@@ -65,8 +65,8 @@ class StatsProviderTest {
   @Test void realExecIsStampedAtSendAndNoEstimateDropsEvenIfOneArrivesBeforeTheReply() throws Exception {
     var time = new AtomicLong(10_000_000); var offset = new AtomicReference<Double>(40_000_000.0);
     try (var rio = new FakeRoboRio(temp, "SYNTHETIC-STATS", "")) {
-      rio.script(StatsCommand.lookup(true), out -> out.write(ProcFixture.sample(0).getBytes(StandardCharsets.UTF_8)));
-      String command = StatsCommand.sample(PullConfig.DISABLED.directories(), org.triplehelix.wpilogmcp.capture.context.ProcStats.configuration(ProcFixture.sample(0), null));
+      rio.script(StatsCommand.lookup(true), out -> out.write(ProcFixture.discovery(0).getBytes(StandardCharsets.UTF_8)));
+      String command = StatsCommand.sample(ProcFixture.DIRECTORIES, org.triplehelix.wpilogmcp.capture.context.ProcStats.configuration(ProcFixture.discovery(0), null));
       rio.script(command, output -> {
         time.addAndGet(150_000); offset.set(90_000_000.0);
         output.write(ProcFixture.sample(0).getBytes(StandardCharsets.UTF_8));
@@ -93,8 +93,8 @@ class StatsProviderTest {
     var clock = new AtomicLong();
     var provider = new StatsProvider(new ProviderConfig.Stats(true, 2_000_000, 100_000),
         PullConfig.DISABLED.directories(), clock::get, () -> 0.0);
-    var original = ProcStats.configuration(ProcFixture.sample(0), null);
-    String command = StatsCommand.sample(PullConfig.DISABLED.directories(), original);
+    var original = ProcStats.configuration(ProcFixture.discovery(0), null);
+    String command = StatsCommand.sample(ProcFixture.DIRECTORIES, original);
     // This is the steady command: shell reads/printf and exactly one external df, no process scan.
     for (String forbidden : List.of("getconf", "cmdline", "robotCommand", "sed ", "grep ", "tr ", "cat ")) {
       assertFalse(command.contains(forbidden), forbidden);
@@ -103,10 +103,10 @@ class StatsProviderTest {
     assertTrue(command.contains("emit /proc/42/stat"));
     try (var rio = new FakeRoboRio(temp, "SYNTHETIC-STATS", "")) {
       rio.script(StatsCommand.lookup(true), out -> {
-        initialLookups.incrementAndGet(); out.write(ProcFixture.sample(0).getBytes(StandardCharsets.UTF_8));
+        initialLookups.incrementAndGet(); out.write(ProcFixture.discovery(0).getBytes(StandardCharsets.UTF_8));
       });
       rio.script(StatsCommand.lookup(false), out -> {
-        restartLookups.incrementAndGet(); out.write(ProcFixture.sample(3).replace(" 500 99999", " 800 99999").getBytes(StandardCharsets.UTF_8));
+        restartLookups.incrementAndGet(); out.write(ProcFixture.discovery(3).replace(" 500 99999", " 800 99999").getBytes(StandardCharsets.UTF_8));
       });
       rio.script(command, out -> {
         samples.incrementAndGet(); int n = phase.get(); clock.addAndGet(2_000_000);
@@ -135,9 +135,9 @@ class StatsProviderTest {
   @Test void anAbsentProgramIsNotAChangedProcessAndIsLookedForOnlyEveryTenSamples() throws Exception {
     var lookups = new java.util.concurrent.atomic.AtomicInteger();
     var clock = new AtomicLong();
-    String missing = ProcFixture.sample(0).replaceAll("(?m)^42 \\(.*\\n", "");
+    String missing = ProcFixture.discovery(0).replaceAll("(?m)^42 \\(.*\\n", "");
     var known = ProcStats.configuration(missing, null);
-    String command = StatsCommand.sample(PullConfig.DISABLED.directories(), known);
+    String command = StatsCommand.sample(ProcFixture.DIRECTORIES, known);
     var provider = new StatsProvider(new ProviderConfig.Stats(true, 2_000_000, 100_000),
         PullConfig.DISABLED.directories(), clock::get, () -> 0.0);
     try (var rio = new FakeRoboRio(temp, "SYNTHETIC-STATS", "")) {

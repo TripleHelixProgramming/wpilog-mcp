@@ -91,12 +91,15 @@ public final class ProcStats {
       return new Snapshot(values, ticks, total - idle, total, up, networks, program, notes);
     } catch (RuntimeException e) { throw new UnsupportedOutputException(e); }
   }
-  public record Configuration(long ticks, long pages, Program program) {}
+  public record Configuration(long ticks, long pages, Program program, List<String> diskDirectories) {
+    public Configuration { diskDirectories = List.copyOf(diskDirectories); }
+  }
   public static Configuration configuration(String text, Configuration before) throws IOException {
     try {
       var sections = sections(text);
       return new Configuration(before == null ? positive(one(sections, "ticks")) : before.ticks(),
-          before == null ? positive(one(sections, "pages")) : before.pages(), program(required(sections, "program")));
+          before == null ? positive(one(sections, "pages")) : before.pages(), program(required(sections, "program")),
+          before == null ? required(sections, "disk_paths") : before.diskDirectories());
     } catch (RuntimeException e) { throw new UnsupportedOutputException(e); }
   }
   private static Map<String, List<String>> sections(String text) {
@@ -105,7 +108,7 @@ public final class ProcStats {
       if (line.startsWith("WPILOG_STATS_1:")) {
         section = line.substring("WPILOG_STATS_1:".length());
         if (sections.putIfAbsent(section, new ArrayList<>()) != null) throw new IllegalArgumentException("duplicate section " + section);
-      } else if (section != null && !line.isBlank()) sections.get(section).add(line.strip());
+      } else if (section != null && !line.isBlank()) sections.get(section).add(section.equals("disk_paths") ? line : line.strip());
       else if (!line.isBlank()) throw new IllegalArgumentException("unexpected output before stats sections");
     }
     return sections;

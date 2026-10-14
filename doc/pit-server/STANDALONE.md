@@ -212,10 +212,14 @@ continue. Each sample checks the known PID's start ticks; only a mismatch agains
 identified PID and start time reports a changed process and asks for discovery on the next
 sample.
 
-**Cost.** The first lookup and `getconf` run once per SSH connection, and the tick and page
-constants stay cached until SSH reconnects. Steady samples read fixed `/proc` files with shell
-builtins and run one `df` for all selected filesystems. Exec replies are bounded to 64 KiB and
-30 seconds, and a sample wait never occupies the NT4 loop.
+**Cost.** Initial connection discovery reads the device's tick/page units and resolves the
+candidate filesystem directories with `cd -- <path>` and `pwd -P`. Those facts stay cached
+until SSH reconnects; a program restart only rediscovers its PID. Aliases of the same real
+directory supply one argument to the steady command's single `df -Pk` invocation. Filesystem
+entry names use the resolved directory. Steady proc reads use shell builtins. While the
+sampling period remains above its configured base, the sampling reason names the last round
+trip and configured budget, including during recovery. Exec replies remain bounded to 64 KiB
+and 30 seconds, with no wait on NT4.
 
 A follow command that exits reports its exit status and the first 4096 bytes of stderr in
 the provider stand-down reason and state-change log. Excess stderr is discarded without
@@ -557,7 +561,8 @@ to bypass it.
 `robot-facts-yyyyMMddTHHmmssZ.md` in the current directory, and an existing report is never
 overwritten. Each fixed read-only command records its exit status, its elapsed milliseconds, up
 to 32 KiB each of stdout and stderr, and any timeout or truncation. An ordinary command has a
-ten-second deadline, and the SSH connect a five-second bound. A refused command stays in the
+ten-second deadline; stats discovery and timing use the provider's 30-second bound.
+The SSH connect has a five-second bound. A refused command stays in the
 report and does not stop the other probes. A connection, configuration or output failure exits
 nonzero; a sparse image collected successfully still exits zero.
 
@@ -584,6 +589,13 @@ nonzero; a sparse image collected successfully still exits zero.
 
 The conclusions mark each fact **found**, **absent** or **refused**, and name the load, radio and
 rotation exercises this snapshot cannot perform.
+
+**Stats command timings.** After initial stats discovery, the report records three
+`stats-steady-N` executions of the actual provider command, `stats-proc`, and one
+`stats-df:<resolved directory>` for each unique path. Their elapsed milliseconds include SSH
+round trips; component times cannot be added as though the network overhead occurred once.
+Refused, truncated or unsupported discovery prevents guessed timings. These measurements do
+not measure robot CPU consumption or replace the loaded shop exercise.
 
 **The hash-cost probe.** The largest `.wpilog` or `.revlog` in the configured pull directories is
 hashed with `head -c N -- <quoted path> | sha256sum`, with N at most `104857600` bytes (100 MiB),

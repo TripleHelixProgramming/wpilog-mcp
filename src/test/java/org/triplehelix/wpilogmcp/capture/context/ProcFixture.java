@@ -7,6 +7,10 @@ package org.triplehelix.wpilogmcp.capture.context;
 /** Generated OS counters: two seconds, 120 busy ticks of 200, and 50 program ticks at 100 Hz. */
 public final class ProcFixture {
   private ProcFixture() {}
+  public static final java.util.List<String> DIRECTORIES = java.util.List.of("/home/lvuser", "/u", "/U");
+  public static String discovery(int n) {
+    return sample(n) + "WPILOG_STATS_1:disk_paths\n" + String.join("\n", DIRECTORIES) + "\n";
+  }
   public static String sample(int n) {
     String program = "42 (robot (java)) S 1 2 3 4 5 6 7 8 9 10 " + (10 + 40 * n) + " " + (5 + 10 * n)
         + " 0 0 20 0 7 0 500 99999 3";

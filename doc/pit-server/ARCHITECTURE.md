@@ -584,7 +584,10 @@ resource joins the NT4 loop to read its clock. `pit://session/current` exposes t
 published identity, file, gateway and provider facts through ordinary MCP resource discovery.
 
 The SSH stats worker discovers the deployed JAR's PID/start ticks and tick/page constants once
-per connection. Its sample reads the fixed proc files and checks the start ticks, rediscovering
+per connection. `ProcStats.Configuration` retains resolved real directories alongside those
+units. `StatsCommand` owns both live and diagnostic command construction, deduplicates the
+physical directories before df, and supplies the same steady/proc/df parts to robot-facts.
+Its sample reads the fixed proc files and checks the start ticks, rediscovering
 only after the process disappears or changes. Steady samples use shell builtins plus one `df`
 for all filesystems; a changed filesystem set omits free-space values with a reason instead of
 attaching a row to the wrong path.

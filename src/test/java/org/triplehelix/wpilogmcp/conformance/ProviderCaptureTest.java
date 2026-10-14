@@ -35,8 +35,8 @@ class ProviderCaptureTest {
     var phase = new AtomicInteger(); var tailLines = new LinkedBlockingQueue<String>();
     var values = new ArrayList<Map.Entry<String, com.google.gson.JsonElement>>(); Path capture;
     try (var rio = new FakeRoboRio(temp.resolve("remote"), "PROVIDER-FIXTURE", "synthetic comments")) {
-      rio.script(StatsCommand.lookup(true), out -> out.write(ProcFixture.sample(0).getBytes(StandardCharsets.UTF_8)));
-      rio.script(StatsCommand.sample(PullConfig.DISABLED.directories(), org.triplehelix.wpilogmcp.capture.context.ProcStats.configuration(ProcFixture.sample(0), null)), out -> out.write(ProcFixture.sample(phase.get()).getBytes(StandardCharsets.UTF_8)));
+      rio.script(StatsCommand.lookup(true), out -> out.write(ProcFixture.discovery(0).getBytes(StandardCharsets.UTF_8)));
+      rio.script(StatsCommand.sample(ProcFixture.DIRECTORIES, org.triplehelix.wpilogmcp.capture.context.ProcStats.configuration(ProcFixture.discovery(0), null)), out -> out.write(ProcFixture.sample(phase.get()).getBytes(StandardCharsets.UTF_8)));
       rio.script(TailCommand.open(ProviderConfig.CONSOLE, "program_console"), out -> {
         out.write((TailCommand.FOLLOW + "\n").getBytes(StandardCharsets.UTF_8)); out.flush();
         while (true) { String line = tailLines.take(); if (line.equals("STOP")) return; out.write((line + "\n").getBytes(StandardCharsets.UTF_8)); out.flush(); }

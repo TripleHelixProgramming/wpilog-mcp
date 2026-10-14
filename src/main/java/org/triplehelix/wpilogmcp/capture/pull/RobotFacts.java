@@ -9,6 +9,9 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.*;
 import org.triplehelix.wpilogmcp.config.PullConfig;
+import org.triplehelix.wpilogmcp.capture.context.ProcStats;
+import org.triplehelix.wpilogmcp.capture.context.StatsCommand;
+import org.triplehelix.wpilogmcp.capture.context.StatsProvider;
 import org.triplehelix.wpilogmcp.ssh.JschConnection;
 import org.triplehelix.wpilogmcp.ssh.SshConnection;
 
@@ -74,6 +77,7 @@ public final class RobotFacts {
   public static Report collect(JschConnection connection, String host, PullConfig config, Clock clock) {
     var observations = new ArrayList<Observation>(); var started = clock.instant();
     for (var probe : FIXED) observations.add(inspect(connection, probe, 10_000));
+    collectStats(connection, config, observations);
     try (var files = SftpTransport.using(connection, config.directories(), host, false)) {
       var largest = files.list().stream().max(Comparator.comparingLong(RobotRemote.File::size).thenComparing(RobotRemote.File::name));
       if (largest.isPresent() && largest.get().size() > 0) {
@@ -86,11 +90,39 @@ public final class RobotFacts {
     if (auth.equals("password")) auth = config.ssh().password().isEmpty() ? "empty password" : "password (nonempty)";
     return new Report(host, config.ssh().port(), config.ssh().user(), auth, connection.fingerprint(), started, observations);
   }
+  private static void collectStats(JschConnection connection, PullConfig config, List<Observation> observations) {
+    String command = StatsCommand.lookup(true, config.directories());
+    var discovery = inspect(connection, new Probe("stats-discovery", command, 0), StatsProvider.COMMAND_DEADLINE_MS, command);
+    observations.add(discovery);
+    try {
+      if (discovery.reply().exitStatus() != 0 || discovery.reply().timedOut() || discovery.reply().truncated())
+        throw new IOException("Stats discovery did not complete successfully; steady timings were not run");
+      var known = ProcStats.configuration(discovery.reply().stdout(), null);
+      for (var entry : StatsCommand.timingCommands(known).entrySet())
+        observations.add(inspectStats(connection, new Probe(entry.getKey(), entry.getValue(), 0), known));
+    } catch (IOException | IllegalArgumentException e) {
+      observations.add(new Observation(new Probe("stats-timing", null, 0),
+          new JschConnection.Reply(-1, "", e.getMessage(), false, false, 0)));
+    }
+  }
+
+  /** A dynamic probe must exactly match a validated provider command for this discovery. */
+  static Observation inspectStats(JschConnection connection, Probe probe, ProcStats.Configuration known) {
+    String approved = StatsCommand.timingCommands(known).get(probe.id());
+    if (approved == null) return refused(probe);
+    return inspect(connection, probe, StatsProvider.COMMAND_DEADLINE_MS, approved);
+  }
+
   private static Observation inspect(JschConnection connection, Probe probe, long timeoutMs) {
-    if (!allowed(probe.command())) return new Observation(probe,
-        new JschConnection.Reply(-1, "", "Command refused: outside read-only allowlist", false, false, 0));
+    return inspect(connection, probe, timeoutMs, null);
+  }
+  private static Observation inspect(JschConnection connection, Probe probe, long timeoutMs, String approved) {
+    if (approved != null ? !approved.equals(probe.command()) : !allowed(probe.command())) return refused(probe);
     try { return new Observation(probe, connection.inspect(probe.command(), timeoutMs, OUTPUT_LIMIT_BYTES)); }
     catch (IOException e) { return new Observation(probe, new JschConnection.Reply(-1, "", e.getMessage(), false, false, 0)); }
+  }
+  private static Observation refused(Probe probe) {
+    return new Observation(probe, new JschConnection.Reply(-1, "", "Command refused: outside read-only allowlist", false, false, 0));
   }
   private static Observation missingHash(String reason) {
     return new Observation(new Probe("hash", null, 0), new JschConnection.Reply(-1, "", reason, false, false, 0));

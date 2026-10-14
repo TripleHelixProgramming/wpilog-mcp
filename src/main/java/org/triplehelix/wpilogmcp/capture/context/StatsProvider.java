@@ -48,10 +48,10 @@ public final class StatsProvider {
     }
     if (locateProgram) {
       activity.accept("Discovering the robot program");
-      String discovery = connection.exec(StatsCommand.lookup(known == null), COMMAND_DEADLINE_MS, MAX_REPLY_BYTES)
+      String discovery = connection.exec(StatsCommand.lookup(known == null, directories), COMMAND_DEADLINE_MS, MAX_REPLY_BYTES)
           .orElseThrow(() -> new IOException("SSH exec is unavailable for stats discovery"));
       known = ProcStats.configuration(discovery, known); locateProgram = false; samplesSinceLookup = 0;
-      command = StatsCommand.sample(directories, known);
+      command = StatsCommand.sample(known.diskDirectories(), known);
       activity.accept("Reading robot statistics");
     }
     long usedPeriod = period.periodUs();
@@ -71,6 +71,11 @@ public final class StatsProvider {
       current = ProcStats.withoutProgram(current); locateProgram = true;
     }
     var sample = ProcStats.between(previous, current); previous = current;
+    String backoff = period.reason();
+    if (backoff != null) {
+      var notes = new java.util.ArrayList<>(sample.notes()); notes.add(backoff);
+      sample = new ProcStats.Sample(sample.values(), sample.robotCpuSeconds(), notes);
+    }
     Long timestamp = mapping == null ? null : Math.max(0, Math.round(sent + mapping));
     if (timestamp == null) droppedBeforeSync++;
     var kernel = timestamp == null ? null : new ProviderStatus.KernelClock(current.uptime(), timestamp / 1_000_000.0,

@@ -219,8 +219,8 @@ proofs appear in a separate session with their reason; old placements are not re
 `limits.sessions` and each row's `limits.cost` report true totals when cut. An empty store
 is `not_applicable` with its reason.
 
-`providers[]` contains `name`, `state`, `reason` (stand-down or partial-sample explanation),
-`period_sec`, `last_round_trip_ms`, `robot_cpu_sec` (whole-robot processor time between samples,
+`providers[]` contains `name`, `state`, `reason` (current activity, stand-down, partial-sample
+or sampling-budget explanation), `period_sec`, `last_round_trip_ms`, `robot_cpu_sec` (whole-robot processor time between samples,
 not CPU attributed to this provider), `lines_per_sec` (accepted in the current second),
 `dropped_lines`, `dropped_before_sync`, `records`, `bytes`, `sample_bytes` (last provider payload),
 and `program_pids`. `program_pids` lists the program PIDs observed in this session, used for

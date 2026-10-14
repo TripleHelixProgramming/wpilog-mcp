@@ -247,7 +247,7 @@ class ContextStartupTest {
     @Override public Optional<String> exec(String command, long timeoutMs, int maxBytes) throws IOException {
       if (command.equals(StatsCommand.lookup(true)) || command.equals(StatsCommand.lookup(false))) {
         discoveryCalls.incrementAndGet(); discoveryEntered.countDown(); if (blockDiscovery) await(releaseDiscovery);
-        return Optional.of(ProcFixture.sample(0));
+        return Optional.of(ProcFixture.discovery(0));
       }
       sampleEntered.countDown(); if (blockSample) await(releaseSample);
       return Optional.of(sampleText);

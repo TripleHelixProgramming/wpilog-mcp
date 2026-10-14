@@ -284,7 +284,7 @@ Entries, each with its unit in its name:
 | `cpu_busy_fraction` | `/proc/stat`: the busy share of the interval since the previous sample (none for the first) |
 | `load_1min`, `load_5min`, `load_15min`, `runnable_tasks` | `/proc/loadavg` |
 | `mem_available_bytes`, `mem_free_bytes` | `/proc/meminfo` |
-| `disk/<mount>/free_bytes`, for `/home/lvuser`, `/u`, and `/U` where present | `df` |
+| `disk/<resolved directory>/free_bytes` (without the leading `/`), for existing candidate directories with aliases removed | `df -Pk`, using physical paths resolved once per SSH connection |
 | `net/<interface>/rx_bytes_per_sec`, `tx_bytes_per_sec` | `/proc/net/dev`, as rates over the interval |
 | `uptime_sec` | `/proc/uptime` |
 | `program/cpu_fraction`, `program/rss_bytes`, `program/threads`, `program/pid` | the robot program's `/proc/<pid>/stat`; a change of `pid` is a program restart |

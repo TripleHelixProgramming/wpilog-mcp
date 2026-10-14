@@ -144,3 +144,11 @@ Confirm the startup phase durations on the NI image from the journal's identity,
 discovery and statistics-read transitions, and confirm that enabling pulls on an established
 SSH connection adds no second identity scan. The local blocking fixtures establish state and
 sharing behavior; they do not measure the original 7–17 second startup window on the robot.
+
+## Shop stats budget follow-up
+
+Keep the default 100 ms stats round-trip budget until the next shop facts report provides
+repeated steady/proc/per-directory df timings on the real image. Determine whether command
+execution, USB df work or network cost explains the slowdown, then decide separately whether
+to tune the default. Confirm directory resolution and one-USB-row behavior on the actual
+robot; a source audit and local shell fixture do not establish NI-image timing.
