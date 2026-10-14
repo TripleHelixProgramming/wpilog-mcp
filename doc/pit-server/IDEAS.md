@@ -16,8 +16,10 @@ behavior on the installed shop machine before choosing different byte/event/dead
 
 Exercise robot-facts permissions on an installed Ubuntu service: an ordinary account receives
 store-specific guidance, the service account succeeds, and root refuses before changing any store
-file. Run the native Windows ACL-denial regression too. The local macOS round covers real POSIX
-denial and portable principal/error behavior, not those deployed-platform guarantees.
+file. Run the native Windows regressions for a writable Administrators-owned directory and an
+ACL denial of the current account; the latter must report the permission-denied cause. The local
+macOS round covers real POSIX denial and simulated Windows filesystem/principal behavior, not
+those deployed-platform guarantees.
 
 ## 9. The Pit Server
 

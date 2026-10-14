@@ -112,7 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `robot-facts --server` now explains configured-store access refusals and gives service-account and direct-address commands; previously an ordinary account saw only a path. It refuses a differently owned or unverifiable store before creating locks or replacing owner-only host-key manifests, so a privileged invocation cannot strand the service's local pins.
+- `robot-facts --server` now explains configured-store access refusals and gives platform-appropriate service-account and direct-address guidance; previously an ordinary account saw only a path. On POSIX file systems it refuses a differently owned or unverifiable store before creating locks or replacing owner-only host-key manifests, so a privileged invocation cannot strand the service's local pins. Windows admission follows actual filesystem permissions; writable group-owned stores are no longer refused by comparing their owner with the current user.
 
 - Capture now replaces the thousand-line INFO topic-cost bursts every five minutes with one summary of cumulative topic, record, byte, dropped and thinned totals and the five largest recorded-byte contributors. Per-topic detail remains available at DEBUG and through `list_sessions`.
 

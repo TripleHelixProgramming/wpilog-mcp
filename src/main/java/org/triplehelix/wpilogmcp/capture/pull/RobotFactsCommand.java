@@ -63,6 +63,9 @@ public final class RobotFactsCommand {
   }
   @FunctionalInterface interface Account {
     java.nio.file.attribute.UserPrincipal currentUser(Path directory) throws IOException;
+    default boolean posix(Path directory) throws IOException { return Files.getFileStore(directory).supportsFileAttributeView("posix"); }
+    default java.nio.file.attribute.UserPrincipal owner(Path directory) throws IOException { return Files.getOwner(directory); }
+    default boolean windows() { return java.io.File.separatorChar == '\\'; }
   }
 
   static int run(String[] args, PrintStream out, PrintStream err, Path home, Clock clock) {
@@ -126,22 +129,24 @@ public final class RobotFactsCommand {
     } catch (Exception e) {
       if (e instanceof InterruptedException) Thread.currentThread().interrupt();
       String reason = accessingStore != null
-          ? storeFailure(accessingStore, options, hosts, e) : e.getMessage();
+          ? storeFailure(accessingStore, options, hosts, e, account.windows()) : e.getMessage();
       err.println("Cannot collect robot facts: " + redact.apply(reason)); return 1;
     } finally { if (stores != null) stores.close(); }
   }
 
   /**
    * Pin lookup itself creates the permanent lock and may initialize the store. A privileged
-   * operator must not leave a service with a foreign lock or a 0600 replacement pin manifest.
-   * Check before even creating the directory; a new store inherits this admission from its
-   * nearest existing ancestor. NIO principals retain Windows domain/ACL identity semantics.
+   * operator on a POSIX filesystem must not leave a service with a foreign lock or a 0600
+   * replacement pin manifest. Check before creating the directory, using a missing store's
+   * nearest existing ancestor. Other filesystems authorize the actual store operations;
+   * Windows group ownership is not evidence that the current account lacks ACL access.
    */
   private static void checkStoreAccount(Path store, Account account) throws IOException {
     Path existing = store;
     while (existing != null) {
       try {
-        var owner = Files.getOwner(existing);
+        if (!account.posix(existing)) return;
+        var owner = account.owner(existing);
         var current = account.currentUser(existing);
         if (!owner.equals(current)) throw new IOException("Store directory or ancestor " + existing
             + " is owned by " + owner.getName() + "; current account is " + current.getName()
@@ -156,15 +161,18 @@ public final class RobotFactsCommand {
     throw new IOException("Cannot find an existing ancestor to verify the configured store owner");
   }
 
-  private static String storeFailure(Path store, Options options, List<String> hosts, Exception failure) {
+  private static String storeFailure(Path store, Options options, List<String> hosts, Exception failure, boolean windows) {
     Throwable cause = failure;
     while (cause.getCause() != null) cause = cause.getCause();
     String detail = cause instanceof java.nio.file.AccessDeniedException
         ? "permission denied for " + cause.getMessage() : failure.getMessage();
     String address = hosts.isEmpty() ? "<robot-address>" : hosts.get(0);
-    return "Cannot access configured store " + store + ": " + detail
-        + ". Run as the service account (for example, sudo -u wpilog-mcp wpilog-mcp robot-facts --server "
-        + options.server() + " --config <config-file>), or name the robot's address directly: "
-        + "wpilog-mcp robot-facts " + address + " (uses your own account's host-key pins).";
+    String command = "wpilog-mcp robot-facts --server " + options.server() + " --config <config-file>";
+    String account = windows
+        ? "Run under the Windows service account, or an account granted access to this store, using " + command
+        : "Run as the service account (for example, sudo -u wpilog-mcp " + command + ")";
+    return "Cannot access configured store " + store + ": " + detail + ". " + account
+        + ", or name the robot's address directly: wpilog-mcp robot-facts " + address
+        + " (uses your own account's host-key pins).";
   }
 }
