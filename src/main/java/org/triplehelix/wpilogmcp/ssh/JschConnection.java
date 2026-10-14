@@ -184,23 +184,30 @@ public final class JschConnection implements SshConnection {
     ChannelExec exec = null;
     try {
       exec = (ChannelExec) session.openChannel("exec"); exec.setCommand(command); exec.setInputStream(null);
-      // A bounded diagnostic stream must never backpressure an otherwise quiet follower.
-      exec.setErrStream(OutputSink.INSTANCE);
+      // Retain a prefix and discard the rest immediately, never a pipe the reader must drain.
+      var done = new java.util.concurrent.CountDownLatch(1);
+      var stderr = new LimitedOutput(4096, done::countDown);
+      exec.setErrStream(stderr);
       InputStream output = exec.getInputStream(); exec.connect(TIMEOUT_MS);
       var channel = exec;
       return new Command() {
         public InputStream output() { return output; }
+        public Optional<Completion> completion(long timeoutMs) throws IOException {
+          if (timeoutMs <= 0 || timeoutMs > 5000) throw new IllegalArgumentException("Invalid follower completion deadline");
+          try {
+            // Stdout EOF can precede SSH exit-status. stderr closes on CHANNEL_CLOSE.
+            if (!done.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) return Optional.empty();
+            return Optional.of(new Completion(channel.getExitStatus(), stderr.text(), stderr.truncated()));
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); throw new IOException("SSH follower completion interrupted", e);
+          }
+        }
         public void close() { channel.disconnect(); }
       };
     } catch (JSchException | IOException e) {
       if (exec != null) exec.disconnect();
       throw new IOException("Cannot open SSH follower channel", e);
     }
-  }
-  private static final class OutputSink extends java.io.OutputStream {
-    static final OutputSink INSTANCE = new OutputSink();
-    @Override public void write(int value) {}
-    @Override public void write(byte[] value, int offset, int length) {}
   }
   @Override public void close() { session.disconnect(); deadlines.close(); }
   public static String fingerprint(byte[] key) {

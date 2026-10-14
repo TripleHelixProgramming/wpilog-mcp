@@ -105,10 +105,26 @@ public final class TailProvider implements AutoCloseable {
       }
     } catch (IOException e) { failure.compareAndSet(null, e.getMessage()); }
     finally {
+      String reason = failure.get();
+      if (reason == null && !closed.get() && command == channel) {
+        try {
+          var ended = channel.completion(5000);
+          if (ended.isEmpty()) reason = "Follow command ended; exit status unavailable after the bounded completion wait";
+          else {
+            var result = ended.get();
+            reason = result.exitStatus() < 0 ? "Follow command ended without an exit status"
+                : "Follow command ended with status " + result.exitStatus();
+            String diagnostic = result.stderr().strip().replace("\r", "").replace("\n", " | ");
+            if (!diagnostic.isEmpty()) reason += ": " + diagnostic;
+            if (result.truncated()) reason += " [stderr truncated after 4096 bytes]";
+          }
+        } catch (IOException e) { reason = "Follow command ended; " + e.getMessage(); }
+      }
+      String explanation = reason;
       if (!closed.get()) worker.execute(() -> {
         if (command == channel) {
           stopCommand();
-          if (current != null && current.connected()) block(failure.get() == null ? "Follow command ended; source unavailable for this session" : failure.get());
+          if (current != null && current.connected()) block(explanation);
           else state("offline", "SSH disconnected", null);
         }
       });

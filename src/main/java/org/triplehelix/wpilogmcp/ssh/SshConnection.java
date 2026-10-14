@@ -17,8 +17,11 @@ public interface SshConnection extends AutoCloseable {
     byte[] read(String path, long offset, int count) throws IOException;
     @Override void close();
   }
+  record Completion(int exitStatus, String stderr, boolean truncated) {}
   interface Command extends AutoCloseable {
     InputStream output();
+    /** Called after stdout EOF on the reader worker, never on the capture loop. */
+    default Optional<Completion> completion(long timeoutMs) throws IOException { return Optional.empty(); }
     @Override void close();
   }
   String fingerprint();

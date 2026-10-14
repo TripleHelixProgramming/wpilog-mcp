@@ -40,6 +40,64 @@ class TailProviderTest {
     assertTrue(docker.contains("ln -sf /bin/busybox /usr/local/bin/tail"), "PATH must select BusyBox tail");
   }
 
+  @Test void aFailedFollowKeepsItsExitStatusAndStderrInTheStandDownReason() throws Exception {
+    var worker = new ManualScheduler();
+    var config = new ProviderConfig.Tail(null, PullConfig.DISABLED.ssh(), "/console", "program_console");
+    try (var rio = new FakeRoboRio(temp, "TAIL-EXIT", "")) {
+      rio.reply(TailCommand.open(config.path(), config.role()), 1, TailCommand.FOLLOW + "\n",
+          "tail: invalid number '0.25'\n");
+      try (var ssh = JschConnection.connect("127.0.0.1", new PullConfig.Ssh("lvuser", "", null, false, rio.port()), null);
+          var tail = new TailProvider(config, () -> ssh, worker::nowUs, () -> 2_000_000, () -> true, worker)) {
+        tail.start(); worker.drain();
+        await(() -> { worker.drain(); return tail.state().state().equals("stand_down"); });
+        assertEquals("Follow command ended with status 1: tail: invalid number '0.25'", tail.state().reason());
+        assertTrue(ssh.connected(), "A failed command does not close the shared connection");
+      }
+    }
+  }
+
+  @Test void noisyStderrRetainsOnlyABoundedPrefixWithoutBlockingStdoutOrChannelClose() throws Exception {
+    var worker = new ManualScheduler();
+    var config = new ProviderConfig.Tail(null, PullConfig.DISABLED.ssh(), "/console", "program_console");
+    try (var rio = new FakeRoboRio(temp, "TAIL-STDERR", "")) {
+      rio.reply(TailCommand.open(config.path(), config.role()), 7, TailCommand.FOLLOW + "\nfollowed line\n",
+          "diagnostic-start " + "x".repeat(1_000_000) + " diagnostic-end");
+      try (var ssh = JschConnection.connect("127.0.0.1", new PullConfig.Ssh("lvuser", "", null, false, rio.port()), null);
+          var tail = new TailProvider(config, () -> ssh, worker::nowUs, () -> 2_000_000, () -> true, worker)) {
+        tail.start(); worker.drain();
+        await(() -> { worker.drain(); return tail.state().state().equals("stand_down"); });
+        assertEquals(List.of("followed line"), tail.buffer().drain(0, 10).stream().map(TailBuffer.Line::text).toList());
+        String reason = tail.state().reason();
+        assertTrue(reason.startsWith("Follow command ended with status 7: diagnostic-start "), reason);
+        assertTrue(reason.contains("stderr truncated"));
+        assertFalse(reason.contains("diagnostic-end"));
+        assertTrue(reason.length() < 4300, "The reported diagnostic is bounded independently of remote output");
+      }
+    }
+  }
+
+  @Test void completionWaitsForChannelCloseAndRejectsUnboundedWaits() throws Exception {
+    var release = new CountDownLatch(1);
+    try (var rio = new FakeRoboRio(temp, "TAIL-CLOSE", "")) {
+      rio.script("wait-before-close", out -> { out.write('x'); out.flush(); release.await(5, TimeUnit.SECONDS); });
+      try (var ssh = JschConnection.connect("127.0.0.1", new PullConfig.Ssh("lvuser", "", null, false, rio.port()), null);
+          var command = ssh.follow("wait-before-close")) {
+        assertEquals('x', command.output().read());
+        assertThrows(IllegalArgumentException.class, () -> command.completion(0));
+        assertThrows(IllegalArgumentException.class, () -> command.completion(5001));
+        var finished = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+          try { return command.completion(5000); }
+          catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+        });
+        assertThrows(java.util.concurrent.TimeoutException.class, () -> finished.get(100, TimeUnit.MILLISECONDS),
+            "An active command has no completed exit status");
+        release.countDown();
+        var result = finished.get(5, TimeUnit.SECONDS).orElseThrow();
+        assertEquals(0, result.exitStatus()); assertEquals("", result.stderr()); assertFalse(result.truncated());
+      }
+    } finally { release.countDown(); }
+  }
+
   @Test void burstsAreCappedAndReportedWhenQuietAndPreSessionHistoryIsBounded() {
     var buffer = new TailBuffer();
     for (int n = 0; n < 275; n++) buffer.line("line-" + n, 123_000, true);

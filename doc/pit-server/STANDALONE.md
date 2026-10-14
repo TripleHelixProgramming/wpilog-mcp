@@ -210,6 +210,11 @@ constants stay cached until SSH reconnects. Steady samples read fixed `/proc` fi
 builtins and run one `df` for all selected filesystems. Exec replies are bounded to 64 KiB and
 30 seconds, and a sample wait never occupies the NT4 loop.
 
+A follow command that exits reports its exit status and the first 4096 bytes of stderr in
+the provider stand-down reason and state-change log. Excess stderr is discarded without
+blocking the channel; a truncated prefix is labeled. Completion waits at most five seconds
+on the follower reader, leaving capture and the shared connection independent.
+
 **Followed files: what you see.** Each tail runs `tail -n 0 -F -s 1` and records one string
 record per line, stamped at **receipt** time. BusyBox accepts the integer one-second polling
 interval; a line can arrive up to one interval after it was written, plus transport and scheduling
