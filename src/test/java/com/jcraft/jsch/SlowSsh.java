@@ -12,7 +12,7 @@ import java.nio.charset.StandardCharsets;
 public final class SlowSsh extends JSch {
   public final byte[] hostKey = {1, 2, 3};
   public boolean authenticated, disconnected, commandClosed, endOnClose;
-  public int connectTimeout, channelTimeout;
+  public int connectTimeout, channelTimeout, realpathError;
   public long elapsedMs;
   public Runnable onRead = () -> {};
   public String reply = "0".repeat(64) + "  -\n";
@@ -33,6 +33,10 @@ public final class SlowSsh extends JSch {
       @Override public void disconnect() { disconnected = true; }
       @Override public Channel openChannel(String kind) {
         if (kind.equals("sftp")) return new ChannelSftp() {
+          @Override public String realpath(String path) throws SftpException {
+            if (realpathError != 0) throw new SftpException(realpathError, "synthetic path resolution error");
+            return path;
+          }
           @Override public void connect(int timeout) { channelTimeout = timeout; }
           @Override public void disconnect() {}
         };

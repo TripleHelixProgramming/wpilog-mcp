@@ -112,6 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Robot pulls resolve configured roots with SFTP realpath and walk each directory once. Previously `/u/logs` and `/U/logs` could transfer the same USB logs twice; existing alias manifests now resume their verified and partial files, including paced fallback proofs that previously could wait indefinitely. The synthetic roboRIO uses both aliases and checks one transfer per log.
+
 - SSH stats now resolve filesystem aliases once per connection and sample each real directory once; USB aliases previously repeated df work. A budget-driven slowdown now states its round trip and budget instead of a null reason, and robot-facts times the actual steady command, its proc reads and each df path so the shop can locate the cost before changing the 100 ms default.
 
 - SSH providers replace the misleading disconnected status during startup with the current identity, program-discovery or statistics-read step. Context and pulls now share one device-identity attempt per SSH connection, and replies from an old connection cannot supply identity or stand down its replacement.

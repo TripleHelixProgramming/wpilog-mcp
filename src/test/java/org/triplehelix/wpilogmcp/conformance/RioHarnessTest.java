@@ -108,6 +108,9 @@ class RioHarnessTest {
       Files.writeString(run.resolve("listing.json"), listing.toString());
       HarnessExpectations.verify(timeline, run, store, http, listing, null, false);
       RioExpectations.captures(timeline, listing, http);
+      var pullManifest = store.resolve("robots").resolve(timeline.get("serial_number").getAsString()).resolve("pull.json");
+      RioExpectations.pullsOnce(JsonParser.parseString(Files.readString(pullManifest)).getAsJsonObject(),
+          timeline.getAsJsonArray("boots").size());
       if (photon != null) {
         photon.check();
         for (var row : listing.getAsJsonArray("logs")) {

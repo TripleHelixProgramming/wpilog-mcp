@@ -19,6 +19,7 @@ public final class SftpTransport implements RobotRemote, SystemRemote {
   @FunctionalInterface public interface IdentitySource { DeviceIdentity read() throws IOException; }
   record Item(String name, long size, long mtimeMillis, boolean directory, boolean regular, boolean symlink) {}
   interface Channel extends AutoCloseable {
+    default Optional<String> realpath(String directory) throws IOException { return Optional.of(directory); }
     List<Item> list(String directory) throws IOException;
     byte[] read(String path, long offset, int count) throws IOException;
     Optional<String> exec(String command, long timeoutMs) throws IOException;
@@ -52,6 +53,7 @@ public final class SftpTransport implements RobotRemote, SystemRemote {
     try { files = ssh.files(); }
     catch (IOException | RuntimeException e) { if (ownConnection) ssh.close(); throw e; }
     return new SftpTransport(new Channel() {
+      public Optional<String> realpath(String directory) throws IOException { return files.realpath(directory); }
       public List<Item> list(String directory) throws IOException {
         return files.list(directory).stream().map(i -> new Item(i.name(), i.size(), i.mtimeMillis(), i.directory(), i.regular(), i.symlink())).toList();
       }
@@ -74,7 +76,13 @@ public final class SftpTransport implements RobotRemote, SystemRemote {
     }, address, fingerprint);
   }
   @Override public List<File> list() throws IOException {
-    var result = new ArrayList<File>(); var pending = new java.util.ArrayDeque<>(directories);
+    var result = new ArrayList<File>(); var pending = new java.util.ArrayDeque<String>();
+    var roots = new java.util.HashSet<String>();
+    // Keep the first configured spelling; proof-based rename recovery also accepts older aliases.
+    for (String directory : directories) {
+      var canonical = channel.realpath(directory);
+      if (canonical.isPresent() && roots.add(canonical.get())) pending.addLast(directory);
+    }
     var visited = new java.util.HashSet<String>();
     while (!pending.isEmpty()) {
       String parent = pending.removeFirst(); if (!visited.add(parent)) continue;

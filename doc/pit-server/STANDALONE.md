@@ -531,6 +531,11 @@ A file with no logged serial is marked `data_alone` in the manifest. A file that
 starts its own session. A disagreement between the logged and the device serial is reported,
 and the logged serial wins for the file.
 
+**USB aliases.** Each recursive listing resolves its configured roots with SFTP realpath and
+walks each physical root once, keeping the first configured spelling. A saved manifest using
+another alias is recovered by the same content proof as a renamed file: verified bytes and
+partial checkpoints are kept. Missing roots are optional; permission failures are reported.
+
 **Resume.** A resumed transfer checks the hash of exactly the held bytes. If exec is unavailable,
 the last 64 KiB is compared instead, which cannot prove the earlier prefix. The robot's files are
 never deleted or modified.

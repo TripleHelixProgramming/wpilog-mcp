@@ -13,6 +13,7 @@ import java.util.Optional;
 public interface SshConnection extends AutoCloseable {
   record Item(String name, long size, long mtimeMillis, boolean directory, boolean regular, boolean symlink) {}
   interface Files extends AutoCloseable {
+    default Optional<String> realpath(String directory) throws IOException { return Optional.of(directory); }
     List<Item> list(String directory) throws IOException;
     byte[] read(String path, long offset, int count) throws IOException;
     @Override void close();

@@ -152,3 +152,10 @@ repeated steady/proc/per-directory df timings on the real image. Determine wheth
 execution, USB df work or network cost explains the slowdown, then decide separately whether
 to tune the default. Confirm directory resolution and one-USB-row behavior on the actual
 robot; a source audit and local shell fixture do not establish NI-image timing.
+
+## Shop USB follow-up
+
+Confirm the NI SFTP server reports the same realpath for `/u/logs` and `/U/logs`, and
+that the existing uppercase manifest resumes without duplicate copies. Unit and real-SFTP
+fixtures cover directory aliases and both hash and byte-comparison rename recovery; the
+container fixture has both USB aliases, but its Linux/Docker run remains a separate check.

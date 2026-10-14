@@ -17,6 +17,13 @@ import org.triplehelix.wpilogmcp.harness.HarnessHttp;
 /** Assertions independent of the robot program and provider parsers: clocks are measured, not guessed. */
 final class RioExpectations {
   private RioExpectations() {}
+  static void pullsOnce(JsonObject manifest, int expected) {
+    var files = manifest.getAsJsonArray("files");
+    assertEquals(expected, files.size(), "Each synthetic USB log must have one transfer, even when import deduplicates content");
+    long names = files.asList().stream().map(e -> e.getAsJsonObject().get("remote_name").getAsString())
+        .map(name -> name.substring(name.lastIndexOf('/') + 1)).distinct().count();
+    assertEquals(expected, names, "Every scripted boot must supply its own log exactly once");
+  }
   static boolean providersFollowing(JsonObject live) {
     if (!live.has("sessions")) return false;
     return live.getAsJsonArray("sessions").asList().stream().map(e -> e.getAsJsonObject())

@@ -24,15 +24,26 @@ class SftpTransportTest {
   static final class Fake implements SftpTransport.Channel {
     final Map<String, List<SftpTransport.Item>> directories = new HashMap<>();
     final Map<String, byte[]> files = new HashMap<>();
-    final List<String> reads = new ArrayList<>();
-    String command; Optional<String> reply = Optional.empty(); boolean closed;
-    @Override public List<SftpTransport.Item> list(String directory) { return directories.getOrDefault(directory, List.of()); }
+    final List<String> reads = new ArrayList<>(), walked = new ArrayList<>();
+    final Map<String, String> canonical = new HashMap<>();
+    String command; Optional<String> reply = Optional.empty(); boolean closed, hashing;
+    @Override public Optional<String> realpath(String directory) { return Optional.of(canonical.getOrDefault(directory, directory)); }
+    @Override public List<SftpTransport.Item> list(String directory) { walked.add(directory); return directories.getOrDefault(directory, List.of()); }
     @Override public byte[] read(String path, long offset, int count) throws IOException {
       reads.add(path + ":" + offset + ":" + count);
       var data = files.get(path); if (data == null) throw new IOException("unreadable");
       return java.util.Arrays.copyOfRange(data, (int) offset, (int) Math.min(data.length, offset + count));
     }
-    @Override public Optional<String> exec(String value, long timeoutMs) { command = value; return reply; }
+    @Override public Optional<String> exec(String value, long timeoutMs) {
+      command = value;
+      if (!hashing) return reply;
+      try {
+        var fields = value.split(" "); int length = Integer.parseInt(fields[2]);
+        String path = fields[4].substring(1, fields[4].length() - 1);
+        return Optional.of(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+            .digest(java.util.Arrays.copyOf(files.get(path), length))) + "  -");
+      } catch (java.security.NoSuchAlgorithmException e) { throw new AssertionError(e); }
+    }
     @Override public void close() { closed = true; }
   }
   static SftpTransport.Item file(String name) { return new SftpTransport.Item(name, 123, 456_000, false, true, false); }
@@ -61,6 +72,83 @@ class SftpTransportTest {
     }
     assertTrue(fake.closed);
     assertEquals("/u/a\\*b\\?c\\\\d", org.triplehelix.wpilogmcp.ssh.JschConnection.sftpLiteral("/u/a*b?c\\d"));
+  }
+
+  @Test void rootAliasesAreWalkedOnlyOnce() throws Exception {
+    var fake = new Fake();
+    for (String root : List.of("/u/logs", "/U/logs")) {
+      fake.canonical.put(root, "/media/usb/logs");
+      fake.directories.put(root, List.of(file("a.wpilog"), dir("session")));
+      fake.directories.put(root + "/session", List.of(file("b.revlog")));
+    }
+    try (var remote = new SftpTransport(fake, List.of("/u/logs", "/U/logs"), "synthetic", "key")) {
+      assertEquals(List.of("/u/logs/a.wpilog", "/u/logs/session/b.revlog"), remote.list().stream().map(f -> f.name()).toList());
+      assertEquals(List.of("/u/logs", "/u/logs/session"), fake.walked);
+    }
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+  void anExistingUppercaseManifestKeepsItsVerifiedFileAndPartialBytes(boolean hashing) throws Exception {
+    var fake = new Fake(); fake.hashing = hashing; byte[] partial = new byte[100_000]; new java.util.Random(5).nextBytes(partial);
+    byte[] complete = new byte[] {1, 2, 3, 4};
+    for (String root : List.of("/u/logs", "/U/logs")) {
+      fake.canonical.put(root, "/media/usb/logs");
+      fake.directories.put(root, List.of(new SftpTransport.Item("a.wpilog", complete.length, 1000, false, true, false),
+          new SftpTransport.Item("b.revlog", partial.length, 1000, false, true, false)));
+      fake.files.put(root + "/a.wpilog", complete); fake.files.put(root + "/b.revlog", partial);
+    }
+    var local = new AliasLocal(); local.data.put("complete", complete); local.data.put("partial", java.util.Arrays.copyOf(partial, 65536));
+    local.saved = new org.triplehelix.wpilogmcp.sync.PullManifest(1, "SYNTHETIC", List.of(
+        new org.triplehelix.wpilogmcp.sync.PullManifest.Entry("/U/logs/a.wpilog", 4, 1000, 4, true, "complete", 0, null),
+        new org.triplehelix.wpilogmcp.sync.PullManifest.Entry("/U/logs/b.revlog", 100000, 1000, 65536, false, "partial", 0, null)), List.of());
+    var clock = new java.util.concurrent.atomic.AtomicLong();
+    try (var remote = new SftpTransport(fake, List.of("/u/logs", "/U/logs"), "synthetic", "key")) {
+      var transfer = new org.triplehelix.wpilogmcp.sync.FileTransfer(remote, local, local.saved, 1_000_000, clock::get, () -> true);
+      for (int n = 0; n < 40; n++) {
+        var result = transfer.step(); clock.addAndGet(Math.max(1, result.waitUs()));
+        if (result.status() == org.triplehelix.wpilogmcp.sync.FileTransfer.Status.IDLE) break;
+      }
+    }
+    assertEquals(2, local.saved.files().size(), "Aliases must not add a second pair of transfers");
+    assertEquals(100000 - 65536, local.appended, "Only bytes after the existing checkpoint may be copied");
+    assertEquals(0, local.created); assertTrue(local.saved.history().isEmpty());
+    assertTrue(local.saved.files().stream().allMatch(org.triplehelix.wpilogmcp.sync.PullManifest.Entry::verified));
+    assertArrayEquals(complete, local.data.get("complete")); assertArrayEquals(partial, local.data.get("partial"));
+  }
+
+  private static final class AliasLocal implements org.triplehelix.wpilogmcp.sync.FileTransfer.Local {
+    final Map<String, byte[]> data = new HashMap<>();
+    org.triplehelix.wpilogmcp.sync.PullManifest saved; int appended, created;
+    public String create(String remote) { String name = "new-" + ++created; data.put(name, new byte[0]); return name; }
+    public long size(String name) { return data.get(name).length; }
+    public byte[] read(String name, long offset, int count) { return java.util.Arrays.copyOfRange(data.get(name), (int) offset, (int) offset + count); }
+    public String prefixHash(String name, long length) {
+      try { return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+          .digest(java.util.Arrays.copyOf(data.get(name), (int) length))); }
+      catch (java.security.NoSuchAlgorithmException e) { throw new AssertionError(e); }
+    }
+    public void append(String name, long offset, byte[] bytes) {
+      assertEquals(data.get(name).length, offset); var grown = java.util.Arrays.copyOf(data.get(name), (int) offset + bytes.length);
+      System.arraycopy(bytes, 0, grown, (int) offset, bytes.length); data.put(name, grown); appended += bytes.length;
+    }
+    public String rename(String name, String remote) { return name; }
+    public String archive(String name) { throw new AssertionError("Existing alias content must be preserved"); }
+    public void verify(String name) {}
+    public String verified(org.triplehelix.wpilogmcp.sync.PullManifest.Entry entry) { return entry.localName(); }
+    public void save(org.triplehelix.wpilogmcp.sync.PullManifest value) { saved = value; }
+  }
+
+  @Test void realpathSkipsAbsentRootsButPreservesPermissionErrors() throws Exception {
+    var ssh = new com.jcraft.jsch.SlowSsh();
+    try (var connection = org.triplehelix.wpilogmcp.ssh.JschConnection.connect("synthetic",
+        org.triplehelix.wpilogmcp.config.PullConfig.DISABLED.ssh(), null, ssh, new Timers());
+        var files = connection.files()) {
+      ssh.realpathError = com.jcraft.jsch.ChannelSftp.SSH_FX_NO_SUCH_FILE;
+      assertTrue(files.realpath("/missing").isEmpty());
+      ssh.realpathError = com.jcraft.jsch.ChannelSftp.SSH_FX_PERMISSION_DENIED;
+      var error = assertThrows(IOException.class, () -> files.realpath("/denied"));
+      assertTrue(error.getMessage().contains("SFTP realpath failed: /denied"));
+    }
   }
 
   @Test void hashCommandQuotesEveryPathAndRefusesUnavailableOrMalformedAnswers() throws Exception {

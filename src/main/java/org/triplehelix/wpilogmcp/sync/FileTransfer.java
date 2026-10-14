@@ -113,7 +113,6 @@ public final class FileTransfer {
             files.put(item.name(), entry); save();
           }
         }
-        renameProof.clear();
         boolean changed = entry.size() != item.size() || entry.mtimeMillis() != item.mtimeMillis();
         if (!changed && (entry.verified() || entry.failure() != null) && entry.equals(validated.get(item.name()))) continue;
         boolean replaced = item.size() < entry.size() || item.mtimeMillis() < entry.mtimeMillis()

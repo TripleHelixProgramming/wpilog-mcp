@@ -10,8 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssh-server 
     && ln -sf /bin/busybox /usr/local/bin/tail \
     && rm -f /etc/ssh/ssh_host_* \
     && useradd --create-home --shell /bin/bash lvuser && passwd -d lvuser \
-    && mkdir -p /run/sshd /home/lvuser/logs /var/local/natinst/log \
-    && chown -R lvuser:lvuser /home/lvuser /var/local/natinst/log \
+    && mkdir -p /run/sshd /home/lvuser/logs /var/local/natinst/log /media/usb/logs \
+    && ln -s /media/usb /u && ln -s /media/usb /U \
+    && chown -R lvuser:lvuser /home/lvuser /var/local/natinst/log /media/usb \
     && ! command -v journalctl
 COPY --from=runtime /runtime /opt/java
 COPY harness/robot/build/libs/shop-robot.jar /home/lvuser/frcUserProgram.jar

@@ -67,6 +67,17 @@ class SftpLoopbackTest {
     }
   }
 
+  @Test void equivalentDirectoriesAreResolvedThroughTheRealSftpChannel() throws Exception {
+    try (var rio = new FakeRoboRio(temp.resolve("aliases"), "ALIAS-RIO", "")) {
+      Files.write(rio.logs().resolve("once.wpilog"), new byte[] {1, 2});
+      var config = new PullConfig(true, List.of("/home/lvuser/logs", "/home/lvuser/logs/../logs"), 0, 1_000_000,
+          new PullConfig.Ssh("lvuser", "", null, false, rio.port()));
+      try (var remote = SftpTransport.connect("127.0.0.1", config, null)) {
+        assertEquals(List.of("/home/lvuser/logs/once.wpilog"), remote.list().stream().map(f -> f.name()).toList());
+      }
+    }
+  }
+
   @Test void keepalivesWorkWhileARealExecChannelIsSilentAndDeadlineClosesOnlyThatChannel() throws Exception {
     try (var rio = new FakeRoboRio(temp.resolve("slow"), "HARNESS-02", "")) {
       Files.write(rio.logs().resolve("slow.wpilog"), new byte[] {1, 2, 3});

@@ -12,5 +12,5 @@ exec /opt/java/bin/java -Xmx256m -Djava.library.path=/opt/wpilib \
   -Dcom.sun.management.jmxremote.authenticate=false \
   -Dcom.sun.management.jmxremote.ssl=false \
   -jar "/home/lvuser/frcUserProgram.jar" /harness/timeline.json "$1" \
-  /home/lvuser/logs "/harness/boot-$1" "$HARNESS_NT_PORT" \
+  /u/logs "/harness/boot-$1" "$HARNESS_NT_PORT" \
   >> /var/local/natinst/log/FRC_UserProgram.log 2>&1

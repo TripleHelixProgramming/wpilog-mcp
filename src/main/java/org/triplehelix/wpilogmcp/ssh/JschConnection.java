@@ -89,6 +89,13 @@ public final class JschConnection implements SshConnection {
     }
   }
   private record FileChannel(ChannelSftp sftp) implements Files {
+    @Override public Optional<String> realpath(String directory) throws IOException {
+      try { return Optional.of(sftp.realpath(directory)); }
+      catch (SftpException e) {
+        if (e.id == ChannelSftp.SSH_FX_NO_SUCH_FILE) return Optional.empty();
+        throw new IOException("SFTP realpath failed: " + directory, e);
+      }
+    }
     @Override public List<Item> list(String directory) throws IOException {
       try {
         var result = new ArrayList<Item>();
