@@ -10,6 +10,7 @@
     {"tool": "suggest_tools", "title": "A diagnosis task", "args": {"task": "why did the robot brown out during teleop", "max_suggestions": 3}},
 
     {"tool": "list_available_logs", "title": "First page, one event", "args": {"event": "vache", "limit": 3}},
+    {"tool": "list_available_logs", "title": "Default view names excluded directories when a preferred store is configured", "args": {"view": "default", "limit": 3}},
     {"tool": "list_available_logs", "title": "All readable sources", "args": {"view": "all", "limit": 3}},
     {"tool": "list_loaded_logs", "title": "After loading", "args": {}},
     {"tool": "list_entries", "title": "Filtered by pattern", "args": {"path": "${q10}", "pattern": "SystemStats/Battery"}},

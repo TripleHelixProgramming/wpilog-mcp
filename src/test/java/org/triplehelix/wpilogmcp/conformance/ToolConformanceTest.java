@@ -212,9 +212,14 @@ class ToolConformanceTest {
           "configured-store", new com.google.gson.JsonObject()), false);
       calls.add(call);
       var result = call.result().getAsJsonObject();
-      for (var field : List.of("preferred_store_id", "source_sync", "source_files")) {
+      for (var field : List.of("preferred_store_id", "source_sync", "source_files", "excluded_directories")) {
         assertTrue(result.has(field), "configured ingestion listing must report " + field);
       }
+      var excluded = result.getAsJsonArray("excluded_directories");
+      assertFalse(excluded.isEmpty(), "The fixture directory is outside the preferred store view");
+      assertEquals(excluded.size(), result.getAsJsonObject("limits")
+          .getAsJsonObject("excluded_directories").get("total").getAsInt());
+      assertTrue(result.get("hint").getAsString().contains("view: all"));
       assertEquals(ingestion.service().preferredStoreId(), result.get("preferred_store_id").getAsString());
       assertEquals("watching", result.getAsJsonObject("source_sync").get("state").getAsString());
       var sources = result.getAsJsonArray("source_files");

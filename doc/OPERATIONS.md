@@ -443,6 +443,8 @@ wpilog-mcp import --robot practice ~/riologs/downloads     # name the robot when
 Files are copied (`--move` moves them), identified by content, hashed, loaded to check them,
 and placed by robot and session. The output lists each file as imported, present (a duplicate,
 left at its source), unassigned (no robot or session known yet) or refused, with the reason.
+If Move cannot remove the original after committing a verified copy, the result still reports
+the import and explains why the original remains.
 When the local server is running, an import from its configured directories is submitted
 to it; other sources are copied into the store's `inbox/` for import. The Logs view also
 offers **Import**. Reference: [Importing Logs](STANDALONE.md#importing-logs).

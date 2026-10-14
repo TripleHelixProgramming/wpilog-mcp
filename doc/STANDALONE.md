@@ -190,6 +190,10 @@ The installer's file also has a `stresstest` server, which only the project's st
 | `idle_exit_minutes` | Minutes without a session, recent MCP request, or active import before a background HTTP server exits; `0` keeps it running. Applies whether a person or a client started it | `0` |
 | `debug` | Debug logging | `false` |
 
+With `experimental_data_store: true`, enabled data-store sync prevents idle exit; pausing sync
+restores the configured idle-exit rule. With the feature flag off, saved policies do not inhibit
+idle exit.
+
 `logdir`, `tba_key`, `diskcachedir`, and `exportdir` can include environment variables, written `${NAME}`. A variable that is not set is left as written, and the server warns about it at startup; in `tba_key` the key then counts as not set.
 
 In `logdir`, `diskcachedir`, and `exportdir`, a path starting with `~/` is in your home folder on macOS, Linux, and Windows alike. Forward slashes work in paths on every system, so prefer them (`~/riologs`, `/Volumes/LOGS/archive`, `D:/frc-logs`).
@@ -362,6 +366,9 @@ The named local server owns one preferred store and the persistent source policy
 or its session does not stop syncing; the daemon keeps running while the policy is enabled and
 restores it on restart. Stopping the server does stop it. All editors and profiles see that same
 policy, and an edit based on an old revision is refused rather than overwriting a newer one.
+With the feature enabled, every session on the named server can read the store and enrolled
+folders, and the policy loads whatever address the server binds to; a server bound beyond
+loopback serves them to its network.
 Settings remain in `servers.yaml`; setup never rewrites it. Enrollment is separate machine-local
 state in `~/.wpilog-mcp/state/local-ingestion/<configuration-identity>.json`, keyed by the selected
 configuration file's canonical path and server name. Copying a store to another computer grants
@@ -619,7 +626,13 @@ An `http` server can serve every MCP client on the machine at once, where a stdi
 wpilog-mcp connect http                      # the "http" server, started first if it is not running
 wpilog-mcp connect --url http://other-laptop:2363     # any server, by URL, started by nobody
 ```
-`connect <name>` does what `start <name>` does first, so a client started with it gets a server whether or not one was running, and a client started beside a running one shares it; `connect --url` starts nothing. Each connected client gets a session of its own, ended when the client closes its end. With `idle_exit_minutes` set (see [Config Fields](#config-fields)), the server exits on its own once every client has gone and the time has passed, so a server that is started on demand need never be stopped by hand.
+`connect <name>` does what `start <name>` does first, so a client started with it gets a server
+whether or not one was running, and a client started beside a running one shares it; `connect
+--url` starts nothing. Each connected client gets a session of its own, ended when the client
+closes its end. With `idle_exit_minutes` set (see [Config Fields](#config-fields)) and
+data-store sync paused, not configured or disabled by the feature flag, the server exits on its own once every client has
+gone and the time has passed, so a server that is started on demand need never be stopped by
+hand.
 
 The VS Code extension always uses this install’s `http` server. It starts the launcher with the home configuration explicitly, then registers its window’s directories and secret-storage key by lease. Every client shares the loaded logs and disk cache ([extension guide](../vscode-extension/README.md#the-standalone-install-is-the-server)).
 

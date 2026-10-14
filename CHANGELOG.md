@@ -141,6 +141,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Console following uses an integer one-second interval accepted by BusyBox and GNU tail, and reports that interval. The former fractional interval made roboRIO BusyBox tail exit immediately. Robot facts now identify each provider utility separately, and the synthetic roboRIO uses BusyBox tail.
 
+- Store Move imports across filesystems now force and verify the copied payload and commit its manifest before deleting the original; previously Java could delete the source before verification and restore corrupted bytes after a bad copy. A failed source deletion retains the successful import and reports the remaining original.
+- Preferred-store listings now name excluded configured and leased directories in `excluded_directories`, with their origins and a `view: all` hint; previously the default view omitted those directories without saying they existed.
+
 - A REV file imported before its WPILOG is now reconsidered when the store gains eligible WPILOG data. Previously it remained unassigned until a manual assignment. The existing unique strong correlation and 250 ms gate still decide placement; bounded attempts retain original provenance and avoid repeated idle work.
 
 - Configured symbolic-link log roots now list WPILOG and REV files, with loadable paths and no traversal of child links. In 0.10.0-dev3 a linked root returned an empty listing; linked store subtrees now retain catalog membership and resolved-path filtering too.

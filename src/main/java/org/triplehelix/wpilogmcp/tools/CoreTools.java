@@ -67,6 +67,7 @@ public final class CoreTools {
           + "select a page (default 50), has_more says whether another page exists. "
           + "With an opted-in data store, view default searches that store and enrolled sources, hiding verified source duplicates before counting; view all keeps originals. "
           + "Only when configured, preferred_store_id identifies that store, source_sync reports policy, state, per-source counts and errors, and bounded source_files reports original paths, state, destination, hash and refusal reasons. "
+          + "When the default view leaves other directories out, excluded_directories gives their path and origin with limits, and hint names view: all to search them too. "
           + "log_directories names the directories searched with path, origin (configured or leased), and team; "
           + "log_directory_paths keeps their plain paths; one that could not be read (a drive "
           + "not mounted, no permission) is listed in skipped with the reason, and the result is "
@@ -148,7 +149,12 @@ public final class CoreTools {
       var directoryPaths = new JsonArray();
       scan.directories().forEach(dir -> directoryPaths.add(dir.toString()));
       var searched = scan.directories().stream().map(java.nio.file.Path::toString).collect(java.util.stream.Collectors.toSet());
-      var directories = StoreJson.JSON.toJsonTree(logDirectory.directoryOrigins().stream().filter(d -> searched.contains(d.path())).toList());
+      var origins = logDirectory.directoryOrigins();
+      var directories = StoreJson.JSON.toJsonTree(origins.stream().filter(d -> searched.contains(d.path())).toList());
+      var ingestion = logManager.stores().localIngestion();
+      var excluded = view.equals("default") && ingestion != null && ingestion.preferredStore() != null
+          ? origins.stream().filter(d -> !searched.contains(d.path())).toList()
+          : java.util.List.<org.triplehelix.wpilogmcp.log.LogDirectory.DirectoryOrigin>of();
       if (scan.noneReadable()) {
         var result = new JsonObject();
         result.addProperty("success", false);
@@ -160,6 +166,7 @@ public final class CoreTools {
         result.add("log_directory_paths", directoryPaths);
         result.addProperty("hint", "Check that each directory exists and can be read (a "
             + "removable drive may not be mounted)");
+        addExcludedDirectories(result, excluded);
         return result;
       }
 
@@ -354,7 +361,6 @@ public final class CoreTools {
         ResultContract.addLimitedList(result, "unassigned", unassigned, unassigned.size(), unassigned.size());
         ResultContract.addLimitedList(result, "moved_to", moved, moved.size(), moved.size());
       }
-      var ingestion = logManager.stores().localIngestion();
       if (ingestion != null && ingestion.preferredStore() != null) {
         result.addProperty("preferred_store_id", ingestion.preferredStoreId());
         result.add("source_sync", StoreJson.JSON.toJsonTree(ingestion.snapshot()));
@@ -383,7 +389,24 @@ public final class CoreTools {
       } else if (!scan.unavailable().isEmpty()) {
         result.addProperty("status", "partial");
       }
+      addExcludedDirectories(result, excluded);
       return result;
+    }
+
+    /** Preference narrows discovery, not access: name the omitted roots instead of hiding them. */
+    private static void addExcludedDirectories(JsonObject result,
+        java.util.List<org.triplehelix.wpilogmcp.log.LogDirectory.DirectoryOrigin> excluded) {
+      if (excluded.isEmpty()) return;
+      var items = new JsonArray();
+      for (var directory : excluded) {
+        var item = new JsonObject();
+        item.addProperty("path", directory.path());
+        item.addProperty("origin", directory.origin());
+        items.add(item);
+      }
+      ResultContract.addLimitedList(result, "excluded_directories", items, items.size(), items.size());
+      var hint = "Use view: all to include the excluded directories and original source files.";
+      result.addProperty("hint", result.has("hint") ? result.get("hint").getAsString() + ". " + hint : hint);
     }
   }
 

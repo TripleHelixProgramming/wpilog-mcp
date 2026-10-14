@@ -439,6 +439,11 @@ Remaining:
 
 ### Store Durability and Move History
 
+If a stored file is deleted outside the server, data-store sync stops for every source with
+"Invalid or missing manifested log", does not resume, and writes nothing to the server log.
+Define recovery from a missing manifested payload and report the failure in the server log;
+this remains deferred hardening.
+
 `MirrorSync` and its recovery still append move records, while `LogStore` and pull placement
 rewrite older records to the final destination. Give mirror moves the same rule and test A to
 B to C with recovery of the second move. Keep the resolver's chain and cycle checks as defence

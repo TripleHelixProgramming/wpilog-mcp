@@ -314,6 +314,12 @@ true total in `limits.source_files`. Successful receipts are not pending work. N
 these fields are absent. `total_logs` counts the selected view before name/time filters. The
 native read catalog also identifies the preferred store; explicit path reads remain unchanged.
 
+Only when the default view leaves out other configured or leased roots, `excluded_directories`
+lists their `path` and `origin` (`configured` or `leased`), with the total in
+`limits.excluded_directories`. The accompanying `hint` names `view: all` to search those folders
+too. These additions are omitted without a preferred store, with `view: all`, or when no
+directory was excluded.
+
 **Example Response:**
 ```json
 {

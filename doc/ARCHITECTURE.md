@@ -395,7 +395,14 @@ The command stages in `inbox/.transfer-<id>/`, with an external transfer lock ac
 
 #### Pairs and assignment
 
-Reading before placement lets an import pair files still beside one another. Copies are loaded again and hashed before the pair's manifest is atomically replaced; failed copies remain unmanaged and failed moves are restored when possible. No existing log is overwritten or deleted.
+Reading before placement lets an import pair files still beside one another. Copies are loaded again and hashed before the pair's manifest is atomically replaced; failed ordinary Copy imports remain unmanaged and failed renamed moves are restored when possible. No existing log is overwritten or deleted.
+
+Move uses an atomic rename on one filesystem. On different filesystems, or if atomic rename is
+unsupported, it creates a new copy, forces it to disk, verifies its inspected hash, commits the
+manifest, and only then deletes the unchanged source. A failed verification removes only that
+Move's new copy; the original survives. Failure to remove the source after commit is a successful
+import with an explanatory reason, never a rollback of the stored file. The reader reservation
+covers the entire operation. Upload staging uses this same path, normally the rename case.
 
 Explicit `POST /store/assign` moves manifested unassigned files into robot sessions through the same queue and lock, commits the destination manifest before removing the old import manifest, and preserves the first import's provenance and moved-path notices. Assignment cannot silently adopt an unmanaged or already assigned file. Identical content already held is reported with its path and its source is left in place.
 

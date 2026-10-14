@@ -6,6 +6,17 @@ package org.triplehelix.wpilogmcp.store;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.LinkOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.DosFileAttributes;
+import java.nio.file.attribute.DosFileAttributeView;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
@@ -46,7 +57,8 @@ import org.triplehelix.wpilogmcp.sync.SyncResult;
 /**
  * One store's import queue, independent of HTTP and the extension. Inspection and correlation
  * finish before placement, and a manifest is committed only after every file in a pair loads
- * at its destination. Failed copies remain visible as strays; originals are never overwritten.
+ * at its destination. Failed ordinary copies remain strays; failed cross-volume Move copies are
+ * removed without changing their originals. A committed payload is never rolled back.
  */
 public final class LogStore implements AutoCloseable {
   public record Request(List<Path> paths, boolean move, String statedRobot) {
@@ -210,6 +222,7 @@ public final class LogStore implements AutoCloseable {
   private final LogManager logManager;
   private final CatalogReader catalogReader;
   private final StoreInbox inbox;
+  private final Mover mover;
   private final AtomicInteger pending = new AtomicInteger();
   private final java.util.concurrent.atomic.AtomicBoolean syncing = new java.util.concurrent.atomic.AtomicBoolean();
   /** HTTP-owned staging paths are unique; source provenance lives only for their import job. */
@@ -218,6 +231,90 @@ public final class LogStore implements AutoCloseable {
   @FunctionalInterface
   interface CatalogReader {
     StoreCatalog.Snapshot read(Path root, SecurityValidator security) throws IOException;
+  }
+
+  /** Preserve the attributes of the copied version, even if the source is replaced later. */
+  record CopyAttributes(BasicFileAttributes basic, Set<PosixFilePermission> permissions,
+      DosFileAttributes dos) {
+    static CopyAttributes read(Path source) throws IOException {
+      var store = Files.getFileStore(source);
+      var posix = store.supportsFileAttributeView("posix")
+          ? Files.readAttributes(source, PosixFileAttributes.class) : null;
+      var dos = store.supportsFileAttributeView("dos")
+          ? Files.readAttributes(source, DosFileAttributes.class) : null;
+      return new CopyAttributes(posix == null ? Files.readAttributes(source, BasicFileAttributes.class)
+          : posix, posix == null ? null : Set.copyOf(posix.permissions()), dos);
+    }
+
+    FileAttribute<?>[] creationAttributes(Path destination) throws IOException {
+      if (permissions == null || !Files.getFileStore(destination.getParent()).supportsFileAttributeView("posix")) {
+        return new FileAttribute<?>[0];
+      }
+      var writable = new HashSet<>(permissions);
+      // Keep group/other access unchanged; the owner needs write access until force completes.
+      writable.add(PosixFilePermission.OWNER_WRITE);
+      return new FileAttribute<?>[]{PosixFilePermissions.asFileAttribute(writable)};
+    }
+
+    void restore(Path destination) throws IOException {
+      Files.getFileAttributeView(destination, BasicFileAttributeView.class)
+          .setTimes(basic.lastModifiedTime(), basic.lastAccessTime(), basic.creationTime());
+      if (permissions != null && Files.getFileStore(destination).supportsFileAttributeView("posix")) {
+        Files.setPosixFilePermissions(destination, permissions);
+      }
+      var view = Files.getFileAttributeView(destination, DosFileAttributeView.class);
+      if (dos != null && view != null) {
+        view.setArchive(dos.isArchive()); view.setHidden(dos.isHidden());
+        view.setSystem(dos.isSystem()); view.setReadOnly(dos.isReadOnly());
+      }
+    }
+  }
+
+  /** Filesystem operations are injectable so tests can model a second volume without one. */
+  static class Mover {
+    boolean sameFileStore(Path source, Path destination) throws IOException {
+      return Files.getFileStore(source).equals(Files.getFileStore(destination.getParent()));
+    }
+    void move(Path source, Path destination, java.nio.file.CopyOption... options) throws IOException {
+      Files.move(source, destination, options);
+    }
+    CopyAttributes copy(Path source, Path destination) throws IOException {
+      var attributes = CopyAttributes.read(source);
+      // CREATE_NEW establishes ownership: failure cleanup must never delete an existing file.
+      boolean created = false;
+      try (var input = Files.newInputStream(source)) {
+        try (var output = java.nio.channels.FileChannel.open(destination,
+            Set.of(java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE),
+            attributes.creationAttributes(destination))) {
+          created = true;
+          byte[] bytes = new byte[64 * 1024];
+          int count;
+          while ((count = input.read(bytes)) != -1) {
+            var buffer = java.nio.ByteBuffer.wrap(bytes, 0, count);
+            while (buffer.hasRemaining()) output.write(buffer);
+          }
+        }
+        return attributes;
+      } catch (IOException | RuntimeException failure) {
+        if (created) {
+          try { Files.delete(destination); }
+          catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+        }
+        throw failure;
+      }
+    }
+    void force(Path destination) throws IOException {
+      try (var channel = java.nio.channels.FileChannel.open(destination, java.nio.file.StandardOpenOption.WRITE)) {
+        channel.force(true);
+      }
+    }
+    void delete(Path source) throws IOException { Files.delete(source); }
+    void discardCopy(Path destination) throws IOException {
+      // Windows refuses deletion of a read-only file; this is our rejected copy, not the source.
+      var dos = Files.getFileAttributeView(destination, DosFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+      if (dos != null && dos.readAttributes().isReadOnly()) dos.setReadOnly(false);
+      Files.delete(destination);
+    }
   }
 
   /**
@@ -265,12 +362,18 @@ public final class LogStore implements AutoCloseable {
   }
 
   LogStore(Path root, SecurityValidator security, LogManager logManager, CatalogReader catalogReader) {
+    this(root, security, logManager, catalogReader, new Mover());
+  }
+
+  LogStore(Path root, SecurityValidator security, LogManager logManager, CatalogReader catalogReader,
+      Mover mover) {
     FileNameEncoding.warnIfNeeded();
     this.root = root;
     this.security = security;
     this.logManager = logManager;
     this.catalogReader = catalogReader;
     this.inbox = new StoreInbox(this, security);
+    this.mover = mover;
     queue = Executors.newSingleThreadExecutor(task -> {
       var thread = new Thread(task, "store-import");
       thread.setDaemon(true);
@@ -972,94 +1075,152 @@ public final class LogStore implements AutoCloseable {
     }
     if (placements.isEmpty()) return;
     var transferred = new ArrayList<Placement>();
-    try (var lease = move ? releaseForMove(placements.stream().map(p -> p.input().path()).toList())
-        : (LogFileAccess.Lease) () -> {}) {
-      for (var placement : placements) {
-        var input = placement.input();
-        security.validate(input.path());
-        if (!input.snapshot().sameAs(FileSnapshot.of(input.path()))
-            || !input.hash().equals(StoreFiles.hash(input.path()))) {
-          throw new IOException("File changed before placement: " + input.path());
-        }
-        io.check(placement.destination());
-        Files.createDirectories(placement.destination().getParent());
-        io.check(placement.destination());
-        if (move) Files.move(input.path(), placement.destination());
-        else Files.copy(input.path(), placement.destination(), StandardCopyOption.COPY_ATTRIBUTES);
-        transferred.add(placement);
-        notify(progress, new Progress("verifying", placement.destination(), transferred.size() - 1, placements.size()));
-        var verified = ImportInspection.read(placement.destination(), parser);
-        if (!verified.hash().equals(input.hash())) throw new IOException("Copy hash differs: " + input.path());
-      }
-      var records = new ArrayList<LogFile>(session == null ? List.of() : session.files());
-      String now = Instant.now().toString();
-      for (var placement : placements) {
-        var input = placement.input();
-        var previous = catalog.assigning.get(input.hash());
-        var provenance = previous == null ? uploadSources.getOrDefault(input.path(), new Provenance("imported", input.path().toString(),
-            input.path().getFileName().toString(), now, move)) : previous.file().provenance();
-        records.add(new LogFile(StoreFiles.relative(manifest.getParent(), placement.destination()),
-            input.hash(), input.size(), input.kind(), provenance, true, input.min(), input.max(),
-            input.start() == null ? null : input.start().toString(),
-            input.end() == null ? null : input.end().toString(), input.startBasis(), input.truncated(),
-            placement.matching(), input.robotFingerprint(), placement.reason(), placement.placementMethod()));
-      }
-      if (session == null) io.write(manifest, records.get(0));
-      else {
-        var start = Instant.parse(session.startedAt());
-        var end = Instant.parse(session.endedAt());
-        String basis = session.startBasis();
-        for (var input : inputs) {
-          // Data joined an already-proven boot. Its uncertain source calendar only nominated it.
-          if (decision != null && decision.matching() != null) continue;
-          // A REV wall clock nominates candidates only; the correlated wpilog owns session time.
-          if (!input.kind().equals("wpilog")) continue;
-          if (input.start() != null && input.start().isBefore(start)) {
-            start = input.start();
-            basis = input.startBasis();
-          }
-          if (input.end() != null && input.end().isAfter(end)) end = input.end();
-        }
-        session = new Session(session.id(), start.toString(), end.toString(), basis,
-            session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats(), session.systemLogs());
-        io.write(manifest, session);
-      }
-      catalog.placed(io, manifest, robot, session, records);
-    } catch (IOException | RuntimeException e) {
-      // Restore moves where possible; never remove an unverified copy or overwrite a new file.
-      if (move) {
-        for (var placement : transferred) {
-          try {
-            Files.move(placement.destination(), placement.input().path());
-          } catch (IOException restore) {
-            e.addSuppressed(restore);
-          }
-        }
-      }
+    var copiedMoves = new HashSet<Placement>();
+    var removalReasons = new HashMap<Placement, String>();
+    LogFileAccess.Lease reservation;
+    try {
+      reservation = move ? releaseForMove(placements.stream().map(p -> p.input().path()).toList()) : () -> {};
+    } catch (IOException | RuntimeException failure) {
       for (var placement : placements) outcomes.add(new Outcome(placement.input().path(), "refused",
-          Files.exists(placement.destination()) ? placement.destination() : null, e.getMessage()));
+          null, failure.getMessage()));
       return;
     }
-    if (move) {
-      var header = catalog.header;
-      var moves = new ArrayList<>(header.moves());
-      for (var placement : placements) moves.add(new Move(placement.input().path().toString(),
-          StoreFiles.relative(root, placement.destination()), Instant.now().toString()));
-      var updated = header.withMoves(moves);
-      io.write(root.resolve("store.json"), updated);
-      catalog.header = updated;
-    }
-    for (var placement : placements) {
-      var old = catalog.assigning.remove(placement.input().hash());
-      if (old != null) {
-        // Commit the new manifest first; until then the old manifest is the source of truth.
-        Files.delete(io.check(old.manifestPath()));
-        rewriteMoves(io, catalog, old.path(), placement.destination());
+    try (var lease = reservation) {
+      List<LogFile> records;
+      try {
+        for (var placement : placements) {
+          var input = placement.input();
+          security.validate(input.path());
+          if (!input.snapshot().sameAs(FileSnapshot.of(input.path()))
+              || !input.hash().equals(StoreFiles.hash(input.path()))) {
+            throw new IOException("File changed before placement: " + input.path());
+          }
+          io.check(placement.destination());
+          Files.createDirectories(placement.destination().getParent());
+          io.check(placement.destination());
+          CopyAttributes copiedAttributes = null;
+          if (move) {
+            boolean renamed = false;
+            if (mover.sameFileStore(input.path(), placement.destination())) {
+              // ATOMIC_MOVE may replace an occupied target even without REPLACE_EXISTING.
+              if (Files.exists(placement.destination(), LinkOption.NOFOLLOW_LINKS)) {
+                throw new FileAlreadyExistsException(placement.destination().toString());
+              }
+              try {
+                mover.move(input.path(), placement.destination(), StandardCopyOption.ATOMIC_MOVE);
+                renamed = true;
+              } catch (AtomicMoveNotSupportedException unsupported) {
+                // Never let the JDK implement a non-atomic move as copy-then-delete.
+              }
+            }
+            if (!renamed) {
+              copiedAttributes = mover.copy(input.path(), placement.destination());
+              copiedMoves.add(placement);
+            }
+          } else Files.copy(input.path(), placement.destination(), StandardCopyOption.COPY_ATTRIBUTES);
+          transferred.add(placement);
+          if (copiedAttributes != null) {
+            mover.force(placement.destination());
+            copiedAttributes.restore(placement.destination());
+          }
+          notify(progress, new Progress("verifying", placement.destination(), transferred.size() - 1, placements.size()));
+          var verified = ImportInspection.read(placement.destination(), parser);
+          if (!verified.hash().equals(input.hash())) throw new IOException("Copy hash differs: " + input.path());
+        }
+        records = new ArrayList<LogFile>(session == null ? List.of() : session.files());
+        String now = Instant.now().toString();
+        for (var placement : placements) {
+          var input = placement.input();
+          var previous = catalog.assigning.get(input.hash());
+          var provenance = previous == null ? uploadSources.getOrDefault(input.path(), new Provenance("imported", input.path().toString(),
+              input.path().getFileName().toString(), now, move)) : previous.file().provenance();
+          records.add(new LogFile(StoreFiles.relative(manifest.getParent(), placement.destination()),
+              input.hash(), input.size(), input.kind(), provenance, true, input.min(), input.max(),
+              input.start() == null ? null : input.start().toString(),
+              input.end() == null ? null : input.end().toString(), input.startBasis(), input.truncated(),
+              placement.matching(), input.robotFingerprint(), placement.reason(), placement.placementMethod()));
+        }
+        if (session == null) io.write(manifest, records.get(0));
+        else {
+          var start = Instant.parse(session.startedAt());
+          var end = Instant.parse(session.endedAt());
+          String basis = session.startBasis();
+          for (var input : inputs) {
+            // Data joined an already-proven boot. Its uncertain source calendar only nominated it.
+            if (decision != null && decision.matching() != null) continue;
+            // A REV wall clock nominates candidates only; the correlated wpilog owns session time.
+            if (!input.kind().equals("wpilog")) continue;
+            if (input.start() != null && input.start().isBefore(start)) {
+              start = input.start();
+              basis = input.startBasis();
+            }
+            if (input.end() != null && input.end().isAfter(end)) end = input.end();
+          }
+          session = new Session(session.id(), start.toString(), end.toString(), basis,
+              session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats(), session.systemLogs());
+          io.write(manifest, session);
+        }
+      } catch (IOException | RuntimeException e) {
+        // Before commit, discard only Move copies we created; ordinary Copy keeps its strays.
+        // A plain reverse move refuses an intervening original instead of replacing it.
+        if (move) {
+          for (var placement : transferred) {
+            try {
+              if (copiedMoves.contains(placement)) mover.discardCopy(placement.destination());
+              else mover.move(placement.destination(), placement.input().path());
+            } catch (IOException restore) {
+              e.addSuppressed(restore);
+            }
+          }
+        }
+        for (var placement : placements) outcomes.add(new Outcome(placement.input().path(), "refused",
+            Files.exists(placement.destination()) ? placement.destination() : null, e.getMessage()));
+        return;
+      }
+      // The payload's manifest is committed. No later failure may roll this placement back.
+      catalog.placed(io, manifest, robot, session, records);
+      if (move) {
+        var header = catalog.header;
+        var moves = new ArrayList<>(header.moves());
+        for (var placement : placements) moves.add(new Move(placement.input().path().toString(),
+            StoreFiles.relative(root, placement.destination()), Instant.now().toString()));
+        var updated = header.withMoves(moves);
+        io.write(root.resolve("store.json"), updated);
+        catalog.header = updated;
+      }
+      for (var placement : placements) {
+        var old = catalog.assigning.remove(placement.input().hash());
+        if (old != null) {
+          // Commit the new manifest first; until then the old manifest is the source of truth.
+          Files.delete(io.check(old.manifestPath()));
+          rewriteMoves(io, catalog, old.path(), placement.destination());
+        }
+      }
+      for (var placement : copiedMoves) {
+        var input = placement.input();
+        try {
+          security.validate(input.path());
+          // A writer or another process may have replaced the original during verification.
+          // Keep it rather than deleting a version this import never inspected.
+          if (!input.snapshot().sameAs(FileSnapshot.of(input.path()))
+              || !input.hash().equals(StoreFiles.hash(input.path()))) {
+            throw new IOException("Source changed after inspection: " + input.path());
+          }
+          mover.delete(input.path());
+        } catch (IOException | RuntimeException failure) {
+          removalReasons.put(placement, "Stored copy verified and committed; original could not be removed: "
+              + input.path() + ": " + failure.getMessage());
+        }
+      }
+      for (var placement : placements) {
+        String reason = session == null
+            ? "No robot assignment or unique correlated wpilog; awaiting assignment" : null;
+        if (removalReasons.containsKey(placement)) reason = reason == null ? removalReasons.get(placement)
+            : reason + "; " + removalReasons.get(placement);
+        outcomes.add(new Outcome(placement.input().path(), session == null ? "unassigned" : "imported",
+            placement.destination(), reason));
       }
     }
-    for (var placement : placements) outcomes.add(new Outcome(placement.input().path(),
-        session == null ? "unassigned" : "imported", placement.destination(), session == null
-            ? "No robot assignment or unique correlated wpilog; awaiting assignment" : null));
   }
 
   /** Payloads never share a directory with manifests, even when their original names match. */
