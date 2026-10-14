@@ -49,6 +49,8 @@ public final class FakeRoboRio implements AutoCloseable {
   private final SshServer server = SshServer.setUpDefaultServer();
   private final Path root;
   private final List<Read> reads = new CopyOnWriteArrayList<>();
+  public final AtomicInteger fileOpens = new AtomicInteger(), fileCloses = new AtomicInteger();
+  public volatile Consumer<Integer> onSftpRequest = request -> {};
   public final AtomicInteger authentications = new AtomicInteger();
   public final AtomicInteger keepalives = new AtomicInteger();
   public final AtomicInteger commands = new AtomicInteger();
@@ -74,6 +76,13 @@ public final class FakeRoboRio implements AutoCloseable {
     server.setFileSystemFactory(new VirtualFileSystemFactory(this.root));
     var sftp = new SftpSubsystemFactory.Builder().build();
     sftp.addSftpEventListener(new SftpEventListener() {
+      @Override public void received(ServerSession session, int type, int id) { onSftpRequest.accept(type); }
+      @Override public void open(ServerSession session, String handle, org.apache.sshd.sftp.server.Handle file) {
+        if (file instanceof FileHandle) fileOpens.incrementAndGet();
+      }
+      @Override public void closed(ServerSession session, String handle, org.apache.sshd.sftp.server.Handle file, Throwable thrown) {
+        if (file instanceof FileHandle) fileCloses.incrementAndGet();
+      }
       @Override public void read(ServerSession session, String handle, FileHandle file,
           long offset, byte[] data, int dataOffset, int dataLen, int readLen, Throwable thrown) {
         if (readLen > 0) reads.add(new Read(System.currentTimeMillis() * 1000,

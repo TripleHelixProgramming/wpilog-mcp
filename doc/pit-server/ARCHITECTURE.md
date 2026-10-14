@@ -14,6 +14,20 @@ remote listing serves a whole pass across files and blocks. A long-running pass 
 listing after ten seconds. Verification requires a stable size and modification time across distinct
 listings.
 
+SFTP data reads retain one handle per active file, closed on pause, error, file completion or
+listing refresh. At most two SFTP packets are outstanding; the delivered packet and read-ahead
+remain within the gate's 64 KiB bound. Range-only transports retain the same interface. Pacing
+charges actual data and fallback-comparison bytes against a bounded 64 KiB allowance and the
+configured byte rate; idle time cannot accumulate an unbounded burst.
+
+The robot pull store batches local bytes up to 1 MiB, with a checkpoint due after one second,
+and also checkpoints on file completion, pause and an idle close. Pacing schedules a wake by
+that deadline; an in-flight remote or filesystem operation can delay completion. One queue admission appends the
+batch, forces staged data, then atomically replaces the progress manifest. Other transfer stores
+retain their existing per-block checkpoints. Closing during an active remote read aborts the
+transport; only uncheckpointed memory can be lost. A process crash may leave more staged bytes
+than the manifest counts, but never durable progress ahead of those bytes.
+
 #### Resuming a copy
 
 `pull.json` remembers each remote name, size, modification time, copied count, verification state,
@@ -21,7 +35,10 @@ and local path, plus retired generations. Growth resumes only after a hash of ex
 prefix matches. Without command execution, the fallback compares the last 64 KiB of that range,
 which is weaker evidence than a whole-prefix hash. Shrinkage, rewound time, or mismatched content
 archives the old copy and starts a new file. A disappearing name and a new name with unique matching
-content can rename the held copy. Names alone never establish continuity.
+content can rename the held copy. Names alone never establish continuity. An owned, unverified
+staging file longer than its saved count is truncated to that count, after rechecking the current
+manifest. The held prefix still needs the ordinary content proof; verified files and short staged
+files cannot use this crash-tail repair.
 
 #### Verification
 

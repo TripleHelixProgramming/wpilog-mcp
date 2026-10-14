@@ -17,6 +17,8 @@ public interface RemoteFiles extends AutoCloseable {
   }
   List<File> list() throws IOException;
   byte[] read(String name, long offset, int count) throws IOException;
+  /** A consumer-owned sequential handle, when supported; range-only transports keep the fallback. */
+  default Optional<java.io.InputStream> open(String name, long offset) throws IOException { return Optional.empty(); }
   /** SHA-256 of exactly the first length bytes; empty means exec/hash support is unavailable. */
   Optional<String> prefixHash(String name, long length) throws IOException;
   @Override default void close() throws IOException {}

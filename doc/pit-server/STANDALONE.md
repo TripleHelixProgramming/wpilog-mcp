@@ -504,6 +504,13 @@ and storage bandwidth outside the transfer byte cap. Their deadline is 30 second
 per 256 KiB, rounded up; SSH keepalives preserve the connection during a slow hash, and a connect
 times out after five seconds. SSH errors are retried; they never stop HTTP or NT4.
 
+Data blocks share one remote handle while a file is active. Local staging and progress are
+checkpointed together at 1 MiB or a one-second deadline, and at file completion or pause.
+An in-flight remote or filesystem operation can delay the checkpoint. The data is forced
+before the manifest counts it. After a crash, a staged tail beyond the saved count is discarded
+and only those uncounted bytes are recopied; the saved prefix is still checked against the robot.
+The rate allowance is bounded to 64 KiB, including after an idle gap.
+
 **Host keys.** The first SSH host key is trusted (first contact trusts the team's robot network)
 and its SHA-256 fingerprint is recorded with the device serial. Supported host keys are Ed25519
 and RSA SHA-2. A changed key is reported: with the default empty password the contact can
@@ -964,7 +971,7 @@ NaN and infinities retain their Prometheus spellings. Each emitted topic gets on
 | `wpilog_capture_records_total`, `wpilog_capture_bytes_total` | The live tools' recorder counts across rollover files: NT4 value records and bytes including record headers, excluding context/control records and copied schema seeds. The `session_started_at` label identifies the counter lifetime; snapshots refresh after the 250 ms asynchronous flush completes. |
 | `wpilog_nt_time_offset_seconds`, `wpilog_nt_round_trip_seconds` | Selected clock estimate (robot minus local monotonic time) and its round trip; absent without sync. |
 | `wpilog_gateway_clients` | Connected downstream gateway clients; 0 when the gateway is disabled. Independent of the robot-side connection. |
-| `wpilog_pull_bytes_total`, `wpilog_pull_files_total` | Per-`robot` process counters: copied payload bytes, including retransfers, and successful verifications, including growing-file updates. |
+| `wpilog_pull_bytes_total`, `wpilog_pull_files_total` | Per-`robot` process counters: received transfer payload bytes, including retransfers and bytes still awaiting a local checkpoint, and successful verifications, including growing-file updates. The byte count is not a durable-offset receipt. |
 | `wpilog_pull_files_waiting` | Per-`robot` known unfinished files at a closed gate, from the last listing; unknown remote files are not counted. |
 | `wpilog_provider_sample_duration_seconds`, `wpilog_provider_sample_bytes` | Last completed sample's round trip and response bytes, by `provider`. |
 | `wpilog_provider_period_seconds`, `wpilog_provider_robot_cpu_seconds` | Current sampling period and the robot's processor time between samples, by `provider`; unknown processor time is omitted. |

@@ -22,6 +22,7 @@ public final class SftpTransport implements RobotRemote, SystemRemote {
     default Optional<String> realpath(String directory) throws IOException { return Optional.of(directory); }
     List<Item> list(String directory) throws IOException;
     byte[] read(String path, long offset, int count) throws IOException;
+    default Optional<java.io.InputStream> open(String path, long offset) throws IOException { return Optional.empty(); }
     Optional<String> exec(String command, long timeoutMs) throws IOException;
     default org.triplehelix.wpilogmcp.ssh.SshConnection.Command follow(String command) throws IOException { throw new IOException("SSH exec streaming is unavailable"); }
     @Override void close();
@@ -58,6 +59,7 @@ public final class SftpTransport implements RobotRemote, SystemRemote {
         return files.list(directory).stream().map(i -> new Item(i.name(), i.size(), i.mtimeMillis(), i.directory(), i.regular(), i.symlink())).toList();
       }
       public byte[] read(String path, long offset, int count) throws IOException { return files.read(path, offset, count); }
+      public Optional<java.io.InputStream> open(String path, long offset) throws IOException { return files.open(path, offset); }
       public Optional<String> exec(String command, long timeoutMs) throws IOException { return ssh.exec(command, timeoutMs, 4096); }
       public org.triplehelix.wpilogmcp.ssh.SshConnection.Command follow(String command) throws IOException { return ssh.follow(command); }
       public void close() { files.close(); if (ownConnection) ssh.close(); }
@@ -103,6 +105,10 @@ public final class SftpTransport implements RobotRemote, SystemRemote {
   @Override public byte[] read(String name, long offset, int count) throws IOException {
     if (offset < 0 || count < 0 || count > FileTransfer.BLOCK_BYTES) throw new IOException("Invalid SFTP block range");
     return channel.read(name, offset, count);
+  }
+  @Override public Optional<java.io.InputStream> open(String name, long offset) throws IOException {
+    if (offset < 0) throw new IOException("Invalid SFTP stream offset");
+    return channel.open(name, offset);
   }
   @Override public org.triplehelix.wpilogmcp.ssh.SshConnection.Command systemCommand(String command) throws IOException {
     return channel.follow(command);

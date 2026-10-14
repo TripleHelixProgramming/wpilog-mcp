@@ -81,6 +81,20 @@ class PullCoordinatorTest {
     }
   }
 
+  @Test void theScheduledWorkerCheckpointsAfterOneSecondEvenAtOneBytePerSecond() throws Exception {
+    var robot = remote(); settled();
+    var config = new PullConfig(true, CONFIG.directories(), CONFIG.settleUs(), 1, CONFIG.ssh());
+    var pull = new PullCoordinator(config, gate, store, WALL, ignored -> {}, worker, (address, settings, pin) -> robot);
+    try {
+      pull.start(); worker.drain(); assertEquals(1, robot.reads.size());
+      var local = store.pulls(robot.device, WALL);
+      assertEquals(0, local.manifest().files().get(0).bytesCopied());
+      worker.advance(999_999); assertEquals(0, local.manifest().files().get(0).bytesCopied());
+      worker.advance(1); assertEquals(65536, local.manifest().files().get(0).bytesCopied());
+      assertEquals(1, robot.reads.size(), "checkpoint timer must not admit another remote block");
+    } finally { pull.closeAsync().get(10, java.util.concurrent.TimeUnit.SECONDS); }
+  }
+
   @Test void staleContactCannotPublishIdentityAndErrorsRetryOnInjectedTime() throws Exception {
     var robot = remote(); var calls = new AtomicInteger(); var identities = new ArrayList<PullCoordinator.Identity>(); settled();
     try (var pull = new PullCoordinator(CONFIG, gate, store, WALL, identities::add, worker, (address, config, pin) -> {

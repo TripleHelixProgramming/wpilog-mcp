@@ -16,6 +16,8 @@ public interface SshConnection extends AutoCloseable {
     default Optional<String> realpath(String directory) throws IOException { return Optional.of(directory); }
     List<Item> list(String directory) throws IOException;
     byte[] read(String path, long offset, int count) throws IOException;
+    /** Caller closes this handle before another operation on the same SFTP channel. */
+    default Optional<InputStream> open(String path, long offset) throws IOException { return Optional.empty(); }
     @Override void close();
   }
   record Completion(int exitStatus, String stderr, boolean truncated) {}

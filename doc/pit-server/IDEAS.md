@@ -159,3 +159,11 @@ Confirm the NI SFTP server reports the same realpath for `/u/logs` and `/U/logs`
 that the existing uppercase manifest resumes without duplicate copies. Unit and real-SFTP
 fixtures cover directory aliases and both hash and byte-comparison rename recovery; the
 container fixture has both USB aliases, but its Linux/Docker run remains a separate check.
+
+## Shop pull throughput follow-up
+
+Measure persistent SFTP streaming and batched checkpoints on the NI controller and USB stick,
+including large REV files, the configured byte cap and disabled/enabled transitions. Local
+30 ms RTT measurements establish the removed per-block cost, not robot CPU, storage performance,
+post-copy verification time or power-loss filesystem behavior. Keep the configured rate and
+existing bounds until the shop supplies that evidence.

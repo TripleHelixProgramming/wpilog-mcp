@@ -10,8 +10,12 @@ common-prefix boots, REV's repeated unset-clock name, DataLogManager renames, on
 read pacing, one retry, manifest round trips, and concurrent-call refusal. Listing counters pin one
 snapshot per pass and a ten-second refresh while a file grows. `TransferVerificationTest`
 copies every generated fixture byte for byte and requires the normal readers to reach clean EOF,
-including rejection of partial WPILOG records and native REV headers/frames. No test waits for a
-robot or sleeps for time.
+including rejection of partial WPILOG records and native REV headers/frames. Those deterministic
+checks advance an injected clock. `FileTransferBatchTest` also checks durable batch ordering,
+crash-tail repair, timer wakeups and bounded byte-rate credit. `SftpTransferThroughputTest` uses a
+real loopback SSH server and an ordered TCP relay delayed 15 ms in each direction to measure
+30 ms RTT, persistent-handle use and wire read-ahead. It uses wall time deliberately; no physical
+robot is required.
 
 **SFTP, gate and placement.** `PullConfigTest`, `PullGateTest`, `SftpTransportTest`,
 `PullCoordinatorTest`, `PullStoreTest`, and `CapturePullTest` cover configuration and secrets,

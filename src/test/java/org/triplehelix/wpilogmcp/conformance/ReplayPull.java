@@ -59,16 +59,9 @@ final class ReplayPull implements AutoCloseable {
     var transfer = new FileTransfer(remote, local, local.manifest(), 1_000_000, now::get, () -> true);
     long size = Files.size(source.path);
     for (var bus : companions) size += Files.size(bus.path());
-    long bound = 2 * (size / FileTransfer.BLOCK_BYTES + 1) + 100L * (companions.size() + 1);
-    boolean verified = false;
-    for (long step = 0; step < bound; step++) {
-      var result = transfer.step(); now.addAndGet(Math.max(1, result.waitUs()));
-      if (transfer.manifest().files().size() == expectedFiles
-          && transfer.manifest().files().stream().allMatch(e -> e.verified() || e.failure() != null)) {
-        verified = transfer.manifest().files().stream().filter(e -> e.remoteName().endsWith("/" + source.path.getFileName()))
-            .allMatch(org.triplehelix.wpilogmcp.sync.PullManifest.Entry::verified); break;
-      }
-    }
+    try (transfer) { ReplayPullProgress.finish(transfer::step, transfer::manifest, expectedFiles, size, now, System::nanoTime); }
+    boolean verified = transfer.manifest().files().stream().filter(e -> e.remoteName().endsWith("/" + source.path.getFileName()))
+        .allMatch(org.triplehelix.wpilogmcp.sync.PullManifest.Entry::verified);
     var security = new org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator(); security.addAllowedDirectory(capture.directory);
     var catalog = StoreCatalog.read(capture.directory, security);
     var result = new LinkedHashMap<String, Object>(); result.put("verified", verified);

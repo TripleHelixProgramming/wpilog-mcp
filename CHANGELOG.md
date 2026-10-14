@@ -112,6 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Robot pulls retain one SFTP handle across data blocks and checkpoint staged bytes and progress together, at 1 MiB or a one-second checkpoint deadline. Previously each 64 KiB block reopened the remote file and separately queued its append and manifest write. Durable progress never leads the staged data; an uncounted staged tail after a crash is truncated to the saved offset instead of forcing a copy from the beginning.
+
 - Robot pulls resolve configured roots with SFTP realpath and walk each directory once. Previously `/u/logs` and `/U/logs` could transfer the same USB logs twice; existing alias manifests now resume their verified and partial files, including paced fallback proofs that previously could wait indefinitely. The synthetic roboRIO uses both aliases and checks one transfer per log.
 
 - SSH stats now resolve filesystem aliases once per connection and sample each real directory once; USB aliases previously repeated df work. A budget-driven slowdown now states its round trip and budget instead of a null reason, and robot-facts times the actual steady command, its proc reads and each df path so the shop can locate the cost before changing the 100 ms default.

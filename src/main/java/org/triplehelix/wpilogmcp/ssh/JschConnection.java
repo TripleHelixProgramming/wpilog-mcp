@@ -113,6 +113,20 @@ public final class JschConnection implements SshConnection {
       try (var input = sftp.get(sftpLiteral(path), null, offset)) { return input.readNBytes(count); }
       catch (SftpException e) { throw new IOException("SFTP read failed: " + path, e); }
     }
+    @Override public Optional<InputStream> open(String path, long offset) throws IOException {
+      try {
+        var source = sftp.get(sftpLiteral(path), null, offset);
+        // Two SFTP packets hide network RTT; at most 64 KiB remains in flight/read ahead on pause.
+        sftp.setBulkRequests(2);
+        return Optional.of(new java.io.FilterInputStream(source) {
+          @Override public void close() throws IOException {
+            try { super.close(); }
+            finally { try { sftp.setBulkRequests(1); } catch (JSchException e) { throw new IOException("Cannot reset SFTP requests", e); } }
+          }
+        });
+      } catch (JSchException e) { throw new IOException("Cannot configure SFTP requests", e); }
+      catch (SftpException e) { throw new IOException("SFTP open failed: " + path, e); }
+    }
     @Override public void close() { sftp.disconnect(); }
   }
   @Override public Optional<String> exec(String command, long timeoutMs, int maxBytes) throws IOException {

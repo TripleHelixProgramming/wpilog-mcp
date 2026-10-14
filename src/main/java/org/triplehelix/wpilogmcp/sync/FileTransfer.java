@@ -5,6 +5,8 @@
 package org.triplehelix.wpilogmcp.sync;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -22,7 +24,7 @@ import org.triplehelix.wpilogmcp.sync.PullManifest.Entry;
  * justify resuming: compare every held byte by hash, or the known range's final 64 KiB when
  * the remote cannot execute a hash command. Time and storage are ports, not sleeps or sockets.
  */
-public final class FileTransfer {
+public final class FileTransfer implements AutoCloseable {
   public static final int BLOCK_BYTES = 64 * 1024;
   public static final long LISTING_PERIOD_US = 10_000_000;
   public interface Local {
@@ -31,6 +33,14 @@ public final class FileTransfer {
     byte[] read(String name, long offset, int count) throws IOException;
     String prefixHash(String name, long length) throws IOException;
     void append(String name, long offset, byte[] bytes) throws IOException;
+    /** Stores opt into batching; ordinary peers keep their existing block checkpoints. */
+    default int checkpointBytes() { return BLOCK_BYTES; }
+    /** Append must become durable before progress can count it. Implementations may combine queue admission. */
+    default void checkpoint(String name, long offset, byte[] bytes, PullManifest progress) throws IOException {
+      append(name, offset, bytes); save(progress);
+    }
+    /** Only an owned staging file may discard bytes a failed checkpoint did not count. */
+    default boolean truncate(String name, long length) throws IOException { return false; }
     String rename(String name, String remoteName) throws IOException;
     String archive(String name) throws IOException;
     /** A verified file returns to staging before it grows, so its session never keeps a stale hash. */
@@ -58,11 +68,22 @@ public final class FileTransfer {
   private volatile PullManifest manifest;
   private volatile int pendingFiles;
   private long nextReadUs, listedAtUs;
+  private long readCredit = BLOCK_BYTES * 1_000_000L;
+  private long creditedAtUs;
+  private boolean creditStarted;
+  private int streamReadBytes;
+  private final ByteArrayOutputStream buffered = new ByteArrayOutputStream();
+  private RemoteFiles.File bufferedFile;
+  private long bufferedSinceUs;
+  private InputStream input;
+  private String inputName;
+  private long inputOffset;
   private List<RemoteFiles.File> listing;
   private final Map<String, RemoteFiles.File> previousPass = new HashMap<>();
 
   public FileTransfer(RemoteFiles remote, Local local, PullManifest manifest,
       long rateBytes, LongSupplier clock, BooleanSupplier gate) {
+    if (local.checkpointBytes() < BLOCK_BYTES || local.checkpointBytes() > 1024 * 1024) throw new IllegalArgumentException("Checkpoint must be between 64 KiB and 1 MiB");
     if (rateBytes <= 0) throw new IllegalArgumentException("Rate must be positive");
     this.remote = remote; this.local = local; this.manifest = manifest; this.serial = manifest.serialNumber();
     this.rateBytes = rateBytes; this.clock = clock; this.gate = gate;
@@ -75,9 +96,11 @@ public final class FileTransfer {
   public Result step() throws IOException {
     if (!busy.compareAndSet(false, true)) throw new IllegalStateException("A transfer step is already running");
     try {
-      if (!gate.getAsBoolean()) { validated.clear(); renameProof.clear(); return result(Status.PAUSED, null, 0, null); }
+      if (!gate.getAsBoolean()) return pause(null);
+      checkpointIfDue();
       if (clock.getAsLong() < nextReadUs) return result(Status.WAITING, null, 0, null);
       if (listing == null || clock.getAsLong() - listedAtUs >= LISTING_PERIOD_US) {
+        checkpoint(); closeInput();
         var fresh = remote.list().stream().sorted(java.util.Comparator.comparing(RemoteFiles.File::name)).toList();
         var unique = new HashSet<String>();
         for (var item : fresh) if (!unique.add(item.name())) throw new IOException("Duplicate remote name: " + item.name());
@@ -94,13 +117,17 @@ public final class FileTransfer {
           var renamed = new ArrayList<Entry>();
           for (var held : List.copyOf(files.values())) {
             if (!names.contains(held.remoteName()) && held.bytesCopied() > 0 && held.bytesCopied() <= item.size()
-                && held.bytesCopied() == local.size(held.localName())) {
+                && reconciledSize(held) == held.bytesCopied()) {
               String key = item + "|" + held;
               Boolean proof = renameProof.get(key);
-              if (proof == null) { proof = matches(item, held); renameProof.put(key, proof); }
+              if (proof == null) {
+                var match = matches(item, held);
+                if (match.isEmpty()) return result(Status.WAITING, item.name(), 0, null);
+                proof = match.get(); renameProof.put(key, proof);
+              }
               if (proof) renamed.add(held);
             }
-            if (!gate.getAsBoolean()) { validated.clear(); renameProof.clear(); return result(Status.PAUSED, null, 0, null); }
+            if (!gate.getAsBoolean()) return pause(null);
             if (clock.getAsLong() < nextReadUs) return result(Status.WAITING, null, 0, null);
           }
           if (renamed.size() == 1) {
@@ -116,11 +143,13 @@ public final class FileTransfer {
         boolean changed = entry.size() != item.size() || entry.mtimeMillis() != item.mtimeMillis();
         if (!changed && (entry.verified() || entry.failure() != null) && entry.equals(validated.get(item.name()))) continue;
         boolean replaced = item.size() < entry.size() || item.mtimeMillis() < entry.mtimeMillis()
-            || local.size(entry.localName()) != entry.bytesCopied();
+            || (changed || !entry.equals(validated.get(item.name()))) && reconciledSize(entry) != entry.bytesCopied();
         if (!replaced && entry.bytesCopied() > 0 && (changed || !entry.equals(validated.get(item.name())))) {
-          replaced = !matches(item, entry);
+          var match = matches(item, entry);
+          if (match.isEmpty()) return result(Status.WAITING, item.name(), 0, null);
+          replaced = !match.get();
         }
-        if (!gate.getAsBoolean()) { validated.clear(); renameProof.clear(); return result(Status.PAUSED, item.name(), 0, null); }
+        if (!gate.getAsBoolean()) return pause(item.name());
         if (replaced) entry = restart(item, entry, 0);
         else if (changed) {
           entry = entry.progress(item, entry.bytesCopied(), false, local.resume(entry), 0, null);
@@ -129,17 +158,31 @@ public final class FileTransfer {
         validated.put(item.name(), entry);
         if (entry.verified() || entry.failure() != null) continue;
         if (clock.getAsLong() < nextReadUs) return result(Status.WAITING, item.name(), 0, null);
-        if (entry.bytesCopied() < item.size()) {
-          int count = (int) Math.min(BLOCK_BYTES, item.size() - entry.bytesCopied());
-          var bytes = remote.read(item.name(), entry.bytesCopied(), count);
+        long offset = entry.bytesCopied() + buffered.size();
+        if (offset < item.size()) {
+          int count = (int) Math.min(Math.min(BLOCK_BYTES, local.checkpointBytes() - buffered.size()), item.size() - offset);
+          if (input != null) {
+            replenish(clock.getAsLong());
+            // A short packet sets the next useful wakeup, not a permanent ceiling on later reads.
+            count = (int) Math.min(count, Math.max(1, readCredit / 1_000_000));
+          }
+          if (!ready(count)) return result(Status.WAITING, item.name(), 0, null);
+          long startedUs = clock.getAsLong();
+          var bytes = read(item.name(), offset, count);
           if (bytes.length == 0 || bytes.length > count) throw new IOException("Short or oversized remote read: " + item.name());
-          local.append(entry.localName(), entry.bytesCopied(), bytes); charge(bytes.length);
-          entry = entry.progress(item, entry.bytesCopied() + bytes.length, false, entry.localName(), entry.retries(), null);
-          files.put(item.name(), entry); validated.put(item.name(), entry); save();
+          charge(bytes.length, startedUs);
+          if (buffered.size() == 0) { bufferedFile = item; bufferedSinceUs = startedUs; }
+          buffered.writeBytes(bytes);
+          boolean complete = offset + bytes.length == item.size();
+          if (buffered.size() >= local.checkpointBytes() || complete || !gate.getAsBoolean()) checkpoint();
+          else checkpointIfDue();
+          if (complete || !gate.getAsBoolean()) closeInput();
           return result(Status.COPIED, item.name(), bytes.length, null);
         }
         if (!item.equals(previousPass.get(item.name()))) { needsStablePass = true; continue; }
-        if (!matches(item, entry)) { restart(item, entry, 0); return result(Status.RETRIED, item.name(), 0, "remote content changed"); }
+        var match = matches(item, entry);
+        if (match.isEmpty()) return result(Status.WAITING, item.name(), 0, null);
+        if (!match.get()) { restart(item, entry, 0); return result(Status.RETRIED, item.name(), 0, "remote content changed"); }
         try { local.verify(entry.localName()); }
         catch (IOException e) {
           if (entry.retries() == 0) { restart(item, entry, 1); return result(Status.RETRIED, item.name(), 0, e.getMessage()); }
@@ -154,30 +197,115 @@ public final class FileTransfer {
       }
       listing = null; // All files reached their listed end; the next step starts a new pass.
       return result(needsStablePass ? Status.WAITING : Status.IDLE, null, 0, null);
-    } catch (IOException e) {
+    } catch (IOException | RuntimeException e) {
+      buffered.reset(); bufferedFile = null; validated.clear();
+      try { closeInput(); } catch (IOException close) { e.addSuppressed(close); }
       listing = null; // A renamed or removed remote file invalidates this snapshot immediately.
       throw e;
     } finally { busy.set(false); }
   }
 
   private Entry restart(RemoteFiles.File item, Entry old, int retry) throws IOException {
+    closeInput(); buffered.reset(); bufferedFile = null;
     String archive = local.archive(old.localName());
     history.add(new Entry(old.remoteName(), old.size(), old.mtimeMillis(), old.bytesCopied(), old.verified(), archive, old.retries(), old.failure()));
     var next = new Entry(item.name(), item.size(), item.mtimeMillis(), 0, false, local.create(item.name()), retry, null);
     files.put(item.name(), next); validated.remove(item.name()); save(); return next;
   }
-  private boolean matches(RemoteFiles.File item, Entry held) throws IOException {
-    long length = held.bytesCopied(); if (length == 0) return true;
-    if (length > item.size()) return false;
+  private java.util.Optional<Boolean> matches(RemoteFiles.File item, Entry held) throws IOException {
+    long length = held.bytesCopied(); if (length == 0) return java.util.Optional.of(true);
+    if (length > item.size()) return java.util.Optional.of(false);
+    closeInput();
     var hash = remote.prefixHash(item.name(), length);
-    if (hash.isPresent()) return hash.get().equals(local.prefixHash(held.localName(), length));
+    if (hash.isPresent()) return java.util.Optional.of(hash.get().equals(local.prefixHash(held.localName(), length)));
     int count = (int) Math.min(BLOCK_BYTES, length); long offset = length - count;
-    var bytes = remote.read(item.name(), offset, count); charge(bytes.length);
-    return bytes.length == count && Arrays.equals(bytes, local.read(held.localName(), offset, count));
+    if (!ready(count)) return java.util.Optional.empty();
+    long startedUs = clock.getAsLong();
+    var bytes = remote.read(item.name(), offset, count); charge(bytes.length, startedUs);
+    return java.util.Optional.of(bytes.length == count && Arrays.equals(bytes, local.read(held.localName(), offset, count)));
   }
-  private void charge(int count) {
-    long duration = (long) Math.ceil(count * 1_000_000.0 / rateBytes);
-    nextReadUs = Math.max(nextReadUs, clock.getAsLong()) + duration;
+  private void replenish(long nowUs) {
+    if (!creditStarted) { creditedAtUs = nowUs; creditStarted = true; }
+    long elapsedUs = Math.max(0, nowUs - creditedAtUs);
+    long missing = BLOCK_BYTES * 1_000_000L - readCredit;
+    // Credit uses byte-microseconds: exact integer ceilings, with saturation before multiplication.
+    readCredit = elapsedUs >= creditWaitUs(missing)
+        ? BLOCK_BYTES * 1_000_000L : readCredit + elapsedUs * rateBytes;
+    creditedAtUs = Math.max(creditedAtUs, nowUs);
+  }
+  private long creditWaitUs(long missing) {
+    return missing / rateBytes + (missing % rateBytes == 0 ? 0 : 1);
+  }
+  private boolean ready(int count) {
+    long nowUs = clock.getAsLong(); replenish(nowUs);
+    long missing = Math.max(0, count * 1_000_000L - readCredit);
+    long waitUs = creditWaitUs(missing);
+    nextReadUs = nowUs + waitUs; return waitUs == 0;
+  }
+  private void charge(int count, long startedUs) {
+    replenish(startedUs);
+    if (count * 1_000_000L > readCredit) throw new IllegalStateException("Read exceeded its byte credit");
+    readCredit -= count * 1_000_000L;
+    ready(input != null && streamReadBytes > 0 ? streamReadBytes : BLOCK_BYTES);
+  }
+  /** A failed remote-handle close after local checkpointing succeeded; callers need its actual origin. */
+  public static final class RemoteCloseException extends IOException {
+    private RemoteCloseException(IOException cause) { super(cause.getMessage(), cause); }
+  }
+  /** Routine disconnects checkpoint memory; a step already in flight is aborted by its transport. */
+  @Override public void close() throws IOException {
+    if (!busy.compareAndSet(false, true)) return;
+    Throwable checkpointFailure = null;
+    try { checkpoint(); }
+    catch (IOException | RuntimeException | Error failure) { checkpointFailure = failure; throw failure; }
+    finally {
+      try { closeInput(); }
+      catch (IOException | RuntimeException | Error failure) {
+        if (checkpointFailure != null) checkpointFailure.addSuppressed(failure);
+        else if (failure instanceof IOException io) throw new RemoteCloseException(io);
+        else throw failure;
+      } finally { busy.set(false); }
+    }
+  }
+  private long reconciledSize(Entry entry) throws IOException {
+    long size = local.size(entry.localName());
+    if (size > entry.bytesCopied() && !entry.verified() && local.truncate(entry.localName(), entry.bytesCopied())) return entry.bytesCopied();
+    return size;
+  }
+  private byte[] read(String name, long offset, int count) throws IOException {
+    if (!name.equals(inputName) || offset != inputOffset) {
+      closeInput(); input = remote.open(name, offset).orElse(null); inputName = name; inputOffset = offset;
+    }
+    byte[] bytes;
+    if (input == null) bytes = remote.read(name, offset, count);
+    else {
+      // Take one available packet. Filling a second packet spends another RTT and permits excess read ahead.
+      var block = new byte[count]; int n = input.read(block);
+      bytes = n < 0 ? new byte[0] : Arrays.copyOf(block, n);
+    }
+    if (input != null) streamReadBytes = Math.max(streamReadBytes, bytes.length);
+    inputOffset += bytes.length; return bytes;
+  }
+  private void closeInput() throws IOException {
+    var previous = input; input = null; inputName = null; streamReadBytes = 0;
+    if (previous != null) previous.close();
+  }
+  private Result pause(String name) throws IOException {
+    checkpoint(); closeInput(); validated.clear(); renameProof.clear();
+    return result(Status.PAUSED, name, 0, null);
+  }
+  private void checkpointIfDue() throws IOException {
+    if (bufferedFile != null && clock.getAsLong() - bufferedSinceUs >= 1_000_000) checkpoint();
+  }
+  private void checkpoint() throws IOException {
+    if (bufferedFile == null) return;
+    var item = bufferedFile; var before = files.get(item.name());
+    var after = before.progress(item, before.bytesCopied() + buffered.size(), false, before.localName(), before.retries(), null);
+    var committed = new LinkedHashMap<>(files); committed.put(item.name(), after);
+    var next = new PullManifest(PullManifest.FORMAT_VERSION, serial, List.copyOf(committed.values()), List.copyOf(history));
+    local.checkpoint(before.localName(), before.bytesCopied(), buffered.toByteArray(), next);
+    files.put(item.name(), after); validated.put(item.name(), after); manifest = next;
+    buffered.reset(); bufferedFile = null;
   }
   private void save() throws IOException {
     var next = new PullManifest(PullManifest.FORMAT_VERSION, serial, List.copyOf(files.values()), List.copyOf(history));
@@ -189,6 +317,8 @@ public final class FileTransfer {
       return held == null || held.size() != item.size() || held.mtimeMillis() != item.mtimeMillis()
           || !held.verified() && held.failure() == null;
     }).count();
-    return new Result(status, Math.max(0, nextReadUs - clock.getAsLong()), remote, bytes, detail);
+    long nowUs = clock.getAsLong(), waitUs = Math.max(0, nextReadUs - nowUs);
+    if (bufferedFile != null) waitUs = Math.min(waitUs, Math.max(0, bufferedSinceUs + 1_000_000 - nowUs));
+    return new Result(status, waitUs, remote, bytes, detail);
   }
 }

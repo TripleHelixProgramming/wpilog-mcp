@@ -113,16 +113,34 @@ public final class PullStore implements FileTransfer.Local {
       } catch (java.security.NoSuchAlgorithmException e) { throw new AssertionError(e); }
     });
   }
+  @Override public int checkpointBytes() { return 1024 * 1024; }
+  @Override public void checkpoint(String name, long offset, byte[] bytes, PullManifest progress) throws IOException {
+    store.capture(io -> { append(io, name, offset, bytes); save(io, progress); return null; });
+  }
   @Override public void append(String name, long offset, byte[] bytes) throws IOException {
-    store.capture(io -> {
+    store.capture(io -> { append(io, name, offset, bytes); return null; });
+  }
+  private void append(StoreFiles io, String name, long offset, byte[] bytes) throws IOException {
+    var path = path(io, name);
+    if (!path.startsWith(robotRoot.resolve("pulled"))) throw new IOException("Only a staged pull can grow");
+    try (var channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
+      if (channel.size() != offset) throw new IOException("Local size differs from pull progress");
+      var buffer = ByteBuffer.wrap(bytes);
+      while (buffer.hasRemaining()) channel.write(buffer, offset + buffer.position());
+      channel.force(true); // The atomic manifest must never get ahead of the staged bytes.
+    }
+  }
+  @Override public boolean truncate(String name, long length) throws IOException {
+    return store.capture(io -> {
       var path = path(io, name);
-      if (!path.startsWith(robotRoot.resolve("pulled"))) throw new IOException("Only a staged pull can grow");
+      if (!path.startsWith(robotRoot.resolve("pulled"))) return false;
+      var progress = io.read(manifest, PullManifest.class).files().stream().filter(e -> e.localName().equals(name)).findFirst();
+      if (progress.isEmpty() || progress.get().bytesCopied() != length) throw new IOException("Staged pull checkpoint changed before truncation");
       try (var channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
-        if (channel.size() != offset) throw new IOException("Local size differs from pull progress");
-        var buffer = ByteBuffer.wrap(bytes);
-        while (buffer.hasRemaining()) channel.write(buffer, offset + buffer.position());
+        if (length < 0 || length > channel.size()) throw new IOException("Invalid staged prefix length");
+        channel.truncate(length); channel.force(true);
       }
-      return null;
+      return true;
     });
   }
   @Override public String rename(String name, String remote) throws IOException {
@@ -143,11 +161,12 @@ public final class PullStore implements FileTransfer.Local {
     });
   }
   @Override public void save(PullManifest progress) throws IOException {
-    store.capture(io -> {
-      if (!identity.serialNumber().equals(progress.serialNumber())) throw new IOException("Pull serial changed");
-      for (var entry : java.util.stream.Stream.concat(progress.files().stream(), progress.history().stream()).toList()) path(io, entry.localName());
-      io.write(manifest, progress); return null;
-    });
+    store.capture(io -> { save(io, progress); return null; });
+  }
+  private void save(StoreFiles io, PullManifest progress) throws IOException {
+    if (!identity.serialNumber().equals(progress.serialNumber())) throw new IOException("Pull serial changed");
+    for (var entry : java.util.stream.Stream.concat(progress.files().stream(), progress.history().stream()).toList()) path(io, entry.localName());
+    io.write(manifest, progress);
   }
   @Override public void verify(String name) throws IOException {
     store.capture(io -> {

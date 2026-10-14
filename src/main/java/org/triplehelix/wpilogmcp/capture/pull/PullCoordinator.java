@@ -36,12 +36,12 @@ public final class PullCoordinator implements AutoCloseable {
   private final AtomicBoolean busy = new AtomicBoolean();
   private final java.util.concurrent.CompletableFuture<Void> closing = new java.util.concurrent.CompletableFuture<>();
   private final AtomicReference<RobotRemote> remote = new AtomicReference<>();
-  private FileTransfer transfer;
+  private volatile FileTransfer transfer;
   private volatile SystemPullPass system;
   private boolean systemPhase;
   private long connection = -1;
   private FileTransfer.Status lastStatus;
-  /** Cumulative copied payload bytes and successful verifications for this server process. */
+  /** Cumulative received payload bytes (including pending checkpoints) and successful verifications for this server process. */
   public record Progress(long bytes, long files, int pendingFiles, int waitingFiles) {}
   private volatile java.util.Map<String, Progress> progress = java.util.Map.of();
   private volatile String serial;
@@ -136,6 +136,9 @@ public final class PullCoordinator implements AutoCloseable {
     return result;
   }
   private void closeRemote() {
+    var copying = transfer;
+    if (copying != null) try { copying.close(); }
+    catch (IOException e) { LoggerFactory.getLogger(PullCoordinator.class).warn("Robot pull checkpoint failed during close: {}", e.getMessage()); }
     var secondPass = system; system = null; systemPhase = false;
     if (secondPass != null) secondPass.close();
     var contact = remote.getAndSet(null);
