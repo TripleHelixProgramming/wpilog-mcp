@@ -236,6 +236,9 @@ and it has no retry or failure. Partial, failed, duplicate and still-current unf
 remain failures. `HarnessPullManifestTest` forces this race and checks the refusal cases without
 depending on thread timing; `RemoteLogInventoryTest` checks both backend listings.
 
+Platform regressions run in the ordinary test suite: `ProviderReasonDescriptionTest` checks
+the provider paragraph with both LF and CRLF, including its blank-line boundary.
+
 The simulated robot also owns a separate ntcore client instance connected only to the gateway. It
 subscribes to every scripted topic and schema, records the received server timestamps in a separate
 observation log, and waits for gateway announcements before the runner releases the timeline. The

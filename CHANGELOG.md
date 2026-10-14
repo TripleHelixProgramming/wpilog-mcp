@@ -256,6 +256,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The provider-reason documentation check now reads paragraphs by lines and exercises both LF and CRLF. Previously regex backtracking treated one Windows line ending as a blank paragraph and hid the documented sampling-budget explanation.
 - The shop harness now distinguishes verified downloads from a vanished DataLogManager name whose first open failed before any bytes were copied. Previously that harmless empty attempt could fail the exact manifest count after both robot logs had verified; the shared check still rejects duplicate, partial, failed, nonempty or still-current unfinished transfers and compares completed pulls with the final remote inventory.
 - Session reads now pass through a real loopback recorder, rollover, peer sync and mirror, with every timestamp and value checked independently. Earlier session tests assembled their manifests directly and did not cover that complete path.
 - Shared-reader regressions cover projected and reduced values, multi-entry completion, session merge clocks and bounds, selective REV retention, append following and a standalone consumer's public types. Failing-first checks and restored fault plants guard the new behavior, alongside frozen legacy responses and independent real-file comparisons.
