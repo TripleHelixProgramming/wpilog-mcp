@@ -436,7 +436,10 @@ declarations, schemas, one value and the finishes cannot fit the configured boun
 stops with an explained error.
 
 **Fidelity.** Excluded or thinned topics are a deliberate reduction in capture fidelity; thinning
-is recorded in the entry metadata. Topic costs are logged every five minutes.
+is recorded in the entry metadata. Every five minutes, one INFO topic-cost summary reports the
+topic count, cumulative recorded records and bytes, dropped and thinned counts, and up to five
+topics with the largest cumulative recorded-byte costs. Per-topic records, bytes, dropped and
+thinned counts and last-minute rates remain in DEBUG logging and `list_sessions`.
 
 **Write failures.** A write failure closes the session with `end_reason` in its manifest and the
 reason in the server log, keeps the NT4 connection, and suppresses recording until a new robot

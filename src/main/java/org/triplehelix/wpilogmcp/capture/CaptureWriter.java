@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,7 +79,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     default void fileClosed(Session session) throws IOException {}
     default void closed(Session session) throws IOException {}
     default void cost(String topic, TopicCost.Snapshot cost) {
-      LoggerFactory.getLogger(CaptureWriter.class).info("Capture topic {}: {}", topic, cost);
+      LoggerFactory.getLogger(CaptureWriter.class).debug("Capture topic {}: {}", topic, cost);
     }
   }
 
@@ -664,7 +665,19 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     }
     observer.flushed(session);
     if (session.observedAtUs >= nextReportUs) {
-      session.costs.forEach((name, cost) -> observer.cost(name, cost.snapshot(session.observedAtUs)));
+      var stats = session.statistics();
+      stats.costs().forEach(observer::cost);
+      long dropped = stats.costs().values().stream().mapToLong(TopicCost.Snapshot::dropped).sum();
+      long thinned = stats.costs().values().stream().mapToLong(TopicCost.Snapshot::thinned).sum();
+      // Keep the ordinary journal bounded even when the robot publishes thousands of topics.
+      // Cumulative recorded bytes rank the five largest contributors; ties use the topic name.
+      var top = stats.costs().entrySet().stream()
+          .sorted(Map.Entry.<String, TopicCost.Snapshot>comparingByValue(
+              Comparator.comparingLong(TopicCost.Snapshot::bytes)).reversed().thenComparing(Map.Entry::getKey))
+          .limit(5).map(entry -> entry.getKey() + "=" + entry.getValue().bytes()).toList();
+      LoggerFactory.getLogger(CaptureWriter.class).info(
+          "Capture cost: topics={}, records={}, bytes={}, dropped={}, thinned={}, top_by_bytes={}",
+          stats.topicCount(), stats.records(), stats.bytes(), dropped, thinned, top);
       session.providers.forEach(provider -> LoggerFactory.getLogger(CaptureWriter.class).info("Capture provider {}: {}", provider.name(), provider));
       nextReportUs = session.observedAtUs + REPORT_PERIOD_US;
     }

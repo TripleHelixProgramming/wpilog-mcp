@@ -202,7 +202,7 @@ A writer IOException closes the session with `end_reason` in the manifest and th
 
 An unreadable or damaged file stays in `open_capture`, with the recovery failure in `end_reason` and the server log; other sessions still recover. An active writer is left alone. This also handles the daemon's earlier process-termination deadline, crashes and power loss.
 
-**Cost accounting.** Per topic: records, bytes, and the rate over the last minute. Reported by `list_sessions` and in the server log every five minutes while a session is open. Configuration may `exclude` topics by prefix or `thin` them to a period; a thinned topic's entry metadata records the period, so a result on it can say so.
+**Cost accounting.** Per topic: cumulative records, bytes, dropped and thinned counts, and the rate over the last minute. `list_sessions` reports these facts. Every five minutes while a session is open, the server logs one INFO summary of topic count and cumulative record, byte, dropped and thinned totals, plus up to five topics ranked by cumulative recorded bytes. Per-topic detail is logged at DEBUG. Configuration may `exclude` topics by prefix or `thin` them to a period; a thinned topic's entry metadata records the period, so a result on it can say so.
 
 **Context entries.** Providers write typed entries under `/Daemon/<provider>/...` (see §8): numeric system stats, followed strings, and JSON identity or structured context, timestamped in the robot's clock.
 
