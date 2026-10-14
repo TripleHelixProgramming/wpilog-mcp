@@ -2,12 +2,15 @@
  * remembered refusal, a cancelled picker, or a refresh cannot accidentally authorize a move. */
 import * as path from "path";
 import { LogListing, ListedRobot, directoryPaths } from "./logsTree";
+import { directoryIdentity, expandTilde } from "../logDirectories";
 
 export const ORGANIZE_CHOICES = ["Organize", "Not now", "Never for this folder"] as const;
 export type OrganizeChoice = typeof ORGANIZE_CHOICES[number] | undefined;
+export type OrganizeMode = "import" | "copy" | "move";
 export const MOVE_CHOICES = [
-  { label: "Move", description: "Organize in place (default); original paths stay in the manifests", move: true },
-  { label: "Copy", description: "Keep the originals as well as the organized copies", move: false },
+  { label: "Import into another folder…", description: "Choose a data store; leave the originals where they are", mode: "import" as const, move: false },
+  { label: "Copy in this folder", description: "Create organized copies in this folder; keep the originals here too", mode: "copy" as const, move: false },
+  { label: "Move in this folder", description: "Organize in this folder; remove the originals after verification", mode: "move" as const, move: true },
 ];
 
 export interface Choices {
@@ -112,10 +115,36 @@ export function robotNameError(name: string): string | undefined {
   return undefined;
 }
 
-/** All three decisions must be complete before the host can submit a batch. Null means the
+/** All choices, including an import destination, must be complete before submitting. Null means the
  * person chose Decide later; undefined means they cancelled and authorizes no request. */
-export function importPlan(offer: OrganizeOffer, choice: OrganizeChoice, move?: boolean, robot?: string | null):
+export function importPlan(offer: OrganizeOffer, choice: OrganizeChoice, mode?: OrganizeMode,
+  robot?: string | null, destination?: string):
     { store: string; paths: string[]; move: boolean; stated_robot: string | null } | undefined {
-  if (choice !== "Organize" || move === undefined || robot === undefined) return undefined;
-  return { store: offer.folder, paths: offer.paths, move, stated_robot: robot };
+  if (choice !== "Organize" || mode === undefined || robot === undefined) return undefined;
+  const store = mode === "import" ? destination : offer.folder;
+  if (!store) return undefined;
+  return { store, paths: offer.paths, move: mode === "move", stated_robot: robot };
+}
+
+/** Import promises to leave the source folder alone, including its status as a plain folder.
+ * Callers resolve real paths first so an alias cannot turn Import into in-place organizing. */
+export function importDestinationError(source: string, destination: string, listing: LogListing,
+  paths: path.PlatformPath = path): string | undefined {
+  if (containsPath(destination, source, paths)) {
+    return "Choose a destination outside the source folder's parents and different from the source folder. Copy or Move in this folder organizes in place.";
+  }
+  const owner = listing.stores?.find(store => containsPath(store.path, destination, paths));
+  if (owner?.mirror) return "A mirror is read-only. Choose another folder for the imported logs.";
+  if (owner && folderKey(owner.path, paths) !== folderKey(destination, paths)) {
+    return `Choose the store's root folder (${owner.path}), not a folder inside it.`;
+  }
+  return undefined;
+}
+
+/** A chosen store survives editor restarts without replacing any existing User roots. */
+export function withImportDirectory(additional: readonly string[], destination: string,
+  paths: path.PlatformPath = path): readonly string[] {
+  const key = directoryIdentity(destination, paths);
+  return additional.some(dir => directoryIdentity(expandTilde(dir, paths), paths) === key)
+    ? additional : [...additional, destination];
 }

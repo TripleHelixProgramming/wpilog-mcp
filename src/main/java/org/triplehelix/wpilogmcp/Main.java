@@ -188,6 +188,11 @@ public class Main {
 
   private static ServerConfig loadConfig(String configName, Path configPath, boolean foreground)
       throws ConfigException {
+    return loadDetailedConfig(configName, configPath, foreground).config();
+  }
+
+  private static ConfigLoader.Loaded loadDetailedConfig(String configName, Path configPath, boolean foreground)
+      throws ConfigException {
     var loader = new ConfigLoader();
     var loaded = foreground ? loader.loadForegroundDetailed(configName, configPath)
         : loader.loadDetailed(configName, configPath);
@@ -196,7 +201,7 @@ public class Main {
     }
     loaded.warnings().forEach(warning -> logger().warn("{}", warning));
     logger().info("Loaded configuration '{}' from {}", configName, loaded.file());
-    return loaded.config();
+    return loaded;
   }
 
   private static void handleStartCommand(String[] args) {
@@ -258,7 +263,8 @@ public class Main {
     try {
       var configPath = foregroundOptions(args).config();
       var configName = args[1];
-      var config = loadConfig(configName, configPath, publicRun);
+      var loaded = loadDetailedConfig(configName, configPath, publicRun);
+      var config = loaded.config();
       logger().info("Starting wpilog-mcp foreground server (config: {})...", configName);
       applyConfig(config);
       var daemonBind = System.getenv("WPILOG_HTTP_BIND");
@@ -267,7 +273,7 @@ public class Main {
       // The stop token comes from the start that spawned this daemon, in the environment
       var stopToken = "--internal-daemon".equals(args[0]) && !managed ? System.getenv(DaemonManager.STOP_TOKEN_ENV) : null;
       initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath,
-          daemonOrigins, stopToken, config.idleExit().orElse(null), config.effectiveCapture(), config.mirror(), config.metrics(), configName);
+          daemonOrigins, stopToken, config.idleExit().orElse(null), config.effectiveCapture(), config.mirror(), config.metrics(), configName, loaded.file(), config.dataStoreEnabled());
     } catch (ConfigException | IllegalArgumentException e) {
       logger().error("{}", e.getMessage());
       System.exit(1);
@@ -722,14 +728,14 @@ public class Main {
   private static void initializeAndRun(boolean httpMode, int httpPort,
       String httpBind, String httpPath, Set<String> allowedOrigins,
       String stopToken, Duration idleExit) {
-    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, stopToken, idleExit, null, null, null, null);
+    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, stopToken, idleExit, null, null, null, null, null, false);
   }
 
   private static void initializeAndRun(boolean httpMode, int httpPort,
       String httpBind, String httpPath, Set<String> allowedOrigins,
       String stopToken, Duration idleExit, org.triplehelix.wpilogmcp.config.CaptureConfig captureConfig,
       org.triplehelix.wpilogmcp.config.MirrorConfig mirrorConfig, org.triplehelix.wpilogmcp.config.MetricsConfig metricsConfig,
-      String configurationName) {
+      String configurationName, Path configurationFile, boolean dataStoreEnabled) {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
 
@@ -766,6 +772,16 @@ public class Main {
     if (httpMode) {
       var httpTransport = new HttpTransport(toolRegistry, httpPort, httpBind, allowedOrigins, httpPath, configurationName);
       final org.triplehelix.wpilogmcp.capture.CaptureService capture;
+      try {
+        // Do not even read a saved policy or grant its paths until this named server opts in.
+        if (configurationName != null && dataStoreEnabled) httpTransport.configureLocalIngestion(
+            org.triplehelix.wpilogmcp.store.LocalIngestion.policyFileFor(
+                Path.of(System.getProperty("user.home")), configurationFile, configurationName));
+      } catch (IOException e) {
+        logger().error("Local ingestion setup failed: {}", e.getMessage(), e);
+        System.exit(1);
+        return;
+      }
       try {
         capture = captureConfig == null ? null
             : new org.triplehelix.wpilogmcp.capture.CaptureService(captureConfig, logManager, httpBind);

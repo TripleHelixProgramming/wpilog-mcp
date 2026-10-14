@@ -30,6 +30,42 @@ class SecurityValidatorTest {
     validator = new SecurityValidator();
   }
 
+  @Test void persistentGrantsReplaceOnlyTheirOwnerAndRevocationNeverOpensEverything() throws IOException {
+    var first = Files.createDirectory(tempDir.resolve("first")).toRealPath();
+    var second = Files.createDirectory(tempDir.resolve("second")).toRealPath();
+    validator.replacePersistentDirectories("one", java.util.Set.of(first));
+    validator.replacePersistentDirectories("two", java.util.Set.of(second));
+    assertEquals(java.util.Set.of(first.toRealPath(), second.toRealPath()), validator.getAllowedDirectories());
+    assertEquals(validator.getAllowedDirectories(), validator.getConfiguredDirectories());
+    validator.replacePersistentDirectories("one", java.util.Set.of());
+    assertThrows(IOException.class, () -> validator.validate(first.resolve("a.wpilog")));
+    assertDoesNotThrow(() -> validator.validate(second.resolve("a.wpilog")));
+    validator.replacePersistentDirectories("two", java.util.Set.of());
+    assertThrows(IOException.class, () -> validator.validate(first.resolve("a.wpilog")));
+    assertThrows(IOException.class, () -> validator.validateOrAllowCached(first.resolve("a.wpilog"), ignored -> true));
+  }
+
+  @Test void anOlderImportCompletionCannotRestoreRevokedRoots() throws IOException {
+    var path = Files.createDirectory(tempDir.resolve("source")).toRealPath();
+    validator.replacePersistentDirectories("policy", 1, java.util.Set.of(path));
+    validator.replacePersistentDirectories("policy", 3, java.util.Set.of());
+    validator.replacePersistentDirectories("policy", 2, java.util.Set.of(path));
+    assertThrows(IOException.class, () -> validator.validate(path));
+  }
+
+  @Test void publishingAnEnrolledCanonicalRootAgainMustNotFollowItsReplacementLink() throws IOException {
+    var root = Files.createDirectory(tempDir.resolve("enrolled")).toRealPath();
+    var outside = Files.createDirectory(tempDir.resolve("outside")).toRealPath();
+    validator.replacePersistentDirectories("policy", 1, java.util.Set.of(root));
+    Files.delete(root);
+    try { Files.createSymbolicLink(root, outside); }
+    catch (UnsupportedOperationException | IOException e) { Assumptions.abort("Symlinks unavailable: " + e.getMessage()); }
+    validator.replacePersistentDirectories("policy", 2, java.util.Set.of(root));
+    assertThrows(IOException.class, () -> validator.validate(outside.resolve("log.wpilog")),
+        "A completed import cannot grant a retargeted directory without another enrollment");
+    assertThrows(IOException.class, () -> validator.validate(root.resolve("log.wpilog")));
+  }
+
   @Test void aNewConfiguredDirectoryResolvesItsExistingParentBeforeItIsCreated() throws IOException {
     var parent = Files.createDirectory(tempDir.resolve("real")); var link = tempDir.resolve("alias");
     try { Files.createSymbolicLink(link, parent); }

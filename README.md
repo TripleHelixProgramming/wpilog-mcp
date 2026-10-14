@@ -26,7 +26,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) is an open 
 
 A log viewer such as AdvantageScope shows you the data, but only if you know where to look. With wpilog-mcp you ask an engineering or strategy question; the model finds the relevant entries, proposes an explanation, and tests it against the data with further tool calls.
 
-A log folder can become a store, organized by robot and session: the extension [offers to organize](vscode-extension/README.md#organizing-your-logs) a folder it finds, and the standalone [import command and inbox](doc/STANDALONE.md#importing-logs) do the same from a terminal or a USB stick. Imports preserve filenames and provenance, and the listing reports files awaiting assignment or refused by the inbox.
+A store organizes logs by robot and session. Continuous folder imports through **Set Up Data Store** are experimental and disabled by default; [enable them on the named server](doc/STANDALONE.md#keeping-a-data-store-up-to-date) to test the setup commands and offer. When enabled, the extension lets you choose the store location and the folders to keep importing. Copy is the default: source logs stay where they are. Move is available for folders you explicitly identify as receiving completed files; duplicate originals are retained. The shared server continues syncing while it runs, even after the editor closes. Its default listing shows the store and pending or refused source files; **Show All Sources** includes originals. Nothing is enrolled without approval. [Data store setup](doc/STANDALONE.md#keeping-a-data-store-up-to-date) explains the choices; one-shot import and organizing remain available.
 
 ### What You Can Ask
 

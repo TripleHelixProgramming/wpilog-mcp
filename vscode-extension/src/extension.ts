@@ -282,7 +282,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     return { directories, key: await context.secrets.get(TBA_SECRET) || null, pitCredential: await pitRegistration(pitUrl(), context.secrets) };
   }
   const explorer = new Explorer(context, outputChannel, serverManager, standaloneSpec,
-    () => directoryRegistration(userSettings(), projects()).paths.map(dir => dir.path), registration, pitUrl, proxyHeaders);
+    () => directoryRegistration(userSettings(), projects()).paths.map(dir => dir.path), registration, pitUrl, proxyHeaders,
+    () => { const user = userSettings(); const roots = combineLogDirectories(user.logDirectory, user.additionalLogDirectories);
+      const fallback = wellKnownLogDirectory(); return roots.length ? roots : fallback ? [fallback] : []; });
   context.subscriptions.push(serverManager, explorer, outputChannel, didChangeEmitter);
 
   /** Registration finishes before an agent receives its URL; a third session can then read the lease. */

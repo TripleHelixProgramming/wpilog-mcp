@@ -235,32 +235,16 @@ Approach:
 
 Fuzzy or heuristic matches must be offered to the LLM as candidates to confirm, never used to pick an entry on the server's own authority (§6.8, which also says how a team's alias map fits the rule).
 
-### 5.6 Auto-Organize Log Directory
-Priority: Medium. Complexity: Medium.
+### 5.6 Opt-in data store
 
-Robots write `.wpilog`, `.revlog`, and `.hoot` files into one flat directory, or into per-session subdirectories with opaque names. This idea is a tool that sorts the files in a log directory into a readable structure.
-
-Possible structure:
-```
-logdir/
-├── 2026-vache/
-│   ├── q42/
-│   │   ├── akit_26-03-22_14-57-55_vache_q42.wpilog
-│   │   └── REV_20260322_145731.revlog
-│   ├── q58/
-│   │   └── ...
-│   └── practice/
-│       └── ...
-```
-
-Features:
-- Group by event, then by match type and number, both parsed from file names and log metadata
-- Put each `.wpilog` next to its `.revlog` files, matched by time
-- Move files, or link them (a non-destructive mode creates symlinks)
-- A dry run that shows what would change
-- An `unsorted/` directory for files with no usable metadata
-
-This would be the first tool that writes into a log directory (exports stay in the export directory). The server does not read `.hoot` files today.
+Implemented for WPILOG and REV files, but held behind the disabled-by-default
+`experimental_data_store` server flag pending further design review. When enabled, the shared
+server keeps importing explicitly selected
+folders into a user-chosen store, with Copy by default and guarded Move for completed-file
+folders. Manifests and receipts retain provenance and duplicate origins. Default browsing uses
+the store plus pending/refused source versions; All Sources preserves access to originals.
+The manual one-time import and organizing commands remain. No symlink organization or `.hoot`
+reader is implemented; the server does not guess a REV alignment from names.
 
 ---
 
@@ -510,7 +494,7 @@ useful.
 - **The plot**: `read_entry` at a resolution, the data endpoint in Arrow and CSV, and the panes, timeline, and statistics in the editor. The third milestone, done.
 - **Console, array elements, and the field view**: the text with its marks on the timeline, `[*]` paths as elements, and the pose on the season's field. The fourth milestone, done.
 - **REV signals**: the endpoint serves them on the robot's clock with the alignment's basis, and the pane lists and plots them. The fifth milestone, done.
-- **Organizing logs**: the sixth milestone is done: server import jobs and inbox batches, the command, explicit unassigned assignment, and the extension's per-folder offer, move/copy and robot picks, progress and result reporting, and trees by robot and session. Pure modules and transport clients have automated checks; the offer, quick pick, progress notification, and trees still need the manual real-VS-Code checks listed in EXPLORER_PLAN.md.
+- **Organizing logs**: the sixth milestone is done: server import jobs and inbox batches, the command, explicit unassigned assignment, and the extension's opt-in persistent source enrollment, import into a user-chosen new or existing store, explicit in-place copy/move and robot picks, progress and result reporting, and trees by robot and session. Pure modules and transport clients have automated checks; the offer, quick pick, progress notification, and trees still need the manual real-VS-Code checks listed in EXPLORER_PLAN.md.
 - **The extension installs and updates the standalone server**: done. The JAR owns the layout; shell installers, Gradle, and the extension delegate to it. The extension offers a missing install, updates older launchers without downgrading or rewriting settings, and provides an on-demand command. Scripts accept tags/pre-releases, prompt interactively, optionally install the matching `.vsix`, and support a settings-preserving refresh with a backup. Bootstrap flows from installer to extension; thereafter the extension updates the server and the Marketplace updates the extension. Real VS Code checks remain listed in EXPLORER_PLAN.md.
 - **Data view and notebook:** explorer milestone 9 is done. Perspective supplies the grid, filters, pivots, quick charts and CSV on exact Arrow samples. Three-cell notebooks preserve the selection and server inputs; Python stays in the user's kernel.
 - **Charts and assistant selections:** explorer milestone 10 is done. `render_chart` returns a headless PNG, versioned specification and full-window measurements with inputs. URI links open the server-validated selection; Ask about this selection uses VS Code chat with clipboard fallback. The own-specification-versus-Vega-Lite question and other assistants' prefill APIs remain open in EXPLORER_PLAN.md. MCP Apps remains a possible future interactive chat surface.

@@ -1,11 +1,19 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as path from "path";
-import { Choices, ORGANIZE_CHOICES, MOVE_CHOICES, containsPath, folderKey, importPlan, offerFor, organizeFolders, rememberChoice, robotItems, robotNameError } from "../explorer/organize";
+import { Choices, ORGANIZE_CHOICES, MOVE_CHOICES, containsPath, folderKey, importDestinationError, importPlan, offerFor, organizeFolders, rememberChoice, robotItems, robotNameError, withImportDirectory } from "../explorer/organize";
 import { organizeSources, DirectoryEntry } from "../explorer/organizeSources";
 import { listing, plain, plainLog, store } from "./fixtures/organizing";
 const empty: Choices = { never: [], deferred: [], offered: {} };
 const simple = { logs: [plainLog], log_directories: [plain] };
+
+test("organizing offers a separate import destination and explains where copy and move put files", () => {
+  assert.ok(MOVE_CHOICES.some(c => c.label === "Import into another folder…"),
+    "Import must offer a user-chosen store without reorganizing the source folder");
+  assert.match(MOVE_CHOICES.find(c => c.move)?.description ?? "", /remove.*original/i);
+  assert.ok(MOVE_CHOICES.some(c => /copy.*this folder/i.test(c.label)),
+    "Copy must say that the organized copies stay in the source folder");
+});
 
 test("a plain folder offers its exact log count once; cancelling defers until activation", () => {
   const offer = offerFor(simple, plain, empty)!;
@@ -14,7 +22,7 @@ test("a plain folder offers its exact log count once; cancelling defers until ac
   assert.equal(offer.store, false);
   assert.deepEqual(offer.paths, [plainLog.path]);
   assert.deepEqual(ORGANIZE_CHOICES, ["Organize", "Not now", "Never for this folder"]);
-  assert.deepEqual(MOVE_CHOICES.map(c => c.move), [true, false]);
+  assert.deepEqual(MOVE_CHOICES.map(c => [c.mode, c.move]), [["import", false], ["copy", false], ["move", true]]);
   for (const choice of ["Organize", "Not now", undefined] as const) {
     const remembered = rememberChoice(empty, offer, choice);
     assert.equal(offerFor(simple, plain, remembered), undefined);
@@ -104,17 +112,48 @@ test("plain offers include REV files but skip nested stores and symlinks; store 
 });
 
 
-test("only Organize plus completed move and robot choices authorizes a request; Decide later sends null", () => {
+test("only completed choices authorize a request; Import always copies to the chosen store", () => {
   const offer = offerFor(simple, plain, empty)!;
   for (const choice of ["Not now", "Never for this folder", undefined] as const) {
-    assert.equal(importPlan(offer, choice, true, "Practice"), undefined);
+    assert.equal(importPlan(offer, choice, "move", "Practice"), undefined);
   }
   assert.equal(importPlan(offer, "Organize", undefined, "Practice"), undefined);
-  assert.equal(importPlan(offer, "Organize", true, undefined), undefined);
-  assert.deepEqual(importPlan(offer, "Organize", true, "Practice"),
+  assert.equal(importPlan(offer, "Organize", "move", undefined), undefined);
+  assert.equal(importPlan(offer, "Organize", "import", "Practice", undefined), undefined);
+  assert.equal(importPlan(offer, "Organize", "import", undefined, store), undefined);
+  assert.deepEqual(importPlan(offer, "Organize", "move", "Practice"),
     { store: plain, paths: [plainLog.path], move: true, stated_robot: "Practice" });
-  assert.deepEqual(importPlan(offer, "Organize", false, null),
+  assert.deepEqual(importPlan(offer, "Organize", "copy", null),
     { store: plain, paths: [plainLog.path], move: false, stated_robot: null });
+  assert.deepEqual(importPlan(offer, "Organize", "import", null, store),
+    { store, paths: [plainLog.path], move: false, stated_robot: null });
+});
+
+test("separate imports refuse in-place destinations, store internals and mirrors on both path APIs", () => {
+  for (const paths of [path.posix, path.win32]) {
+    const root = paths.resolve(paths === path.win32 ? "C:/fixture" : "/fixture");
+    const source = paths.join(root, "source");
+    const target = paths.join(root, "store");
+    const mirror = paths.join(root, "mirror");
+    const current = { stores: [{ path: target }, { path: mirror, mirror: true }] };
+    assert.equal(importDestinationError(source, target, current, paths), undefined);
+    assert.equal(importDestinationError(source, paths.join(source, "archive"), current, paths), undefined);
+    assert.match(importDestinationError(source, source, current, paths)!, /different from the source/);
+    assert.match(importDestinationError(source, root, current, paths)!, /source folder's parents/);
+    assert.match(importDestinationError(source, paths.join(target, "robots"), current, paths)!, /root folder/);
+    assert.match(importDestinationError(source, mirror, current, paths)!, /read-only/);
+    assert.match(importDestinationError(source, paths.join(mirror, "child"), current, paths)!, /read-only/);
+  }
+  assert.match(importDestinationError("C:\\Source", "c:/source/", {}, path.win32)!, /different from the source/);
+});
+
+test("remembering an import destination preserves User roots and avoids equivalent Windows paths", () => {
+  const existing = ["./relative", "/previous"];
+  assert.deepEqual(withImportDirectory(existing, "/selected", path.posix), [...existing, "/selected"]);
+  assert.deepEqual(existing, ["./relative", "/previous"]);
+  const windows = ["C:\\Logs\\"];
+  assert.equal(withImportDirectory(windows, "c:/logs", path.win32), windows);
+  assert.deepEqual(withImportDirectory(windows, "D:\\Store", path.win32), [...windows, "D:\\Store"]);
 });
 
 test("a copy that creates a store does not offer its retained originals again; new files do", () => {

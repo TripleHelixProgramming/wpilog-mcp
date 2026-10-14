@@ -65,6 +65,8 @@ public final class CoreTools {
       return "List WPILOG files available in the configured log directories with friendly names, "
           + "newest first, paged: log_count is the number matching the filters, offset/limit "
           + "select a page (default 50), has_more says whether another page exists. "
+          + "With an opted-in data store, view default searches that store and enrolled sources, hiding verified source duplicates before counting; view all keeps originals. "
+          + "Only when configured, preferred_store_id identifies that store, source_sync reports policy, state, per-source counts and errors, and bounded source_files reports original paths, state, destination, hash and refusal reasons. "
           + "log_directories names the directories searched with path, origin (configured or leased), and team; "
           + "log_directory_paths keeps their plain paths; one that could not be read (a drive "
           + "not mounted, no permission) is listed in skipped with the reason, and the result is "
@@ -106,6 +108,7 @@ public final class CoreTools {
               false)
           .addProperty("since", "string", "Only logs from this date on: 2026-03-20, or an "
               + "ISO-8601 instant", false)
+          .addProperty("view", "string", "default uses the preferred store and pending/refused enrolled source files; all includes original sources (no preference means unchanged listing)", false)
           .addIntegerProperty("offset", "Logs to skip", false, 0)
           .addIntegerProperty("limit", "Maximum logs to return (max 500)", false, DEFAULT_LIMIT)
           .build();
@@ -139,10 +142,13 @@ public final class CoreTools {
         return result;
       }
 
-      var scan = logDirectory.scanLogs();
+      var view = getOptString(arguments, "view", "default");
+      if (!java.util.Set.of("default", "all").contains(view)) throw new IllegalArgumentException("view must be default or all");
+      var scan = logDirectory.scanLogs(view.equals("all"));
       var directoryPaths = new JsonArray();
       scan.directories().forEach(dir -> directoryPaths.add(dir.toString()));
-      var directories = StoreJson.JSON.toJsonTree(logDirectory.directoryOrigins());
+      var searched = scan.directories().stream().map(java.nio.file.Path::toString).collect(java.util.stream.Collectors.toSet());
+      var directories = StoreJson.JSON.toJsonTree(logDirectory.directoryOrigins().stream().filter(d -> searched.contains(d.path())).toList());
       if (scan.noneReadable()) {
         var result = new JsonObject();
         result.addProperty("success", false);
@@ -347,6 +353,13 @@ public final class CoreTools {
         ResultContract.addLimitedList(result, "unmanaged", unmanaged, unmanaged.size(), unmanaged.size());
         ResultContract.addLimitedList(result, "unassigned", unassigned, unassigned.size(), unassigned.size());
         ResultContract.addLimitedList(result, "moved_to", moved, moved.size(), moved.size());
+      }
+      var ingestion = logManager.stores().localIngestion();
+      if (ingestion != null && ingestion.preferredStore() != null) {
+        result.addProperty("preferred_store_id", ingestion.preferredStoreId());
+        result.add("source_sync", StoreJson.JSON.toJsonTree(ingestion.snapshot()));
+        var files = ingestion.files(0, 100);
+        ResultContract.addLimitedList(result, "source_files", StoreJson.JSON.toJsonTree(files.files()).getAsJsonArray(), files.total(), 100);
       }
       ResultContract.addLimitedList(result, "logs", logsArray,
           Math.max(0, logs.size() - Math.min(offset, logs.size())), limit);

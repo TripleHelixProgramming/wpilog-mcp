@@ -131,6 +131,11 @@ test("the commands are the ones the README names, each under the extension's or 
     "wpilog-mcp.uploadToPitServer",
     "wpilog-mcp.setPitProxyCredential",
     "wpilog-mcp.clearPitProxyCredential",
+    "wpilog-mcp.explorer.setupDataStore",
+    "wpilog-mcp.explorer.manageDataStore",
+    "wpilog-mcp.explorer.syncDataStore",
+    "wpilog-mcp.explorer.pauseDataStore",
+    "wpilog-mcp.explorer.showAllSources",
     "wpilog-mcp.explorer.organizeLogs",
     "wpilog-mcp.explorer.importLogs",
     "wpilog-mcp.explorer.assignRobot",
@@ -305,4 +310,16 @@ test("selection commands stay in the title and the webview context menu; links a
   for (const suffix of ["openInNotebook", "askAboutSelection"]) assert.ok(manifest.contributes.menus["editor/title"].some((m: any) => m.command === "wpilog-mcp.explorer." + suffix));
   assert.deepEqual(manifest.contributes.menus["webview/context"], [{ command: "wpilog-mcp.explorer.askAboutSelection", when: "webviewId == 'wpilog-mcp.explorer'", group: "navigation" }]);
   assert.ok(manifest.activationEvents.includes("onUri"));
+});
+
+
+test("experimental data-store commands are hidden and disabled until the server opts in", () => {
+  const context = "wpilog-mcp.dataStoreEnabled";
+  for (const name of ["setupDataStore", "manageDataStore", "syncDataStore", "pauseDataStore", "showAllSources"]) {
+    const command = `wpilog-mcp.explorer.${name}`;
+    assert.equal(manifest.contributes.commands.find((item: any) => item.command === command)?.enablement, context, `${command} enablement`);
+    assert.equal(manifest.contributes.menus.commandPalette.find((item: any) => item.command === command)?.when, context, `${command} palette`);
+    assert.equal(manifest.contributes.menus["view/title"].find((item: any) => item.command === command)?.when,
+      `view == wpilog-mcp.logs && ${context}`, `${command} Logs menu`);
+  }
 });

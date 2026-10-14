@@ -72,13 +72,63 @@ The extension host calls the same tools as the assistant and fetches samples thr
 
 **WPILog Explorer: Ask about this selection**, in the editor title and context menu, sends the path, selected entries, window and pane kind to VS Code chat. It names `get_statistics` first for a plot selection, `search_strings` for console text, or `render_chart` for a pane. If chat cannot be opened, the prompt is copied to the clipboard with a notice. Prefilling other assistants remains an open question; paste is the portable route.
 
+## A Data Store That Follows Your Folders
+
+Continuous folder imports are experimental and disabled by default. To test them, enable
+`experimental_data_store` on the named server and restart it, as described in
+[Keeping a data store up to date](../doc/STANDALONE.md#keeping-a-data-store-up-to-date).
+The setup offer and the five data-store commands are hidden until the server enables the feature.
+Disabling it preserves existing store files and the saved policy; it stops policy loading,
+background imports and the preferred-store view. Manual Organize Logs and one-time imports
+remain available.
+
+When enabled and loose logs are available, the explorer offers **Set Up Data Store**, **Not now**, or
+**Don't offer again**. **WPILog Explorer: Set Up Data Store…**, in the command palette and Logs
+view menu, also starts setup explicitly. Choose a local destination and review the source
+folders. Existing server directories and your User log-directory settings are checked initially;
+project, session and temporary folders require an explicit choice. You can add another local
+source with the folder picker. Folders configured later are never enrolled automatically.
+
+For each source, choose **Copy and keep originals** or **Move finished files**. Copy is the first
+choice. Move requires confirmation that the source contains only finished files and that no
+program writes logs there; it removes an original only after the server verifies its placement.
+Duplicate content is reported as present and the duplicate source remains. Sources cannot be
+inside the destination or another store, and overlapping enrollments need one chosen owner. A
+store created inside a source is excluded from that source's scan.
+
+The final review names every source, its mode and the destination. Cancelling before **Save and
+Start Syncing** changes nothing. Saving creates one persistent policy for the named shared server,
+not a separate watcher for each window or profile. It runs after VS Code closes while the server
+runs, resumes when the server restarts, and does not rewrite your User settings or `servers.yaml`.
+Another profile sees the same setup; a conflicting edit is refused for review rather than
+silently replacing it.
+
+The default Logs view and MCP listing prefer the store while keeping files still awaiting import
+or refused. A confirmed imported original is hidden only while its receipt still describes that
+file and its stored copy exists. **Toggle All Source Logs** switches back to the original files
+as well. **Manage Data Store…** reviews sources, shows status and file receipts, pauses or resumes
+synchronization, and requests a scan; **Sync Data Store Now** and **Pause or Resume Data Store Sync**
+also have their own commands. The **Folder synchronization** group reports pending/refused files
+with their reasons. Existing files remain readable while synchronization is paused. Direct log
+paths and the experimental reader library's explicitly supplied roots keep their usual behavior.
+
 ## Organizing Your Logs
 
-When a log directory has files to organize, WPILog Explorer offers **Organize**, **Not now**, or **Never for this folder**. Nothing moves until you choose Organize and complete the choices. Not now (or dismissing the offer) lasts until the next activation; Never is remembered for that folder. **WPILog Explorer: Organize Logs…**, also in the Logs view's title bar, can ask again at any time. With several directories it first asks which one. A store with unmanaged files gets the same offer, with their count and the first few names.
+For a one-time operation, **WPILog Explorer: Organize Logs…** remains available in the command
+palette and Logs view menu. With several directories it first asks which one. It shows the count
+of plain logs or unmanaged store files, then asks **Organize**, **Not now**, or **Never for this
+folder**. This command does not establish ongoing synchronization; use data-store setup above
+for that. Nothing moves until the choices are complete.
 
-Choose **Move** (the default) to organize in place, or **Copy** to keep the originals too. Then choose a known robot by name and serial, **New robot…**, or **Decide later**. Names allow letters, digits, dots, hyphens, and underscores, and must be portable filenames. The log's own identity wins when present; without one, Decide later leaves the files under Unassigned. The server imports the batch while the notification shows the phase, file, and completed/total counts. Afterwards it reports imported, present, unassigned, and refused counts; each file's result and the server's reasons go to the **WPILog Analyzer** output channel. A shared serial in two robot directories is reported with both paths for a later explicit merge.
+Choose where the organized logs should go:
 
-A store's Logs tree shows robots (with their identity basis in the tooltip), dates, sessions with their times and known event/match, then each wpilog and its correlated REV companions. Clicking a REV companion opens its wpilog, where the REV pane shows its signals. **Unassigned**, **Inbox**, and **Unmanaged** come last with import actions; Inbox files show waiting, importing, or refused and its reason. **Assign to Robot…** on an unassigned file moves it into the chosen robot's history through the server. Plain folders keep their event/date groups. A window containing both shows a store node and a directory node; Import on a plain file or directory copies it into an existing store.
+- **Import into another folder…** asks you to choose a data-store folder. It copies the logs and REV companions there, leaving the originals in their current locations. Choose an existing store or an empty folder; the server creates a store on the first import. The destination is added to your User **Additional Log Directories**, so it appears in the Logs tree and remains available after restarting the editor. Importing identical content again reports it as present instead of creating another copy.
+- **Copy in this folder** makes the source folder a store and creates organized copies inside it. The originals remain there too, listed as unmanaged files.
+- **Move in this folder** makes the source folder a store and relocates the logs within it. The server verifies each copy before removing its original; duplicate sources stay in place.
+
+Then choose a known robot by name and serial, **New robot…**, or **Decide later**. Cancelling any picker submits no import. Names allow letters, digits, dots, hyphens, and underscores, and must be portable filenames. The log's own identity wins when present; without one, Decide later leaves the files under Unassigned. The server imports the batch while the notification shows the phase, file, and completed/total counts. Afterwards it reports imported, present, unassigned, and refused counts; each file's result and the server's reasons go to the **WPILog Analyzer** output channel. A shared serial in two robot directories is reported with both paths for a later explicit merge.
+
+A store's Logs tree shows robots (with their identity basis in the tooltip), dates, sessions with their times and known event/match, then each wpilog and its correlated REV companions. Clicking a REV companion opens its wpilog, where the REV pane shows its signals. **Unassigned**, **Inbox**, and **Unmanaged** come last with import actions; Inbox files show waiting, importing, or refused and its reason. **Assign to Robot…** on an unassigned file moves it into the chosen robot's history through the server. Plain folders keep their event/date groups. A window containing both shows a store node and a directory node; Import on a plain file or directory also lets you choose an existing store or another folder for a new one, and always copies.
 
 HTTP import sources must be inside the server's configured log directories. For a USB stick or another outside path, copy files into the store's **inbox/**, or use `wpilog-mcp import --robot practice /path/to/usb/logs` with the standalone server's name/configuration as needed. The command publishes a complete inbox batch, carrying the robot choice in `batch.json`; the daemon imports it once it stops growing and writes each outcome in `inbox/imported.log`. See the [standalone import guide](../doc/STANDALONE.md#importing-logs). Refresh the Logs view to see automatic inbox imports.
 

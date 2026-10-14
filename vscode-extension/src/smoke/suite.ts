@@ -75,6 +75,16 @@ async function smoke(): Promise<void> {
     assert.equal(await within(api.smokeData(["/Value"], 0, 2, true), "Perspective appended rows"), 3);
     record("data view renders two fixture samples and appends the third through its worker");
 
+    const commands = await vscode.commands.getCommands(true);
+    for (const name of ["setupDataStore", "manageDataStore", "syncDataStore", "pauseDataStore", "showAllSources"]) {
+      assert.ok(commands.includes(`wpilog-mcp.explorer.${name}`), `data-store command is registered: ${name}`);
+    }
+    await within(vscode.commands.executeCommand("wpilog-mcp.explorer.showAllSources"), "show all source logs");
+    assert.ok(await within(find(), "all-source tree listing"), "all-source view preserves the fixture");
+    await within(vscode.commands.executeCommand("wpilog-mcp.explorer.showAllSources"), "restore preferred-store view");
+    assert.ok(await within(find(), "default tree listing"), "default view preserves a source with no configured store");
+    record("data-store commands and source toggle preserve ordinary log access");
+
     const url = `${base}/mcp`;
     await vscode.workspace.getConfiguration("wpilog-mcp").update("pitServerUrl", url, vscode.ConfigurationTarget.Global);
     await within(vscode.commands.executeCommand("wpilog-mcp.registerPitWithClaudeCode"), "pit registration command");

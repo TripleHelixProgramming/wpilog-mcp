@@ -45,6 +45,18 @@ class ConfigLoaderTest {
     return file;
   }
 
+  @Test void dataStoreIsExperimentalAndDefaultsOffUntilExplicitlyEnabled() throws Exception {
+    var loader = new ConfigLoader();
+    var path = writeYaml("servers: {example: {transport: http}}\n");
+    assertFalse(loader.loadDetailed("example", path).config().dataStoreEnabled());
+    writeYaml("experimental_data_store: true\nservers: {example: {transport: http}}\n");
+    assertTrue(loader.loadDetailed("example", path).config().dataStoreEnabled(), "Explicit defaults can opt servers in");
+    writeYaml("defaults: {experimental_data_store: true}\nservers: {example: {transport: http, experimental_data_store: false}}\n");
+    assertFalse(loader.loadDetailed("example", path).config().dataStoreEnabled(), "A named server can override enabled defaults");
+    writeYaml("defaults: {experimental_data_store: false}\nservers: {example: {transport: http, experimental_data_store: true}}\n");
+    assertTrue(loader.loadDetailed("example", path).config().dataStoreEnabled());
+  }
+
   @Test
   void connectLoadsOnlyHomeOrExplicitServerConfigurationAndOnlyTopLevelProjectHints() throws Exception {
     var oldHome = System.getProperty("user.home");

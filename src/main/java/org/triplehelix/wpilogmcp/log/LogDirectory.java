@@ -185,7 +185,18 @@ public class LogDirectory {
   public List<Path> getLogDirectories() {
     var paths = new ArrayList<>(logDirectories);
     ClientLeases.getInstance().directories().forEach(directory -> paths.add(directory.path()));
+    paths.addAll(ingestionDirectories());
     return paths.stream().distinct().toList();
+  }
+
+  private List<Path> ingestionDirectories() {
+    var service = LogManager.getInstance().stores().localIngestion();
+    if (service == null || service.preferredStore() == null) return List.of();
+    var policy = service.snapshot().policy();
+    var roots = new ArrayList<Path>(); roots.add(service.preferredStore());
+    if (policy.enabled()) policy.sources().stream().filter(org.triplehelix.wpilogmcp.store.LocalIngestion.Source::enabled)
+        .map(source -> Path.of(source.path())).forEach(roots::add);
+    return List.copyOf(roots);
   }
 
   /**
@@ -301,8 +312,13 @@ public class LogDirectory {
    * @throws IOException if no directory is configured
    * @since 0.9.0
    */
-  public DirectoryScan scanLogs() throws IOException {
-    var dirs = getLogDirectories();
+  public DirectoryScan scanLogs() throws IOException { return scanLogs(false); }
+
+  /** The default view removes a source only after its current version has a surviving receipt. */
+  public DirectoryScan scanLogs(boolean allSources) throws IOException {
+    var service = LogManager.getInstance().stores().localIngestion();
+    var preferred = ingestionDirectories();
+    var dirs = allSources || preferred.isEmpty() ? getLogDirectories() : preferred;
     if (dirs.isEmpty()) throw new IOException("Log directory not configured");
 
     var unavailable = new ArrayList<UnavailableDirectory>();
@@ -344,6 +360,7 @@ public class LogDirectory {
     }
     var seen = new HashSet<Path>();
     var logs = found.stream().filter(l -> seen.add(realPath(Path.of(l.path()))))
+        .filter(l -> allSources || service == null || service.visible(realPath(Path.of(l.path()))))
         .sorted(NEWEST_LOG_FIRST).toList();
     unavailable.forEach(u -> logger.warn("Log directory {} skipped: {}", u.directory(), u.reason()));
     logger.info("Found {} log files in {} of {} directories. Cache hits: {}, misses: {}",
@@ -485,7 +502,8 @@ public class LogDirectory {
 
   /** Permanent origins win duplicate paths; their team still follows the active lease precedence. */
   public List<DirectoryOrigin> directoryOrigins() {
-    var configured = logDirectories.stream().map(LogDirectory::realPath).toList();
+    var configured = new ArrayList<>(logDirectories.stream().map(LogDirectory::realPath).toList());
+    ingestionDirectories().stream().map(LogDirectory::realPath).forEach(configured::add);
     return getLogDirectories().stream().map(dir -> new DirectoryOrigin(dir.toString(),
         configured.contains(realPath(dir)) ? "configured" : "leased", teamFor(dir))).toList();
   }

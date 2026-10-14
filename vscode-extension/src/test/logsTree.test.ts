@@ -233,3 +233,17 @@ test("plain leased roots keep event/date groups and empty roots stay visible", (
   assert.equal(nodes[2].description, "leased");
   assert.match(nodes[2].children[0].label, /^No logs/);
 });
+
+
+test("source synchronization keeps refusal reasons visible without presenting successful receipts as pending", () => {
+  const state = { ...listing, source_sync: { policy: { enabled: true, store: "/destination" }, state: "running" },
+    source_files: [{ path: "/logs/waiting.revlog", state: "waiting", reason: "File is still growing" },
+      { path: "/logs/bad.wpilog", state: "refused", reason: "Invalid header" },
+      { path: "/logs/done.wpilog", state: "imported", destination: "/destination/done.wpilog" }] };
+  const tree = buildLogTree(state);
+  const sync = tree.find(node => node.label === "Folder synchronization");
+  assert.ok(sync && "children" in sync, "Synchronization state needs its own group, not the inbox");
+  const serialized = JSON.stringify(sync);
+  assert.match(serialized, /File is still growing/); assert.match(serialized, /Invalid header/);
+  assert.doesNotMatch(serialized, /done.wpilog/);
+});

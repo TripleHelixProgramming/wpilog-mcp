@@ -42,6 +42,11 @@ public class SecurityValidator {
   private final Set<Path> allowedDirectories = new CopyOnWriteArraySet<>();
 
   private final ClientLeases leases;
+  private final java.util.concurrent.ConcurrentMap<String, PersistentGrant> persistentDirectories =
+      new java.util.concurrent.ConcurrentHashMap<>();
+  private record PersistentGrant(long generation, Set<Path> directories) {}
+  private final java.util.concurrent.atomic.AtomicLong grantSequence = new java.util.concurrent.atomic.AtomicLong();
+  private volatile boolean persistentPermissions;
 
   public SecurityValidator() {
     this(null);
@@ -53,7 +58,7 @@ public class SecurityValidator {
   }
 
   private boolean leasedPermissions() {
-    return leases != null && leases.enforcesDirectories();
+    return persistentPermissions || leases != null && leases.enforcesDirectories();
   }
 
   /**
@@ -92,9 +97,34 @@ public class SecurityValidator {
     }
   }
 
+  /** Replaces one explicit machine-local policy grant without changing other owners. */
+  public void replacePersistentDirectories(String owner, Set<Path> directories) {
+    replacePersistentDirectories(owner, grantSequence.incrementAndGet(), directories);
+  }
+
+  /** A completed older import must never reinstate a source a newer user edit revoked. */
+  public void replacePersistentDirectories(String owner, long generation, Set<Path> directories) {
+    java.util.Objects.requireNonNull(owner);
+    var resolved = new HashSet<Path>();
+    for (var directory : directories) {
+      if (!directory.isAbsolute()) throw new IllegalArgumentException("Persistent roots must be canonical absolute paths");
+      // Enrollment already resolved links. Republishing after an import must retain that
+      // spelling: resolving again would grant a replacement symlink's unapproved target.
+      // validate() still resolves every access, so a retarget cannot escape this stored root.
+      resolved.add(directory.normalize());
+    }
+    // Once explicit grants were installed, revoking the last must never restore unrestricted
+    // legacy access, including a cache hit. Empty initial policies do not alter legacy callers.
+    if (!resolved.isEmpty()) persistentPermissions = true;
+    var next = new PersistentGrant(generation, Set.copyOf(resolved));
+    persistentDirectories.compute(owner, (ignored, previous) ->
+        previous == null || generation >= previous.generation() ? next : previous);
+  }
+
   /** Clears all allowed directories. */
   public void clearAllowedDirectories() {
     allowedDirectories.clear();
+    if (persistentDirectories.values().stream().allMatch(grant -> grant.directories().isEmpty())) persistentPermissions = false;
     logger.debug("Cleared all allowed directories");
   }
 
@@ -104,7 +134,7 @@ public class SecurityValidator {
    * @return A new set containing the allowed directories
    */
   public Set<Path> getAllowedDirectories() {
-    var result = new HashSet<>(allowedDirectories);
+    var result = new HashSet<>(getConfiguredDirectories());
     if (leases != null) {
       leases.directories().forEach(directory -> result.add(directory.path()));
     }
@@ -112,7 +142,11 @@ public class SecurityValidator {
   }
 
   /** A store exposed to network peers must come from configuration, never a session lease. */
-  public Set<Path> getConfiguredDirectories() { return Set.copyOf(allowedDirectories); }
+  public Set<Path> getConfiguredDirectories() {
+    var result = new HashSet<>(allowedDirectories);
+    persistentDirectories.values().forEach(grant -> result.addAll(grant.directories()));
+    return Set.copyOf(result);
+  }
 
   /**
    * Validates that a path is within an allowed directory.

@@ -189,6 +189,11 @@ The native input read remains bounded if the file grows after admission. A resou
 is explained, never a partial success. Its timestamps remain the decoder's double seconds;
 the API does not invent exact REV record offsets or lossless integer timestamps.
 
+On a named server with the [experimental data-store feature enabled](STANDALONE.md#keeping-a-data-store-up-to-date)
+and an opted-in data store, the HTTP catalog adds `preferred_store_id`.
+That preference describes the shared server's browsing default; it does not rewrite explicit
+paths, hide catalog members or change a standalone library caller's configured roots.
+
 ## HTTP version 1
 
 Every HTTP server exposes `/read/v1` under the same Origin and path admission as its existing

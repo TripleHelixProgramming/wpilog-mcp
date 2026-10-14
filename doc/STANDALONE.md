@@ -186,6 +186,7 @@ The installer's file also has a `stresstest` server, which only the project's st
 | `diskcachedisable` | Turn off the persistent disk cache | `false` |
 | `exportdir` | Directory for CSV exports | `wpilog-export` in the system's temporary directory |
 | `scandepth` | How many directory levels to search for `.wpilog` and `.revlog` files | `5` |
+| `experimental_data_store` | Enable experimental continuous folder imports and their extension controls for this named server; restart after changing it | `false` |
 | `idle_exit_minutes` | Minutes without a session, recent MCP request, or active import before a background HTTP server exits; `0` keeps it running. Applies whether a person or a client started it | `0` |
 | `debug` | Debug logging | `false` |
 
@@ -320,7 +321,89 @@ The probe uses the configured port on `127.0.0.1`; if you bind only to a particu
 address with `WPILOG_HTTP_BIND`, update the probe URL to that address as well. The service keeps
 the existing [HTTP network policy](#http-transport).
 
+### Keeping a data store up to date
+
+Continuous folder imports are experimental and disabled by default. To test them, add
+`experimental_data_store: true` to the named server in `~/.wpilog-mcp/servers.yaml`, then
+restart that server. For the extension's shared server, keep its existing fields and add:
+
+```yaml
+servers:
+  http:
+    transport: http
+    port: 2363
+    experimental_data_store: true
+```
+
+Absent or `false`, the flag leaves the setup offer and five data-store commands hidden. The
+server does not load a saved ingestion policy, grant its directories, prefer its store in
+listings, or run its background imports. Policy and store files stay on disk; enabling the
+flag again and restarting restores the saved policy. A store or source that is also configured
+through `logdir` or a client lease remains readable through that separate grant. Manual
+Organize Logs and one-time imports remain available without the flag.
+
+When enabled, **WPILog Explorer: Set Up Data Store…** replaces the automatic organizing offer.
+Choose an existing empty folder or store, review source folders, choose Copy or Move for each,
+and confirm the summary. Copy keeps the originals. Move requires your acknowledgment
+that the folder receives completed files; a quiet writer could otherwise append after a move.
+Identical content is reported as present and left at its source, even in Move mode. A successful
+Move stays marked as imported while its manifested store copy exists. The optional robot name
+supplies identity only when the log does not record it.
+
+User and permanent server folders are preselected. Project folders, session-only folders and OS
+temporary folders start unchecked; you can explicitly select them. Newly configured folders are
+never enrolled automatically. Cancellation before confirmation changes no setting and submits no
+import. **Manage Data Store…** edits the shared policy, shows status and opens the store folder;
+**Sync Data Store Now** requests discovery and retries unchanged refusals,
+**Pause/Resume Data Store Sync** controls ingestion,
+and **Show All Sources** switches the listing. Pausing retains files and the readable store.
+
+The named local server owns one preferred store and the persistent source policy. Closing VS Code
+or its session does not stop syncing; the daemon keeps running while the policy is enabled and
+restores it on restart. Stopping the server does stop it. All editors and profiles see that same
+policy, and an edit based on an old revision is refused rather than overwriting a newer one.
+Settings remain in `servers.yaml`; setup never rewrites it. Enrollment is separate machine-local
+state in `~/.wpilog-mcp/state/local-ingestion/<configuration-identity>.json`, keyed by the selected
+configuration file's canonical path and server name. Copying a store to another computer grants
+no local directory access and enrolls no sources there.
+
+Discovery runs on startup, on Sync Now and every 30 seconds, with pending files checked every
+three seconds. Size, modification time and filesystem identity must stay unchanged for at least
+three seconds, then be checked again on the store queue. This admits settled immutable versions,
+not a live mirror: later growth waits and imports another version without replacing the old one.
+A rewrite preserving all three attributes is outside that cheap detection rule. Source-root links
+are resolved, but links below the root, other stores, mirrors and staging directories are skipped.
+Unavailable sources report their reason; a missing or replaced destination suspends work rather
+than silently creating a different store. Removing a source stops future imports, not an already
+admitted transaction. Imported files, original paths and duplicate origins remain recorded.
+
+The default `list_available_logs` view searches the preferred store and enrolled sources, hiding
+an original only when its current version has a receipt and its stored copy still exists.
+Pending, changed and refused source files remain visible. `view: all` includes the originals and
+other readable directories. Explicit file paths and the standalone reader's root selection keep
+their meaning. A REV file arriving before its WPILOG is reconsidered when the store gains a new
+session-owned WPILOG; only the existing unique, strong, near-zero correlation can assign it.
+Ambiguous files remain unassigned with their reason.
+
+Local controls are `GET/PUT /store/local-ingestion`, `POST /store/local-ingestion/scan` and
+`GET /store/local-ingestion/files?offset=0&limit=100`. They require a named server bound to
+loopback, a loopback peer, an allowed Origin and a live `Mcp-Session-Id`. With the feature flag
+off, these controls return HTTP 409 with `FEATURE_DISABLED`, including the status request;
+they read no saved policy. PUT sends the full
+policy with its current `revision`, `enabled`, `store`, `store_id` and `sources`; each source has
+`path`, `mode`, `enabled`, `completed_files` and nullable `stated_robot`. A stale revision returns
+409. The file page carries `files`, `offset`, `limit` and `total`. These are user controls, never
+MCP tools. Policy bodies are bounded at 64 KiB, with at most 64 sources; discovery retains at most
+100,000 file states and reports the limit if reached. One batch admits at most 32 files.
+
 ### Importing Logs
+
+In VS Code, **Import into another folder…** in the manual **Organize Logs…** command copies logs into a
+data-store folder you choose, leaving the sources untouched. The destination is saved in User
+**Additional Log Directories** and leased to the shared server before importing; `servers.yaml`
+is not changed. You can choose a new empty folder or an existing store. Repeated content is
+reported as present. **Copy in this folder** and **Move in this folder** instead organize
+within the source folder, retaining or removing the originals respectively after verification.
 
 ```bash
 wpilog-mcp import [--server <name>] [--config <path>] [--store <dir>] [--move] [--robot <name>] <path>...

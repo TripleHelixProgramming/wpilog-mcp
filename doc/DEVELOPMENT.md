@@ -333,7 +333,7 @@ oldest supported and current versions by hand:
 4. Use `get_tba_match_data` with the secret-storage key and confirm no configuration, project file, command, or output contains it. Clear the key and check fallback behavior.
 5. Register Claude Code at user scope, including the copy-command fallback. Accept/decline the project YAML offer and gitignore choice; run the bridge in a terminal with VS Code closed.
 6. Open legacy projects: retire only recognized untracked/ignored entries, preserve other entries and tracked/custom files with a note, stop `vscode-default` once, and remove its private settings. Check a failed stop can retry next activation.
-7. Exercise the explorer: log/entry trees and origins, plotting and statistics, console cursor, field pose, REV alignment, decode warnings, and read refusals. For organizing, check once-per-activation offers, Never/on-demand override, folder and robot picks, move/copy, progress/refusal output, inbox states, assignment, and refresh. The detailed milestone 6 checklist is in [EXPLORER_PLAN.md](EXPLORER_PLAN.md#11-milestones).
+7. Exercise the explorer: log/entry trees and origins, plotting and statistics, console cursor, field pose, REV alignment, decode warnings, and read refusals. For organizing, check once-per-activation offers, Never/on-demand override, folder and robot picks, import into a chosen store (including cancellation), in-place copy/move, progress/refusal output, inbox states, assignment, and refresh. The detailed milestone 6 checklist is in [EXPLORER_PLAN.md](EXPLORER_PLAN.md#11-milestones).
 
 8. Exercise Perspective filters, grouping/pivots, quick charts and CSV export. Open a notebook beside a writable log and with workspace fallback; run it with a chosen Python kernel. Open chart links (including refused paths and histogram/scatter/field panes), use Ask about this selection in each pane, and check both chat and clipboard routes. These interactive flows remain manual.
 
@@ -417,6 +417,24 @@ Run the frozen-build comparison below whenever shared scanning or decoding chang
 conformance oracle alone cannot prove compatibility with the previous implementation. Both MCP and
 Arrow/CSV now use the shared admission and traversal; their compatibility materializer deliberately
 keeps the legacy whole-entry diagnostics and value representation.
+
+### Data store enrollment checks
+
+`LocalIngestionTest` advances an injected clock through discovery, settlement, queued rechecks,
+copy/move, duplicates, restart receipts, source limits and unavailable paths. `RevReconsiderationTest`
+checks REV-first arrival, ambiguity, the same-boot gate, bounded work and preservation of original
+provenance. `LocalIngestionEndpointTest` drives the real loopback policy, session, Origin and
+revision gates; `LocalIngestionListingTest` checks default/all views before counts and paging.
+`ConfigLoaderTest` and `MainRunTest` check that the named-server experimental flag defaults off
+and gates loading saved policy, grants and synchronization. Extension pure tests cover command
+visibility and direct-execution gating, setup cancellation, temporary lease restoration, source
+defaults, Move acknowledgment and reporting. Real editor checks exercise the glue on supported
+versions.
+
+Opting out must preserve the frozen read comparison. Placement changes additionally require the
+stratified Java replay; this feature does not change NT4, capture, the replayer or native transport.
+Measure idle discovery and restart on a synthetic store: retained receipts must cause no repeated
+payload hashing or correlation, and the timing report names its file/session count.
 
 ### Comparing frozen server builds
 

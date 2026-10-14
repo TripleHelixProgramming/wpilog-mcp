@@ -173,6 +173,41 @@
         "category": "WPILog Analyzer"
       },
       {
+        "command": "wpilog-mcp.explorer.setupDataStore",
+        "enablement": "wpilog-mcp.dataStoreEnabled",
+        "title": "Set Up Data Store\u2026",
+        "category": "WPILog Explorer",
+        "icon": "$(database)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.manageDataStore",
+        "enablement": "wpilog-mcp.dataStoreEnabled",
+        "title": "Manage Data Store\u2026",
+        "category": "WPILog Explorer",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.syncDataStore",
+        "enablement": "wpilog-mcp.dataStoreEnabled",
+        "title": "Sync Data Store Now",
+        "category": "WPILog Explorer",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.pauseDataStore",
+        "enablement": "wpilog-mcp.dataStoreEnabled",
+        "title": "Pause or Resume Data Store Sync",
+        "category": "WPILog Explorer",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.showAllSources",
+        "enablement": "wpilog-mcp.dataStoreEnabled",
+        "title": "Toggle All Source Logs",
+        "category": "WPILog Explorer",
+        "icon": "$(files)"
+      },
+      {
         "command": "wpilog-mcp.explorer.organizeLogs",
         "title": "Organize Logs\u2026",
         "category": "WPILog Explorer",
@@ -300,6 +335,31 @@
           "command": "wpilog-mcp.explorer.organizeLogs",
           "when": "view == wpilog-mcp.logs",
           "group": "navigation@3"
+        },
+        {
+          "command": "wpilog-mcp.explorer.setupDataStore",
+          "when": "view == wpilog-mcp.logs && wpilog-mcp.dataStoreEnabled",
+          "group": "dataStore@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.manageDataStore",
+          "when": "view == wpilog-mcp.logs && wpilog-mcp.dataStoreEnabled",
+          "group": "dataStore@2"
+        },
+        {
+          "command": "wpilog-mcp.explorer.syncDataStore",
+          "when": "view == wpilog-mcp.logs && wpilog-mcp.dataStoreEnabled",
+          "group": "dataStore@3"
+        },
+        {
+          "command": "wpilog-mcp.explorer.pauseDataStore",
+          "when": "view == wpilog-mcp.logs && wpilog-mcp.dataStoreEnabled",
+          "group": "dataStore@4"
+        },
+        {
+          "command": "wpilog-mcp.explorer.showAllSources",
+          "when": "view == wpilog-mcp.logs && wpilog-mcp.dataStoreEnabled",
+          "group": "dataStore@5"
         }
       ],
       "view/item/context": [
@@ -372,6 +432,26 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "wpilog-mcp.explorer.setupDataStore",
+          "when": "wpilog-mcp.dataStoreEnabled"
+        },
+        {
+          "command": "wpilog-mcp.explorer.manageDataStore",
+          "when": "wpilog-mcp.dataStoreEnabled"
+        },
+        {
+          "command": "wpilog-mcp.explorer.syncDataStore",
+          "when": "wpilog-mcp.dataStoreEnabled"
+        },
+        {
+          "command": "wpilog-mcp.explorer.pauseDataStore",
+          "when": "wpilog-mcp.dataStoreEnabled"
+        },
+        {
+          "command": "wpilog-mcp.explorer.showAllSources",
+          "when": "wpilog-mcp.dataStoreEnabled"
+        },
         {
           "command": "wpilog-mcp.explorer.importLogs",
           "when": "false"

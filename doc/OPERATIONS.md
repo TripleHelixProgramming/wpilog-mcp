@@ -71,6 +71,14 @@ not carry them. Keep a `.revlog` next to the `.wpilog` it was recorded with.
 To use other directories, see [6.3](#63-configure-the-server) and [6.5](#65-project-directories).
 A log outside every configured directory is refused by name, not read.
 
+The experimental **Set Up Data Store…** offer and commands are hidden by default. If you have
+[enabled them on the server](STANDALONE.md#keeping-a-data-store-up-to-date), choose a destination
+and review the folders to
+keep importing. Copy leaves your source logs untouched; Move requires a completed-file folder.
+Nothing starts until the final confirmation. **Not now** leaves the logs as they are, and **Never**
+suppresses the offer. Setup is also available from the command palette. The manual **Organize
+Logs…** command still offers a one-time import or in-place Copy and Move.
+
 #### 1.5 Team number and The Blue Alliance key (optional)
 
 Neither is needed to read a log. The team number labels logs that record none; the key adds
@@ -408,6 +416,16 @@ and the client registration, and delete the disk cache:
 [Upgrading](STANDALONE.md#upgrading), [Uninstalling](STANDALONE.md#uninstalling).
 
 ### 7. Stores: import and inbox
+
+Continuous imports are experimental and off by default. After explicitly
+[enabling the feature and restarting the server](STANDALONE.md#keeping-a-data-store-up-to-date),
+use **Set Up Data Store…** for continuous imports from selected folders. The store is the default
+place to browse, with pending or refused source files kept visible. **Show All Sources** reveals
+originals. **Manage Data Store…** shows the shared policy, per-source status and refusal reasons;
+**Sync Data Store Now** requests a scan and **Pause/Resume Data Store Sync** stops or resumes
+future imports. The server continues working when the editor closes, while the server runs.
+Temporary and project folders require explicit selection. New folders never join automatically.
+See [Keeping a data store up to date](STANDALONE.md#keeping-a-data-store-up-to-date).
 
 #### 7.1 Import from a USB stick or a folder
 

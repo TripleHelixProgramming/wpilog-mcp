@@ -302,7 +302,51 @@ A directory with `store.json` is a store. Its format version and creation time d
 
 Manifests keep the store inspectable with ordinary file tools, without a database or another service to operate. Only manifested files belong to sessions: a file copied in by hand appears under `unmanaged`, even inside a session directory. A newer format is refused, and an older one requires an explicit migration.
 
+#### Persistent local ingestion
+
+The named-server flag `experimental_data_store` defaults to false. Without it, startup does
+not load persistent ingestion policy or publish its grants, preferred store or background
+worker. Local ingestion controls explain that the feature is disabled without reading the
+policy, and the extension hides its offer and commands. Disabling the flag does not delete the
+policy or stored files; a restart with the flag enabled restores the saved policy. Ordinary
+configured roots, manual imports and store reads remain independent of this feature.
+
+The named shared server owns `LocalIngestion`, not an editor window. Its policy is machine-local,
+keyed by canonical configuration path and name, and atomically replaced under a separate file
+lock with optimistic revisions. A live loopback session admits explicit setup; persistent grants
+then outlive that lease and are restored before discovery. Grants belong to the policy owner,
+with monotonic revisions so an older import completion cannot resurrect a removed source.
+Pausing keeps store reads available and stops future batches. Enabled ingestion inhibits idle
+exit, and shutdown drains admitted work before revoking its grants.
+
+The inbox and enrolled folders share the `FileStability` owner. Discovery only nominates files;
+`LogStore.importPrepared` rechecks their stamps and destination identity under its existing queue
+and cross-process lock before running the existing importer. Copy/move, SHA-256 deduplication,
+classification and correlation have no extension-side implementation. Copy is the default;
+automatic Move needs the person's explicit completed-file handoff acknowledgment. Stability is
+not proof that a writer closed its file. Growing copies produce later immutable versions.
+
+Bounded receipts under `.local-ingestion/` record source path/version, result, destination, hash
+and time, including duplicate origins without replacing a payload's first provenance. Receipts
+are metadata, excluded from unmanaged files and peer payload transfers. Unchanged receipts avoid
+rehashing or correlation after idle scans and restart. They hide sources only while the verified
+manifested destination remains available. The default listing uses this policy before counts or
+paging; an explicit all-sources view and explicit path reads remain available.
+
+Unassigned REV reconsideration is a bounded store operation, at most 32 candidates per queue
+turn. Session-owned WPILOG content hashes define its candidate generation; durable local attempt
+receipts avoid repeating unsuccessful correlation on every idle scan. A newly arrived or assigned
+WPILOG triggers reconsideration using the original assignment path, all eligible anchors, the
+250 ms gate and original provenance. An ambiguity stays unassigned. This changes arrival-order
+handling, not synchronization arithmetic or the disk-cache format.
+
 #### Imports
+
+The extension's Import choice selects a separate destination and always submits a copy request
+to the same importer as in-place Copy and Move. The chosen root is saved in the user's additional
+log directories, then its MCP session's serialized lease update completes before the HTTP job
+is submitted. Cancelling the destination or robot picker submits no job or settings change;
+the extension does not implement its own copying, matching or duplicate detection.
 
 The log manager owns one `StoreRegistry`, which provides one `LogStore` object and daemon import queue for each real store path. Its `importPaths` future and progress callback are independent of HTTP and the extension. Imports classify by the WPILOG header or native REV record header (REV can also use a WPILOG container), hash the complete file, and read through the lazy decoder before placing anything. The shared signal resolver supplies the identity and Driver Station conventions. A new session's start comes from the logged wall clock, else the filename convention, else modification time minus the log's duration; the manifest records that basis.
 

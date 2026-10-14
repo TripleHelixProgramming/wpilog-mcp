@@ -11,16 +11,18 @@ import { HttpHeaders, noHeaders } from "./pitCredential";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 import * as vscode from "vscode";
 import { DataClient, DataError, TooLargeError } from "./dataClient";
-import { McpClient, ToolError } from "./mcpClient";
+import { McpClient, ToolError, LocalControlError } from "./mcpClient";
 import { SessionRegistration } from "./directoryLease";
 import { DaemonSpec, ServerManager } from "./serverManager";
 import { EntryListing, EntryNode, ListedEntry, buildEntryTree, buildFieldNodes, elementNodes, elementPaths } from "./explorer/entriesTree";
 import { ListedLog, LogListing, LogNode, buildLogTree } from "./explorer/logsTree";
-import { Choices, MOVE_CHOICES, ORGANIZE_CHOICES, OrganizeOffer, containsPath, importPlan, offerFor, organizeFolders, rememberChoice, robotItems, robotNameError } from "./explorer/organize";
+import { Choices, MOVE_CHOICES, ORGANIZE_CHOICES, OrganizeOffer, containsPath, importDestinationError, importPlan, offerFor, organizeFolders, rememberChoice, robotItems, robotNameError, withImportDirectory } from "./explorer/organize";
 import { completeListing, progressText, resultDetails, resultSummary, runImport, sameRobotMessages } from "./explorer/importJobs";
 import { organizeSources } from "./explorer/organizeSources";
+import { DATA_STORE_ENABLED_CONTEXT, IngestionPolicy, IngestionSource, IngestionStatus, LocalIngestionClient, dataStoreDisabled, ingestionPolicyError, ingestionReview, sourceCandidates, temporaryDirectoryRoots } from "./explorer/localIngestion";
 import { mirroredCopy, originOf, pitEndpoint, pitLogTree, readRemoteLogUri, remoteLogUri } from "./explorer/pitServer";
 import { Selection, parseExplorerUri, openValidated, selectionPrompt } from "./explorer/selection";
 import { notebook } from "./explorer/notebook";
@@ -31,6 +33,7 @@ export const EDITOR_VIEW_TYPE = "wpilog-mcp.explorer";
 export const LOGS_VIEW = "wpilog-mcp.logs";
 export const ENTRIES_VIEW = "wpilog-mcp.entries";
 
+const NEVER_STORE_SETUP_KEY = "wpilog-mcp.neverOfferDataStore";
 const NEVER_ORGANIZE_KEY = "wpilog-mcp.neverOrganizeFolders";
 /** How many of an array's elements "Plot Every Element" plots: a pane can hold that many. */
 const ELEMENTS_PLOTTED = 16;
@@ -59,6 +62,7 @@ export class Explorer implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private choices: Choices;
   private offering = false;
+  private offeredStore = false;
 
   /**
    * @param windowSpec the server, with the projects it serves, as extension.ts computes it
@@ -71,8 +75,10 @@ export class Explorer implements vscode.Disposable {
     private readonly windowDirectories: () => string[] | undefined = () => undefined,
     private readonly registration?: () => Promise<SessionRegistration>,
     private readonly pitUrl: () => string | undefined = () => undefined,
-    private readonly headersFor: HttpHeaders = noHeaders
+    private readonly headersFor: HttpHeaders = noHeaders,
+    private readonly permanentDirectories: () => string[] = () => []
   ) {
+    void vscode.commands.executeCommand("setContext", DATA_STORE_ENABLED_CONTEXT, false);
     this.choices = { never: context.globalState.get<string[]>(NEVER_ORGANIZE_KEY) ?? [], deferred: [], offered: {} };
     this.logs = new LogsProvider(this);
     this.entries = new EntriesProvider(this);
@@ -96,6 +102,14 @@ export class Explorer implements vscode.Disposable {
         webviewOptions: { retainContextWhenHidden: true },
         supportsMultipleEditorsPerDocument: false,
       }),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.setupDataStore", () => this.storeAction(() => this.setupDataStore())),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.manageDataStore", () => this.storeAction(() => this.manageDataStore())),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.syncDataStore", () => this.storeAction(async () => {
+        await (await this.ingestionClient()).scan(); this.logs.refresh();
+        void vscode.window.showInformationMessage("Data-store scan requested. Pending files appear in the Logs view.");
+      })),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.pauseDataStore", () => this.storeAction(() => this.pauseDataStore())),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.showAllSources", () => this.storeAction(async () => this.logs.toggleSources())),
       vscode.commands.registerCommand("wpilog-mcp.explorer.organizeLogs", () => this.organizeOnDemand()),
       vscode.commands.registerCommand("wpilog-mcp.explorer.importLogs", (item?: LogItem) => this.importItem(item)),
       vscode.commands.registerCommand("wpilog-mcp.explorer.assignRobot", (item?: LogItem) => this.importItem(item, true)),
@@ -151,20 +165,161 @@ export class Explorer implements vscode.Disposable {
         ? vscode.Uri.parse(remoteLogUri(spec.url, logPath, listed?.session)) : vscode.Uri.file(logPath), EDITOR_VIEW_TYPE); });
   }
 
-  /** Automatic offers are serialized, including across a refresh while a picker is open. */
+  /** Discovery may offer setup, but only a completed review authorizes persistent ingestion. */
   async offerOrganizing(listing?: LogListing): Promise<void> {
+    if (this.offering) return;
+    try {
+      // Availability belongs to the named server, including windows that already declined setup.
+      // Its background check must not make a command appear busy while ordinary logs load.
+      const status = await this.ingestionStatus();
+      if (this.offering || this.offeredStore || this.context.globalState.get<boolean>(NEVER_STORE_SETUP_KEY)) return;
+      this.offering = true;
+      try {
+        const current = listing ?? await this.logs.listing(this.spec());
+        if (current.status === "error" || !(current.logs ?? []).some(log => !log.store)) return;
+        if (status.policy?.store) return;
+        this.offeredStore = true;
+        const choice = await vscode.window.showInformationMessage(
+          "Create a data store that keeps your chosen log folders organized as new files arrive? Originals stay unless you explicitly choose Move.",
+          "Set Up Data Store", "Not now", "Don't offer again");
+        if (choice === "Don't offer again") await this.context.globalState.update(NEVER_STORE_SETUP_KEY, true);
+        if (choice === "Set Up Data Store") await this.setupDataStore(current);
+      } finally { this.offering = false; }
+    } catch (error) {
+      // An older server must still list logs; an explicit setup command gives its full refusal.
+      if (!dataStoreDisabled(error)) this.log(`Data-store setup offer: ${messageOf(error)}`);
+    }
+  }
+
+  private async ingestionClient(): Promise<LocalIngestionClient> { return new LocalIngestionClient(await this.clientFor(this.spec())); }
+  private async ingestionStatus(): Promise<IngestionStatus> {
+    try {
+      const status = await (await this.ingestionClient()).status();
+      await vscode.commands.executeCommand("setContext", DATA_STORE_ENABLED_CONTEXT, true);
+      return status;
+    } catch (error) {
+      await vscode.commands.executeCommand("setContext", DATA_STORE_ENABLED_CONTEXT, false);
+      throw error;
+    }
+  }
+
+  private async storeAction(action: () => Promise<void>): Promise<void> {
     if (this.offering) return;
     this.offering = true;
     try {
-      const current = listing ?? await this.logs.listing(this.spec());
-      for (const folder of this.foldersForWindow(current)) {
-        const offer = offerFor(current, folder, this.choices);
-        if (offer) await this.showOffer(offer, current);
+      // Menu enablement alone does not guard commands invoked by another extension or a keybinding.
+      await this.ingestionStatus();
+      await action();
+    }
+    catch (error) {
+      if (dataStoreDisabled(error)) this.reportImportError(error);
+      else if (error instanceof LocalControlError && error.status === 409) {
+        this.logs.refresh();
+        this.reportImportError(`Data-store settings changed in another editor or could not be saved. Nothing was overwritten. Open Manage Data Store to review them. ${error.message}`);
+      } else this.reportImportError(error);
+    } finally { this.offering = false; }
+  }
+
+  private async setupDataStore(supplied?: LogListing): Promise<void> {
+    const control = await this.ingestionClient();
+    const status = await control.status();
+    const listing = supplied ?? await this.logs.listing(this.spec());
+    let store = status.policy?.store;
+    if (store) {
+      const choice = await vscode.window.showQuickPick([
+        { label: "Keep this data store", description: store, keep: true },
+        { label: "Choose another data store…", description: "Previously imported files stay in the old store", keep: false },
+      ], { title: "Set Up Data Store" });
+      if (!choice) return;
+      if (!choice.keep) store = undefined;
+    }
+    if (!store) {
+      const folders = await vscode.window.showOpenDialog({ title: "Choose the data-store folder", openLabel: "Use as data store",
+        canSelectFolders: true, canSelectFiles: false, canSelectMany: false });
+      if (!folders?.length) return;
+      if (folders[0].scheme !== "file") throw new Error("Choose a local folder for the data store.");
+      store = await fs.promises.realpath(folders[0].fsPath);
+    }
+    const canonical = async (folder: string) => fs.promises.realpath(folder).catch(() => path.resolve(folder));
+    const userRoots = await Promise.all(this.permanentDirectories().map(canonical));
+    const temporary = await Promise.all(temporaryDirectoryRoots(process.platform, os.tmpdir()).map(canonical));
+    const normalized: LogListing = { ...listing, log_directories: await Promise.all((listing.log_directories ?? listing.log_directory_paths ?? []).map(async dir =>
+      typeof dir === "string" ? canonical(dir) : { ...dir, path: await canonical(dir.path) })) };
+    const candidates = sourceCandidates(normalized, userRoots, temporary, store, status.policy?.store ? status.policy : null);
+    const picked = await vscode.window.showQuickPick([...candidates.map(candidate => ({ label: candidate.path,
+      description: candidate.origin as string, picked: candidate.selected, candidate })),
+      { label: "Choose another source folder…", description: "Explicitly include a local folder", picked: false, candidate: undefined }], {
+      title: "Choose source folders", canPickMany: true,
+      placeHolder: "Only checked folders will synchronize. Project, session and temporary folders require your choice.",
+    });
+    if (picked === undefined) return;
+    const selected = picked.flatMap(item => item.candidate ? [item.candidate] : []);
+    if (picked.some(item => !item.candidate)) {
+      const extra = await vscode.window.showOpenDialog({ title: "Choose source folders", openLabel: "Include these sources",
+        canSelectFolders: true, canSelectFiles: false, canSelectMany: true });
+      if (!extra?.length) return;
+      for (const folder of extra) {
+        if (folder.scheme !== "file") throw new Error("Choose local source folders.");
+        selected.push({ path: await fs.promises.realpath(folder.fsPath), origin: "project or session", selected: true });
       }
-    } catch (error) {
-      this.reportImportError(error);
-    } finally {
-      this.offering = false;
+    }
+    const sources: IngestionSource[] = [];
+    for (const candidate of selected) {
+      const item = { candidate };
+      const previous = status.policy?.sources.find(source => source.path === item.candidate.path);
+      const mode = await vscode.window.showQuickPick([
+        { label: "Copy and keep originals", description: "Safe for folders where logs may still be written", mode: "copy" as const },
+        { label: "Move finished files", description: "Remove verified originals; this folder must contain only finished logs", mode: "move" as const },
+      ], { title: `Source: ${item.candidate.path}`, placeHolder: previous ? `Current mode: ${previous.mode}. Choose the ongoing policy.` : "Choose the ongoing policy; Copy is the default." });
+      if (!mode) return;
+      if (mode.mode === "move") {
+        const confirm = await vscode.window.showWarningMessage(
+          `Use Move only if no program writes logs in ${item.candidate.path}. This is an ongoing removal policy; verified duplicates are retained.`,
+          { modal: true }, "This source contains only finished files");
+        if (confirm !== "This source contains only finished files") return;
+      }
+      sources.push({ path: item.candidate.path, mode: mode.mode, enabled: true, completed_files: mode.mode === "move",
+        stated_robot: previous?.stated_robot ?? null });
+    }
+    const error = ingestionPolicyError(store, sources, normalized); if (error) throw new Error(error);
+    const policy: IngestionPolicy = { revision: status.policy?.revision ?? 0, enabled: true, store,
+      store_id: status.policy?.store === store ? status.policy.store_id : null, sources };
+    const approved = await vscode.window.showInformationMessage(ingestionReview(policy), { modal: true }, "Save and Start Syncing");
+    if (approved !== "Save and Start Syncing") return;
+    await control.save(policy);
+    this.logs.refresh();
+    void vscode.window.showInformationMessage("Data store configured. The shared server will keep synchronizing these folders after VS Code closes.");
+  }
+
+  private async pauseDataStore(): Promise<void> {
+    const control = await this.ingestionClient(), status = await control.status();
+    if (!status.policy?.store) { await this.setupDataStore(); return; }
+    await control.save({ ...status.policy, enabled: !status.policy.enabled }, !status.policy.enabled);
+    this.logs.refresh();
+    void vscode.window.showInformationMessage(status.policy.enabled ? "Data-store synchronization paused. Existing files stay available." : "Data-store synchronization resumed.");
+  }
+
+  private async manageDataStore(): Promise<void> {
+    const control = await this.ingestionClient(), status = await control.status();
+    if (!status.policy?.store) { await this.setupDataStore(); return; }
+    const choice = await vscode.window.showQuickPick([
+      { label: "Review store and source folders…", action: "configure" }, { label: "Sync now", action: "sync" },
+      { label: status.policy.enabled ? "Pause synchronization" : "Resume synchronization", action: "pause" },
+      { label: "Show source status", action: "status" }, { label: "Show all sources / preferred store", action: "view" },
+    ], { title: "Manage Data Store", placeHolder: status.policy.store });
+    if (!choice) return;
+    if (choice.action === "configure") await this.setupDataStore();
+    if (choice.action === "sync") { await control.scan(); this.logs.refresh(); }
+    if (choice.action === "pause") await this.pauseDataStore();
+    if (choice.action === "view") this.logs.toggleSources();
+    if (choice.action === "status") {
+      const detail = [status.policy.enabled ? "Synchronization enabled" : "Synchronization paused", status.policy.store,
+        ...(status.sources ?? []).map(source => `${source.path}: ${source.state ?? "unknown"}${source.reason ? ` — ${source.reason}` : ""}`)].join("\n");
+      this.log(detail);
+      const page = await control.files();
+      for (const file of page.files) this.log(`${file.path}: ${file.state}${file.destination ? ` → ${file.destination}` : ""}${file.reason ? `; ${file.reason}` : ""}`);
+      if (page.total > page.files.length) this.log(`Showing ${page.files.length} of ${page.total} receipts; GET /store/local-ingestion/files supports offset and limit.`);
+      void vscode.window.showInformationMessage(`${detail}\nThe output channel shows ${page.files.length} of ${page.total} file receipts.`);
     }
   }
 
@@ -198,15 +353,43 @@ export class Explorer implements vscode.Disposable {
     this.choices = rememberChoice(this.choices, offer, choice);
     await this.context.globalState.update(NEVER_ORGANIZE_KEY, this.choices.never);
     if (choice !== "Organize") return;
-    const mode = await vscode.window.showQuickPick(MOVE_CHOICES, { title: "Organize logs", placeHolder: "Move (default) or copy the originals?" });
+    const mode = await vscode.window.showQuickPick(MOVE_CHOICES,
+      { title: "Organize logs", placeHolder: `Source: ${offer.folder}. Choose where the organized logs will go.` });
     if (!mode) return;
-    const robot = await this.pickRobot(listing, offer.folder);
-    const plan = importPlan(offer, choice, mode.move, robot);
+    const destination = mode.mode === "import" ? await this.pickImportStore(listing, offer.folder) : offer.folder;
+    if (!destination) return;
+    const robot = await this.pickRobot(listing, destination);
+    const plan = importPlan(offer, choice, mode.mode, robot, destination);
     if (!plan) return;
     const paths = await organizeSources(offer, (listing.stores ?? []).map(s => s.path), async folder =>
       (await fs.promises.readdir(folder, { withFileTypes: true })).map(entry => ({ name: entry.name,
         directory: entry.isDirectory(), file: entry.isFile(), symlink: entry.isSymbolicLink() })));
-    await this.importBatch(plan.store, paths, plan.move, plan.stated_robot);
+    await this.importBatch(plan.store, paths, plan.move, plan.stated_robot, false, mode.mode === "import");
+  }
+
+  /** Choosing a directory grants only that root; the Java store still owns all file operations. */
+  private async pickImportStore(listing: LogListing, source: string): Promise<string | undefined> {
+    const stores = (listing.stores ?? []).filter(store => !store.mirror && !containsPath(store.path, source));
+    let target: string | undefined;
+    if (stores.length) {
+      const chosen = await vscode.window.showQuickPick([
+        { label: "Choose another folder…", description: "Create a data store or use one already on disk", store: undefined as string | undefined },
+        ...stores.map(store => ({ label: path.basename(store.path), description: store.path, store: store.path })),
+      ], { title: "Import copies into a data store", placeHolder: "Original files stay in the source folder; identical content is not imported twice" });
+      if (!chosen) return;
+      target = chosen.store;
+    }
+    if (!target) {
+      const selected = await vscode.window.showOpenDialog({ title: "Choose a folder for the log data store",
+        openLabel: "Use as log store", canSelectFiles: false, canSelectFolders: true, canSelectMany: false });
+      if (!selected?.length) return;
+      if (selected[0].scheme !== "file") throw new Error("Choose a local folder for the log data store.");
+      target = selected[0].fsPath;
+    }
+    const destination = await fs.promises.realpath(target);
+    const reason = importDestinationError(await fs.promises.realpath(source), destination, listing);
+    if (reason) throw new Error(reason);
+    return destination;
   }
 
   private async pickRobot(listing: LogListing, store: string, assigning = false): Promise<string | null | undefined> {
@@ -227,20 +410,15 @@ export class Explorer implements vscode.Disposable {
       if (node.kind === "log" && !node.log.store || node.kind === "directory") {
         const listing = await this.logs.listing(item.spec);
         const stores = (listing.stores ?? []).filter(store => !store.mirror);
-        const target = stores.length === 1 ? stores[0].path : (await vscode.window.showQuickPick(
-          stores.map(s => ({ label: path.basename(s.path), description: s.path, store: s.path })),
-          { title: "Import a copy into a store", placeHolder: "Choose the destination store" }))?.store;
-        if (!target) {
-          if (!stores.length) void vscode.window.showInformationMessage("Use Organize Logs to create a store first.");
-          return;
-        }
+        const target = await this.pickImportStore(listing, node.kind === "log" ? path.dirname(node.log.path) : node.folder);
+        if (!target) return;
         const robot = await this.pickRobot(listing, target);
         if (robot === undefined) return;
         const offer = node.kind === "directory" ? offerFor(listing, node.folder, this.choices, true) : undefined;
         const files = node.kind === "log" ? [node.log.path] : offer ? await organizeSources(offer,
           stores.map(s => s.path), async folder => (await fs.promises.readdir(folder, { withFileTypes: true }))
             .map(e => ({ name: e.name, directory: e.isDirectory(), file: e.isFile(), symlink: e.isSymbolicLink() }))) : [];
-        if (files.length) await this.importBatch(target, files, false, robot);
+        if (files.length) await this.importBatch(target, files, false, robot, false, true);
         return;
       }
       if (node.kind === "store") {
@@ -259,22 +437,33 @@ export class Explorer implements vscode.Disposable {
       const store = node.kind === "imports" ? node.store : node.file.store;
       const assignment = assigning || node.group === "unassigned";
       const listing = await this.logs.listing(item.spec);
-      const robot = await this.pickRobot(listing, store, assignment);
-      if (robot === undefined) return;
-      const mode = assignment ? { move: true } : await vscode.window.showQuickPick(MOVE_CHOICES,
-        { title: "Import files", placeHolder: "Move (default) or copy the originals?" });
+      const mode = assignment ? { mode: "move", move: true } : await vscode.window.showQuickPick(MOVE_CHOICES,
+        { title: "Organize files", placeHolder: `Source store: ${store}. Choose where the organized logs will go.` });
       if (!mode) return;
-      await this.importBatch(store, paths, mode.move, robot, assignment);
+      const target = mode.mode === "import" ? await this.pickImportStore(listing, store) : store;
+      if (!target) return;
+      const robot = await this.pickRobot(listing, target, assignment);
+      if (robot === undefined) return;
+      await this.importBatch(target, paths, mode.move, robot, assignment, mode.mode === "import");
     } catch (error) {
       this.reportImportError(error);
     }
   }
 
-  private async importBatch(store: string, paths: string[], move: boolean, robot: string | null, assignment = false): Promise<void> {
+  private async importBatch(store: string, paths: string[], move: boolean, robot: string | null,
+    assignment = false, rememberStore = false): Promise<void> {
     const client = await this.clientFor(this.spec());
     try {
+      if (rememberStore) {
+        const config = vscode.workspace.getConfiguration("wpilog-mcp");
+        const previous = config.inspect<string[]>("additionalLogDirectories")?.globalValue ?? [];
+        const directories = withImportDirectory(previous, store);
+        if (directories !== previous) await config.update("additionalLogDirectories", directories, vscode.ConfigurationTarget.Global);
+        // Await this client's serialized lease update, rather than racing the settings event.
+        await client.refreshRegistration();
+      }
       const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification,
-        title: assignment ? "Assigning logs" : "Organizing logs", cancellable: false }, progress =>
+        title: assignment ? "Assigning logs" : rememberStore ? "Importing copies" : "Organizing logs", cancellable: false }, progress =>
         runImport(client.endpoint, { store, paths, move, stated_robot: robot }, job => {
           progress.report({ message: progressText(job) });
         }, assignment));
@@ -381,6 +570,10 @@ class LogItem extends vscode.TreeItem {
         this.description = node.description;
         this.contextValue = "wpilogDirectory";
         break;
+      case "sourceSync":
+        this.iconPath = new vscode.ThemeIcon("sync");
+        this.tooltip = node.tooltip;
+        break;
       case "robot":
       case "session":
         this.iconPath = new vscode.ThemeIcon(node.kind === "robot" ? "circuit-board" : "history");
@@ -433,6 +626,12 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
   readonly onDidChangeTreeData = this.changed.event;
   private readonly listings = new Map<string, Promise<LogListing>>();
   private filter = "";
+  private allSources = false;
+
+  toggleSources(): void {
+    this.allSources = !this.allSources; this.refresh();
+    void vscode.window.showInformationMessage(this.allSources ? "Showing all source files, including imported originals." : "Showing the preferred store and sources still awaiting import.");
+  }
 
   constructor(private readonly explorer: Explorer) {}
 
@@ -502,7 +701,7 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
   private async fetch(spec: ExplorerSpec): Promise<LogListing> {
     try {
       const client = await this.explorer.clientFor(spec);
-      const listing = await completeListing(args => client.callTool("list_available_logs", args) as Promise<LogListing>);
+      const listing = await completeListing(args => client.callTool("list_available_logs", this.allSources ? { ...args, view: "all" } : args) as Promise<LogListing>);
       // Do not hold up the tree while the person considers an offer.
       if (spec.kind !== "pit") void this.explorer.offerOrganizing(listing);
       return listing;

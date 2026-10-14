@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   fs.writeFileSync(path.join(scratch, "install.json"), runJava(["install", "--install-dir", install, "--force", "--json"]));
   const config = path.join(install, "servers.yaml");
   const port = await unusedPort();
-  fs.writeFileSync(config, `servers:\n  http:\n    transport: http\n    port: ${port}\n    idle_exit_minutes: 0\n    diskcachedisable: true\n`);
+  fs.writeFileSync(config, `servers:\n  http:\n    transport: http\n    port: ${port}\n    idle_exit_minutes: 0\n    experimental_data_store: true\n    diskcachedisable: true\n`);
   // Use a PATH executable that records argv, never the user's real Claude configuration.
   fs.writeFileSync(path.join(bin, "claude"), `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(userData, "User", "settings.json"), JSON.stringify({

@@ -386,7 +386,8 @@ public class ConfigLoader {
         CaptureConfig.parse(block.get("capture"), path -> expandPath(interpolate(path, warnings)), text -> interpolate(text, warnings)),
         MirrorConfig.parse(block.get("mirror"), path -> expandPath(interpolate(path, warnings))),
         MetricsConfig.parse(block.get("metrics")),
-        ContextConfig.parse(block.get("context"), text -> interpolate(text, warnings))
+        ContextConfig.parse(block.get("context"), text -> interpolate(text, warnings)),
+        getBoolean(block, "experimental_data_store")
     );
   }
 

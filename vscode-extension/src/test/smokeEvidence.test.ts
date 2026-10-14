@@ -5,10 +5,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { checkComplete, prepareFixture } from "../smoke/evidence";
 
-test("the runner accepts all six editor checks and refuses an incomplete or failed result", () => {
-  const checks = ["activation", "server", "listing", "editor", "data append", "pit command"];
+test("the runner accepts all seven editor checks and refuses an incomplete or failed result", () => {
+  const checks = ["activation", "server", "listing", "editor", "data append", "data store commands", "pit command"];
   assert.doesNotThrow(() => checkComplete({ status: "ok", checks }));
-  assert.throws(() => checkComplete({ status: "ok", checks: checks.slice(0, 5) }));
+  assert.throws(() => checkComplete({ status: "ok", checks: checks.slice(0, 6) }));
   assert.throws(() => checkComplete({ status: "failed", checks }));
 });
 

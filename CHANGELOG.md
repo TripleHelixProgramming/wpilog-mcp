@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional data-store setup enrolls reviewed source folders for server-owned imports that continue while the shared server runs, even with editors closed. Previously the organizing offer performed only a one-time operation. Copy is the default; automatic Move requires a completed-file acknowledgment, and duplicates stay at their source. Revisioned machine-local policy, durable source receipts, status, pause/resume and Sync Now preserve provenance without rewriting YAML.
+- The default log listing uses an opted-in store and pending/refused source versions, hiding verified originals before counts and paging; Show All Sources retains the full view. Previously copied originals and their store entries appeared together. Explicit paths and clients without an enrolled policy retain their existing behavior.
+
+- The explorer's manual Organize Logs command can import copies into a user-chosen data-store folder, including a new store, and remembers it in Additional Log Directories. Previously Copy and Move both organized in the source folder and Import required an existing store; their labels now state where files go. Imports preserve the originals and reuse the server's content-based duplicate detection.
 - Native read queries now project nested struct/array fields and reduce numeric windows to explicit min/max buckets through the same field and arithmetic owners as legacy tools. Previously third-party readers had to reimplement these operations or use the explorer endpoint.
 - Multi-entry native reads admit separate tables together, in NDJSON or multipart Arrow, and manifested sessions can be read on a requested anchor clock with recorded alignment and source coordinates. Previously readers had to coordinate separate queries and combine files themselves; unproven clocks and overlaps are never silently merged.
 - A caller-polled local follower resumes appended WPILOG prefixes, including partial records and backward timestamps, while retaining older cursors. Previously local native reads could only refuse a growing file and start over.
@@ -98,6 +102,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Continuous folder imports and Set Up Data Store are now experimental and disabled by default behind the named-server `experimental_data_store` flag. Previously the extension exposed setup and loaded saved policies without that gate. With it off, the offer and commands are hidden, and the server loads no ingestion policy or directory grants and starts no synchronization; existing policies and store files are preserved for a later opt-in. Manual imports and organizing remain available.
+
 - Power crossings and battery summaries name an unrecovered window boundary `open_at_scope_end`; the former `open_at_log_end` could be true before the log ended. The old `open_at_log_end` and battery-health `open_at_end` names stay as same-value aliases.
 
 - Explorer source removes the empty placeholder left by a retired entry-cache clear. Runtime behavior and caching are unchanged.
@@ -131,6 +137,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Failed SSH followers retain a bounded stderr prefix and the command exit status in their stand-down reason. Previously stderr was discarded, so a failed console command appeared only as an unavailable source.
 
 - Console following uses an integer one-second interval accepted by BusyBox and GNU tail, and reports that interval. The former fractional interval made roboRIO BusyBox tail exit immediately. Robot facts now identify each provider utility separately, and the synthetic roboRIO uses BusyBox tail.
+
+- A REV file imported before its WPILOG is now reconsidered when the store gains eligible WPILOG data. Previously it remained unassigned until a manual assignment. The existing unique strong correlation and 250 ms gate still decide placement; bounded attempts retain original provenance and avoid repeated idle work.
 
 - Configured symbolic-link log roots now list WPILOG and REV files, with loadable paths and no traversal of child links. In 0.10.0-dev3 a linked root returned an empty listing; linked store subtrees now retain catalog membership and resolved-path filtering too.
 - Claude Code registration now recognizes and remembers an identical user-scope bridge in each editor or profile without showing the expected duplicate-add error; in 0.10.0-dev3 a second editor warned that registration failed, for both `wpilog-analyzer` and `wpilog-pit`. Conflicts leave the entry unchanged and give manual instructions. Real failures and conflicts retain the add command's stdout and stderr, while lookup output stays private; each registration keeps its own success and failure wording and a failure offers its registration command.

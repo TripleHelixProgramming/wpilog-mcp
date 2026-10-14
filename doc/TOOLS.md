@@ -301,9 +301,18 @@ List WPILOG files in the configured log directories with user-friendly names, ne
 - `event` (optional): Only logs from this event code (case-insensitive exact match, e.g. `VACHE`)
 - `match_type` (optional): `p`, `q` (or `qm`), `qf`, `sf`, `f`, or `e`; anything else is an error. A log with no match (a file named for an event only) has no match type and matches none of them
 - `since` (optional): Only logs from this date on (`2026-03-20`, midnight UTC), or from an ISO-8601 instant
+- `view` (optional): `default` searches the preferred store and enrolled pending/refused sources, hiding verified original duplicates before counts and paging; `all` includes originals and other readable folders. Without an opted-in policy, or while the experimental data-store feature is disabled, both retain the existing listing.
 - `offset`, `limit` (optional): Paging (default limit 50, max 500)
 
 **Returns:** `log_directories`, `log_directory_paths`, `log_count` (logs matching the filters), `total_logs` (in all the directories), `offset`, `returned`, `has_more`, `tba_enrichment`, `metadata_cache`, `logs` (the page), and `limits.logs`. Only the listed page is enriched with TBA data. When no log matches the filters, the status is `no_match`. A directory that could not be read makes the result `partial`, with an entry in `skipped` (`section: "logs"`, `directory`, `reason`). When no directory can be read, the call is an error naming each directory and why.
+
+With the [experimental data-store feature enabled](STANDALONE.md#keeping-a-data-store-up-to-date)
+and a configured preferred store, `preferred_store_id` identifies it. `source_sync` carries the
+policy, overall state, pending/active counts, per-source counts and errors; `source_files` is a
+bounded page of original paths with state, destination, hash, size and refusal reason, with its
+true total in `limits.source_files`. Successful receipts are not pending work. No policy means
+these fields are absent. `total_logs` counts the selected view before name/time filters. The
+native read catalog also identifies the preferred store; explicit path reads remain unchanged.
 
 **Example Response:**
 ```json

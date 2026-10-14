@@ -113,6 +113,13 @@ public class HttpTransport {
   private final org.triplehelix.wpilogmcp.store.StoreRegistry stores =
       org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores();
   private volatile java.util.Set<java.nio.file.Path> storeDirectories;
+  private volatile org.triplehelix.wpilogmcp.store.LocalIngestion localIngestion;
+  /** Selected config identity is supplied by Main; anonymous transports never persist policy. */
+  public void configureLocalIngestion(java.nio.file.Path policyFile) throws IOException {
+    if (server != null || configurationName == null) throw new IllegalStateException("A named server must configure ingestion before start");
+    localIngestion = stores.configureLocalIngestion(policyFile);
+    readEndpoint.preferredStore(localIngestion::preferredStoreId);
+  }
   private final org.triplehelix.wpilogmcp.store.StoreDoor storeDoor = new org.triplehelix.wpilogmcp.store.StoreDoor(
       () -> storeDirectories != null ? storeDirectories : org.triplehelix.wpilogmcp.log.LogManager.getInstance()
           .getConfiguredDirectories());
@@ -208,6 +215,17 @@ public class HttpTransport {
     this.onIdle = onIdle;
   }
 
+  private void handleLocalIngestion(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)
+        || !server.getAddress().getAddress().isLoopbackAddress()
+        || !exchange.getRemoteAddress().getAddress().isLoopbackAddress()) {
+      LocalIngestionEndpoint.error(exchange, 403, "ACCESS_DENIED", "Data store setup requires loopback and an allowed Origin"); return;
+    }
+    noteMcpActivity();
+    new LocalIngestionEndpoint(sessionManager, () -> localIngestion).handle(exchange);
+  }
+
   public void start() throws IOException {
     server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
     server.createContext(this.mcpPath, counted(this::handleRequest));
@@ -225,6 +243,7 @@ public class HttpTransport {
     server.createContext(StoreImportEndpoint.PATH, storeStreaming.handle(counted(this::handleImport)));
     server.createContext(StoreImportEndpoint.ASSIGN_PATH, storeStreaming.handle(counted(this::handleImport)));
     server.createContext("/store", storeStreaming.handle(counted(this::handleStore)));
+    server.createContext(LocalIngestionEndpoint.PATH, storeStreaming.handle(counted(this::handleLocalIngestion)));
     server.createContext(StoreSyncEndpoint.PATH, counted(this::handleSync));
     server.createContext(MirrorEndpoint.PATH, counted(this::handleMirror));
     // Direct handoff grows beyond four workers as soon as they are busy. A waiting queue
@@ -264,6 +283,7 @@ public class HttpTransport {
         CLEANUP_INTERVAL_MINUTES, CLEANUP_INTERVAL_MINUTES, TimeUnit.MINUTES);
     server.start();
     stores.startWatching();
+    if (localIngestion != null) localIngestion.start();
     lastMcpActivityNanos = idleClock.getAsLong();
     var idle = idleExit;
     if (idle != null && onIdle != null) {
@@ -290,7 +310,7 @@ public class HttpTransport {
   /** Runs {@code onIdle} once, when no session is open and the idle time has passed. */
   void exitIfIdle() {
     var idle = idleExit;
-    if (idle == null || sessionManager.size() > 0 || stores.importing() || importEndpoint.active() || syncEndpoint.active() || mirrorEndpoint.active()) return;
+    if (idle == null || localIngestion != null && localIngestion.enabled() || sessionManager.size() > 0 || stores.importing() || importEndpoint.active() || syncEndpoint.active() || mirrorEndpoint.active()) return;
     long idleFor = idleClock.getAsLong() - lastMcpActivityNanos;
     if (idleFor < idle.toNanos()) return;
     if (!idleExitRun.compareAndSet(false, true)) return;
@@ -321,6 +341,7 @@ public class HttpTransport {
     }
     mirrorEndpoint.close();
     readEndpoint.close();
+    if (localIngestion != null) { localIngestion.close(); stores.clearLocalIngestion(localIngestion); }
     // 1. End the SSE streams. Their loops sleep between pings; the interrupt ends the loop,
     //    which closes the exchange. They would otherwise stay open until the client went away.
     if (sseExecutor != null) {

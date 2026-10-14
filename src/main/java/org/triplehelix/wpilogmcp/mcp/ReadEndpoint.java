@@ -106,6 +106,9 @@ final class ReadEndpoint implements AutoCloseable {
     boolean retired;
     Lease(ReadSnapshot snapshot, JsonObject descriptor, long used) { this.snapshot = snapshot; this.descriptor = descriptor; this.used = used; }
   }
+  private java.util.function.Supplier<String> preferredStore = () -> null;
+  void preferredStore(java.util.function.Supplier<String> supplier) { preferredStore = supplier; }
+
   ReadEndpoint(LogAccess access) { this(access, () -> null); }
   ReadEndpoint(LogAccess access, Catalogs catalogs) { this(access, catalogs, 32, Duration.ofSeconds(60).toNanos(), System::nanoTime); }
   ReadEndpoint(LogAccess access, int maxSnapshots, long idleNanos, LongSupplier clock) { this(access, () -> null, maxSnapshots, idleNanos, clock); }
@@ -127,8 +130,12 @@ final class ReadEndpoint implements AutoCloseable {
           var catalog = catalogLease.value();
           // Serialize the existing catalog directly into the bounded writer, rather than first
           // allocating an unbounded second Gson tree for all of a season's manifest records.
-          send(exchange, 200, Map.of("api_version", ReadWire.VERSION,
-              "catalog", catalog == null ? new StoreReadCatalog.Snapshot(List.of(), List.of()) : catalog.snapshot()));
+          var response = new java.util.LinkedHashMap<String, Object>();
+          response.put("api_version", ReadWire.VERSION);
+          response.put("catalog", catalog == null ? new StoreReadCatalog.Snapshot(List.of(), List.of()) : catalog.snapshot());
+          var preferred = preferredStore.get();
+          if (preferred != null) response.put("preferred_store_id", preferred);
+          send(exchange, 200, response);
         }
       } else if (path.equals(PATH + "/rev/query") || path.equals(PATH + "/rev/describe")) {
         requireMethod(method, "POST");

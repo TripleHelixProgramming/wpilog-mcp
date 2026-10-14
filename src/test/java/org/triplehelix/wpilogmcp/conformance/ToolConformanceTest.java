@@ -4,6 +4,7 @@
  */
 package org.triplehelix.wpilogmcp.conformance;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -201,6 +202,25 @@ class ToolConformanceTest {
       for (var variant : ToolArguments.variants(tool, null, null, fixtures, exportDir)) {
         calls.add(evaluate(tool, "-", variant, false));
       }
+    }
+    // Optional listing fields must be produced by a real configured ingestion policy, not
+    // removed from the description checks because ordinary fixture servers have no policy.
+    try (var ingestion = org.triplehelix.wpilogmcp.store.LocalIngestionFixture.create(
+        FixtureLogs.defaultDirectory().resolve("source-ingestion"), logManager)) {
+      var listing = tools.stream().filter(tool -> tool.name().equals("list_available_logs")).findFirst().orElseThrow();
+      var call = evaluate(listing, "source-ingestion", new ToolArguments.Variant(
+          "configured-store", new com.google.gson.JsonObject()), false);
+      calls.add(call);
+      var result = call.result().getAsJsonObject();
+      for (var field : List.of("preferred_store_id", "source_sync", "source_files")) {
+        assertTrue(result.has(field), "configured ingestion listing must report " + field);
+      }
+      assertEquals(ingestion.service().preferredStoreId(), result.get("preferred_store_id").getAsString());
+      assertEquals("watching", result.getAsJsonObject("source_sync").get("state").getAsString());
+      var sources = result.getAsJsonArray("source_files");
+      assertEquals(1, sources.size());
+      assertEquals("imported", sources.get(0).getAsJsonObject().get("state").getAsString());
+      assertEquals(ingestion.original().toString(), sources.get(0).getAsJsonObject().get("path").getAsString());
     }
     for (var fixture : fixtures) {
       String path = fixture.path().toString();

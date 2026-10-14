@@ -55,6 +55,9 @@ export interface LogListing {
   unmanaged?: StoreFile[];
   log_directories?: (string | { path: string; origin: "configured" | "leased"; team: number | null })[];
   log_directory_paths?: string[];
+  preferred_store_id?: string | null;
+  source_sync?: { policy?: { enabled: boolean; store: string | null } | null; state?: string; error?: string | null; pending?: number };
+  source_files?: { source?: string; path: string; state: string; destination?: string | null; reason?: string | null; size_bytes?: number }[];
   log_count?: number;
   returned?: number;
   offset?: number;
@@ -72,6 +75,7 @@ export function directoryPaths(listing: LogListing): string[] {
 /** A node of the tree. */
 export type LogNode = { readOnly?: boolean } & (
   | { kind: "store" | "directory"; label: string; folder: string; description?: string; tooltip?: string; children: LogNode[] }
+  | { kind: "sourceSync"; label: string; tooltip: string; children: LogNode[] }
   | { kind: "robot" | "session"; label: string; tooltip: string; children: LogNode[] }
   | { kind: "imports"; label: string; group: "unassigned" | "inbox" | "unmanaged"; store: string; files: StoreFile[]; children: LogNode[] }
   | { kind: "importFile"; label: string; description: string; tooltip: string; group: "unassigned" | "inbox" | "unmanaged"; file: StoreFile }
@@ -250,6 +254,20 @@ function inside(folder: string, file: string): boolean {
 
 /** Stores use manifest identities and clocks. Plain folders retain their event/date grouping. */
 export function buildLogTree(listing: LogListing, filter = ""): LogNode[] {
+  const nodes = catalogTree(listing, filter);
+  const policy = listing.source_sync?.policy;
+  if (!policy?.store) return nodes;
+  const children: LogNode[] = (listing.source_files ?? []).filter(file => !["imported", "present"].includes(file.state))
+    .filter(file => !filter.trim() || `${file.path} ${file.state} ${file.reason ?? ""}`.toLowerCase().includes(filter.trim().toLowerCase()))
+    .map(file => ({ kind: "note", label: `${path.basename(file.path)} · ${file.state}`,
+      tooltip: [file.path, file.reason].filter(Boolean).join("\n") }));
+  if (listing.source_sync?.error) children.unshift({ kind: "note", label: listing.source_sync.error });
+  if (!children.length) children.push({ kind: "note", label: !policy.enabled ? "Synchronization is paused" : (listing.source_sync?.pending ?? 0) > 0
+    ? `${listing.source_sync!.pending} files pending; use Manage Data Store for source details` : "No pending files on this receipt page" });
+  return [...nodes, { kind: "sourceSync", label: "Folder synchronization", tooltip: `${policy.store}\n${policy.enabled ? "Enabled" : "Paused"} · ${listing.source_sync?.state ?? "unknown"}`, children }];
+}
+
+function catalogTree(listing: LogListing, filter: string): LogNode[] {
   if (listing.status === "error") return plainLogTree(listing, filter);
   const origins = (listing.log_directories ?? []).filter((dir): dir is Exclude<typeof dir, string> => typeof dir !== "string");
   if (!listing.stores?.length) {

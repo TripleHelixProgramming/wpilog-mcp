@@ -59,6 +59,141 @@ public final class LogStore implements AutoCloseable {
   public record Outcome(Path originalPath, String status, Path path, String reason) {}
   public record SameRobot(String serialNumber, List<Path> directories) {}
   public record Result(List<Outcome> files, List<SameRobot> sameRobots) {}
+  public record Reconsideration(int considered, int imported, int remaining, List<Outcome> files) {
+    public Reconsideration { files = List.copyOf(files); }
+  }
+
+  private static final int MAX_REV_RECONSIDERATION = 32;
+  private static final String NO_REV_ASSIGNMENT =
+      "Assignment needs a robot and session time, or a unique correlated wpilog for a REV log";
+  private record RevAttempt(String candidateGeneration) {}
+  private record RevCursor(String candidateGeneration, String lastAttemptedHash) {}
+  private final java.util.concurrent.atomic.AtomicReference<CompletableFuture<Reconsideration>> reconsidering =
+      new java.util.concurrent.atomic.AtomicReference<>();
+
+  /**
+   * Arrival order must not decide whether two completed files are paired. This bounded queue
+   * turn reuses assignment's exact correlation and placement path, without inventing a robot.
+   * Per-content attempt receipts suppress repeated correlations across idle scans and restarts;
+   * only the set of session-owned WPILOG hashes invalidates them. An unmatched REV imported
+   * later has no receipt and is therefore still considered against the complete candidate set.
+   */
+  public CompletableFuture<Reconsideration> reconsiderUnassignedRev() {
+    for (;;) {
+      var previous = reconsidering.get();
+      if (previous != null) return previous;
+      var result = new CompletableFuture<Reconsideration>();
+      if (!reconsidering.compareAndSet(null, result)) continue;
+      pending.incrementAndGet();
+      try {
+        queue.execute(() -> {
+          Reconsideration value = null;
+          Throwable failure = null;
+          try (var lock = StoreLock.acquire(root, security)) {
+            if (!StoreCatalog.isStore(root)) value = new Reconsideration(0, 0, 0, List.of());
+            else {
+              var io = new StoreFiles(root, security, this::published);
+              var header = io.read(root.resolve("store.json"), Header.class);
+              if (header.mirror()) throw new IOException("A mirror cannot reconsider imported files");
+              value = reconsiderRev(io);
+              if (value.imported() > 0) publishInventory();
+            }
+          } catch (Exception e) { failure = e; }
+          catch (OutOfMemoryError e) { failure = new IOException("Not enough heap to reconsider REV files", e); }
+          finally {
+            pending.decrementAndGet();
+            reconsidering.compareAndSet(result, null);
+          }
+          // Callbacks may enqueue more work: release the store lock before completing them.
+          if (failure == null) result.complete(value); else result.completeExceptionally(failure);
+        });
+      } catch (RuntimeException e) {
+        pending.decrementAndGet();
+        reconsidering.compareAndSet(result, null);
+        result.completeExceptionally(e);
+      }
+      return result;
+    }
+  }
+
+  private Reconsideration reconsiderRev(StoreFiles io) throws IOException {
+    var catalog = new ImportCatalog(catalogReader.read(root, security));
+    migrateUnassigned(io, catalog);
+    var hashes = catalog.files.values().stream()
+        .filter(f -> f.session() != null && "wpilog".equals(f.file().kind()))
+        .map(f -> f.file().sha256()).distinct().sorted().toList();
+    if (hashes.isEmpty()) return new Reconsideration(0, 0, 0, List.of());
+    String generation;
+    try {
+      var digest = java.security.MessageDigest.getInstance("SHA-256");
+      for (var hash : hashes) {
+        checkContentHash(hash);
+        digest.update(hash.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+      }
+      generation = java.util.HexFormat.of().formatHex(digest.digest());
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IllegalStateException("The JDK must provide SHA-256", e);
+    }
+    var directory = root.resolve(".rev-reconsideration");
+    var cursorPath = directory.resolve("cursor.json");
+    String cursor = "";
+    if (Files.exists(io.check(cursorPath))) {
+      try {
+        var saved = io.read(cursorPath, RevCursor.class);
+        if (generation.equals(saved.candidateGeneration()) && saved.lastAttemptedHash() != null) {
+          checkContentHash(saved.lastAttemptedHash());
+          cursor = saved.lastAttemptedHash();
+        }
+      } catch (IOException e) {
+        LoggerFactory.getLogger(LogStore.class).warn("Revalidating invalid REV reconsideration cursor: {}", e.getMessage());
+      }
+    }
+    var unassigned = catalog.files.values().stream()
+        .filter(f -> f.session() == null && "revlog".equals(f.file().kind()))
+        .sorted(java.util.Comparator.comparing(f -> f.file().sha256())).toList();
+    // Resume after the last completed batch, then wrap for new REV hashes before the cursor.
+    String start = cursor;
+    var ordered = java.util.stream.Stream.concat(
+        unassigned.stream().filter(f -> f.file().sha256().compareTo(start) > 0),
+        unassigned.stream().filter(f -> f.file().sha256().compareTo(start) <= 0)).toList();
+    var pending = new ArrayList<StoredFile>();
+    for (var file : ordered) {
+      checkContentHash(file.file().sha256());
+      var receipt = directory.resolve(file.file().sha256() + ".json");
+      boolean attempted = false;
+      if (Files.exists(io.check(receipt))) {
+        try { attempted = generation.equals(io.read(receipt, RevAttempt.class).candidateGeneration()); }
+        catch (IOException e) {
+          LoggerFactory.getLogger(LogStore.class).warn("Revalidating invalid REV reconsideration receipt: {}", e.getMessage());
+        }
+      }
+      if (!attempted) pending.add(file);
+    }
+    if (pending.isEmpty()) return new Reconsideration(0, 0, 0, List.of());
+    var batch = pending.subList(0, Math.min(MAX_REV_RECONSIDERATION, pending.size()));
+    var imported = run(new Request(batch.stream().map(StoredFile::path).toList(), true, null), p -> {}, true);
+    var files = new HashMap<Path, StoredFile>();
+    batch.forEach(file -> files.put(file.path(), file));
+    int placed = 0;
+    String last = cursor;
+    for (var outcome : imported.files()) {
+      var source = files.get(outcome.originalPath());
+      if (source == null) throw new IOException("Unexpected REV reconsideration outcome: " + outcome.originalPath());
+      if ("imported".equals(outcome.status())) placed++;
+      else if (!"refused".equals(outcome.status()) || !NO_REV_ASSIGNMENT.equals(outcome.reason())) {
+        throw new IOException("REV reconsideration could not place " + outcome.originalPath() + ": " + outcome.reason());
+      }
+      // A placement failure never becomes an attempted-generation receipt. It must be retryable.
+      last = source.file().sha256();
+      io.write(directory.resolve(last + ".json"), new RevAttempt(generation));
+    }
+    io.write(cursorPath, new RevCursor(generation, last));
+    return new Reconsideration(batch.size(), placed, pending.size() - batch.size(), imported.files());
+  }
+
+  private static void checkContentHash(String hash) throws IOException {
+    if (hash == null || !hash.matches("[0-9a-f]{64}")) throw new IOException("Invalid content hash in REV reconsideration inventory");
+  }
 
   private record Candidate(Path path, String hash, Robot robot, Instant start, Instant end) {}
   private record Pair(Candidate wpilog, SyncResult sync) {}
@@ -756,7 +891,7 @@ public final class LogStore implements AutoCloseable {
     if (robot == null || primary.start() == null) {
       if (inputs.stream().anyMatch(input -> catalog.assigning.containsKey(input.hash()))) {
         for (var input : inputs) outcomes.add(new Outcome(input.path(), "refused", input.path(),
-            "Assignment needs a robot and session time, or a unique correlated wpilog for a REV log"));
+            NO_REV_ASSIGNMENT));
         return;
       }
       for (var input : inputs) {

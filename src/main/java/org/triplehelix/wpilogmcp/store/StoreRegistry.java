@@ -32,6 +32,31 @@ public final class StoreRegistry implements AutoCloseable {
   private final Discovery discovery;
   private volatile boolean discoverNext = true;
   private long lastDiscovery;
+  private volatile LocalIngestion localIngestion;
+  private final AtomicBoolean configuringIngestion = new AtomicBoolean();
+
+  /** Shared by discovery and listing; editor windows never own separate ingestion loops. */
+  public LocalIngestion localIngestion() { return localIngestion; }
+
+  public synchronized void setLocalIngestion(LocalIngestion service) {
+    var previous = localIngestion;
+    if (previous != null && previous != service) throw new IllegalStateException("Local ingestion is already configured");
+    localIngestion = service;
+  }
+
+  public LocalIngestion configureLocalIngestion(Path policyFile) throws IOException {
+    if (!configuringIngestion.compareAndSet(false, true)) throw new IllegalStateException("Local ingestion is being configured");
+    try {
+      if (localIngestion != null) throw new IllegalStateException("Local ingestion is already configured");
+      var service = new LocalIngestion(this, security, policyFile);
+      try { setLocalIngestion(service); return service; }
+      catch (RuntimeException failure) { service.close(); throw failure; }
+    } finally { configuringIngestion.set(false); }
+  }
+
+  public synchronized void clearLocalIngestion(LocalIngestion expected) {
+    if (localIngestion == expected) localIngestion = null;
+  }
 
   @FunctionalInterface
   interface Discovery {
@@ -164,6 +189,8 @@ public final class StoreRegistry implements AutoCloseable {
   /** Queued and running imports finish; daemon workers never keep the process alive. */
   @Override
   public void close() {
+    var ingestion = localIngestion;
+    if (ingestion != null) ingestion.close();
     ScheduledExecutorService polling;
     synchronized (this) {
       if (closed) return;

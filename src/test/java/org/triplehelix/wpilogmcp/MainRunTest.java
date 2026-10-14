@@ -57,7 +57,22 @@ class MainRunTest {
     for (String mode : List.of("ordinary", "flag", "environment")) {
       // A probe-and-release ephemeral port can be claimed by another process before this
       // child binds. Let the server own port selection and read its actual listening port.
-      var path = config("    transport: http\n    port: 0\n");
+      boolean dataStoreEnabled = mode.equals("flag");
+      var configured = Files.createDirectories(temp.resolve("configured"));
+      var destination = Files.createDirectories(temp.resolve("store"));
+      var source = Files.createDirectories(temp.resolve("enrolled"));
+      Files.writeString(destination.resolve("store.json"), org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJson(
+          new org.triplehelix.wpilogmcp.store.StoreManifest.Header(1, "2026-01-01T00:00:00Z", "synthetic-store", List.of())));
+      var path = config("    transport: http\n    port: 0\n    logdir: "
+          + new com.google.gson.JsonPrimitive(configured.toString()) + "\n"
+          + (dataStoreEnabled ? "    experimental_data_store: true\n" : mode.equals("environment")
+              ? "    experimental_data_store: false\n" : ""));
+      var policyFile = org.triplehelix.wpilogmcp.store.LocalIngestion.policyFileFor(temp, path, "pit");
+      Files.createDirectories(policyFile.getParent());
+      var savedPolicy = org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJson(
+          new org.triplehelix.wpilogmcp.store.LocalIngestion.Policy(1, true, destination.toRealPath().toString(), "synthetic-store",
+              List.of(new org.triplehelix.wpilogmcp.store.LocalIngestion.Source(source.toRealPath().toString(), "copy", true, false, null))));
+      Files.writeString(policyFile, savedPolicy);
       var command = new ArrayList<>(List.of(ProcessHandle.current().info().command().orElseThrow(), "-Xmx256m",
           "-Duser.home=" + temp, "-jar", System.getProperty("install.testJar"), "run", "pit", "--config", path.toString()));
       if (mode.equals("flag")) command.add("--managed");
@@ -93,7 +108,36 @@ class MainRunTest {
         assertEquals(Version.VERSION, health.get().get("version").getAsString());
         assertEquals("pit", health.get().get("name").getAsString(), "health names the running configuration");
         assertEquals(child.pid(), health.get().get("pid").getAsLong(), "run must not spawn a daemon");
+        var init = http.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:" + port + "/mcp"))
+            .header("Content-Type", "application/json").POST(java.net.http.HttpRequest.BodyPublishers.ofString(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}" )).build(),
+            java.net.http.HttpResponse.BodyHandlers.ofString());
+        var setup = http.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:" + port + "/store/local-ingestion"))
+            .header("Mcp-Session-Id", init.headers().firstValue("Mcp-Session-Id").orElseThrow()).GET().build(),
+            java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertEquals(dataStoreEnabled ? 200 : 409, setup.statusCode(),
+            "Data-store enrollment requires explicit experimental_data_store opt-in: " + setup.body());
+        if (!dataStoreEnabled) {
+          assertEquals("FEATURE_DISABLED", com.google.gson.JsonParser.parseString(setup.body()).getAsJsonObject().get("code").getAsString());
+          for (String route : List.of("/store/local-ingestion", "/store/local-ingestion/scan", "/store/local-ingestion/files")) {
+            var refused = http.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:" + port + route))
+                .header("Mcp-Session-Id", init.headers().firstValue("Mcp-Session-Id").orElseThrow())
+                .method(route.endsWith("files") ? "GET" : route.endsWith("scan") ? "POST" : "PUT",
+                    java.net.http.HttpRequest.BodyPublishers.ofString("{}" )).build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+            assertEquals(409, refused.statusCode(), refused.body());
+            assertTrue(refused.body().contains("FEATURE_DISABLED"), refused.body());
+          }
+        }
         var mcp = new org.triplehelix.wpilogmcp.harness.HarnessHttp(port); mcp.initialize();
+        var listing = mcp.call("list_available_logs", new com.google.gson.JsonObject());
+        assertEquals(dataStoreEnabled, listing.has("source_sync"),
+            "Disabled policy must not select a preferred store or register persisted source grants: " + listing);
+        if (!dataStoreEnabled) {
+          var roots = listing.getAsJsonArray("log_directory_paths").asList().stream().map(com.google.gson.JsonElement::getAsString).toList();
+          assertEquals(1, roots.size());
+          assertEquals(configured.toRealPath(), Path.of(roots.get(0)).toRealPath());
+        }
+        assertEquals(savedPolicy, Files.readString(policyFile), "The flag never edits the saved enrollment policy");
         assertEquals(expected, mcp.call("list_sessions", new com.google.gson.JsonObject()).get("managed").getAsBoolean());
         assertEquals("", Files.readString(out));
         assertFalse(Files.exists(temp.resolve(".wpilog-mcp/run/pit.pid")));

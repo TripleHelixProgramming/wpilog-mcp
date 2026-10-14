@@ -60,6 +60,7 @@ export class McpClient {
   private registeredSession?: string;
   private lastRegistration?: SessionRegistration;
   private heartbeat?: ReturnType<typeof setInterval>;
+  private temporaryDirectories: readonly string[] = [];
 
   /**
    * @param endpoint the server's MCP endpoint, such as `http://127.0.0.1:41234/mcp`
@@ -168,6 +169,43 @@ export class McpClient {
     return update;
   }
 
+  /** Local controls use this client's existing lease; they never borrow another window's session. */
+  async requestLocalControl<T>(route: string, method: "GET" | "POST" | "PUT", body?: unknown): Promise<T> {
+    await this.refreshRegistration();
+    return this.localControl<T>(route, method, body);
+  }
+
+  /** Keep reviewed roots admitted through the save, then restore the ordinary window lease.
+   * The callback receives a request function to avoid waiting on its own serialized update. */
+  withTemporaryDirectories<T>(paths: readonly string[], action: (request: <R>(route: string,
+    method: "GET" | "POST" | "PUT", body?: unknown) => Promise<R>) => Promise<T>): Promise<T> {
+    const operation = this.refreshRegistration().then(async () => {
+      if (this.disposed) throw new ToolError("The client was disposed", "registration");
+      this.temporaryDirectories = [...paths];
+      try {
+        await this.register(this.sessionId!);
+        return await action((route, method, body) => this.localControl(route, method, body));
+      } finally {
+        this.temporaryDirectories = [];
+        if (!this.disposed && this.sessionId) await this.register(this.sessionId);
+      }
+    });
+    this.updating = operation.then(() => {}, () => {});
+    return operation;
+  }
+
+  private async localControl<T>(route: string, method: "GET" | "POST" | "PUT", body?: unknown): Promise<T> {
+    if (!/^\/store\/local-ingestion(?:[/?]|$)/.test(route)) throw new Error("Unknown local data-store control route");
+    const reply = await this.exchange(new URL(route, this.endpoint).toString(), method, body, this.sessionId);
+    let value: { error?: string; code?: string };
+    try { value = JSON.parse(reply.body); }
+    catch { throw new Error(`Data-store control returned invalid JSON (HTTP ${reply.status})`); }
+    if (reply.status < 200 || reply.status >= 300) {
+      throw new LocalControlError(value.error ?? `Data-store control failed (HTTP ${reply.status})`, reply.status, value.code);
+    }
+    return value as T;
+  }
+
   /** A ping preserves the session's lifetime without changing which key or directory lease is newest. */
   async keepAlive(): Promise<void> {
     await this.updating.catch(() => {});
@@ -183,8 +221,12 @@ export class McpClient {
   }
 
   private async register(session: string): Promise<void> {
-    if (!this.registration) return;
-    const registration = await this.registration();
+    if (!this.registration && !this.temporaryDirectories.length) return;
+    const base = this.registration ? await this.registration() : { directories: { paths: [], team: null }, key: null };
+    const known = new Set(base.directories.paths.map(item => item.path));
+    const registration: SessionRegistration = { ...base, directories: { ...base.directories,
+      paths: [...base.directories.paths, ...this.temporaryDirectories.filter(directory => !known.has(directory))
+        .map(directory => ({ path: directory, team: null }))] } };
     if (!leaseChanged(this.lastRegistration, registration, this.registeredSession !== session)) return;
     const changes: [string, unknown][] = [["/directories", registration.directories], ["/tba-key", { key: registration.key }]];
     if (registration.pitCredential) changes.push(["/pit-credential", registration.pitCredential]);
@@ -272,4 +314,9 @@ class RegistrationError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
   }
+}
+
+/** A conflict is shown to the person; the client never retries a policy replacement. */
+export class LocalControlError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
 }

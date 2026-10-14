@@ -4,6 +4,8 @@
  */
 package org.triplehelix.wpilogmcp.store;
 
+import org.triplehelix.wpilogmcp.store.FileStability.Stamp;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
@@ -39,10 +41,9 @@ import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
  * Hidden transfers are never candidates: only a published batch may acquire a stated robot.
  */
 public final class StoreInbox {
-  static final Duration SETTLE_TIME = Duration.ofSeconds(3);
+  static final Duration SETTLE_TIME = FileStability.SETTLE_TIME;
   private static final Gson BATCH_JSON = new GsonBuilder().setStrictness(Strictness.STRICT).create();
   public record Entry(Path path, long size, String state, String reason, String statedRobot) {}
-  private record Stamp(long size, FileTime modified) {}
   private record Batch(Path directory, Stamp stamp, String robot, String refusal) {}
   private record Observed(Stamp stamp, Batch batch) {}
   private record Seen(Observed observed, long at, String state, String reason) {}
@@ -89,7 +90,7 @@ public final class StoreInbox {
     for (var group : groups.entrySet()) {
       var ready = group.getValue().stream().filter(path -> {
         var old = seen.get(path);
-        return old.state().equals("waiting") && now - old.at() >= SETTLE_TIME.toNanos();
+        return old.state().equals("waiting") && FileStability.settled(now, old.at());
       }).toList();
       if (ready.isEmpty()) continue;
       // Loose files need not wait for unrelated loose drops. A published directory is one batch.
@@ -212,7 +213,7 @@ public final class StoreInbox {
     var sidecar = directory.resolve("batch.json");
     if (!Files.exists(sidecar, LinkOption.NOFOLLOW_LINKS)) return new Batch(directory, null, null, null);
     var attrs = Files.readAttributes(sidecar, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-    var stamp = new Stamp(attrs.size(), attrs.lastModifiedTime());
+    var stamp = Stamp.of(attrs);
     try {
       io.check(sidecar);
       if (!attrs.isRegularFile() || attrs.size() > 4096) throw new IllegalArgumentException();
@@ -253,7 +254,7 @@ public final class StoreInbox {
           if (!batches.containsKey(directory)) batches.put(directory, batch(directory, io));
           batch = batches.get(directory);
         }
-        files.put(path, new Observed(new Stamp(attrs.size(), attrs.lastModifiedTime()), batch));
+        files.put(path, new Observed(Stamp.of(attrs), batch));
         return FileVisitResult.CONTINUE;
       }
 
