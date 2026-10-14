@@ -12,6 +12,13 @@ produces a path. A live pending-admission/failure field before a session exists 
 events and cannot cap one filesystem write or flush. Measure storage stalls and sustained backlog
 behavior on the installed shop machine before choosing different byte/event/deadline defaults.
 
+## Remaining platform validation
+
+Exercise robot-facts permissions on an installed Ubuntu service: an ordinary account receives
+store-specific guidance, the service account succeeds, and root refuses before changing any store
+file. Run the native Windows ACL-denial regression too. The local macOS round covers real POSIX
+denial and portable principal/error behavior, not those deployed-platform guarantees.
+
 ## 9. The Pit Server
 
 ### 9.1 Live Capture, Gateway, and the Long-Term Record

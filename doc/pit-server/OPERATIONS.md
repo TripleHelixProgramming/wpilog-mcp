@@ -203,6 +203,12 @@ It makes one read-only SSH connection and writes a dated report. The report reco
 
 Each fact is **found**, **absent** or **refused**. The report never contains a password. Keep it
 outside the repository, and send the conclusions to whoever maintains the configuration.
+For an installed service, run the named-server form as the account that owns its store
+(for example `sudo -u wpilog-mcp wpilog-mcp robot-facts --server pit --config /etc/wpilog-mcp/servers.yaml --out /tmp/rio-facts.md`).
+Choose a new output path that account can write. A foreign or unverifiable store owner is refused
+before local pins are written, including when invoked as root. The direct-address form instead
+uses your own account's host-key pins.
+
 Details: [Robot facts](STANDALONE.md#robot-facts-for-the-shop).
 
 ### 2.2 Decide the pull settings

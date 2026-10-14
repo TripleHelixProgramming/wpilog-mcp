@@ -88,9 +88,30 @@ class OperationsClaimTest {
     String usage = main.substring(main.indexOf("private static void printUsage()"));
     var verbs = matches("logger\\(\\)\\.info\\(\"  ([a-z][a-z-]*)\\s", usage);
     var shown = new HashSet<String>();
-    for (String snippet : code()) shown.addAll(matches("\\bwpilog-mcp\"?[ \\t]+([a-z][a-z-]*)\\b", snippet));
+    for (String snippet : code()) shown.addAll(commandVerbs(snippet));
     assertFalse(shown.isEmpty());
     for (String verb : shown) assertTrue(verbs.contains(verb), "OPERATIONS.md: verb absent from printUsage: " + verb);
+  }
+
+  @Test void sudoAccountArgumentsAreNotVerbsButMisspelledCommandsRemainVisible() {
+    assertEquals(Set.of("robot-facts"), commandVerbs("sudo -u wpilog-mcp wpilog-mcp robot-facts --server pit"));
+    assertEquals(Set.of("robot-facts"), commandVerbs("sudo --user=wpilog-mcp wpilog-mcp robot-facts --server pit"));
+    assertEquals(Set.of("robt-facts"), commandVerbs("sudo -u wpilog-mcp wpilog-mcp robt-facts --server pit"));
+    assertEquals(Set.of("status"), commandVerbs("wpilog-mcp status"));
+    assertEquals(Set.of("start"), commandVerbs("\"C:\\Tools\\wpilog-mcp\" start"));
+  }
+
+  private static Set<String> commandVerbs(String snippet) {
+    var values = new HashSet<String>();
+    // Look ahead at the verb: consuming a sudo account's following executable would hide
+    // the real command. Classify the account argument without allowing an unknown verb.
+    var commands = Pattern.compile("\\bwpilog-mcp[\"']?[ \\t]+(?=([a-z][a-z-]*)\\b)").matcher(snippet);
+    var account = Pattern.compile("(?:^|[ \\t])(?:-u|--user)(?:[ \\t]+|=)[\"']?$");
+    while (commands.find()) {
+      if (account.matcher(snippet.substring(0, commands.start())).find()) continue;
+      values.add(commands.group(1));
+    }
+    return values;
   }
 
   @Test void yamlExamplesUseAcceptedKeysAndLoadAsWritten() throws Exception {

@@ -112,6 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `robot-facts --server` now explains configured-store access refusals and gives service-account and direct-address commands; previously an ordinary account saw only a path. It refuses a differently owned or unverifiable store before creating locks or replacing owner-only host-key manifests, so a privileged invocation cannot strand the service's local pins.
+
 - Capture now replaces the thousand-line INFO topic-cost bursts every five minutes with one summary of cumulative topic, record, byte, dropped and thinned totals and the five largest recorded-byte contributors. Per-topic detail remains available at DEBUG and through `list_sessions`.
 
 - Robot pull pause messages now state the gate's reason and report changes without repeating an unchanged pause. Previously pauses printed `null` and expected power-offs appeared as warnings; a transfer interrupted after NT4 disconnects now logs its I/O retry at INFO. Known local filesystem failures, unexplained I/O failures and other exceptions retain WARN. Remote-handle close failures are distinguished from local checkpoint failures, which retain their cause if both operations fail.

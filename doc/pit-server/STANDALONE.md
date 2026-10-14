@@ -583,6 +583,21 @@ lock for its pins. Direct-host pins live in `~/.wpilog-mcp/robot-facts/ssh-hosts
 server uses its capture store's pins. A busy store lock is an explained refusal, not permission
 to bypass it.
 
+The named-server form writes the configured store's local host-key pins. Run it as the account
+that owns the store. For the installed Ubuntu service, for example:
+
+```bash
+sudo -u wpilog-mcp wpilog-mcp robot-facts --server pit --config /etc/wpilog-mcp/servers.yaml --out /tmp/rio-facts.md
+```
+
+Choose a new output path that the service account can write. If your account cannot access that
+store, use the service account or give the robot's address directly; the direct form keeps pins
+under your own home directory. A named store must have the same operating-system owner as the
+invoking account, even when the invoking account is root; a missing store uses the nearest
+existing parent's owner for this check. An unavailable ownership check is a refusal. This prevents
+root-owned `store.lock`, `store.json` or `ssh-hosts.json` files from blocking the service. Do not
+delete the permanent lock or change ownership to bypass a refusal.
+
 **The report.** The report is dated in UTC. Without `--out` it is written as
 `robot-facts-yyyyMMddTHHmmssZ.md` in the current directory, and an existing report is never
 overwritten. Each fixed read-only command records its exit status, its elapsed milliseconds, up

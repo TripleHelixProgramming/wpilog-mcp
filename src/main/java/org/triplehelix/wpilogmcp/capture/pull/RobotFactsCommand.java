@@ -61,13 +61,27 @@ public final class RobotFactsCommand {
   public static int run(String[] args, PrintStream out, PrintStream err) {
     return run(args, out, err, Path.of(System.getProperty("user.home")), Clock.systemUTC());
   }
+  @FunctionalInterface interface Account {
+    java.nio.file.attribute.UserPrincipal currentUser(Path directory) throws IOException;
+  }
+
   static int run(String[] args, PrintStream out, PrintStream err, Path home, Clock clock) {
+    return run(args, out, err, home, clock, directory -> {
+      String user = ProcessHandle.current().info().user()
+          .orElseThrow(() -> new IOException("Cannot determine the current operating-system account"));
+      return directory.getFileSystem().getUserPrincipalLookupService().lookupPrincipalByName(user);
+    });
+  }
+
+  static int run(String[] args, PrintStream out, PrintStream err, Path home, Clock clock, Account account) {
     UnaryOperator<String> redact = RobotFactsReport.redactor(PullConfig.DISABLED.ssh());
     StoreRegistry stores = null;
+    Options options = null;
+    Path accessingStore = null;
+    List<String> hosts = List.of();
     try {
-      var options = parse(args);
+      options = parse(args);
       PullConfig pull;
-      List<String> hosts;
       Path storePath;
       if (options.server() != null) {
         var capture = new ConfigLoader().load(options.server(), options.config()).capture();
@@ -83,17 +97,25 @@ public final class RobotFactsCommand {
       Path output = options.output() != null ? options.output() : Path.of("robot-facts-"
           + DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC).format(clock.instant()) + ".md").toAbsolutePath();
       if (Files.exists(output)) throw new IOException("Report already exists; choose a new --out file");
+      if (options.server() != null) {
+        accessingStore = storePath;
+        checkStoreAccount(storePath, account);
+      }
       var security = new SecurityValidator(); security.addAllowedDirectory(storePath);
       stores = new StoreRegistry(security);
       var store = stores.store(storePath);
       IOException last = null;
       for (String host : hosts) {
+        if (options.server() != null) accessingStore = storePath;
         String pin = store.hostKey(host).get(30, TimeUnit.SECONDS);
+        accessingStore = null;
         JschConnection connection;
         try { connection = JschConnection.connect(host, pull.ssh(), pin); }
         catch (IOException e) { last = e; continue; }
         try (connection) {
+          if (options.server() != null) accessingStore = storePath;
           store.recordHostKey(host, connection.fingerprint()).get(30, TimeUnit.SECONDS);
+          accessingStore = null;
           var report = RobotFacts.collect(connection, host, pull, clock);
           Files.writeString(output, RobotFactsReport.markdown(report, redact), StandardOpenOption.CREATE_NEW);
           out.println("Robot facts written to " + redact.apply(output.toString()));
@@ -103,7 +125,46 @@ public final class RobotFactsCommand {
       throw last != null ? last : new IOException("No configured robot address");
     } catch (Exception e) {
       if (e instanceof InterruptedException) Thread.currentThread().interrupt();
-      err.println("Cannot collect robot facts: " + redact.apply(e.getMessage())); return 1;
+      String reason = accessingStore != null
+          ? storeFailure(accessingStore, options, hosts, e) : e.getMessage();
+      err.println("Cannot collect robot facts: " + redact.apply(reason)); return 1;
     } finally { if (stores != null) stores.close(); }
+  }
+
+  /**
+   * Pin lookup itself creates the permanent lock and may initialize the store. A privileged
+   * operator must not leave a service with a foreign lock or a 0600 replacement pin manifest.
+   * Check before even creating the directory; a new store inherits this admission from its
+   * nearest existing ancestor. NIO principals retain Windows domain/ACL identity semantics.
+   */
+  private static void checkStoreAccount(Path store, Account account) throws IOException {
+    Path existing = store;
+    while (existing != null) {
+      try {
+        var owner = Files.getOwner(existing);
+        var current = account.currentUser(existing);
+        if (!owner.equals(current)) throw new IOException("Store directory or ancestor " + existing
+            + " is owned by " + owner.getName() + "; current account is " + current.getName()
+            + ". Refusing to create store.lock or owner-only manifests for a different account");
+        return;
+      } catch (java.nio.file.NoSuchFileException missing) {
+        existing = existing.getParent();
+      } catch (UnsupportedOperationException unsupported) {
+        throw new IOException("Cannot verify the configured store's operating-system owner", unsupported);
+      }
+    }
+    throw new IOException("Cannot find an existing ancestor to verify the configured store owner");
+  }
+
+  private static String storeFailure(Path store, Options options, List<String> hosts, Exception failure) {
+    Throwable cause = failure;
+    while (cause.getCause() != null) cause = cause.getCause();
+    String detail = cause instanceof java.nio.file.AccessDeniedException
+        ? "permission denied for " + cause.getMessage() : failure.getMessage();
+    String address = hosts.isEmpty() ? "<robot-address>" : hosts.get(0);
+    return "Cannot access configured store " + store + ": " + detail
+        + ". Run as the service account (for example, sudo -u wpilog-mcp wpilog-mcp robot-facts --server "
+        + options.server() + " --config <config-file>), or name the robot's address directly: "
+        + "wpilog-mcp robot-facts " + address + " (uses your own account's host-key pins).";
   }
 }
