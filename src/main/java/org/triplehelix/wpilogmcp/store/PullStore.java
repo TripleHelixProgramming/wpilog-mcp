@@ -337,12 +337,13 @@ public final class PullStore implements FileTransfer.Local {
       String serial = input.metadata() != null && input.metadata().serialNumber() != null ? input.metadata().serialNumber() : identity.serialNumber();
       decision = match(source, input, serial, held.content(), candidates.files());
     }
-    beforePlacement.accept(source);
     // A retained tool read may take three seconds to drain. That wait belongs to this pull
     // worker, never to the store queue or the NT4 listener creating its next capture.
     try (var reservation = LogFileAccess.reserveMove(List.of(source))) {
       var released = manager.release(source);
       if (!released.released()) throw new IOException(released.reason());
+      // Test mutations need the same mapping-free window as placement on Windows.
+      beforePlacement.accept(source);
       return store.capture(io -> {
         if (!source.equals(path(io, entry.localName())) || !input.snapshot().sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(source))) {
           throw new IOException("Pulled file changed after verification; retry before placement");

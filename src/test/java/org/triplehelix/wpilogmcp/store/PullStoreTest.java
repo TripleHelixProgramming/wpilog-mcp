@@ -386,12 +386,22 @@ class PullStoreTest {
   @Test void replacingStagedBytesAfterMatchingIsRejectedBeforePlacement() throws Exception {
     var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
     var entry = staged(local, "/u/logs/robot.wpilog", Files.readAllBytes(log("robot.wpilog", null, "/x", 0, false)));
+    var replaced = new java.util.concurrent.atomic.AtomicBoolean();
     local.beforePlacement(source -> {
-      try { Files.writeString(source, "replaced after inspection"); }
+      assertFalse(manager.testIsLogLoaded(source.toString()),
+          "The mutation must run after releasing cached mappings, including on Windows");
+      try { Files.writeString(source, "replaced after inspection"); replaced.set(true); }
       catch (IOException e) { throw new java.io.UncheckedIOException(e); }
     });
     local.verify(entry.localName());
-    assertThrows(IOException.class, () -> local.verified(entry));
+    assertTrue(manager.testIsLogLoaded(root.resolve(entry.localName()).toString()),
+        "Verification must supply the cached reader exercised by this regression");
+    var refusal = assertThrows(IOException.class, () -> local.verified(entry));
+    assertTrue(replaced.get(), "The injected replacement must succeed before testing revalidation");
+    var cause = assertInstanceOf(IOException.class, refusal.getCause());
+    assertEquals("Pulled file changed after verification; retry before placement", cause.getMessage());
+    assertEquals("replaced after inspection", Files.readString(root.resolve(entry.localName())));
+    assertEquals(List.of(entry), local.manifest().files());
     assertTrue(StoreCatalog.read(root, security).files().isEmpty());
   }
 

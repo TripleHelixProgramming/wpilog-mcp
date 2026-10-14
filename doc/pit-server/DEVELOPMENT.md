@@ -237,7 +237,10 @@ remain failures. `HarnessPullManifestTest` forces this race and checks the refus
 depending on thread timing; `RemoteLogInventoryTest` checks both backend listings.
 
 Platform regressions run in the ordinary test suite: `ProviderReasonDescriptionTest` checks
-the provider paragraph with both LF and CRLF, including its blank-line boundary.
+the provider paragraph with both LF and CRLF, including its blank-line boundary. The staged-file
+replacement case in `PullStoreTest` injects its change after cached readers are released and before
+queued revalidation, so Windows can perform the mutation. It requires the specific verification
+refusal, an unchanged pull receipt and a retained staged file; a failed injection is not a pass.
 
 The simulated robot also owns a separate ntcore client instance connected only to the gateway. It
 subscribes to every scripted topic and schema, records the received server timestamps in a separate
