@@ -66,6 +66,10 @@ class CaptureShutdownTest {
         loop.advance(250_000);
         var closing = threads.submit(service::close);
         loop.until(() -> fileClosed.get() > alreadyClosed);
+        // Writer shutdown closes the file before the separately queued client disconnect.
+        // Keep the manual loop running so the remaining wait is only store completion.
+        loop.until(() -> !service.live().connected());
+        assertFalse(service.live().connected(), "NT4 disconnect must finish while the import still holds the store queue");
         try { assertThrows(TimeoutException.class, () -> closing.get(200, TimeUnit.MILLISECONDS)); }
         finally { release.countDown(); }
         closing.get(10, TimeUnit.SECONDS); importing.get(10, TimeUnit.SECONDS);

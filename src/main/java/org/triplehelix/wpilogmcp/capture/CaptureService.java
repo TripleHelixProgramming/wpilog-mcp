@@ -18,6 +18,8 @@ public final class CaptureService implements AutoCloseable {
   static final Duration CLOSE_TIMEOUT = Duration.ofSeconds(30);
   private final Duration closeTimeout;
   private final Nt4Client client;
+  private final CaptureWriter writer;
+  private final ClientScheduler loop;
   private final LiveCapture live;
   private final org.triplehelix.wpilogmcp.nt4.client.LoopWatchdog watchdog;
   private final org.triplehelix.wpilogmcp.nt4.server.Nt4Gateway gateway;
@@ -74,7 +76,7 @@ public final class CaptureService implements AutoCloseable {
       CaptureWriter.OutputFactory outputs, Duration closeTimeout,
       org.triplehelix.wpilogmcp.capture.pull.PullCoordinator.Factory pulls, String bindAddress,
       ClientScheduler binds) throws IOException {
-    this.closeTimeout = closeTimeout;
+    this.closeTimeout = closeTimeout; this.loop = loop;
     watchdog = new org.triplehelix.wpilogmcp.nt4.client.LoopWatchdog(loop);
     store = manager.stores().store(config.store());
     live = new LiveCapture(store.root(), loop);
@@ -89,10 +91,11 @@ public final class CaptureService implements AutoCloseable {
     observation = store.observe(live);
     placement = store.captures(clock);
     placement.onStatus(live::status);
-    var writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs(), live::robotNowUs), config.maxFileBytes(), outputs);
+    writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs(), live::robotNowUs), config.maxFileBytes(), outputs);
     var gate = new org.triplehelix.wpilogmcp.capture.pull.PullGate(loop::nowUs, config.pull().settleUs());
     providers = (config.providers().jvm() != null || config.providers().robotSsh() || !config.providers().tails().isEmpty() || !config.providers().photonvision().isEmpty() || pulls == null && config.pull().active())
         ? new org.triplehelix.wpilogmcp.capture.context.ContextProviders(config, writer, live, loop, store, clock) : null;
+    writer.onActivity(() -> { if (providers != null) providers.sessionChanged(); });
     var factory = pulls == null ? (org.triplehelix.wpilogmcp.capture.pull.PullCoordinator.Factory)
         (settings, admission, storage, wall, identity) -> new org.triplehelix.wpilogmcp.capture.pull.PullCoordinator(
             settings, admission, storage, wall, identity, ClientScheduler.daemon("robot-pull"), (address, options, pin) -> providers.pull(address, options, pin)) : pulls;
@@ -120,7 +123,7 @@ public final class CaptureService implements AutoCloseable {
   }
 
   @Override public void close() {
-    stopping.set(true);
+    if (!stopping.compareAndSet(false, true)) return;
     watchdog.close();
     live.stop();
     var providersClosed = providers == null ? java.util.concurrent.CompletableFuture.completedFuture(null) : providers.closeAsync();
@@ -132,8 +135,10 @@ public final class CaptureService implements AutoCloseable {
     try {
       // One bound covers stopping the writer and waiting behind imports for the final manifest.
       var recovery = starting;
+      loop.execute(writer::shutdown);
       java.util.concurrent.CompletableFuture.allOf(client.closeAsync(), recovery == null
           ? java.util.concurrent.CompletableFuture.completedFuture(null) : recovery.handle((ignored, error) -> null), pullClosed, gatewayClosed, providersClosed)
+          .thenCompose(ignored -> writer.admissionCompletion())
           .thenCompose(ignored -> placement.completion())
           .get(closeTimeout.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
     } catch (InterruptedException e) {

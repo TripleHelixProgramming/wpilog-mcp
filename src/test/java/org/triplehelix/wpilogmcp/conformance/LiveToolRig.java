@@ -73,7 +73,10 @@ final class LiveToolRig implements AutoCloseable {
   }
   void announce(String name, String type) throws Exception {
     gateway.announce(name, type, new JsonObject()).get(); pump(() -> service.live().topics().containsKey(name));
+    awaitRecording();
   }
+  /** Topic receipt precedes store admission; tool scenarios need the recording before querying it. */
+  void awaitRecording() { pump(() -> service.live().current() != null && service.live().current().open()); }
   void value(String name, long timestamp, int code, Object value) throws Exception {
     long before = service.live().receivedValues(); gateway.value(name, timestamp, code, value).get();
     pump(() -> service.live().receivedValues() > before);

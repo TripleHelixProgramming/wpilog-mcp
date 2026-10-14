@@ -160,7 +160,7 @@ public final class ContextProviders implements AutoCloseable {
     publish();
   }
   public void sessionChanged() {
-    var current = writer.session(); open = connected && current != null && current.open();
+    var current = writer.session(); open = connected && current != null && current.open() && writer.ready();
     if (current != session) {
       if (session != null) episode.incrementAndGet();
       session = current; kernel = null; statsStatus = null; live.clearProviders(); records = 0; bytes = 0; sampleBytes = 0; programPids.clear();

@@ -32,7 +32,8 @@ import org.triplehelix.wpilogmcp.capture.context.DeviceIdentity;
 /**
  * The NT4 listener is the only writer. Time-sync replies, not possibly ancient retained values,
  * identify a continuing robot clock. Completed writes publish the live index on this loop;
- * manifest work takes snapshots and never waits here, except when creating a capture.
+ * manifest work takes snapshots and never waits here. Admission buffers ordered events while
+ * placement runs elsewhere, with explicit byte, event and time limits.
  * Periodic force runs on a dedicated thread, with at most one outstanding flush. Completion
  * returns to the listener loop before touching the index; close/rollover wait for that force.
  */
@@ -49,14 +50,23 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
   public interface Observer {
     Path create(String address, Instant startedAt) throws IOException;
-    /** Creation is the only store barrier, including reopening a previously hashed file. */
+    /** Synchronous compatibility for callers outside the NT4 listener. */
     default Path create(String address, Instant startedAt, Session previous) throws IOException {
       return previous == null ? create(address, startedAt) : previous.path();
     }
     default Path create(String address, Instant startedAt, Session previous, DeviceIdentity identity) throws IOException {
       return create(address, startedAt, previous);
     }
-    /** A file creation barrier: the old writer and mapping are closed before directory promotion. */
+    /** Cheap observers complete inline; store placement overrides this without joining its queue. */
+    default CompletableFuture<Path> createAsync(String address, Instant start, Session previous, DeviceIdentity identity) {
+      try { return CompletableFuture.completedFuture(create(address, start, previous, identity)); }
+      catch (IOException e) { return CompletableFuture.failedFuture(e); }
+    }
+    /** A late admission has no writer: retain its explicit failure instead of an empty healthy session. */
+    default CompletableFuture<Void> abandoned(Path path, Instant endedAt, String reason) {
+      return CompletableFuture.completedFuture(null);
+    }
+    /** Identity updates preserve the current file; directory promotion follows close. */
     default void identity(Session session) throws IOException {}
     default void opened(Session session, boolean resumed) throws IOException {}
     default void entry(Session session, EntryInfo entry) throws IOException {}
@@ -89,6 +99,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     private long minUs = Long.MAX_VALUE, maxUs = Long.MIN_VALUE, sizeBytes, observedAtUs;
     private final List<ClosedFile> files = new ArrayList<>();
     private final Map<String, TopicCost> costs = new LinkedHashMap<>();
+    private Instant observedAt;
     private volatile Map<String, TopicCost.Snapshot> closedCosts = Map.of();
     private List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> providers = List.of();
     private org.triplehelix.wpilogmcp.capture.context.ProviderStatus.KernelClock kernelClock;
@@ -107,6 +118,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     public long maxTimestampUs() { return maxUs == Long.MIN_VALUE ? 0 : maxUs; }
     public long sizeBytes() { return sizeBytes; }
     public long observedAtUs() { return observedAtUs; }
+    public Instant observedAt() { return observedAt; }
     public List<ClosedFile> files() { return List.copyOf(files); }
     /** Accounting through the last closed file, safe to inspect after the listener has stopped. */
     public Map<String, TopicCost.Snapshot> closedCosts() { return closedCosts; }
@@ -147,6 +159,191 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   private boolean haveClock;
   private long serverUs, receiptUs, nextReportUs;
   private long rejected;
+  /** Encoded event bytes plus a fixed allowance per event bound the startup backlog. */
+  public record AdmissionLimits(long bytes, int events, long timeoutUs, int drainEvents, long drainUs) {
+    public AdmissionLimits {
+      if (bytes < 1 || events < 1 || timeoutUs < 1 || drainEvents < 1 || drainUs < 1)
+        throw new IllegalArgumentException("Invalid capture admission limits");
+    }
+  }
+  public static final AdmissionLimits ADMISSION_LIMITS = new AdmissionLimits(16L << 20, 65_536, 30_000_000, 256, 2_000);
+  private final AdmissionLimits admissionLimits;
+  private record Deferred(Runnable action, long bytes, long receivedUs, Instant wall) {}
+  private final java.util.ArrayDeque<Deferred> deferred = new java.util.ArrayDeque<>();
+  private long deferredBytes, admissionGeneration;
+  private Deferred replaying;
+  private boolean draining, drainQueued, waitingForRetirement;
+  private volatile boolean shutdown;
+  private volatile String admissionFailure;
+  private Runnable activity = () -> {};
+  private static final class Opening {
+    final long generation;
+    final String address;
+    final Instant start;
+    final Session previous;
+    final DeviceIdentity identity;
+    final CompletableFuture<Void> done = new CompletableFuture<>();
+    volatile String cancelled;
+    Opening(long generation, String address, Instant start, Session previous, DeviceIdentity identity) {
+      this.generation = generation; this.address = address; this.start = start;
+      this.previous = previous; this.identity = identity;
+    }
+  }
+  private volatile Opening opening;
+  private volatile CompletableFuture<Void> admissionCompletion = CompletableFuture.completedFuture(null);
+  public void onActivity(Runnable callback) { activity = callback; }
+  public String admissionFailure() { return admissionFailure; }
+  public boolean ready() { return output != null && opening == null && deferred.isEmpty() && !draining; }
+  public CompletableFuture<Void> admissionCompletion() { return admissionCompletion; }
+  private long nowUs() { return replaying == null ? loop.nowUs() : replaying.receivedUs(); }
+  private Instant wallNow() { return replaying == null ? wallClock.instant() : replaying.wall(); }
+
+  private boolean defer(Runnable action, java.util.function.LongSupplier bytes) {
+    if (replaying != null || opening == null && deferred.isEmpty() && !draining) return false;
+    if (opening != null && opening.cancelled != null && !waitingForRetirement) return false;
+    long cost = 256 + bytes.getAsLong();
+    if (deferred.size() >= admissionLimits.events() || cost > admissionLimits.bytes() - deferredBytes) {
+      failAdmission("Capture admission buffer exceeded " + admissionLimits.events() + " events or "
+          + admissionLimits.bytes() + " bytes; " + (deferred.size() + 1) + " pending events were not recorded");
+      return true;
+    }
+    deferred.addLast(new Deferred(action, cost, loop.nowUs(), wallClock.instant())); deferredBytes += cost;
+    return true;
+  }
+
+  private void failAdmission(String reason) {
+    admissionFailure = reason; failed = true;
+    var pending = opening;
+    if (pending != null && pending.cancelled == null) pending.cancelled = reason;
+    waitingForRetirement = false;
+    deferred.clear(); deferredBytes = 0;
+    LoggerFactory.getLogger(CaptureWriter.class).error("Capture recording stopped until a new robot clock: {}", reason);
+    if (output != null) {
+      session.endReason = reason;
+      io(() -> { closeFile(); topics.clear(); contexts.clear(); observer.closed(session); });
+    }
+    activity.run();
+  }
+
+  private boolean admit(Announce first) throws IOException {
+    if (opening != null) {
+      // A new clock may arrive before an expired request can retire its manifest. Retain the
+      // new episode, but never let two admissions mutate the placement observer's state.
+      waitingForRetirement = true;
+      enqueueFirst(first);
+      var retiring = opening;
+      loop.schedule(() -> {
+        if (opening == retiring && waitingForRetirement) failAdmission("Capture admission exceeded "
+            + admissionLimits.timeoutUs() / 1_000_000.0 + " seconds while retiring an earlier admission; "
+            + deferred.size() + " pending events were not recorded");
+      }, admissionLimits.timeoutUs());
+      return false;
+    }
+    var previous = resume ? session : null;
+    var start = previous == null ? wallNow() : previous.startedAt();
+    if (previous == null) session = null;
+    var device = identity != null && identity.address().equals(address) ? identity : previous == null ? null : previous.identity;
+    var request = new Opening(++admissionGeneration, address, start, previous, device);
+    var future = observer.createAsync(address, start, previous, device);
+    if (future.isDone()) {
+      try { admitted(request, future.join()); }
+      catch (java.util.concurrent.CompletionException e) { throw admissionError(e); }
+      return true;
+    }
+    opening = request; admissionCompletion = request.done;
+    enqueueFirst(first);
+    loop.schedule(() -> {
+      if (opening == request && request.cancelled == null) failAdmission("Capture admission exceeded "
+          + admissionLimits.timeoutUs() / 1_000_000.0 + " seconds; " + deferred.size() + " pending events were not recorded");
+    }, Math.max(0, admissionLimits.timeoutUs() - (loop.nowUs() - nowUs())));
+    future.whenComplete((path, error) -> {
+      if (shutdown) { abandon(request, path, error); return; }
+      try { loop.execute(() -> completeAdmission(request, path, error)); }
+      catch (java.util.concurrent.RejectedExecutionException e) { request.cancelled = "Capture listener stopped before admission completed"; abandon(request, path, error); }
+    });
+    activity.run(); return false;
+  }
+
+  private static long topicBytes(Announce topic) {
+    return topic == null ? 0 : topic.name().length() * 2L + topic.type().length() * 2L + topic.properties().toString().length() * 2L;
+  }
+  private void enqueueFirst(Announce first) {
+    long firstBytes = 256 + topicBytes(first);
+    // A reconnect can start another admission while replaying the previous backlog.
+    deferred.addFirst(new Deferred(() -> announce(first), firstBytes, nowUs(), wallNow())); deferredBytes += firstBytes;
+    if (deferred.size() > admissionLimits.events() || deferredBytes > admissionLimits.bytes()) {
+      failAdmission("Capture admission buffer exceeded its event or byte limit; " + deferred.size() + " pending events were not recorded");
+    }
+  }
+
+  private static IOException admissionError(Throwable error) {
+    while (error instanceof java.util.concurrent.CompletionException && error.getCause() != null) error = error.getCause();
+    return error instanceof IOException io ? io : new IOException("Capture admission failed", error);
+  }
+  private void admitted(Opening request, Path path) throws IOException {
+    if (request.previous == null) session = new Session(path, request.start, request.address, policy);
+    else { session = request.previous; session.relocate(path); }
+    session.identity = request.identity; session.providers = providers; session.kernelClock = kernelClock;
+    openFile(request.previous != null); nextReportUs = nowUs() + REPORT_PERIOD_US;
+    if (deferred.isEmpty()) activity.run();
+  }
+  private void abandon(Opening request, Path path, Throwable error) {
+    var retired = path == null ? CompletableFuture.<Void>completedFuture(null)
+        : observer.abandoned(path, wallClock.instant(), request.cancelled == null ? "Capture admission failed" : request.cancelled);
+    retired.whenComplete((ignored, failure) -> {
+      if (failure == null) request.done.complete(null); else request.done.completeExceptionally(failure);
+    });
+  }
+  private void completeAdmission(Opening request, Path path, Throwable error) {
+    if (opening != request || request.generation != admissionGeneration || request.cancelled != null || shutdown) {
+      if (request.cancelled == null) request.cancelled = "Capture admission superseded";
+      abandon(request, path, error);
+      request.done.whenComplete((ignored, retiredError) -> {
+        try { loop.execute(() -> {
+          if (opening != request) return;
+          opening = null;
+          if (retiredError != null) failAdmission("Earlier capture admission could not retire: " + retiredError.getMessage());
+          else if (waitingForRetirement && !shutdown && !failed) {
+            waitingForRetirement = false; drainDeferred(request);
+          }
+        }); } catch (java.util.concurrent.RejectedExecutionException stopped) { }
+      });
+      return;
+    }
+    if (error != null) {
+      failAdmission("Capture admission failed: " + admissionError(error).getMessage());
+      opening = null; request.done.complete(null); return;
+    }
+    opening = null;
+    // Initial file facts use the queued announcement's clock, not the later placement reply.
+    replaying = deferred.peekFirst();
+    try { io(() -> admitted(request, path)); } finally { replaying = null; }
+    if (failed) { deferred.clear(); deferredBytes = 0; request.done.complete(null); return; }
+    drainDeferred(request);
+  }
+  private void drainDeferred(Opening owner) {
+    drainQueued = false; draining = true;
+    long start = System.nanoTime(); int count = 0;
+    while (!deferred.isEmpty() && opening == null && !failed && !shutdown
+        && count < admissionLimits.drainEvents() && (count == 0 || System.nanoTime() - start < admissionLimits.drainUs() * 1000)) {
+      var event = deferred.removeFirst(); deferredBytes -= event.bytes(); replaying = event;
+      try { event.action().run(); } finally { replaying = null; }
+      count++;
+    }
+    draining = false;
+    if (!deferred.isEmpty() && opening == null && !failed && !shutdown) {
+      if (!drainQueued) { drainQueued = true; loop.execute(() -> drainDeferred(owner)); }
+    } else {
+      owner.done.complete(null);
+      if (opening == null) activity.run();
+    }
+  }
+  /** Called on the listener before its executor stops. Any abandoned input is named explicitly. */
+  public void shutdown() {
+    shutdown = true;
+    if (opening != null || !deferred.isEmpty()) failAdmission("Capture stopped during admission; " + deferred.size() + " pending events were not recorded");
+    close();
+  }
 
   public CaptureWriter(Clock wallClock, ClientScheduler loop, CapturePolicy policy, Observer observer) {
     this(wallClock, loop, policy, observer, DEFAULT_MAX_FILE_BYTES);
@@ -157,7 +354,12 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   /** The output factory permits failures after real record writes without filling a test disk. */
   public CaptureWriter(Clock wallClock, ClientScheduler loop, CapturePolicy policy, Observer observer,
       long maxFileBytes, OutputFactory outputs) {
+    this(wallClock, loop, policy, observer, maxFileBytes, outputs, ADMISSION_LIMITS);
+  }
+  CaptureWriter(Clock wallClock, ClientScheduler loop, CapturePolicy policy, Observer observer,
+      long maxFileBytes, OutputFactory outputs, AdmissionLimits limits) {
     if (maxFileBytes < 256 || maxFileBytes > org.triplehelix.wpilogmcp.log.MappedLogBytes.MAX_FILE_BYTES) throw new IllegalArgumentException("Invalid capture.max_file_bytes");
+    admissionLimits = limits;
     this.wallClock = wallClock; this.loop = loop; this.policy = policy; this.observer = observer;
     this.maxFileBytes = maxFileBytes; this.outputs = outputs;
   }
@@ -167,6 +369,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
 
   /** Called on the listener thread after SSH has supplied device evidence. */
   public void identity(DeviceIdentity device) {
+    if (defer(() -> identity(device), () -> device.json().toString().length() * 2L)) return;
     identity = device;
     if (session == null || output == null || !device.address().equals(address)) return;
     session.identity = device;
@@ -177,17 +380,19 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
 
   @Override public void connected(URI uri, String protocol) {
+    if (defer(() -> connected(uri, protocol), () -> uri.toString().length() * 2L + protocol.length() * 2L)) return;
     address = uri.getHost(); connected = true; synchronizedClock = false; resume = false;
   }
 
   @Override public void timeSync(long timestampUs, long receivedAtUs) {
+    if (defer(() -> timeSync(timestampUs, receivedAtUs), () -> 16)) return;
     long elapsed = receivedAtUs - receiptUs;
     boolean continuing = haveClock && timestampUs >= serverUs && elapsed >= 0
         && Math.abs((double) timestampUs - serverUs - elapsed) <= RECONNECT_TOLERANCE_US;
     boolean restartHere = failed && synchronizedClock && !continuing;
     if (!synchronizedClock || restartHere) {
       resume = session != null && continuing;
-      if (!continuing) failed = false;
+      if (!continuing) { failed = false; admissionFailure = null; }
       synchronizedClock = true;
     }
     serverUs = timestampUs; receiptUs = receivedAtUs; haveClock = true;
@@ -196,23 +401,14 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
 
   @Override public void announce(Announce announce) {
+    if (defer(() -> announce(announce), () -> topicBytes(announce))) return;
+    if (shutdown) return;
     if (!connected || !synchronizedClock) throw new IllegalStateException("Capture announce before time sync");
     announced.put(announce.id(), announce);
     if (failed) return;
     io(() -> {
       if (output == null) {
-        if (!resume) {
-          var now = wallClock.instant();
-          session = null; // A failed new create must not overwrite the previous session's reason.
-          var device = identity != null && identity.address().equals(address) ? identity : null;
-          session = new Session(observer.create(address, now, null, device), now, address, policy);
-          session.identity = device; session.providers = providers; session.kernelClock = kernelClock;
-        } else {
-          if (identity != null && identity.address().equals(address)) session.identity = identity;
-          session.relocate(observer.create(address, session.startedAt(), session, session.identity));
-        }
-        openFile(resume);
-        nextReportUs = loop.nowUs() + REPORT_PERIOD_US;
+        if (!admit(announce)) return;
       }
       if (policy.excluded(announce.name()) || topics.containsKey(announce.id())) return;
       long periodUs = policy.periodUs(announce.name());
@@ -237,6 +433,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
 
   /** Keep publisher properties apart from recorder provenance, including null-as-delete patches. */
   @Override public void properties(Properties change) {
+    if (defer(() -> properties(change), () -> change.name().length() * 2L + change.update().toString().length() * 2L)) return;
     for (var before : List.copyOf(announced.values())) {
       if (!before.name().equals(change.name())) continue;
       var after = before.withUpdate(change.update()); announced.put(after.id(), after);
@@ -261,7 +458,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     });
     session.files.removeIf(f -> f.name().equals(session.path().getFileName().toString()));
     session.open = true; session.endedAt = null; session.sizeBytes = output.size();
-    session.observedAtUs = loop.nowUs();
+    session.observedAtUs = nowUs(); session.observedAt = wallNow();
     observer.opened(session, append);
     scheduleFlush(output);
     writeIdentity();
@@ -299,7 +496,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
 
   /** Ordered provider hook: its own entry ids, metadata updates, rollover and the same live index. */
   public int recordContext(String name, String type, Object value, long timestampUs, JsonObject metadata) {
-    if (output == null || failed) return 0;
+    if (!ready() || failed) return 0;
     if (!name.startsWith("/Daemon/")) throw new IllegalArgumentException("Context entries belong under /Daemon/");
     var nt = NtType.fromWpilog(type); byte[] payload = WpilogOutput.payload(nt.code(), value);
     String meta = metadata.toString(); int[] bytes = {0};
@@ -327,6 +524,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   /** Facts are copied on the writer thread; state changes publish immediately, costs on flush. */
   public void providers(List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> values,
       org.triplehelix.wpilogmcp.capture.context.ProviderStatus.KernelClock kernel) {
+    var snapshot = List.copyOf(values);
+    if (defer(() -> providers(snapshot, kernel), () -> 64 + snapshot.stream().mapToLong(v -> v.toString().length() * 2L).sum())) return;
     boolean changed = providers.size() != values.size();
     if (!changed) for (int i = 0; i < values.size(); i++) {
       var a = providers.get(i); var b = values.get(i);
@@ -396,6 +595,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
 
   @Override public void unannounce(Unannounce announce) {
+    if (defer(() -> unannounce(announce), () -> announce.name().length() * 2L)) return;
     announced.remove(announce.id());
     var topic = topics.remove(announce.id());
     if (topic != null && output != null) io(() -> {
@@ -404,6 +604,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
 
   @Override public void value(Announce announce, ValueFrame frame, long receivedAtUs) {
+    if (defer(() -> value(announce, frame, receivedAtUs), () -> frame.encode().length + topicBytes(announce))) return;
     var topic = topics.get(announce.id());
     if (topic == null || output == null || failed) return;
     var cost = session.costs.get(announce.name());
@@ -425,6 +626,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
 
   @Override public void invalidValue(Announce topic, int typeCode) {
+    if (defer(() -> invalidValue(topic, typeCode), () -> 16 + topicBytes(topic))) return;
     rejected++;
     if (session != null && topic != null) session.costs.computeIfAbsent(topic.name(), ignored -> new TopicCost()).drop();
   }
@@ -455,7 +657,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     var pending = pendingForce;
     if (pending == null) return;
     pendingForce = null;
-    try { session.observedAtUs = pending.join(); }
+    try { long completedAt = pending.join(); if (ready()) session.observedAtUs = completedAt; }
     catch (java.util.concurrent.CompletionException e) {
       if (e.getCause() instanceof IOException failure) throw failure;
       throw new IOException("Capture flush failed", e.getCause());
@@ -468,7 +670,10 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     }
   }
 
-  @Override public void disconnected() { connected = false; announced.clear(); close(); }
+  @Override public void disconnected() {
+    if (defer(this::disconnected, () -> 0)) return;
+    connected = false; announced.clear(); close();
+  }
 
   private void closeFile() throws IOException {
     var closing = output;
@@ -485,8 +690,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
     try { closing.close(); }
     catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
-    session.nextEntry = closing.nextEntry(); session.open = false; session.endedAt = wallClock.instant();
-    session.observedAtUs = loop.nowUs();
+    session.nextEntry = closing.nextEntry(); session.open = false; session.endedAt = wallNow();
+    session.observedAtUs = nowUs();
     var costs = new LinkedHashMap<String, TopicCost.Snapshot>();
     session.costs.forEach((name, cost) -> costs.put(name, cost.snapshot(session.observedAtUs)));
     session.closedCosts = Map.copyOf(costs);
@@ -500,13 +705,20 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
 
   @Override public void close() {
+    if (!shutdown && defer(this::close, () -> 0)) return;
     if (output == null) return;
     io(() -> { closeFile(); topics.clear(); contexts.clear(); observer.closed(session); });
   }
 
   @FunctionalInterface private interface IO { void run() throws IOException; }
   private void io(IO operation) {
-    try { operation.run(); }
+    try {
+      if (session != null && (replaying != null || ready())) {
+        session.observedAt = wallNow();
+        if (replaying != null) session.observedAtUs = nowUs();
+      }
+      operation.run();
+    }
     catch (IOException e) {
       failed = true;
       if (session != null) session.endReason = "Capture write failed: " + e.getMessage();
@@ -514,7 +726,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       try { closeFile(); } catch (IOException close) { e.addSuppressed(close); }
       topics.clear(); contexts.clear();
       if (session != null) {
-        session.open = false; session.endedAt = wallClock.instant(); session.observedAtUs = loop.nowUs();
+        session.open = false; session.endedAt = wallNow(); session.observedAtUs = nowUs();
         try { observer.closed(session); }
         catch (IOException close) { LoggerFactory.getLogger(CaptureWriter.class).error("Capture failure could not be recorded", close); }
       }

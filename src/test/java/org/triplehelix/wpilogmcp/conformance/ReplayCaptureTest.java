@@ -62,4 +62,62 @@ class ReplayCaptureTest {
       }
     }
   }
+  @Test void pullReplayKeepsTheListenerResponsiveAndWaitsForAsyncAdmission() throws Exception {
+    try (var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 1_000_000L, java.util.List.of(Nt4Client.V40))) {
+      gateway.start().get(10, TimeUnit.SECONDS);
+      var device = new org.triplehelix.wpilogmcp.capture.context.DeviceIdentity("ASYNC-REPLAY", "fixture", "127.0.0.1", "SHA256:fixture", java.util.Map.of());
+      try (var capture = new ReplayCapture(RobotAddress.uri("127.0.0.1", gateway.port(), "async-admission"),
+          directory.resolve("unused.wpilog"), directory.resolve("capture"), Clock.systemUTC(), device)) {
+        var entered = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
+        var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        try {
+          var importing = capture.store.importPaths(new org.triplehelix.wpilogmcp.store.LogStore.Request(java.util.List.of(), false, null), progress -> {
+            if (progress.phase().equals("starting")) { entered.countDown(); try { release.await(5, TimeUnit.SECONDS); }
+              catch (InterruptedException e) { throw new AssertionError(e); } }
+          });
+          assertTrue(entered.await(5, TimeUnit.SECONDS)); timer.schedule(release::countDown, 1, TimeUnit.SECONDS);
+          long begin = System.nanoTime(); gateway.announce("/x", "int", new com.google.gson.JsonObject()).get();
+          org.triplehelix.wpilogmcp.harness.HarnessHttp.await("ordered announcement callback", 5, () -> capture.announcements.get() == 1);
+          double waitMs = (System.nanoTime() - begin) / 1e6;
+          assertTrue(waitMs < 250, "Replay observer must forward async admission, loop waited " + waitMs + " ms");
+          var ready = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try { capture.ready(1); } catch (Exception e) { throw new java.util.concurrent.CompletionException(e); }
+          });
+          assertThrows(java.util.concurrent.TimeoutException.class, () -> ready.get(50, TimeUnit.MILLISECONDS), "Replay readiness must await the recording, not just its topic table");
+          release.countDown(); importing.get(5, TimeUnit.SECONDS); ready.get(5, TimeUnit.SECONDS);
+          assertTrue(capture.writer.ready()); assertEquals(1, capture.files.size());
+        } finally { release.countDown(); timer.shutdownNow(); }
+      }
+    }
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void stoppedPullReplayRetiresItsPendingManifestBeforeReturning(boolean manual) throws Exception {
+    var loop = manual ? new ManualScheduler() : org.triplehelix.wpilogmcp.nt4.client.ClientScheduler.daemon();
+    try (var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 1_000_000L, java.util.List.of(Nt4Client.V40))) {
+      gateway.start().get(10, TimeUnit.SECONDS);
+      var device = new org.triplehelix.wpilogmcp.capture.context.DeviceIdentity("CANCELLED-REPLAY", "fixture", "127.0.0.1", "SHA256:fixture", java.util.Map.of());
+      try (var capture = new ReplayCapture(RobotAddress.uri("127.0.0.1", gateway.port(), "cancel-admission"),
+          directory.resolve("unused.wpilog"), directory.resolve("capture"), Clock.systemUTC(), device, 1L << 20, loop)) {
+        var entered = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
+        var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        try {
+          var importing = capture.store.importPaths(new org.triplehelix.wpilogmcp.store.LogStore.Request(java.util.List.of(), false, null), progress -> {
+            if (progress.phase().equals("starting")) { entered.countDown(); try { release.await(5, TimeUnit.SECONDS); }
+              catch (InterruptedException e) { throw new AssertionError(e); } }
+          });
+          assertTrue(entered.await(5, TimeUnit.SECONDS)); timer.schedule(release::countDown, 1, TimeUnit.SECONDS);
+          gateway.announce("/x", "int", new com.google.gson.JsonObject()).get();
+          if (loop instanceof ManualScheduler scheduler) scheduler.until(() -> capture.announcements.get() == 1);
+          else org.triplehelix.wpilogmcp.harness.HarnessHttp.await("ordered announcement callback", 5, () -> capture.announcements.get() == 1);
+          capture.stop(); importing.get(5, TimeUnit.SECONDS);
+          var catalog = org.triplehelix.wpilogmcp.store.StoreCatalog.readManaged(capture.directory, capture.manager.testGetSecurityValidator());
+          assertEquals(1, catalog.sessions().size()); assertTrue(catalog.files().isEmpty()); assertTrue(catalog.openCaptures().isEmpty());
+          assertTrue(String.valueOf(catalog.sessions().get(0).session().endReason()).contains("Capture stopped during admission"));
+        } finally { release.countDown(); timer.shutdownNow(); }
+      }
+    }
+  }
+
 }

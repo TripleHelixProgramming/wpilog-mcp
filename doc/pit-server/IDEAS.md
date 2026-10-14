@@ -4,6 +4,14 @@
 > retained for development and controlled shop evaluation, not as a recommendation for team use.
 > Automated tests and simulation do not establish reliability on a real robot.
 
+## Admission visibility and storage cost
+
+Admission failures are immediately logged and later recorded in a session manifest if placement
+produces a path. A live pending-admission/failure field before a session exists remains future work;
+`list_sessions` does not invent a session for it. The two-millisecond replay slice checks between
+events and cannot cap one filesystem write or flush. Measure storage stalls and sustained backlog
+behavior on the installed shop machine before choosing different byte/event/deadline defaults.
+
 ## 9. The Pit Server
 
 ### 9.1 Live Capture, Gateway, and the Long-Term Record

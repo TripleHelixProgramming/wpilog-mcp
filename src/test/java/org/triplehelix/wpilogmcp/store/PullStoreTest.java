@@ -67,7 +67,10 @@ class PullStoreTest {
     });
   }
   PullManifest.Entry pull(FakeRobot remote) throws Exception {
-    var local = store.pulls(remote.device, WALL); var clock = new AtomicLong();
+    return pull(remote, local -> {});
+  }
+  PullManifest.Entry pull(FakeRobot remote, java.util.function.Consumer<PullStore> configure) throws Exception {
+    var local = store.pulls(remote.device, WALL); configure.accept(local); var clock = new AtomicLong();
     var transfer = new FileTransfer(remote, local, local.manifest(), 1_000_000, clock::get, () -> true);
     for (int n = 0; n < 100; n++) {
       var result = transfer.step(); clock.addAndGet(Math.max(1, result.waitUs()));
@@ -78,6 +81,374 @@ class PullStoreTest {
   }
   StoreCatalog.StoredFile placed(PullManifest.Entry entry) throws Exception {
     return StoreCatalog.read(root, security).files().stream().filter(f -> f.path().equals(root.resolve(entry.localName()))).findFirst().orElseThrow();
+  }
+
+  private PullManifest.Entry staged(PullStore local, String remote, byte[] bytes) throws Exception {
+    local.manifest();
+    String name = local.create(remote); local.append(name, 0, bytes);
+    var entry = new PullManifest.Entry(remote, bytes.length, WALL.millis(), bytes.length, false, name, 0, null);
+    local.save(new PullManifest(1, "SYNTHETIC-A", List.of(entry), List.of()));
+    return entry;
+  }
+
+  @Test void slowLocalPrefixHashDoesNotHoldTheCaptureAnnounceLoop() throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    byte[] bytes = new byte[131_072]; java.util.Arrays.fill(bytes, (byte) 37);
+    var entry = staged(local, "/u/logs/prefix.wpilog", bytes);
+    var hashing = new java.util.concurrent.CountDownLatch(1);
+    local.prefixHasher((path, length) -> {
+      hashing.countDown();
+      try { Thread.sleep(750); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException(e); }
+      return PullStore.hashPrefix(path, length);
+    });
+    var workers = java.util.concurrent.Executors.newSingleThreadExecutor();
+    try {
+      var hash = workers.submit(() -> local.prefixHash(entry.localName(), bytes.length));
+      assertTrue(hashing.await(10, TimeUnit.SECONDS));
+      measureAnnounce("local prefix hash");
+      String expected = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+      assertEquals(expected, hash.get(10, TimeUnit.SECONDS));
+    } finally { workers.shutdownNow(); }
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"append", "checkpoint", "truncate", "save"})
+  void localMutationsRetirePreparedWpilogReaders(String operation) throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/prepared.wpilog", Files.readAllBytes(log("prepared.wpilog", null, "/x", 0, false)));
+    local.verify(entry.localName());
+    assertThrows(IOException.class, () -> org.triplehelix.wpilogmcp.log.LogFileAccess.move(List.of(root.resolve(entry.localName()))),
+        "verification must actually hold the WPILOG reader before the mutation");
+    mutatePrepared(local, entry, operation);
+    assertTrue(manager.release(root.resolve(entry.localName())).released(), "mutation must release the prepared WPILOG reader");
+    try (var ignored = org.triplehelix.wpilogmcp.log.LogFileAccess.move(List.of(root.resolve(entry.localName())))) {
+      assertThrows(IOException.class, () -> local.verified(entry), "mutation requires fresh verification");
+    }
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"append", "checkpoint", "truncate", "save"})
+  void localMutationsCancelAnOverlappingVerification(String operation) throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/preparing.wpilog", Files.readAllBytes(log("preparing.wpilog", null, "/x", 0, false)));
+    var started = new java.util.concurrent.CountDownLatch(1); var resume = new java.util.concurrent.CountDownLatch(1);
+    local.parsers(() -> {
+      started.countDown();
+      try { if (!resume.await(10, TimeUnit.SECONDS)) throw new IOException("Timed out waiting for test mutation"); }
+      catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException(e); }
+      return new org.triplehelix.wpilogmcp.revlog.RevLogParser(new org.triplehelix.wpilogmcp.revlog.dbc.DbcLoader().load(null));
+    });
+    var worker = java.util.concurrent.Executors.newSingleThreadExecutor();
+    try {
+      var verification = worker.submit(() -> { local.verify(entry.localName()); return null; });
+      assertTrue(started.await(10, TimeUnit.SECONDS));
+      mutatePrepared(local, entry, operation); resume.countDown();
+      var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> verification.get(10, TimeUnit.SECONDS));
+      assertInstanceOf(IOException.class, failure.getCause());
+      assertTrue(manager.release(root.resolve(entry.localName())).released(), "cancelled verification must release its WPILOG reader");
+      try (var ignored = org.triplehelix.wpilogmcp.log.LogFileAccess.move(List.of(root.resolve(entry.localName())))) {
+        assertThrows(IOException.class, () -> local.verified(entry));
+      }
+    } finally { resume.countDown(); worker.shutdownNow(); }
+  }
+
+  @Test void localMutationClosesItsPreparedReaderBeforeWaitingForTheQueue() throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/before.wpilog", Files.readAllBytes(log("before.wpilog", null, "/x", 0, false)));
+    local.verify(entry.localName());
+    var blocked = new java.util.concurrent.CountDownLatch(1); var releaseQueue = new java.util.concurrent.CountDownLatch(1);
+    var blocker = store.captureAsync(io -> {
+      blocked.countDown();
+      try { if (!releaseQueue.await(10, TimeUnit.SECONDS)) throw new IOException("Timed out waiting for test queue"); }
+      catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException(e); }
+      return null;
+    });
+    var worker = java.util.concurrent.Executors.newSingleThreadExecutor();
+    var mutating = new java.util.concurrent.atomic.AtomicReference<Thread>();
+    try {
+      assertTrue(blocked.await(10, TimeUnit.SECONDS));
+      var mutation = worker.submit(() -> { mutating.set(Thread.currentThread()); local.append(entry.localName(), entry.bytesCopied(), new byte[0]); return null; });
+      awaitStoreJoin(mutating);
+      assertTrue(manager.release(root.resolve(entry.localName())).released(), "retained reader must retire before staged mutation can run");
+      releaseQueue.countDown(); blocker.get(10, TimeUnit.SECONDS); mutation.get(10, TimeUnit.SECONDS);
+    } finally { releaseQueue.countDown(); worker.shutdownNow(); }
+  }
+
+  @Test void localMutationRetiresVerificationStartedWhileItWaitsForTheQueue() throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/queued.wpilog", Files.readAllBytes(log("queued.wpilog", null, "/x", 0, false)));
+    var blocked = new java.util.concurrent.CountDownLatch(1); var releaseQueue = new java.util.concurrent.CountDownLatch(1);
+    var parsing = new java.util.concurrent.CountDownLatch(1); var releaseParser = new java.util.concurrent.CountDownLatch(1);
+    local.parsers(() -> {
+      parsing.countDown();
+      try { if (!releaseParser.await(10, TimeUnit.SECONDS)) throw new IOException("Timed out waiting for test mutation"); }
+      catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException(e); }
+      return new org.triplehelix.wpilogmcp.revlog.RevLogParser(new org.triplehelix.wpilogmcp.revlog.dbc.DbcLoader().load(null));
+    });
+    var blocker = store.captureAsync(io -> {
+      blocked.countDown();
+      try { if (!releaseQueue.await(10, TimeUnit.SECONDS)) throw new IOException("Timed out waiting for test queue"); }
+      catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException(e); }
+      return null;
+    });
+    var workers = java.util.concurrent.Executors.newFixedThreadPool(2);
+    var mutating = new java.util.concurrent.atomic.AtomicReference<Thread>();
+    var verifying = new java.util.concurrent.atomic.AtomicReference<Thread>();
+    try {
+      assertTrue(blocked.await(10, TimeUnit.SECONDS));
+      var mutation = workers.submit(() -> { mutating.set(Thread.currentThread()); local.append(entry.localName(), entry.bytesCopied(), new byte[0]); return null; });
+      awaitStoreJoin(mutating);
+      var verification = workers.submit(() -> { verifying.set(Thread.currentThread()); local.verify(entry.localName()); return null; });
+      awaitStoreJoin(verifying);
+      releaseQueue.countDown(); blocker.get(10, TimeUnit.SECONDS); mutation.get(10, TimeUnit.SECONDS);
+      assertTrue(parsing.await(10, TimeUnit.SECONDS)); releaseParser.countDown();
+      var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> verification.get(10, TimeUnit.SECONDS));
+      assertInstanceOf(IOException.class, failure.getCause());
+      assertTrue(manager.release(root.resolve(entry.localName())).released());
+      try (var ignored = org.triplehelix.wpilogmcp.log.LogFileAccess.move(List.of(root.resolve(entry.localName())))) { }
+    } finally { releaseQueue.countDown(); releaseParser.countDown(); workers.shutdownNow(); }
+  }
+
+  private static void awaitStoreJoin(java.util.concurrent.atomic.AtomicReference<Thread> worker) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (System.nanoTime() < deadline) {
+      var thread = worker.get();
+      if (thread != null && thread.getState() == Thread.State.WAITING && java.util.Arrays.stream(thread.getStackTrace()).anyMatch(frame ->
+          frame.getClassName().equals(LogStore.class.getName()) && frame.getMethodName().equals("capture"))) return;
+      Thread.sleep(1);
+    }
+    fail("Worker did not reach the deliberately blocked store queue");
+  }
+
+  private void mutatePrepared(PullStore local, PullManifest.Entry entry, String operation) throws Exception {
+    switch (operation) {
+      case "append" -> local.append(entry.localName(), entry.bytesCopied(), new byte[0]);
+      case "checkpoint" -> local.checkpoint(entry.localName(), entry.bytesCopied(), new byte[0], local.manifest());
+      case "truncate" -> assertTrue(local.truncate(entry.localName(), entry.bytesCopied()));
+      case "save" -> local.save(local.manifest());
+      default -> fail("Unknown mutation: " + operation);
+    }
+  }
+
+  @Test void prefixHashRejectsBytesThatChangeDuringTheRead() throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/prefix.wpilog", new byte[]{1, 2, 3, 4});
+    local.prefixHasher((path, length) -> {
+      String digest = PullStore.hashPrefix(path, length);
+      Files.write(path, new byte[]{5, 6, 7, 8, 9}); return digest;
+    });
+    assertThrows(IOException.class, () -> local.prefixHash(entry.localName(), 4));
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"rename", "resume", "archive"})
+  void pulledRelocationWaitsForReadersOutsideTheStoreQueue(String operation) throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/robot.wpilog", Files.readAllBytes(log("robot.wpilog", null, "/x", 0, false)));
+    local.verify(entry.localName());
+    String placed = local.verified(entry);
+    var saved = new PullManifest.Entry(entry.remoteName(), entry.size(), entry.mtimeMillis(), entry.bytesCopied(), true, placed, entry.retries(), entry.failure());
+    local.save(new PullManifest(1, "SYNTHETIC-A", List.of(saved), List.of()));
+    var source = root.resolve(placed);
+    var reader = org.triplehelix.wpilogmcp.log.LogFileAccess.read(source);
+    var workers = java.util.concurrent.Executors.newScheduledThreadPool(2);
+    try {
+      var relocated = workers.submit(() -> switch (operation) {
+        case "rename" -> local.rename(placed, "/U/logs/renamed.wpilog");
+        case "resume" -> local.resume(saved);
+        default -> local.archive(placed);
+      });
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10); boolean reserved = false;
+      while (System.nanoTime() < deadline) {
+        try (var probe = org.triplehelix.wpilogmcp.log.LogFileAccess.read(source)) { Thread.sleep(1); }
+        catch (org.triplehelix.wpilogmcp.log.LogFileException expected) { reserved = true; break; }
+      }
+      assertTrue(reserved, "Relocation did not reserve its source");
+      workers.schedule(reader::close, 750, TimeUnit.MILLISECONDS);
+      measureAnnounce(operation + " reader drain");
+      var target = root.resolve(relocated.get(10, TimeUnit.SECONDS));
+      assertFalse(Files.exists(source)); assertTrue(Files.exists(target));
+      var catalog = StoreCatalog.readManaged(root, security);
+      assertEquals(operation.equals("archive"), catalog.files().stream().anyMatch(f -> f.path().equals(target)));
+    } finally { reader.close(); workers.shutdownNow(); }
+  }
+
+  @Test void pulledRelocationRechecksTheSourceAfterWaitingForReaders() throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/robot.wpilog", new byte[]{1, 2, 3});
+    var source = root.resolve(entry.localName());
+    var reader = org.triplehelix.wpilogmcp.log.LogFileAccess.read(source);
+    var workers = java.util.concurrent.Executors.newSingleThreadExecutor();
+    try {
+      var relocation = workers.submit(() -> local.rename(entry.localName(), "/u/logs/renamed.wpilog"));
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10); boolean reserved = false;
+      while (System.nanoTime() < deadline) {
+        try (var probe = org.triplehelix.wpilogmcp.log.LogFileAccess.read(source)) { Thread.sleep(1); }
+        catch (org.triplehelix.wpilogmcp.log.LogFileException expected) { reserved = true; break; }
+      }
+      assertTrue(reserved, "Relocation did not reserve its source");
+      Files.write(source, new byte[]{4, 5, 6, 7}); reader.close();
+      var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> relocation.get(10, TimeUnit.SECONDS));
+      assertInstanceOf(IOException.class, failure.getCause());
+      assertArrayEquals(new byte[]{4, 5, 6, 7}, Files.readAllBytes(source));
+    } finally { reader.close(); workers.shutdownNow(); }
+  }
+
+  @Test void stagedRelocationDoesNotReadUnrelatedSessionPayloads() throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/robot.wpilog", new byte[]{1, 2, 3});
+    var unrelated = seed("SYNTHETIC-B", "unrelated", log("other.wpilog", null, "/x", 0, false));
+    Files.delete(unrelated);
+    String relocated = local.rename(entry.localName(), "/u/logs/renamed.wpilog");
+    assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(root.resolve(relocated)));
+  }
+
+  private void measureAnnounce(String blocker) throws Exception {
+    measureStoreProgress(blocker);
+    var placement = store.captures(WALL); var loop = new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler();
+    try (var writer = new org.triplehelix.wpilogmcp.capture.CaptureWriter(WALL, loop,
+        org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, placement)) {
+      writer.connected(org.triplehelix.wpilogmcp.nt4.client.RobotAddress.uri("127.0.0.1", 5810, "slow-pull"), "networktables.first.wpi.edu");
+      writer.timeSync(10_000_000, 0);
+      long start = System.nanoTime();
+      writer.announce(new org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce("/x", 1, "double", null, new com.google.gson.JsonObject()));
+      double millis = (System.nanoTime() - start) / 1_000_000.0;
+      System.out.println("S7 slow " + blocker + "=750 ms; announce_wait_ms=" + millis);
+      assertTrue(millis < 400, "Announce waited behind " + blocker + ": " + millis + " ms");
+      loop.until(writer::ready); // Await admission after measuring the listener call itself.
+      assertNotNull(writer.session());
+    }
+    placement.completion().get(10, TimeUnit.SECONDS);
+  }
+
+  private void measureStoreProgress(String blocker) throws Exception {
+    long start = System.nanoTime();
+    assertNotNull(store.capture(io -> io.read(root.resolve("store.json"), Header.class)));
+    double millis = (System.nanoTime() - start) / 1_000_000.0;
+    System.out.println("S7 " + blocker + "; metadata_wait_ms=" + millis);
+    assertTrue(millis < 400, "Store metadata waited behind " + blocker + ": " + millis + " ms");
+  }
+
+  @Test void slowPulledParseDoesNotHoldTheCaptureAnnounceLoop() throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    byte[] nativeRev = {0, 1, 10, 5, 0, 0, 0, 1, 0, 0, 0, 0, 0};
+    var entry = staged(local, "/u/logs/REV_20260307_142233.revlog", nativeRev);
+    var parsing = new java.util.concurrent.CountDownLatch(1);
+    local.parsers(() -> new org.triplehelix.wpilogmcp.revlog.RevLogParser(new org.triplehelix.wpilogmcp.revlog.dbc.DbcLoader().load(null)) {
+      @Override public org.triplehelix.wpilogmcp.revlog.ParsedRevLog parseComplete(Path path) throws IOException {
+        parsing.countDown();
+        try { Thread.sleep(750); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException(e); }
+        return super.parseComplete(path);
+      }
+    });
+    var workers = java.util.concurrent.Executors.newSingleThreadExecutor();
+    try {
+      var parse = workers.submit(() -> { local.verify(entry.localName()); return null; });
+      assertTrue(parsing.await(10, TimeUnit.SECONDS));
+      measureStoreProgress("pulled parsing");
+      var placement = store.captures(WALL); var loop = new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler();
+      try (var writer = new org.triplehelix.wpilogmcp.capture.CaptureWriter(WALL, loop,
+          org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, placement)) {
+        writer.connected(org.triplehelix.wpilogmcp.nt4.client.RobotAddress.uri("127.0.0.1", 5810, "slow-pull"), "networktables.first.wpi.edu");
+        writer.timeSync(10_000_000, 0);
+        long start = System.nanoTime();
+        writer.announce(new org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce("/x", 1, "double", null, new com.google.gson.JsonObject()));
+        double millis = (System.nanoTime() - start) / 1_000_000.0;
+        System.out.println("S7 slow native parse=750 ms; announce_wait_ms=" + millis);
+        assertTrue(millis < 400, "Announce waited behind pulled parsing: " + millis + " ms");
+        loop.until(writer::ready); // Await admission after measuring the listener call itself.
+        assertNotNull(writer.session());
+      }
+      parse.get(10, TimeUnit.SECONDS); placement.completion().get(10, TimeUnit.SECONDS);
+    } finally { workers.shutdownNow(); }
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void strictNativeRevParseIsSharedByVerificationInspectionAndMatching(boolean eligible) throws Exception {
+    if (eligible) seed("SYNTHETIC-A", "142233Z", log("capture.wpilog", null, "NT:/x", 0, false));
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/REV_20260307_142233.revlog", new byte[]{0, 1, 10, 5, 0, 0, 0, 1, 0, 0, 0, 0, 0});
+    var parses = new java.util.concurrent.atomic.AtomicInteger();
+    local.parsers(() -> new org.triplehelix.wpilogmcp.revlog.RevLogParser(new org.triplehelix.wpilogmcp.revlog.dbc.DbcLoader().load(null)) {
+      @Override public org.triplehelix.wpilogmcp.revlog.ParsedRevLog parseComplete(Path path) throws IOException {
+        parses.incrementAndGet(); return super.parseComplete(path);
+      }
+      @Override public org.triplehelix.wpilogmcp.revlog.ParsedRevLog parse(Path path) throws IOException {
+        parses.incrementAndGet(); return super.parse(path);
+      }
+    });
+    local.verify(entry.localName()); local.verified(entry);
+    System.out.println("S7 complete native decodes=" + parses.get());
+    assertEquals(1, parses.get(), "verification, inspection, and matching must share the strict decode");
+  }
+
+  @Test void replacingStagedBytesAfterMatchingIsRejectedBeforePlacement() throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/robot.wpilog", Files.readAllBytes(log("robot.wpilog", null, "/x", 0, false)));
+    local.beforePlacement(source -> {
+      try { Files.writeString(source, "replaced after inspection"); }
+      catch (IOException e) { throw new java.io.UncheckedIOException(e); }
+    });
+    local.verify(entry.localName());
+    assertThrows(IOException.class, () -> local.verified(entry));
+    assertTrue(StoreCatalog.read(root, security).files().isEmpty());
+  }
+
+  @Test void changedCandidateCalendarIsRejectedBeforePlacement() throws Exception {
+    var capture = seed("SYNTHETIC-A", "142233Z", log("capture.wpilog", null, "NT:/x", 0, false));
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/robot.wpilog", Files.readAllBytes(log("robot.wpilog", null, "/x", 0, false)));
+    local.beforePlacement(source -> {
+      try {
+        var manifest = capture.resolveSibling("session.json");
+        String text = Files.readString(manifest);
+        Files.writeString(manifest, text.replace("2026-03-07T14:22:33Z", "2026-03-01T14:22:33Z").replace("2026-03-07T14:23:33Z", "2026-03-01T14:23:33Z"));
+      } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
+    });
+    local.verify(entry.localName());
+    assertThrows(IOException.class, () -> local.verified(entry));
+    assertEquals(1, StoreCatalog.read(root, security).files().size());
+  }
+
+  @Test void anotherCandidateAppearingAfterCorrelationCannotKeepAUniqueMatch() throws Exception {
+    var capture = seed("SYNTHETIC-A", "142233Z", log("capture.wpilog", null, "NT:/x", 0, false));
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/robot.wpilog", Files.readAllBytes(log("robot.wpilog", null, "/x", 0, false)));
+    local.beforePlacement(source -> {
+      try {
+        var second = capture.getParent().resolveSibling("second"); Files.createDirectory(second);
+        Files.copy(capture, second.resolve(capture.getFileName()));
+        Files.writeString(second.resolve("session.json"), Files.readString(capture.resolveSibling("session.json")).replace("142233Z", "second"));
+      } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
+    });
+    local.verify(entry.localName());
+    assertThrows(IOException.class, () -> local.verified(entry));
+    assertEquals(2, StoreCatalog.read(root, security).files().size());
+  }
+
+  @Test void changedTransferProgressIsRejectedBeforePlacement() throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/robot.wpilog", Files.readAllBytes(log("robot.wpilog", null, "/x", 0, false)));
+    local.verify(entry.localName());
+    local.save(new PullManifest(1, "SYNTHETIC-A", List.of(new PullManifest.Entry(entry.remoteName(), entry.size(), entry.mtimeMillis(),
+        entry.bytesCopied() - 1, false, entry.localName(), 0, null)), List.of()));
+    assertThrows(IOException.class, () -> local.verified(entry));
+    assertTrue(StoreCatalog.read(root, security).files().isEmpty());
+  }
+
+  @Test void replacementBetweenStrictScanAndInspectionInvalidatesVerification() throws Exception {
+    var local = store.pulls(FakeRobot.device("SYNTHETIC-A", "SHA256:first"), WALL);
+    var entry = staged(local, "/u/logs/native.revlog", new byte[]{0, 1, 10, 5, 0, 0, 0, 1, 0, 0, 0, 0, 0});
+    local.parsers(() -> new org.triplehelix.wpilogmcp.revlog.RevLogParser(new org.triplehelix.wpilogmcp.revlog.dbc.DbcLoader().load(null)) {
+      @Override public org.triplehelix.wpilogmcp.revlog.ParsedRevLog parseComplete(Path path) throws IOException {
+        var decoded = super.parseComplete(path);
+        Files.write(path, new byte[]{0, 1, 10, 6, 0, 0, 0, 1, 0, 0, 0, 0, 0});
+        Files.setLastModifiedTime(path, java.nio.file.attribute.FileTime.fromMillis(WALL.millis() + 1000));
+        return decoded;
+      }
+    });
+    assertThrows(IOException.class, () -> local.verify(entry.localName()));
   }
 
   @Test void candidateClocksUseInclusiveTwoOrSixteenHourWindows() {
@@ -223,7 +594,7 @@ class PullStoreTest {
         org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, new org.triplehelix.wpilogmcp.capture.CaptureIndex(placement, manager, 600_000_000))) {
       writer.identity(FakeRobot.device("SYNTHETIC-A", "SHA256:first"));
       writer.connected(org.triplehelix.wpilogmcp.nt4.client.RobotAddress.uri("127.0.0.1", 5810, "live-pull"), "networktables.first.wpi.edu");
-      writer.timeSync(10_000_000, 0); writer.announce(topic);
+      writer.timeSync(10_000_000, 0); writer.announce(topic); loop.until(writer::ready);
       for (int n = 0; n <= 3000; n++) writer.value(topic, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 10_000_000 + n * 20_000L, 1,
           FixtureLogs.revlogPairOutput(10 + n * 0.02)), 0);
       loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs()); placement.completion().get(10, TimeUnit.SECONDS);
@@ -231,7 +602,15 @@ class PullStoreTest {
       var remote = new FakeRobot(); remote.device = FakeRobot.device("SYNTHETIC-B", "SHA256:second");
       store.identify(remote.device, WALL).get(10, TimeUnit.SECONDS);
       remote.files.put("/u/logs/robot.wpilog", Files.readAllBytes(log("robot.wpilog", "SYNTHETIC-A", "/Drive/FrontLeft/AppliedOutput", 0, false)));
-      var entry = pull(remote); var stored = placed(entry);
+      var entry = pull(remote, local -> local.beforePlacement(source -> {
+        writer.value(topic, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 71_000_000, 1, 0.5), 0);
+        try {
+          loop.advance(5_000_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
+          placement.completion().get(2, TimeUnit.SECONDS);
+        }
+        catch (Exception e) { throw new IllegalStateException("Capture progress waited for correlation placement", e); }
+      }));
+      var stored = placed(entry);
       assertEquals(session, stored.session().id()); assertNotNull(stored.session().openCapture());
       assertEquals("by_correlation", stored.file().matching().method()); assertNull(stored.file().matching().wpilogSha256());
       var conflict = new IdentityConflict(stored.file().path(), "SYNTHETIC-A", "SYNTHETIC-B");

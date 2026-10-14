@@ -120,7 +120,7 @@ class SystemPullTest {
     try (var writer = new org.triplehelix.wpilogmcp.capture.CaptureWriter(WALL, loop, org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, placement)) {
       writer.identity(FakeRobot.device(SERIAL, "SHA256:fixture"));
       writer.connected(org.triplehelix.wpilogmcp.nt4.client.RobotAddress.uri("127.0.0.1", 5810, "fixture"), "networktables.first.wpi.edu");
-      writer.timeSync(10_000_000, 0); writer.announce(topic); writer.value(topic, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 10_000_000, 2, 1L), 0);
+      writer.timeSync(10_000_000, 0); writer.announce(topic); loop.until(writer::ready); writer.value(topic, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 10_000_000, 2, 1L), 0);
       var logs = storage.systemPulls(FakeRobot.device(SERIAL, "SHA256:fixture"), WALL); assertTrue(logs.beginPass()); logs.kernel(List.of("[100.0] warning fixture"), 110);
       loop.advance(5_000_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
       placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);

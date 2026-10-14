@@ -70,7 +70,10 @@ public final class FixtureLogs {
   /** A fixture root is owned by its creator. Clear it before recreating manifests and files. */
   public static Path freshDirectory(Path root) {
     try {
-      org.triplehelix.wpilogmcp.log.LogManager.getInstance().release(root);
+      var manager = org.triplehelix.wpilogmcp.log.LogManager.getInstance();
+      // Other fixtures may already restrict the singleton; this creator owns only this root.
+      manager.addAllowedDirectory(root);
+      manager.release(root);
       if (Files.exists(root)) try (var paths = Files.walk(root)) {
         for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(path);
       }

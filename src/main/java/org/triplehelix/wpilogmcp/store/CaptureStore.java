@@ -60,6 +60,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
   private final AtomicLong writes = new AtomicLong(), submissions = new AtomicLong();
   private volatile CompletableFuture<Void> completion = CompletableFuture.completedFuture(null);
   private long submittedAtUs;
+  private final java.util.Map<Path, Session> reopening = new java.util.concurrent.ConcurrentHashMap<>();
   private org.triplehelix.wpilogmcp.capture.context.DeviceIdentity recordedIdentity;
   /** The NT4 loop publishes these facts before any asynchronous manifest work. */
   public record Status(Path path, Instant startedAt, Instant endedAt, String address, boolean open,
@@ -81,22 +82,57 @@ public final class CaptureStore implements CaptureWriter.Observer {
   }
 
   @Override public Path create(String address, Instant start) throws IOException {
-    awaitPrevious();
-    times.clear(); loggedSerials.clear(); conflicts.clear();
-    event = null; matchType = null; matchNumber = null; teamNumber = null; typeOrdinal = 0; number = 0;
-    return store.capture(io -> {
-      // Percent escapes are portable and injective, unlike replacing every IPv6 ':' with '_'.
+    return create(address, start, null, null);
+  }
+  @Override public Path create(String address, Instant start, CaptureWriter.Session previous) throws IOException {
+    return create(address, start, previous, null);
+  }
+  @Override public Path create(String address, Instant start, CaptureWriter.Session previous,
+      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) throws IOException {
+    try { return createAsync(address, start, previous, identity).get(); }
+    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Interrupted capture creation", e); }
+    catch (java.util.concurrent.ExecutionException e) { throw new IOException("Capture creation failed", e.getCause()); }
+  }
+  @Override public CompletableFuture<Path> createAsync(String address, Instant start, CaptureWriter.Session previous,
+      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) {
+    if (previous == null) {
+      times.clear(); loggedSerials.clear(); conflicts.clear();
+      event = null; matchType = null; matchNumber = null; teamNumber = null; typeOrdinal = 0; number = 0;
+    }
+    var preceding = completion;
+    var result = preceding.thenCompose(ignored -> store.captureAsync(io -> {
+      if (identity != null) {
+        RobotIdentityStore.record(io, store.root(), identity, clock.instant());
+        RobotIdentityStore.promote(io, store.root(), manager, null, identity, clock.instant());
+      }
+      if (previous != null) {
+        // Earlier close/rename precedes admission; clear the finished hash before reopening.
+        var original = previous.path();
+        var path = Files.exists(original) ? original : io.read(store.root().resolve("store.json"), Header.class).moves().stream()
+            .filter(m -> Path.of(m.originalPath()).equals(original)).reduce((a, b) -> b)
+            .map(m -> store.root().resolve(m.movedTo())).orElse(original);
+        path = io.check(path);
+        var manifest = path.getParent().resolve("session.json");
+        var old = io.read(manifest, Session.class);
+        reopening.put(path, old);
+        var provenance = new Provenance(Provenance.CAPTURED, null, path.getFileName().toString(), start.toString(), false);
+        String filename = path.getFileName().toString();
+        var files = old.files().stream().filter(f -> !f.path().equals(filename)).toList();
+        io.write(manifest, new Session(old.id(), old.startedAt(), old.endedAt(), old.startBasis(),
+            old.event(), old.matchType(), old.matchNumber(), old.teamNumber(), files,
+            new OpenCapture(path.getFileName().toString(), provenance, Files.size(path),
+                previous.minTimestampUs() / 1_000_000.0, previous.maxTimestampUs() / 1_000_000.0), null,
+            old.deviceIdentity(), old.identityConflicts(), old.conflicts(), old.captureStats(), old.systemLogs()));
+        return path;
+      }
       var header = io.read(store.root().resolve("store.json"), Header.class);
       String id = header.addresses().getOrDefault(address, RobotIdentityStore.addressId(address));
       var robot = store.root().resolve("robots").resolve(StoreFiles.component(id));
-      if (!Files.exists(io.check(robot.resolve("robot.json")))) {
-        io.write(robot.resolve("robot.json"), new Robot(id, null, null, null, "address"));
-      }
+      if (!Files.exists(io.check(robot.resolve("robot.json")))) io.write(robot.resolve("robot.json"), new Robot(id, null, null, null, "address"));
       var day = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneOffset.UTC).format(start);
       var name = DateTimeFormatter.ofPattern("HHmmss'Z'").withZone(ZoneOffset.UTC).format(start);
       var parent = io.check(robot.resolve("sessions").resolve(day)); Files.createDirectories(parent);
-      var directory = parent.resolve(name);
-      int suffix = 2;
+      var directory = parent.resolve(name); int suffix = 2;
       while (true) {
         try { Files.createDirectory(io.check(directory)); break; }
         catch (java.nio.file.FileAlreadyExistsException e) { directory = parent.resolve(name + "_" + suffix++); }
@@ -104,54 +140,32 @@ public final class CaptureStore implements CaptureWriter.Observer {
       io.write(directory.resolve("session.json"), new Session(UUID.randomUUID().toString(), start.toString(),
           start.toString(), "pit_clock", null, null, null, null, List.of()));
       return directory.resolve("capture.wpilog");
-    });
+    }));
+    // A refused new admission is retryable; an earlier unfinished close remains a barrier.
+    completion = result.handle((ignored, error) -> (Void) null).thenCompose(ignored -> preceding);
+    return result;
   }
-
-  @Override public Path create(String address, Instant start, CaptureWriter.Session previous,
-      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) throws IOException {
-    if (identity != null) store.capture(io -> {
-      var robot = RobotIdentityStore.record(io, store.root(), identity, clock.instant());
-      RobotIdentityStore.promote(io, store.root(), manager, null, identity, clock.instant());
-      return robot;
-    });
-    return create(address, start, previous);
-  }
-
-  @Override public Path create(String address, Instant start, CaptureWriter.Session previous) throws IOException {
-    if (previous == null) return create(address, start);
-    awaitPrevious();
-    // The preceding close (and any cosmetic move) precedes this create in the same queue.
-    // Remove the old hash before reopening its bytes, so the catalog never sees a stale verified size.
-    return store.capture(io -> {
-      var original = previous.path();
-      var path = Files.exists(original) ? original : io.read(store.root().resolve("store.json"), Header.class).moves().stream()
-          .filter(m -> Path.of(m.originalPath()).equals(original)).reduce((a, b) -> b)
-          .map(m -> store.root().resolve(m.movedTo())).orElse(original);
-      path = io.check(path);
-      var manifest = path.getParent().resolve("session.json");
+  @Override public CompletableFuture<Void> abandoned(Path path, Instant endedAt, String reason) {
+    var result = store.captureAsync(io -> {
+      var manifest = io.check(path).getParent().resolve("session.json");
       var old = io.read(manifest, Session.class);
-      var provenance = new Provenance(Provenance.CAPTURED, null, path.getFileName().toString(), start.toString(), false);
-      String filename = path.getFileName().toString();
-      var files = old.files().stream().filter(f -> !f.path().equals(filename)).toList();
-      io.write(manifest, new Session(old.id(), old.startedAt(), clock.instant().toString(), old.startBasis(),
-          old.event(), old.matchType(), old.matchNumber(), old.teamNumber(), files,
-          new OpenCapture(path.getFileName().toString(), provenance, Files.size(path),
-              previous.minTimestampUs() / 1_000_000.0, previous.maxTimestampUs() / 1_000_000.0), null,
+      var previous = reopening.remove(path);
+      var files = new ArrayList<>(old.files());
+      if (previous != null) previous.files().stream().filter(f -> f.path().equals(path.getFileName().toString()))
+          .filter(f -> files.stream().noneMatch(current -> current.path().equals(f.path()))).forEach(files::add);
+      io.write(manifest, new Session(old.id(), old.startedAt(), previous == null ? endedAt.toString() : previous.endedAt(), old.startBasis(),
+          old.event(), old.matchType(), old.matchNumber(), old.teamNumber(), List.copyOf(files), null, reason,
           old.deviceIdentity(), old.identityConflicts(), old.conflicts(), old.captureStats(), old.systemLogs()));
-      return path;
+      return (Void) null;
     });
+    completion = result; return result;
   }
-  @Override public void opened(CaptureWriter.Session session, boolean resumed) { update(session, true); }
+  @Override public void opened(CaptureWriter.Session session, boolean resumed) { reopening.remove(session.path()); update(session, true); }
   @Override public void flushed(CaptureWriter.Session session) { update(session, false); }
   @Override public void closed(CaptureWriter.Session session) { update(session, true); }
   @Override public void identity(CaptureWriter.Session session) { update(session, true); }
   @Override public void providers(CaptureWriter.Session session) { update(session, true); }
   public CompletableFuture<Void> completion() { return completion; }
-  private void awaitPrevious() throws IOException {
-    try { completion.get(); }
-    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Interrupted capture creation", e); }
-    catch (java.util.concurrent.ExecutionException e) { throw new IOException("Previous capture manifest failed", e.getCause()); }
-  }
   long manifestWrites() { return writes.get(); }
   long queuedUpdates() { return submissions.get(); }
 
@@ -202,7 +216,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
     if (!due && pending.get() == null) return;
     if (due) submittedAtUs = now;
     var snapshot = new Update(capture, capture.path().getFileName().toString(), capture.open(),
-        capture.open() ? clock.instant() : capture.endedAt(), capture.sizeBytes(),
+        capture.open() ? capture.observedAt() : capture.endedAt(), capture.sizeBytes(),
         capture.minTimestampUs() / 1_000_000.0, capture.maxTimestampUs() / 1_000_000.0,
         capture.files(), event, matchType, matchNumber, teamNumber, capture.endReason(), capture.identity(), List.copyOf(conflicts), statistics);
     var next = pending.updateAndGet(old -> new Pending(snapshot,

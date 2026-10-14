@@ -36,8 +36,15 @@ record ImportInspection(Path path, String hash, long size, String kind, LogMetad
   }
 
   static ImportInspection read(Path path, RevLogParser revParser) throws IOException {
+    return read(path, revParser, null);
+  }
+
+  /** A completed pull supplies its strict decode; no second reader or permissive parse is needed. */
+  static ImportInspection read(Path path, RevLogParser revParser,
+      org.triplehelix.wpilogmcp.sync.TransferVerification.Content verified) throws IOException {
     var before = FileSnapshot.of(path);
     if (before == null) throw new IOException("File no longer exists: " + path);
+    if (verified != null && !verified.snapshot().sameAs(before)) throw new IOException("File changed during verification: " + path);
     byte[] header;
     try (var input = Files.newInputStream(path)) {
       header = input.readNBytes(16);
@@ -52,8 +59,9 @@ record ImportInspection(Path path, String hash, long size, String kind, LogMetad
     String basis = null;
     boolean truncated = false;
     if (header.length >= 6 && new String(header, 0, 6, StandardCharsets.US_ASCII).equals("WPILOG")) {
-      try (var reader = new ScopedLogReader(path);
-           var log = new LazyParsedLog(path.toString(), reader.reader(), 32L * 1024 * 1024)) {
+      try (var reader = verified == null ? new ScopedLogReader(path) : null;
+           var loaded = reader == null ? null : new LazyParsedLog(path.toString(), reader.reader(), 32L * 1024 * 1024)) {
+        var log = verified == null ? loaded : verified.wpilog();
         // REV also writes WPILOG containers. Its CAN declarations distinguish them by content.
         kind = log.entries().values().stream().anyMatch(e -> e.type().equals("raw")
             && e.name().matches("CAN/\\d+(?:/Periodic Status \\d+)?")) ? "revlog" : "wpilog";
@@ -86,7 +94,7 @@ record ImportInspection(Path path, String hash, long size, String kind, LogMetad
       }
     } else if (nativeHeader(header, before.size())) {
       kind = "revlog";
-      var rev = revParser.parse(path);
+      var rev = verified == null ? revParser.parse(path) : verified.revlog();
       fingerprint = RobotCandidates.inspect(rev);
       if (rev.devices().isEmpty()) throw new IOException("No REV devices in " + path.getFileName());
       min = rev.minTimestamp();
@@ -94,7 +102,7 @@ record ImportInspection(Path path, String hash, long size, String kind, LogMetad
     } else {
       throw new IOException("Refused " + path.getFileName() + ": no WPILOG or REV record header");
     }
-    if (fingerprint == null) fingerprint = RobotCandidates.inspect(revParser.parse(path));
+    if (fingerprint == null) fingerprint = RobotCandidates.inspect(verified == null ? revParser.parse(path) : verified.revlog());
     if (kind.equals("revlog") && start == null) {
       var filename = path.getFileName().toString();
       if (filename.startsWith("REV_")) {

@@ -50,6 +50,7 @@ final class ReplayCapture implements AutoCloseable {
   private final HttpTransport transport;
   private final Nt4Client client;
   private final Object progress = new Object();
+  private final java.util.concurrent.atomic.AtomicBoolean recordingReady = new java.util.concurrent.atomic.AtomicBoolean();
   private boolean stopped;
   private int readyConnection;
 
@@ -83,6 +84,14 @@ final class ReplayCapture implements AutoCloseable {
           org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) throws java.io.IOException {
         return placement == null ? previous == null ? capture : previous.path() : placement.create(robot, start, previous, identity);
       }
+      public CompletableFuture<Path> createAsync(String robot, Instant start, CaptureWriter.Session previous,
+          org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) {
+        return placement == null ? CaptureWriter.Observer.super.createAsync(robot, start, previous, identity)
+            : placement.createAsync(robot, start, previous, identity);
+      }
+      public CompletableFuture<Void> abandoned(Path path, Instant endedAt, String reason) {
+        return placement == null ? CompletableFuture.completedFuture(null) : placement.abandoned(path, endedAt, reason);
+      }
       public void opened(CaptureWriter.Session session, boolean resumed) throws java.io.IOException {
         if (!sessions.contains(session)) sessions.add(session);
         if (!resumed) files.add(session.path()); if (placement != null) placement.opened(session, resumed);
@@ -104,6 +113,7 @@ final class ReplayCapture implements AutoCloseable {
       catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
     });
     writer = new CaptureWriter(wallClock, loop, CapturePolicy.ALL, index, maxFileBytes);
+    writer.onActivity(() -> recordingReady.set(writer.ready()));
     if (device != null) writer.identity(device);
     var registry = new ToolRegistry(); CoreTools.registerAll(registry);
     org.triplehelix.wpilogmcp.tools.RevLogTools.registerAll(registry);
@@ -139,10 +149,12 @@ final class ReplayCapture implements AutoCloseable {
   void ready(int count) throws Exception {
     // Readiness belongs to the current subscription. A transient connection before replay
     // can otherwise overshoot a lifetime counter and make equality impossible forever.
+    java.util.function.BooleanSupplier ready = () -> client.isConnected() && announcements.get() == count
+        && (count == 0 || recordingReady.get());
     try {
       if (loop instanceof org.triplehelix.wpilogmcp.nt4.client.ManualScheduler manual) {
-        manual.until(() -> client.isConnected() && announcements.get() == count);
-      } else HarnessHttp.await("replay subscription", 30, () -> client.isConnected() && announcements.get() == count);
+        manual.until(ready);
+      } else HarnessHttp.await("replay subscription", 30, ready::getAsBoolean);
       readyConnection = connections.get();
     } catch (AssertionError failure) {
       throw new AssertionError("Replay subscription: connected=" + client.isConnected() + ", connections=" + connections.get()
@@ -183,11 +195,15 @@ final class ReplayCapture implements AutoCloseable {
 
   void stop() throws Exception {
     if (stopped) return; stopped = true;
-    var closed = client.closeAsync();
-    if (loop instanceof org.triplehelix.wpilogmcp.nt4.client.ManualScheduler manual) manual.until(closed::isDone);
-    closed.get(30, TimeUnit.SECONDS);
+    loop.execute(writer::shutdown);
+    var clientClosed = client.closeAsync();
+    // Only client completion needs the manual loop. Admission retirement completes on the
+    // store worker after that loop closes, so waiting for it cannot require another callback.
+    if (loop instanceof org.triplehelix.wpilogmcp.nt4.client.ManualScheduler manual) manual.until(clientClosed::isDone);
+    clientClosed.thenCompose(ignored -> writer.admissionCompletion())
+        .thenCompose(ignored -> placement == null ? CompletableFuture.completedFuture(null) : placement.completion())
+        .get(30, TimeUnit.SECONDS);
     if (placement != null) {
-      placement.completion().get(30, TimeUnit.SECONDS);
       files.clear(); sessions.forEach(s -> s.files().forEach(f -> files.add(s.path().resolveSibling(f.name()))));
     }
   }

@@ -415,7 +415,16 @@ the address directory moves under it at session close (see [Robot identity](#rob
 closed file gets its own SHA-256 and final size. Event and match facts appear in the store
 listing as soon as the queued fact update runs. Imports never stall the NT4 writer: manifest
 updates coalesce into one pending task, run on changed facts or at most every five seconds.
-Creation, including a resumed file's removal from the hashed list, is synchronous.
+Creation, including a resumed file's removal from the hashed list, is asynchronous. While the
+store is busy, capture retains arrival order and original timestamps within a 65,536-event and
+16 MiB event-accounting budget, with a 30-second admission deadline. Overflow or timeout logs
+an explicit recording failure and unrecorded pending-event count; any late session manifest keeps
+that end reason. A new robot clock permits another attempt. Backlog replay yields after 256 events
+or two milliseconds checked between events; individual filesystem operations can take longer.
+A buffered disconnect closes the recording at its original time. Explicit server shutdown instead
+abandons pending admission with a logged reason and pending-event count. Context providers begin delivery
+after the backlog drains. Until a session exists, admission failures appear in the server log;
+there is no synthetic session row in `list_sessions`.
 
 **Rollover.** At `capture.max_file_bytes` the recording rolls to `capture-2.wpilog`,
 `capture-3.wpilog`, and so on, in the same session. Each file redeclares the active entries and

@@ -85,6 +85,21 @@ aliases. A file's logged serial wins over the SSH device reading, with a recorde
 matching never crosses known serials. Addresses select a connection, not a robot's lifetime
 identity.
 
+Strict verification and inspection share one prepared input for each completed pull. Native REV
+is decoded once; a WPILOG keeps one retained view until matching finishes. Decoding, inspection's
+content hash and calendar-filtered correlation run on the pull worker outside the store queue and
+cross-process lock. Local prefix hashing also uses a retained read lease outside that queue.
+All pulled-file moves reserve and drain source readers on the pull worker; the reader-drain budget
+is three seconds, and exhaustion leaves the staged file for retry.
+
+Short queued operations snapshot ownership and manifests, then recheck file identity/size/mtime,
+transfer progress and the complete matching candidate set before moving bytes and writing
+manifests. They do not repeat payload scans, hashes or correlation under the lock. A capture may
+extend the fixed prefix already used; a replacement, changed calendar nomination/identity/anchor
+or newly ambiguous candidate requires another off-queue decision. Candidate manifests are capped
+individually at 4 MiB; revalidation still visits the managed candidate set. Queue wait and filesystem
+latency have no general wall-clock bound, so recording admission must not join those operations.
+
 #### Session matching
 
 Before loading candidates, manifest session ranges nominate overlapping sessions, using the same
@@ -216,10 +231,26 @@ headers, and exclude declarations, control changes, identity context and schema 
 An optional `capture` configuration starts this listener beside the HTTP server. Missing robots do
 not delay HTTP startup. Shutdown drains tool calls, closes the capture, then retires log readers.
 The capture store uses the existing store queue, path validation, move reservations, and manifests.
-Creation is synchronous. Later updates use immutable snapshots and coalesce into one pending task:
-changed facts queue immediately, ordinary progress at most every five seconds. Imports cannot stall
-the NT4 event loop. Shutdown waits at most 30 seconds for the writer and last close snapshot,
-including its hashes. A timeout is logged for the next startup sweep.
+Creation, including removal of a resumed file's old hash, runs asynchronously on the store queue.
+The NT4 listener never joins admission. It retains events in arrival order while waiting, preserving
+original robot, receipt and wall-clock times. The backlog is bounded to 65,536 events and 16 MiB of
+accounted storage, including encoded/text payloads and per-event allowances, with a 30-second admission deadline. This is an
+accounting limit, not an exact JVM heap measurement. Overflow or deadline expiry stops recording for
+that boot with an immediate server-log reason and count of unrecorded pending events; a late path
+is retired with an explained manifest end_reason, not opened as a healthy empty recording. A new
+robot clock permits another admission attempt, after an older cancelled placement retires safely;
+that wait uses the same bounded event policy. A disconnect already in the backlog closes the
+finite recording at its original time after admission succeeds.
+
+Backlog replay yields after 256 events or two milliseconds checked between events. A single
+filesystem write/flush can exceed that slice; it is not a hard operating-system I/O deadline.
+Provider context delivery waits for admission and backlog replay to finish; tails retain their
+existing bounded pre-session buffers. Later manifest updates use immutable snapshots and coalesce
+into one pending task: changed facts queue immediately, ordinary progress at most every five
+seconds. Shutdown waits at most 30 seconds for the writer, pending admission and last close
+snapshot, including its hashes. Unlike a normal buffered disconnect, explicit server shutdown
+abandons a still-pending admission with an error/count and an eventual manifest end reason.
+A timeout is logged for the next startup sweep.
 
 #### Open captures and renames
 

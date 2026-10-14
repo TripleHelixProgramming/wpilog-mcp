@@ -63,6 +63,7 @@ public class LiveReplayTest {
     try (var source = new ReplaySource(file); var rig = new LiveToolRig(work, CapturePolicy.ALL)) {
       var replay = new LogReplayer(source, rig.gateway, rig.robot::set); replay.announce();
       rig.pump(() -> rig.service.live().topics().size() == replay.topicCount());
+      if (replay.topicCount() > 0) rig.awaitRecording();
       var results = new ArrayList<Map.Entry<String, JsonElement>>();
       var arguments = new JsonObject(); var requested = new JsonArray();
       source.entries.values().stream().limit(2000).forEach(e -> requested.add(source.topic(e)));

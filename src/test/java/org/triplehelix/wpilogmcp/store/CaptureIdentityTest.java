@@ -43,9 +43,9 @@ class CaptureIdentityTest {
     return new DeviceIdentity(serial, "fixture robot", "127.0.0.1", key,
         Map.of("serial_source", "/proc/42/environ:serialnum", "comments_source", "/etc/machine-info:PRETTY_HOSTNAME"));
   }
-  static void connect(CaptureWriter writer, long time, long received) {
+  static void connect(CaptureWriter writer, ManualScheduler loop, long time, long received) throws InterruptedException {
     writer.connected(RobotAddress.uri("127.0.0.1", 5810, "identity"), "networktables.first.wpi.edu");
-    writer.timeSync(time, received); writer.announce(VALUE);
+    writer.timeSync(time, received); writer.announce(VALUE); loop.until(writer::ready);
   }
   private SecurityValidator security() { var result = new SecurityValidator(); result.addAllowedDirectory(temp); return result; }
 
@@ -55,11 +55,11 @@ class CaptureIdentityTest {
       var placement = stores.store(root).captures(WALL); var index = new CaptureIndex(placement, LogManager.getInstance(), 0);
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index)) {
         var identity = device("SYNTHETIC-A", "SHA256:fixture-a"); writer.identity(identity);
-        connect(writer, 10_000_000, 0); var path = writer.session().path();
+        connect(writer, loop, 10_000_000, 0); var path = writer.session().path();
         assertTrue(path.startsWith(root.resolve("robots").resolve("SYNTHETIC-A")));
         writer.value(VALUE, new ValueFrame(1, 10_000_000, 2, 7L), 0);
         writer.disconnected(); placement.completion().get(10, TimeUnit.SECONDS);
-        connect(writer, 12_000_000, 2_000_000); writer.value(VALUE, new ValueFrame(1, 12_000_000, 2, 9L), 2_000_000);
+        connect(writer, loop, 12_000_000, 2_000_000); writer.value(VALUE, new ValueFrame(1, 12_000_000, 2, 9L), 2_000_000);
         try (var use = LogManager.getInstance().acquire(path.toString())) {
           assertEquals("/Daemon/Robot/Identity", use.log().entries().keySet().iterator().next());
           var values = use.log().values().get("/Daemon/Robot/Identity");
@@ -83,7 +83,7 @@ class CaptureIdentityTest {
     try (var stores = new StoreRegistry(security)) {
       var placement = stores.store(root).captures(WALL); var index = new CaptureIndex(placement, LogManager.getInstance(), 0);
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index)) {
-        connect(writer, 10_000_000, 0); var old = writer.session().path();
+        connect(writer, loop, 10_000_000, 0); var old = writer.session().path();
         writer.value(VALUE, new ValueFrame(1, 10_000_000, 2, 7L), 0); loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
         try (var use = LogManager.getInstance().acquire(old.toString())) { assertEquals(7L, use.log().values().get("NT:/x").get(0).value()); }
         placement.completion().get(10, TimeUnit.SECONDS);
@@ -127,7 +127,7 @@ class CaptureIdentityTest {
       var store = stores.store(root); var placement = store.captures(WALL);
       var index = new CaptureIndex(placement, LogManager.getInstance(), 0);
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index)) {
-        connect(writer, 10_000_000, 0); var old = writer.session().path();
+        connect(writer, loop, 10_000_000, 0); var old = writer.session().path();
         placement.completion().get(10, TimeUnit.SECONDS);
         store.captureAsync(io -> { blocked.countDown(); try { release.await(); } catch (InterruptedException e) { throw new java.io.IOException(e); } return null; });
         assertTrue(blocked.await(5, TimeUnit.SECONDS));
@@ -157,7 +157,7 @@ class CaptureIdentityTest {
       var store = stores.store(root); var placement = store.captures(WALL);
       var identity = device("SYNTHETIC-A", "SHA256:fixture");
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
-        connect(writer, 10_000_000, 0); writer.identity(identity);
+        connect(writer, loop, 10_000_000, 0); writer.identity(identity);
         var event = new Announce("/FMSInfo/EventName", 2, "string", null, new JsonObject());
         var type = new Announce("/FMSInfo/MatchType", 3, "int", null, new JsonObject());
         var number = new Announce("/FMSInfo/MatchNumber", 4, "int", null, new JsonObject());
@@ -212,7 +212,7 @@ class CaptureIdentityTest {
       System.setErr(output);
       var placement = stores.store(root).captures(WALL);
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
-        writer.identity(device("SYNTHETIC-A", "SHA256:fixture-a")); connect(writer, 10_000_000, 0);
+        writer.identity(device("SYNTHETIC-A", "SHA256:fixture-a")); connect(writer, loop, 10_000_000, 0);
         var serial = new Announce("/SystemStats/SerialNumber", 2, "string", null, new JsonObject());
         writer.announce(serial); writer.value(serial, new ValueFrame(2, 10_000_000, 4, "SYNTHETIC-B"), 0);
         writer.disconnected(); placement.completion().get(10, TimeUnit.SECONDS);
@@ -273,8 +273,9 @@ class CaptureIdentityTest {
     try (var stores = new StoreRegistry(security)) {
       var store = stores.store(root); var placement = store.captures(WALL);
       Path old;
-      try (var writer = new CaptureWriter(WALL, new ManualScheduler(), CapturePolicy.ALL, placement)) {
-        connect(writer, 1_000_000, 0); old = writer.session().path();
+      var loop = new ManualScheduler();
+      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
+        connect(writer, loop, 1_000_000, 0); old = writer.session().path();
         writer.value(VALUE, new ValueFrame(1, 1_000_000, 2, 7L), 0);
       }
       placement.completion().get(10, TimeUnit.SECONDS);
@@ -292,10 +293,11 @@ class CaptureIdentityTest {
     var root = temp.resolve("store");
     try (var stores = new StoreRegistry(security())) {
       var placement = stores.store(root).captures(WALL);
-      try (var writer = new CaptureWriter(WALL, new ManualScheduler(), CapturePolicy.ALL, placement)) {
-        connect(writer, 10_000_000, 0); writer.disconnected(); placement.completion().get(10, TimeUnit.SECONDS);
+      var loop = new ManualScheduler();
+      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
+        connect(writer, loop, 10_000_000, 0); writer.disconnected(); placement.completion().get(10, TimeUnit.SECONDS);
         writer.identity(device("SYNTHETIC-A", "SHA256:first"));
-        connect(writer, 11_000_000, 1_000_000);
+        connect(writer, loop, 11_000_000, 1_000_000);
         assertEquals("SYNTHETIC-A", writer.session().identity().serialNumber());
         assertTrue(writer.session().path().startsWith(root.resolve("robots").resolve("SYNTHETIC-A")));
         writer.disconnected(); placement.completion().get(10, TimeUnit.SECONDS);
@@ -307,8 +309,9 @@ class CaptureIdentityTest {
     var root = temp.resolve("store");
     try (var stores = new StoreRegistry(security())) {
       var placement = stores.store(root).captures(WALL);
-      try (var writer = new CaptureWriter(WALL, new ManualScheduler(), CapturePolicy.ALL, placement, 2048)) {
-        connect(writer, 1_000_000, 0);
+      var loop = new ManualScheduler();
+      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement, 2048)) {
+        connect(writer, loop, 1_000_000, 0);
         for (int i = 2; i < 8; i++) writer.announce(new Announce("/" + "x".repeat(180) + i, i, "int", null, new JsonObject()));
         writer.identity(device("SYNTHETIC-A", "SHA256:first"));
         assertFalse(writer.session().open());

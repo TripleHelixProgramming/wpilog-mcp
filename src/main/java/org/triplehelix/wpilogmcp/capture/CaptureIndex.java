@@ -40,6 +40,13 @@ public final class CaptureIndex implements CaptureWriter.Observer {
       org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) throws IOException {
     return placement.create(address, start, previous, identity);
   }
+  @Override public java.util.concurrent.CompletableFuture<Path> createAsync(String address, Instant start,
+      CaptureWriter.Session previous, org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) {
+    return placement.createAsync(address, start, previous, identity);
+  }
+  @Override public java.util.concurrent.CompletableFuture<Void> abandoned(Path path, Instant endedAt, String reason) {
+    return placement.abandoned(path, endedAt, reason);
+  }
   @Override public void identity(CaptureWriter.Session session) throws IOException { placement.identity(session); }
   @Override public void opened(CaptureWriter.Session session, boolean resumed) throws IOException {
     if (!resumed) live = new LiveLog(session.path(), hotWindowUs, robotNowUs);

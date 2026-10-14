@@ -43,9 +43,9 @@ class CaptureStoreTest {
   }
   private static final Clock WALL = Clock.fixed(Instant.parse("2026-03-07T14:22:33Z"), ZoneOffset.UTC);
   private static final Announce VALUE = new Announce("/x", 1, "int", null, new JsonObject());
-  private static void connect(CaptureWriter writer, long time, long received) {
+  private static void connect(CaptureWriter writer, ManualScheduler loop, long time, long received) throws InterruptedException {
     writer.connected(RobotAddress.uri("127.0.0.1", 5810, "test"), "networktables.first.wpi.edu");
-    writer.timeSync(time, received); writer.announce(VALUE);
+    writer.timeSync(time, received); writer.announce(VALUE); loop.until(writer::ready);
   }
 
   @Test void openClosedResumeAndSameSecondSessionsKeepTheirFactsAndBytes() throws Exception {
@@ -55,7 +55,7 @@ class CaptureStoreTest {
       var root = directory.resolve("store"); var loop = new ManualScheduler();
       var placement = stores.store(root).captures(WALL);
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
-        connect(writer, 10_000_000, 0);
+        connect(writer, loop, 10_000_000, 0);
         assertEquals(root.resolve("robots/address-127.0.0.1/sessions/2026-03-07/142233Z/capture.wpilog"), writer.session().path());
         writer.value(VALUE, new ValueFrame(1, 10_000_000, 2, 5L), 0); loop.advance(5_000_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs()); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
         var open = StoreCatalog.read(root, security); assertEquals(1, open.openCaptures().size());
@@ -77,12 +77,12 @@ class CaptureStoreTest {
         assertTrue(closed.openCaptures().isEmpty()); assertEquals(1, closed.files().size());
         var file = closed.files().get(0); assertEquals(StoreFiles.hash(file.path()), file.file().sha256());
         assertEquals(Files.size(file.path()), file.file().sizeBytes());
-        connect(writer, 11_000_000, 1_000_000);
+        connect(writer, loop, 11_000_000, 1_000_000);
         writer.value(VALUE, new ValueFrame(1, 11_000_000, 2, 6L), 1_000_000); writer.disconnected(); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
         closed = StoreCatalog.read(root, security); assertEquals(1, closed.files().size());
         assertEquals(first.session().id(), closed.files().get(0).session().id());
         assertEquals(11, closed.files().get(0).file().maxTimestampSec());
-        connect(writer, 1_000_000, 2_000_000); writer.disconnected(); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        connect(writer, loop, 1_000_000, 2_000_000); writer.disconnected(); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
         assertEquals("142233Z_2", writer.session().path().getParent().getFileName().toString());
         assertEquals(2, StoreCatalog.read(root, security).files().size());
         assertEquals(1, StoreCatalog.read(root, security).header().formatVersion());
@@ -104,7 +104,7 @@ class CaptureStoreTest {
       });
       var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex(placement, LogManager.getInstance(), 0);
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index)) {
-        connect(writer, 10_000_000, 0); var before = writer.session().path();
+        connect(writer, loop, 10_000_000, 0); var before = writer.session().path();
         var names = List.of("/FMSInfo/EventName", "/FMSInfo/MatchType", "/FMSInfo/MatchNumber");
         for (int i = 0; i < names.size(); i++) {
           var topic = new Announce(names.get(i), i + 2, i == 0 ? "string" : "int", null, new JsonObject());
@@ -134,7 +134,7 @@ class CaptureStoreTest {
           assertEquals(before, writer.session().path());
           assertEquals("TEST", StoreCatalog.read(root, security).files().get(0).session().event());
           allowMove.set(true);
-          connect(writer, 11_000_000, 1_000_000); writer.disconnected();
+          connect(writer, loop, 11_000_000, 1_000_000); writer.disconnected();
           placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
           assertEquals(2, attempts.get());
         }
@@ -176,7 +176,7 @@ class CaptureStoreTest {
           (path, id, resume) -> new org.triplehelix.wpilogmcp.capture.WpilogOutput(path, id, resume) {
             @Override public void flush() { outputFlushes.incrementAndGet(); }
           })) {
-        connect(writer, 10_000_000, 0);
+        connect(writer, loop, 10_000_000, 0);
         var event = new Announce("/FMSInfo/EventName", 2, "string", null, new JsonObject()); writer.announce(event);
         var busy = threads.submit(() -> store.capture(io -> {
           entered.countDown();
@@ -220,7 +220,7 @@ class CaptureStoreTest {
       var store = stores.store(directory.resolve("store")); var placement = store.captures(WALL);
       var loop = new ManualScheduler();
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
-        connect(writer, 10_000_000, 0); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        connect(writer, loop, 10_000_000, 0); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
         long initial = placement.manifestWrites();
         var event = new Announce("/FMSInfo/EventName", 2, "string", null, new JsonObject()); writer.announce(event);
         writer.value(event, new ValueFrame(2, 10_000_000, 4, "TEST"), 0);
@@ -251,8 +251,9 @@ class CaptureStoreTest {
     try (var stores = new StoreRegistry(security, manager)) {
       var store = stores.store(directory.resolve("store")); var placement = store.captures(WALL);
       var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex(placement, manager, 0);
-      try (var writer = new CaptureWriter(WALL, new ManualScheduler(), CapturePolicy.ALL, index, 256)) {
-        connect(writer, 10_000_000, 0);
+      var loop = new ManualScheduler();
+      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index, 256)) {
+        connect(writer, loop, 10_000_000, 0);
         for (int i = 0; i < 100; i++) writer.value(VALUE, new ValueFrame(1, 10_000_000 + i, 2, (long) i), i);
         placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
         var open = StoreCatalog.read(store.root(), security);
@@ -292,7 +293,7 @@ class CaptureStoreTest {
       var loop = new ManualScheduler();
       var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex(placement, manager, 0);
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index, 1024)) {
-        connect(writer, 1_000_000, 0);
+        connect(writer, loop, 1_000_000, 0);
         var schema = new Announce("/.schema/struct:SeedPoint", 2, "structschema", null, new JsonObject());
         var point = new Announce("/point", 3, "struct:SeedPoint", null, new JsonObject());
         writer.announce(schema); writer.announce(point);

@@ -422,7 +422,7 @@ class StoreSyncTest {
         int counter = 0;
         for (var w : List.of(writer, peer)) {
           w.identity(identity); w.connected(org.triplehelix.wpilogmcp.nt4.client.RobotAddress.uri("127.0.0.1", 5810, "test"), "networktables.first.wpi.edu");
-          w.timeSync(1_000_000, 0); w.announce(value);
+          w.timeSync(1_000_000, 0); w.announce(value); (w == writer ? firstLoop : secondLoop).until(w::ready);
           w.value(value, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 1_000_000, 2, (long) ++counter), 0);
         }
         var event = new org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce("/FMSInfo/EventName", 2, "string", null, new com.google.gson.JsonObject());
