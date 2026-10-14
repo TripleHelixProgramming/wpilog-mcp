@@ -130,6 +130,8 @@ With `capture.pull.enabled: true`, the pit server copies the robot's own log fil
 robot has sat disabled for the settle time (5 seconds by default) with the NT4 connection up.
 It pauses the moment the robot is enabled and resumes where it stopped.
 
+The server log names why pulling is paused: `NT4 is disconnected`, `Robot is enabled or its enabled state is unknown`, or `Waiting for disabled-state settling`. A changed reason is logged once; repeated checks of the same state stay quiet. An I/O retry after NT4 disconnects includes that reason and the original error at INFO. Known local filesystem failures, I/O errors while NT4 remains connected, and unexpected non-I/O exceptions remain WARN. A remote-handle close after a successful checkpoint is identified separately; a disconnected close is INFO, while a local checkpoint failure remains WARN even if closing the remote handle also fails.
+
 - Files wait under `robots/<serial>/pulled/` until they load cleanly, then move into their
   session's `robot/` directory. A pulled log joins a session only on strong data correlation
   within 250 ms of the capture; otherwise it starts a session of its own with

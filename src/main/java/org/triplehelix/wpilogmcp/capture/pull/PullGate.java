@@ -8,6 +8,15 @@ import java.util.function.LongSupplier;
 
 /** Unknown, enabled, or disconnected state is closed. Every connection must settle anew. */
 public final class PullGate {
+  /** The gate owns admission and its explanation, so a paused transfer cannot invent a cause. */
+  public enum ClosedReason {
+    DISCONNECTED("NT4 is disconnected"),
+    ENABLED_OR_UNKNOWN("Robot is enabled or its enabled state is unknown"),
+    SETTLING("Waiting for disabled-state settling");
+    private final String description;
+    ClosedReason(String description) { this.description = description; }
+    public String description() { return description; }
+  }
   private record State(String address, long connection, boolean disabled, long disabledAtUs) {}
   private final LongSupplier clock;
   private final long settleUs;
@@ -24,9 +33,13 @@ public final class PullGate {
         disabled && before.disabled() ? before.disabledAtUs() : clock.getAsLong());
   }
   public void unknown() { control(null); }
-  public boolean open() {
-    var current = state; long elapsed = clock.getAsLong() - current.disabledAtUs();
-    return current.address() != null && current.disabled() && elapsed >= settleUs;
+  public boolean open() { return closedReason() == null; }
+  /** One state snapshot decides both admission and its reason; null means the gate is open. */
+  public ClosedReason closedReason() {
+    var current = state;
+    if (current.address() == null) return ClosedReason.DISCONNECTED;
+    if (!current.disabled()) return ClosedReason.ENABLED_OR_UNKNOWN;
+    return clock.getAsLong() - current.disabledAtUs() >= settleUs ? null : ClosedReason.SETTLING;
   }
   public String address() { return state.address(); }
   public long connection() { return state.connection(); }

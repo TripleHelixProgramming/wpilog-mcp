@@ -506,6 +506,8 @@ disconnected state pauses the worker within its current 64 KiB block; when the g
 transfer resumes at the held offset after a content check. The server log reports starts,
 pauses, completion and failures, and `list_sessions` reports the matched imports.
 
+The server log names why pulling is paused: `NT4 is disconnected`, `Robot is enabled or its enabled state is unknown`, or `Waiting for disabled-state settling`. A changed reason is logged once; repeated checks of the same state stay quiet. An I/O retry after NT4 disconnects includes that reason and the original error at INFO. Known local filesystem failures, I/O errors while NT4 remains connected, and unexpected non-I/O exceptions remain WARN. A remote-handle close after a successful checkpoint is identified separately; a disconnected close is INFO, while a local checkpoint failure remains WARN even if closing the remote handle also fails.
+
 **Cost and pacing.** `capture.pull.rate_bytes` caps the transfer, and the cap also covers the
 fallback comparison reads. One recursive listing serves each transfer pass, refreshed after
 ten seconds during a long pass. Hash commands read the whole held prefix on the robot, using CPU

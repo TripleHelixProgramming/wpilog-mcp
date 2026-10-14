@@ -112,6 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Robot pull pause messages now state the gate's reason and report changes without repeating an unchanged pause. Previously pauses printed `null` and expected power-offs appeared as warnings; a transfer interrupted after NT4 disconnects now logs its I/O retry at INFO. Known local filesystem failures, unexplained I/O failures and other exceptions retain WARN. Remote-handle close failures are distinguished from local checkpoint failures, which retain their cause if both operations fail.
+
 - Pulled telemetry verification, inspection and matching now share one strict decode; parsing, correlation, prefix hashing and reader draining run outside the store queue, with placement evidence rechecked under it. Previously native REV files were decoded three times while holding the queue, and a reconnecting robot's first announcement waited behind imports. Capture admission is now asynchronous with a bounded ordered event buffer, preserving receipt and calendar times and explicitly reporting overflow or timeout.
 
 - Robot pulls retain one SFTP handle across data blocks and checkpoint staged bytes and progress together, at 1 MiB or a one-second checkpoint deadline. Previously each 64 KiB block reopened the remote file and separately queued its append and manifest write. Durable progress never leads the staged data; an uncounted staged tail after a crash is truncated to the saved offset instead of forcing a copy from the beginning.

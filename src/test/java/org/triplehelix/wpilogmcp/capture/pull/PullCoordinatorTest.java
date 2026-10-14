@@ -50,6 +50,171 @@ class PullCoordinatorTest {
   }
   void settled() { gate.connected("127.0.0.1"); gate.control(0L); worker.advance(5_000_000); }
 
+  @FunctionalInterface interface LoggedAction { void run() throws Exception; }
+  private List<String> logLines(LoggedAction action) throws Exception {
+    var original = System.err; var bytes = new java.io.ByteArrayOutputStream();
+    try (var output = new java.io.PrintStream(bytes, true, java.nio.charset.StandardCharsets.UTF_8)) {
+      System.setErr(output); action.run();
+    } finally { System.setErr(original); }
+    var lines = bytes.toString(java.nio.charset.StandardCharsets.UTF_8).lines().filter(line -> line.contains("Robot pull")).toList();
+    lines.forEach(line -> System.out.println("S8 captured: " + line));
+    return lines;
+  }
+
+  @Test void pausedLinesNameChangingGateReasonsWithoutRepeatingTheSameState() throws Exception {
+    var lines = logLines(() -> {
+      try (var pull = new PullCoordinator(CONFIG, gate, store, WALL, ignored -> {}, worker,
+          (address, config, pin) -> { throw new AssertionError("Closed gates must not connect"); })) {
+        pull.step(); pull.step();
+        gate.connected("127.0.0.1"); pull.step(); pull.step();
+        gate.control(0L); pull.step(); pull.step();
+        gate.control(1L); pull.step();
+      }
+    });
+    assertEquals(4, lines.size(), lines.toString());
+    assertTrue(lines.get(0).contains("PAUSED: NT4 is disconnected"), lines.toString());
+    assertTrue(lines.get(1).contains("PAUSED: Robot is enabled or its enabled state is unknown"), lines.toString());
+    assertTrue(lines.get(2).contains("PAUSED: Waiting for disabled-state settling"), lines.toString());
+    assertTrue(lines.get(3).contains("PAUSED: Robot is enabled or its enabled state is unknown"), lines.toString());
+    assertTrue(lines.stream().allMatch(line -> line.contains("INFO") && !line.contains("null")), lines.toString());
+  }
+
+  @Test void stoppedPullNamesShutdownInsteadOfAnAbsentRemoteFile() throws Exception {
+    settled();
+    var lines = logLines(() -> {
+      var pull = new PullCoordinator(CONFIG, gate, store, WALL, ignored -> {}, worker,
+          (address, config, pin) -> { throw new AssertionError("A stopped pull must not connect"); });
+      pull.closeAsync().get(2, java.util.concurrent.TimeUnit.SECONDS);
+      assertEquals("Pull coordinator is stopping", pull.step().detail());
+    });
+    assertTrue(lines.get(0).contains("PAUSED: Pull coordinator is stopping"));
+  }
+
+  @Test void staleEpisodeNamesTheConnectionChangeEvenWhenTheNewGateIsOpen() throws Exception {
+    var robot = remote(); settled();
+    var lines = logLines(() -> {
+      try (var pull = new PullCoordinator(CONFIG, gate, store, WALL, ignored -> {}, worker, (address, config, pin) -> {
+        gate.connected(address); gate.control(0L); worker.elapse(5_000_000); return robot;
+      })) {
+        assertEquals("Connection changed; waiting for a current pull session", pull.step().detail());
+      }
+    });
+    assertTrue(robot.closed); assertTrue(gate.open());
+    assertTrue(lines.get(0).contains("PAUSED: Connection changed; waiting for a current pull session"));
+  }
+
+  @Test void anIoFailureAfterTheGateDisconnectsIsInfoAndNamesTheGateReason() throws Exception {
+    settled();
+    var lines = logLines(() -> {
+      try (var pull = new PullCoordinator(CONFIG, gate, store, WALL, ignored -> {}, worker, (address, config, pin) -> {
+        gate.disconnected(); throw new IOException("Pipe closed");
+      })) { pull.start(); worker.drain(); }
+    });
+    assertEquals(1, lines.size(), lines.toString());
+    assertTrue(lines.get(0).contains("INFO"), lines.toString());
+    assertTrue(lines.get(0).contains("NT4 is disconnected") && lines.get(0).contains("Pipe closed"), lines.toString());
+    assertFalse(lines.get(0).contains("WARN"), lines.toString());
+  }
+
+  @Test void powerOffDuringTheSecondBlockProducesAnInfoRetry() throws Exception {
+    var robot = remote(); settled();
+    RobotRemote interrupted = new RobotRemote() {
+      @Override public org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity() { return robot.identity(); }
+      @Override public List<File> list() { return robot.list(); }
+      @Override public byte[] read(String name, long offset, int count) throws IOException {
+        if (offset == 0) return robot.read(name, offset, count);
+        gate.disconnected(); throw new IOException("Pipe closed");
+      }
+      @Override public java.util.Optional<String> prefixHash(String name, long length) throws IOException { return robot.prefixHash(name, length); }
+      @Override public void close() { robot.close(); }
+    };
+    var lines = logLines(() -> {
+      try (var pull = new PullCoordinator(CONFIG, gate, store, WALL, ignored -> {}, worker, (address, config, pin) -> interrupted)) {
+        pull.start(); worker.drain(); worker.advance(100_000);
+      }
+    });
+    assertEquals(1, robot.reads.size()); assertTrue(robot.closed);
+    var retry = lines.stream().filter(line -> line.contains("Pipe closed")).toList();
+    assertEquals(1, retry.size(), lines.toString());
+    assertTrue(retry.get(0).contains("INFO") && retry.get(0).contains("NT4 is disconnected"), lines.toString());
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"open", "enabled", "settling", "unexpected"})
+  void unexpectedFailuresStillWarnWhenTheGateDoesNotExplainADisconnect(String state) throws Exception {
+    settled();
+    var lines = logLines(() -> {
+      try (var pull = new PullCoordinator(CONFIG, gate, store, WALL, ignored -> {}, worker, (address, config, pin) -> {
+        if (state.equals("enabled")) gate.control(1L);
+        if (state.equals("settling")) { gate.control(1L); gate.control(0L); }
+        if (state.equals("unexpected")) { gate.disconnected(); throw new IllegalStateException("synthetic implementation failure"); }
+        throw new IOException("synthetic I/O failure");
+      })) { pull.start(); worker.drain(); }
+    });
+    assertEquals(1, lines.size(), lines.toString());
+    assertTrue(lines.get(0).contains("WARN") && lines.get(0).contains("Robot pull will retry"), lines.toString());
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void localFilesystemFailuresStillWarnWhenNtDisconnects(boolean wrapped) throws Exception {
+    settled();
+    var lines = logLines(() -> {
+      try (var pull = new PullCoordinator(CONFIG, gate, store, WALL, ignored -> {}, worker, (address, config, pin) -> {
+        gate.disconnected();
+        var denied = new java.nio.file.AccessDeniedException("synthetic staged file");
+        throw wrapped ? new IOException("Checkpoint failed", denied) : denied;
+      })) { pull.start(); worker.drain(); }
+    });
+    assertEquals(1, lines.size(), lines.toString());
+    assertTrue(lines.get(0).contains("WARN"), lines.toString());
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"disconnected", "connected", "local-failure"})
+  void persistentHandleCloseLogsItsActualFailurePhase(String state) throws Exception {
+    var robot = remote(); settled(); var closes = new AtomicInteger(); var opens = new AtomicInteger();
+    RobotRemote persistent = new RobotRemote() {
+      @Override public org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity() { return robot.identity(); }
+      @Override public List<File> list() { return robot.list(); }
+      @Override public byte[] read(String name, long offset, int count) throws IOException { return robot.read(name, offset, count); }
+      @Override public java.util.Optional<String> prefixHash(String name, long length) throws IOException { return robot.prefixHash(name, length); }
+      @Override public java.util.Optional<java.io.InputStream> open(String name, long offset) {
+        opens.incrementAndGet(); var bytes = robot.files.get(name);
+        return java.util.Optional.of(new java.io.ByteArrayInputStream(bytes, (int) offset, bytes.length - (int) offset) {
+          @Override public void close() throws IOException { closes.incrementAndGet(); throw new IOException("synthetic remote pipe closed"); }
+        });
+      }
+      @Override public void close() { robot.close(); }
+    };
+    var lines = logLines(() -> {
+      var pull = new PullCoordinator(CONFIG, gate, store, WALL, ignored -> {}, worker, (address, config, pin) -> persistent);
+      try {
+        assertEquals(FileTransfer.Status.COPIED, pull.step().status());
+        var local = store.pulls(robot.device, WALL); var held = local.manifest().files().get(0);
+        assertEquals(0, held.bytesCopied(), "close must checkpoint the buffered first block");
+        if (state.equals("local-failure")) {
+          var staged = store.root().resolve(held.localName()); Files.delete(staged); Files.createDirectory(staged);
+        }
+        if (state.equals("connected")) pull.closeAsync().get(2, java.util.concurrent.TimeUnit.SECONDS);
+        else { gate.disconnected(); assertEquals(FileTransfer.Status.PAUSED, pull.step().status()); }
+        assertEquals(state.equals("local-failure") ? 0 : 65536, local.manifest().files().get(0).bytesCopied());
+      } finally { pull.closeAsync().get(2, java.util.concurrent.TimeUnit.SECONDS); }
+    });
+    assertEquals(1, opens.get()); assertEquals(1, closes.get()); assertTrue(robot.closed);
+    var failure = lines.stream().filter(line -> line.contains("during close")).toList();
+    assertEquals(1, failure.size(), lines.toString()); String message = failure.get(0);
+    if (state.equals("local-failure")) {
+      assertTrue(message.contains("WARN") && message.contains("checkpoint failed"), message);
+      assertFalse(message.contains("synthetic remote pipe closed"), "remote close must not replace the local failure: " + message);
+    } else {
+      assertTrue(message.contains("remote handle") && message.contains("synthetic remote pipe closed"), message);
+      assertFalse(message.contains("checkpoint failed"), "successful checkpoint must not be reported as failed: " + message);
+      assertTrue(message.contains(state.equals("disconnected") ? "INFO" : "WARN"), message);
+      if (state.equals("disconnected")) assertTrue(message.contains("NT4 is disconnected"), message);
+    }
+  }
+
   @Test void noContactUntilSettledThenPauseWithinABlockResumeAndContinueAcrossKeyChanges() throws Exception {
     var robot = remote(); var pins = new ArrayList<String>(); var identities = new ArrayList<PullCoordinator.Identity>();
     try (var pull = new PullCoordinator(CONFIG, gate, store, WALL, identities::add, worker, (address, config, pin) -> { pins.add(pin); return robot; })) {

@@ -41,6 +41,7 @@ public final class PullCoordinator implements AutoCloseable {
   private boolean systemPhase;
   private long connection = -1;
   private FileTransfer.Status lastStatus;
+  private String lastPauseReason;
   /** Cumulative received payload bytes (including pending checkpoints) and successful verifications for this server process. */
   public record Progress(long bytes, long files, int pendingFiles, int waitingFiles) {}
   private volatile java.util.Map<String, Progress> progress = java.util.Map.of();
@@ -72,11 +73,25 @@ public final class PullCoordinator implements AutoCloseable {
       delay = result.waitUs() > 0 ? Math.min(result.waitUs(), 250_000) : result.status() == FileTransfer.Status.IDLE ? 3_000_000 : 250_000;
       if (result.status() == FileTransfer.Status.COPIED) delay = Math.max(1, result.waitUs());
     } catch (Exception e) {
+      var reason = gate.closedReason();
       closeRemote(); transfer = null;
-      LoggerFactory.getLogger(PullCoordinator.class).warn("Robot pull will retry: {}", e.getMessage()); delay = 3_000_000;
+      if (e instanceof IOException && reason == PullGate.ClosedReason.DISCONNECTED && !filesystemFailure(e)) {
+        LoggerFactory.getLogger(PullCoordinator.class).info("Robot pull will retry: {} ({})", reason.description(), e.getMessage());
+      } else {
+        LoggerFactory.getLogger(PullCoordinator.class).warn("Robot pull will retry: {}", e.getMessage());
+      }
+      delay = 3_000_000;
     } finally {
       if (!stopped.get()) worker.schedule(this::tick, delay);
     }
+  }
+
+  private static boolean filesystemFailure(Throwable failure) {
+    var visited = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Throwable, Boolean>());
+    for (var cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
+      if (cause instanceof java.nio.file.FileSystemException) return true;
+    }
+    return false;
   }
 
   /** Test seam for a complete scheduling step; only the coordinator's one worker calls it in use. */
@@ -120,6 +135,12 @@ public final class PullCoordinator implements AutoCloseable {
   }
   private FileTransfer.Result report(FileTransfer.Result result) {
     var status = result.status();
+    if (status == FileTransfer.Status.PAUSED) {
+      var reason = gate.closedReason();
+      String detail = stopped.get() ? "Pull coordinator is stopping" : reason == null
+          ? "Connection changed; waiting for a current pull session" : reason.description();
+      result = new FileTransfer.Result(status, result.waitUs(), result.remoteName(), result.bytes(), detail);
+    }
     if (serial != null) {
       var before = progress.getOrDefault(serial, new Progress(0, 0, 0, 0));
       var next = new java.util.HashMap<>(progress);
@@ -128,17 +149,30 @@ public final class PullCoordinator implements AutoCloseable {
           transfer == null ? before.pendingFiles() : transfer.pendingFiles(), 0));
       progress = java.util.Map.copyOf(next);
     }
-    if (status == FileTransfer.Status.VERIFIED || status == FileTransfer.Status.RETRIED || status == FileTransfer.Status.REFUSED
-        || status != lastStatus && (status == FileTransfer.Status.PAUSED || status == FileTransfer.Status.COPIED)) {
+    boolean changedPause = status == FileTransfer.Status.PAUSED
+        && (status != lastStatus || !java.util.Objects.equals(lastPauseReason, result.detail()));
+    if (changedPause) {
+      LoggerFactory.getLogger(PullCoordinator.class).info("Robot pull PAUSED: {}", result.detail());
+    } else if (status == FileTransfer.Status.VERIFIED || status == FileTransfer.Status.RETRIED || status == FileTransfer.Status.REFUSED
+        || status != lastStatus && status == FileTransfer.Status.COPIED) {
       LoggerFactory.getLogger(PullCoordinator.class).info("Robot pull {}: {} {}", status, result.remoteName(), result.detail() == null ? "" : result.detail());
     }
+    if (status == FileTransfer.Status.PAUSED) lastPauseReason = result.detail();
     if (status != FileTransfer.Status.WAITING) lastStatus = status;
     return result;
   }
   private void closeRemote() {
     var copying = transfer;
     if (copying != null) try { copying.close(); }
-    catch (IOException e) { LoggerFactory.getLogger(PullCoordinator.class).warn("Robot pull checkpoint failed during close: {}", e.getMessage()); }
+    catch (IOException e) {
+      var logger = LoggerFactory.getLogger(PullCoordinator.class);
+      if (e instanceof FileTransfer.RemoteCloseException) {
+        var reason = gate.closedReason();
+        if (reason == PullGate.ClosedReason.DISCONNECTED) {
+          logger.info("Robot pull remote handle interrupted during close: {} ({})", reason.description(), e.getMessage());
+        } else logger.warn("Robot pull remote handle failed during close: {}", e.getMessage());
+      } else logger.warn("Robot pull checkpoint failed during close: {}", e.getMessage());
+    }
     var secondPass = system; system = null; systemPhase = false;
     if (secondPass != null) secondPass.close();
     var contact = remote.getAndSet(null);
