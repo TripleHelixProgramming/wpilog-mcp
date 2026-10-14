@@ -72,9 +72,44 @@ The extension host calls the same tools as the assistant and fetches samples thr
 
 **WPILog Explorer: Ask about this selection**, in the editor title and context menu, sends the path, selected entries, window and pane kind to VS Code chat. It names `get_statistics` first for a plot selection, `search_strings` for console text, or `render_chart` for a pane. If chat cannot be opened, the prompt is copied to the clipboard with a notice. Prefilling other assistants remains an open question; paste is the portable route.
 
-The reusable visualization editor is still an isolated development prototype. Stage 1 tests its
-revision and recovery contracts; it adds no commands to the installed Explorer and does not
-change which editor opens logs. [Development checks](../doc/DEVELOPMENT.md#visualization-stage-1-lifecycle-prototype) describe the opt-in fixture.
+### Recorded visualization preview
+
+Choose **WPILog Explorer: Open Source Overview (Preview)** on a local WPILOG in Logs, or
+**Reopen Editor With → WPILog Source Overview (Preview)**. Ordinary opening still uses the
+existing Explorer editor. The overview shows catalog facts first, then the indexed duration,
+signal inventory and completeness; unavailable facts are labeled, never guessed from signal names.
+**Blank layout** opens an independent working view. Add a plot or value table, select signals
+in **Add signals**, and use each panel's **Move, resize or remove panel** controls with Tab/Enter
+or drag its header and resize its edge. Panel titles are editable. Title, size, position and style
+edits keep the current samples; series/range changes start a new data query. The Entries target label names the current view and panel; a click adds to that target, or creates a view from the overview.
+
+**Recorded time and cursor** sets a shared time window or reads the last logged value at or
+before a cursor. Equal timestamps choose the last physical record; values are not interpolated.
+Plots use the server's existing Arrow samples or min/max/mean buckets (at most 4,096 points per
+signal); value tables use original typed samples and show their timestamps and skipped-record
+counts. The preview limits a view to 32 series, with no hidden-view data requests and explicit
+cancellation of stale replies. Continuous live views and the aggregate decoded-buffer setting
+arrive in Stage 3.
+
+Draft gestures are persisted on the local server, with a local recovery journal; drafts do not
+trigger native Save prompts. **Save view…** chooses a labeled writable store, or **Create store…**
+creates one through an empty import without enrolling any folders. It clears draft undo history;
+subsequent edits use native Save/Undo/Redo. Native **Save As** still refuses with a **Save view…**
+hint. **Duplicate and Open Beside** creates an independent UUID; native Split moves the same view.
+The overview lists Saved views and Unsaved views, including a detached draft's 30-day expiry.
+Unreadable/newer saved files are reported beside the readable views and left intact. A metadata
+budget limit produces an explained partial list, without blocking an already known saved view.
+Saved views open as new working copies. A named server with durable state restores working UUIDs
+and configurations after restart; ephemeral state shows its restart warning. Unavailable files or a different owner are explained instead
+of being silently substituted. For a file outside a store, identity checks file attributes, not
+content: a rewrite preserving the fingerprint is not detected. Unreferenced source locators may
+be reclaimed; reopen the unchanged file in Source Overview to restore its saved views.
+
+This Stage 2a preview is local, recorded WPILOG only. Templates, statistics/raw tables, public
+visualization MCP operations and notifications arrive in Stage 2b. Keep using the existing editor
+for specialized field, console, REV, notebook and Advanced Data workflows. See
+[development checks](../doc/DEVELOPMENT.md#visualization-stage-2a-recorded-preview) for the isolated
+real-service/editor fixture and its remaining platform gates.
 
 ## A Data Store That Follows Your Folders
 

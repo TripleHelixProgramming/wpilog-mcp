@@ -348,6 +348,14 @@ public class LogManager {
     return securityValidator.getAllowedDirectories();
   }
 
+  /** Metadata-only source admission shares exactly the reader's current grants and move aliases. */
+  public Path validateSourcePath(Path path) throws IOException {
+    securityValidator.validate(path);
+    var resolved = stores.resolveMoved(path);
+    securityValidator.validate(resolved);
+    return resolved.toRealPath();
+  }
+
   /** Permanent roots for the HTTP store door; a lease cannot publish a store to peers. */
   public Set<Path> getConfiguredDirectories() { return securityValidator.getConfiguredDirectories(); }
 

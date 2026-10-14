@@ -128,7 +128,7 @@ export class EntriesView implements vscode.WebviewViewProvider, vscode.Disposabl
     this.sourceFilter = filter;
     this.sourceGrouping = grouping;
     if (!this.current(generation)) return;
-    void this.post({ type: "loading", generation, filter, grouping, resetFilter });
+    void this.post({ type: "loading", target: this.source.targetLabel, generation, filter, grouping, resetFilter });
     void this.readRoots(generation, filter, grouping, resetFilter);
   }
 
@@ -139,7 +139,7 @@ export class EntriesView implements vscode.WebviewViewProvider, vscode.Disposabl
       const nodes = await this.serialize(roots, generation, filter.trim() !== "");
       if (!this.current(generation)) return;
       this.applyCollapse(nodes);
-      await this.post({ type: "tree", generation, filter, grouping, resetFilter, nodes });
+      await this.post({ type: "tree", target: this.source.targetLabel, generation, filter, grouping, resetFilter, nodes });
     } catch (error) { this.report(error, generation); }
   }
 

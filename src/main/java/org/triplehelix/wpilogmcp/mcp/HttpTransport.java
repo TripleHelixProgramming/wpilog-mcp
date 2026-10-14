@@ -69,6 +69,8 @@ public class HttpTransport {
   private final SessionManager sessionManager;
   private final ClientLeases leases = ClientLeases.getInstance();
   private final RegistrationEndpoint registration;
+  private volatile VisualizationEndpoint visualization;
+  private String visualizationFailure;
   private boolean leasesOpened;
   private final int port;
   private final String bindAddress;
@@ -170,7 +172,10 @@ public class HttpTransport {
       java.util.Set<String> allowedOriginHosts, String mcpPath, String configurationName) {
     this.toolRegistry = toolRegistry;
     this.gson = new GsonBuilder().serializeNulls().create();
-    this.sessionManager = new SessionManager(leases::remove);
+    this.sessionManager = new SessionManager(id -> {
+      leases.remove(id);
+      var endpoint = visualization; if (endpoint != null) endpoint.release(id);
+    });
     this.registration = new RegistrationEndpoint(sessionManager, leases);
     this.handler = new McpMessageHandler(toolRegistry, sessionManager);
     this.port = port;
@@ -226,7 +231,21 @@ public class HttpTransport {
     new LocalIngestionEndpoint(sessionManager, () -> localIngestion).handle(exchange);
   }
 
+  private void handleVisualization(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    var authority = CallerContext.http(server.getAddress().getAddress(), exchange.getRemoteAddress().getAddress(), origin == null || isAllowedOrigin(origin));
+    if (authority == CallerContext.Authority.UNTRUSTED) {
+      LocalIngestionEndpoint.error(exchange, 403, "ACCESS_DENIED", "Visualization preview requires loopback and an allowed Origin"); return;
+    }
+    noteMcpActivity();
+    var endpoint = visualization;
+    if (endpoint == null) LocalIngestionEndpoint.error(exchange, 503, "WORKSPACE_UNAVAILABLE", visualizationFailure);
+    else endpoint.handle(exchange, authority);
+  }
+
   public void start() throws IOException {
+    try { visualization = new VisualizationEndpoint(sessionManager, toolRegistry.serverIdentity()); }
+    catch (IOException failure) { visualizationFailure = failure.getMessage(); logger.warn("Visualization preview unavailable: {}", visualizationFailure); }
     server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
     server.createContext(this.mcpPath, counted(this::handleRequest));
     server.createContext("/directories", counted(this::handleRegistration));
@@ -238,6 +257,7 @@ public class HttpTransport {
     server.createContext("/stop", counted(this::handleStop));
     streaming = new StreamingRequests(16, streamTimeout);
     storeStreaming = new StreamingRequests(4, streamTimeout);
+    server.createContext(VisualizationEndpoint.PATH, streaming.handle(counted(this::handleVisualization)));
     server.createContext(DATA_PATH, streaming.handle(counted(this::handleData)));
     server.createContext(ReadEndpoint.PATH, streaming.handle(counted(this::handleRead)));
     server.createContext(StoreImportEndpoint.PATH, storeStreaming.handle(counted(this::handleImport)));
@@ -340,6 +360,7 @@ public class HttpTransport {
       return;
     }
     mirrorEndpoint.close();
+    if (visualization != null) visualization.close();
     readEndpoint.close();
     if (localIngestion != null) { localIngestion.close(); stores.clearLocalIngestion(localIngestion); }
     // 1. End the SSE streams. Their loops sleep between pings; the interrupt ends the loop,

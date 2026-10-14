@@ -1,0 +1,19 @@
+body { color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); padding: 12px; font-size: 13px; }
+h1 { font-size: 1.5em; margin-bottom: 4px; } h2 { font-size: 1.1em; }
+button, input, select { font: inherit; padding: 5px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, #777); }
+button { cursor: pointer; margin: 3px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+button:hover { background: var(--vscode-button-secondaryHoverBackground); }
+:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+label { max-width: 100%; flex-wrap: wrap; display: inline-flex; gap: 8px; align-items: center; margin: 6px; } label:has(select[multiple]) { display: flex; }
+summary { cursor: pointer; } select { max-width: 100%; } details > label { box-sizing: border-box; }
+#signals { width: 100%; } #search { min-width: 0; max-width: 100%; width: 20em; } details { padding: 8px; border: 1px solid var(--vscode-widget-border, #555); }
+#warning { color: var(--vscode-editorWarning-foreground); white-space: pre-wrap; } #source, #clock { opacity: .85; }
+.view-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; } dt { font-weight: bold; } dd { margin: 0; overflow-wrap: anywhere; }
+.view-row { padding: 10px 0; border-bottom: 1px solid var(--vscode-widget-border, #555); }
+.grid-stack-item-content { border: 1px solid var(--vscode-widget-border, #555); border-radius: 4px; display: flex; flex-direction: column; background: var(--vscode-editor-background); overflow: hidden; }
+.panel-header { cursor: move; display: flex; align-items: center; gap: 6px; padding: 5px; background: var(--vscode-sideBar-background); }
+.panel-title { flex: 1; min-width: 50px; font-weight: bold; } .panel-controls { padding: 2px 6px; border: 0; }
+.panel-body { overflow: auto; flex: 1; min-height: 0; padding: 5px; } .panel-note { padding: 2px 8px; margin: 0; }
+table { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: 6px; border-bottom: 1px solid var(--vscode-widget-border, #555); overflow-wrap: anywhere; }
+.time-controls input { width: 9em; } .u-legend { font-size: .9em; } .uplot { color: var(--vscode-foreground); }

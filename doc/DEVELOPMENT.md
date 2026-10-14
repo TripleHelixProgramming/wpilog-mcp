@@ -401,8 +401,33 @@ Focused server tests are `*Visualization*Test` and `*CallerContextTest`; the ord
 includes visualization controller and recovery-journal tests. The Java contract resource owns
 configuration validation. The fixture backend is a synthetic lifecycle test double, not a second
 production persistence service. Native Save As stays unavailable with a Save view… hint until
-its picker, destination alias, and replacement-tab gates are established. No source overview or
-new visualization commands are registered by normal extension activation in Stage 1.
+its picker, destination alias, and replacement-tab gates are established. Stage 1 remains an isolated lifecycle regression; Stage 2a registers the optional product preview described below.
+
+### Visualization Stage 2a recorded preview
+
+Run `./gradlew shadowJar extensionSmokeFixture`, then `npm run test:recorded-visualization`
+in `vscode-extension`, with an explicit `VSCODE_VERSION=1.101.0` or current stable version.
+The runner starts the built JAR as a foreground child with generated logs, a private home and
+configuration, then launches an isolated normal editor profile. It never uses the installed
+service or robot logs. It exercises the actual overview/working providers, bundled GridStack
+and uPlot under CSP, Arrow and typed cursor replies, panel controls via Enter, A/A/B isolation,
+and transport counts proving title/resize edits issue no new Arrow or cursor request,
+Entries routing, first-store metadata save and a second Java/editor launch for draft/saved
+recovery. Results, renderer diagnostics and screenshots stay under `build/visualization-stage2a`.
+The narrow DevTools connection belongs only to this disposable editor. The first-store native
+fixture exercises the real save operation directly; picker sequencing/cancellation is checked
+separately with supplied VS Code dialogs. Native lifecycle regression remains
+`npm run test:visualization`. Run both on the oldest supported/current editor; Linux requires
+Xvfb, and actual Linux/Windows native results must not be inferred from Mac or mocked tests.
+
+Focused Java tests include `VisualizationEndpointTest`, `VisualizationServiceTest`,
+`VisualizationMetadataTest` and `CallerContextTest`. Node tests cover optional registration,
+layout purity, Entries generations, lease/save ordering, aborts and response bounds. The focused
+review checks also cover per-record saved-file failures, direct open beyond a listing budget,
+locator reclamation, and host/renderer buffer retention across presentation revisions. Plants
+must catch owner/revision bypass, session cleanup/race failures, stale replies and budget
+removal. Templates/public MCP adapters and notification wiring belong to Stage 2b; the recorded
+preview's new route preserves raw JSON before shared contract admission.
 
 ### The data endpoint's streams
 

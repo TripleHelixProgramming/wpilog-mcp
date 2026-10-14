@@ -7,7 +7,11 @@ under its content security policy, by nonce.
 
 | Library | Version | Files | License |
 |---|---|---|---|
+| [GridStack](https://github.com/gridstack/gridstack.js) | 14.0.0 | `gridstack-all.js`, `gridstack.min.css` | MIT (`gridstack.LICENSE`) |
 | [uPlot](https://github.com/leeoniya/uPlot) | 1.6.32 | `uPlot.iife.min.js`, `uPlot.min.css` | MIT (`uPlot.LICENSE`) |
 
 To update one, download the release's distribution files, replace them here, and change the
 version in this table; `manifest.test.ts` checks that each file and its license are present.
+
+GridStack assets are the unmodified distribution and LICENSE from the official npm
+`gridstack` 14.0.0 tarball. They add 100,606 uncompressed bytes including the license.

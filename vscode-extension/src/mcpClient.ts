@@ -194,6 +194,23 @@ export class McpClient {
     return operation;
   }
 
+  /** Narrow local preview adapter; a lost response never replays a mutation automatically. */
+  async visualization<T>(route: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    if (!/^\/[a-zA-Z0-9_/-]+$/.test(route)) throw new Error("Invalid visualization route");
+    await this.updating.catch(() => {}); await this.ensureSession();
+    const called = this.sessionId;
+    const send = () => this.exchange(new URL("/visualizations/v1" + route, this.endpoint).toString(),
+      body === undefined ? "GET" : "POST", body, this.sessionId, 600_000, signal, 16 << 20);
+    let reply = await send();
+    if (reply.status === 404 && JSON.parse(reply.body).code === "SESSION_EXPIRED") {
+      if (this.sessionId === called) this.sessionId = undefined;
+      await this.ensureSession(); reply = await send();
+    }
+    const value = JSON.parse(reply.body);
+    if (reply.status !== 200) throw new LocalControlError(`${value.code ?? "PREVIEW_FAILED"}: ${value.error ?? reply.status}`, reply.status, value.code);
+    return value as T;
+  }
+
   private async localControl<T>(route: string, method: "GET" | "POST" | "PUT", body?: unknown): Promise<T> {
     if (!/^\/store\/local-ingestion(?:[/?]|$)/.test(route)) throw new Error("Unknown local data-store control route");
     const reply = await this.exchange(new URL(route, this.endpoint).toString(), method, body, this.sessionId);
@@ -269,7 +286,7 @@ export class McpClient {
   }
 
   private async exchange(endpoint: string, method: string, payload?: unknown, sessionId?: string,
-    timeout = REQUEST_TIMEOUT_MS): Promise<Exchange> {
+    timeout = REQUEST_TIMEOUT_MS, signal?: AbortSignal, maxBytes = Infinity): Promise<Exchange> {
     const body = payload === undefined ? "" : JSON.stringify(payload);
     const headers: Record<string, string> = {
       ...await this.headersFor(endpoint),
@@ -283,9 +300,11 @@ export class McpClient {
         endpoint,
         { method, headers, timeout },
         (response) => {
-          let text = "";
+          let text = "", bytes = 0;
           response.setEncoding("utf8");
           response.on("data", (chunk: string) => {
+            bytes += Buffer.byteLength(chunk);
+            if (bytes > maxBytes) { request.destroy(new Error("Response exceeds its byte budget")); return; }
             text += chunk;
           });
           response.on("end", () => {
@@ -301,7 +320,10 @@ export class McpClient {
       );
       request.on("timeout", () => request.destroy(new Error("the request timed out")));
       request.on("error", (error) => reject(this.unreachable(method, error)));
-      request.end(body);
+      const abort = () => request.destroy(new Error("Request cancelled"));
+      signal?.addEventListener("abort", abort, { once: true });
+      request.once("close", () => signal?.removeEventListener("abort", abort));
+      if (signal?.aborted) abort(); else request.end(body);
     });
   }
 

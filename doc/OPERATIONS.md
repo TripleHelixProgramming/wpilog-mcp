@@ -50,7 +50,7 @@ version, configuration `name`, process ID, `managed`, the `gateway` status field
 `server_instance_id`/`working_state`. A named server normally reports durable local owner
 identity. If its visualization state cannot be opened, it logs a warning and continues with
 ephemeral identity; `working_state_reason` explains the fallback. Unnamed servers also report
-ephemeral identity and a reason. This does not enable visualization editing or create a log store. The server's log is at
+ephemeral identity and a reason. This does not create a log store; the recorded visualization preview is opened explicitly. The server's log is at
 `~/.wpilog-mcp/logs/http.log`.
 
 Startup writes one `Configuring log directory:` line per configured root to that log.
@@ -306,6 +306,32 @@ needed. The [extension guide](../vscode-extension/README.md#exploring-logs) has 
    quick charts and CSV export.
 5. **WPILog Explorer: Ask about this selection** sends the path, entries and window to chat.
    **Open in Notebook** writes a Python notebook that fetches the same samples.
+#### 5.1 Recorded visualization preview
+
+1. On a local WPILOG in Logs, choose **Open Source Overview (Preview)**. Source facts appear
+   before signal indexing completes. Missing robot, session or match information says unavailable.
+   Ordinary open still uses the existing Explorer editor during the preview.
+2. Choose **Blank layout**, then **Add plot** or **Add value table**. Expand **Add signals**,
+   choose a panel and select exact entry names. Entries also names the active view/panel as its
+   destination. Switching to another view changes that destination; a hidden view is not a fallback.
+3. Use **Move, resize or remove panel** with Tab/Enter, or drag/resize the panel.
+   Title, position and size edits retain the loaded samples. Expand **Recorded time and cursor**
+   for a range or latest/cursor values. Tables report the last original sample at or before the
+   cursor, its robot timestamp and any skipped-record count.
+4. Use **Duplicate and Open Beside** to make an independent view of the same source; open another
+   source overview to work with a different recording at the same time. Native Split moves a view.
+5. **Save view…** offers stores by label and path. **Create store…** asks for a local directory
+   and creates metadata through an empty import, without enabling automatic ingestion. Canceling
+   leaves the draft. Promotion clears draft undo; later changes use native Save and Undo/Redo.
+   Save As remains unavailable and points to Save view.
+6. Return to the overview to resume an Unsaved view (detached drafts expire after 30 days) or open
+   a new working copy of a Saved view. A durable named server retains these across restart.
+   Invalid/newer saved files are reported beside the readable ones and left intact. If an unmanaged
+   file's fingerprint changed or the source is no longer allowed, the view reports unavailability
+   rather than selecting a similar file. The fingerprint checks file attributes, not its content;
+   see the [standalone reference](STANDALONE.md) for this limit and locator recovery. Templates,
+   public MCP editing and live following are later stages.
+
 ## Part II: Running the server
 
 ### 6. The shared server on a laptop

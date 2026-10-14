@@ -54,7 +54,7 @@ function fixture() {
       return predicate(this) ? this : this.children.map(child => child.find(predicate)).find(Boolean);
     }
   }
-  const elements = new Map(["filter", "grouping", "clear", "collapse-all", "status", "entries"].map(id => [id, new Element(id)]));
+  const elements = new Map(["filter", "grouping", "clear", "collapse-all", "status", "entries", "visualization-target"].map(id => [id, new Element(id)]));
   elements.get("grouping")!.value = "path";
   const messages: any[] = [];
   let receive: Handler = () => {};
@@ -324,4 +324,15 @@ test("the sidebar page loads only bundled script/style and includes its inline c
   assert.match(html, /<option value="path">Path<\/option>/);
   assert.match(html, /<option value="type">Data type<\/option>/);
   assert.match(html, /id="collapse-all"[^>]*aria-label="Collapse all"/);
+});
+
+
+test("Entries target label follows only the accepted source generation", () => {
+  const page = fixture();
+  page.send({ type: "tree", generation: 2, filter: "", nodes: [], target: "A · Plot" });
+  assert.equal(page.get("visualization-target").text(), "A · Plot");
+  page.send({ type: "tree", generation: 1, filter: "", nodes: [], target: "Hidden B · Plot" });
+  assert.equal(page.get("visualization-target").text(), "A · Plot");
+  page.send({ type: "loading", generation: 3, filter: "", target: "B · Table" });
+  assert.equal(page.get("visualization-target").text(), "B · Table");
 });

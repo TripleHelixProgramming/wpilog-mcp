@@ -154,6 +154,7 @@ test("the commands are the ones the README names, each under the extension's or 
     "wpilog-mcp.explorer.refreshLog",
     "wpilog-mcp.explorer.openInNotebook",
     "wpilog-mcp.explorer.askAboutSelection",
+    "wpilog-mcp.explorer.openSourceOverview",
   ]);
   for (const c of commands) {
     const explorer = c.command.startsWith("wpilog-mcp.explorer.");
@@ -180,7 +181,8 @@ test("the explorer is one activity bar container with the Logs and Entries views
 
 test("the custom editor opens .wpilog files by default, read-only, and leaves other editors offered", () => {
   const editors = manifest.contributes.customEditors as { viewType: string; displayName: string; selector: { filenamePattern: string }[]; priority: string }[];
-  assert.equal(editors.length, 1);
+  assert.equal(editors.length, 3);
+  assert.deepEqual(editors.slice(1).map(e => [e.viewType, e.priority]), [["wpilog-mcp.sourceOverview", "option"], ["wpilog-mcp.visualization", "default"]]);
   assert.equal(editors[0].viewType, "wpilog-mcp.explorer");
   assert.equal(editors[0].displayName, "WPILog Explorer");
   assert.deepEqual(editors[0].selector, [{ filenamePattern: "*.wpilog" }]);
@@ -225,7 +227,7 @@ test("every menu names a declared command, and every view-title button has an ic
 test("the plot's libraries are bundled with their licenses, at the versions the vendor table pins", () => {
   const root = path.join(__dirname, "..", "..");
   for (const asset of ["media/plot.js", "media/plotMath.js", "media/follow.js", "media/arrowStream.js", "media/console.js", "media/field.js", "media/rev.js", "media/vendor/uPlot.iife.min.js",
-    "media/vendor/uPlot.min.css", "media/vendor/uPlot.LICENSE", "media/vendor/README.md"]) {
+    "media/vendor/uPlot.min.css", "media/vendor/uPlot.LICENSE", "media/vendor/gridstack-all.js", "media/vendor/gridstack.min.css", "media/vendor/gridstack.LICENSE", "media/vendor/README.md"]) {
     assert.ok(fs.existsSync(path.join(root, asset)), asset);
   }
   const table = fs.readFileSync(path.join(root, "media", "vendor", "README.md"), "utf8");

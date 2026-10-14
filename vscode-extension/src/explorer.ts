@@ -1,3 +1,4 @@
+import { RecordedPreview } from "./visualization/recordedPreview";
 import { EntryInfo } from "./explorer/entryInfo";
 import { HttpHeaders, noHeaders } from "./pitCredential";
 /**
@@ -62,6 +63,7 @@ export class Explorer implements vscode.Disposable {
   readonly entries: EntriesProvider;
   private readonly entriesView: EntriesView;
   readonly editor: ExplorerEditorProvider;
+  readonly preview: RecordedPreview;
   private readonly disposables: vscode.Disposable[] = [];
   private choices: Choices;
   private offering = false;
@@ -87,7 +89,20 @@ export class Explorer implements vscode.Disposable {
     this.entries = new EntriesProvider(this, context.workspaceState);
     this.entriesView = new EntriesView(this.entries, context.extensionUri);
     this.editor = new ExplorerEditorProvider(this);
-    this.disposables.push(
+    let previewLog: OpenLog | undefined;
+    this.preview = new RecordedPreview({ context, client: () => this.clientFor(this.spec()),
+      entries: (file, target) => {
+        if (previewLog?.path !== file) previewLog = file ? { path: file, spec: this.spec() } : undefined;
+        this.entries.setActive(previewLog, target);
+      },
+      grantStore: async folder => {
+        const key = `wpilog-mcp.visualizationStores.${this.spec().name}`;
+        const roots = context.workspaceState.get<string[]>(key) ?? [];
+        if (!roots.includes(folder)) await context.workspaceState.update(key, [...roots, folder]);
+        await (await this.clientFor(this.spec())).refreshRegistration();
+      },
+    });
+    this.disposables.push(this.preview,
       // Custom editor URIs are documents, not paths on this laptop. No file contents cross this provider.
       vscode.workspace.registerFileSystemProvider("wpilog-pit", {
         onDidChangeFile: new vscode.EventEmitter<vscode.FileChangeEvent[]>().event,
@@ -151,14 +166,14 @@ export class Explorer implements vscode.Disposable {
         else if (item?.resourceUri) void vscode.env.clipboard.writeText(item.resourceUri.fsPath);
       }),
       vscode.commands.registerCommand("wpilog-mcp.explorer.showEntry", (nameOrItem: string | EntryItem) =>
-        this.editor.selectEntry(entryNameOf(nameOrItem))),
+        this.routeEntry(entryNameOf(nameOrItem), true)),
       vscode.commands.registerCommand("wpilog-mcp.explorer.plotEntry", (nameOrItem: string | EntryItem) =>
-        this.editor.plotEntry(entryNameOf(nameOrItem))),
-      vscode.commands.registerCommand("wpilog-mcp.explorer.plotElements", (item?: EntryItem) => {
+        this.routeEntry(entryNameOf(nameOrItem), false)),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.plotElements", async (item?: EntryItem) => {
         const node = item?.node;
         if (node?.kind !== "field" || !node.elements) return;
         for (const name of elementPaths(node.entry.name, node.fieldPath, node.elements, ELEMENTS_PLOTTED)) {
-          this.editor.plotEntry(name);
+          await this.routeEntry(name, false);
         }
       }),
       vscode.commands.registerCommand("wpilog-mcp.explorer.refreshLog", () => this.editor.reloadActive())
@@ -166,6 +181,13 @@ export class Explorer implements vscode.Disposable {
   }
 
   /** The Logs tree and URI handler share server admission before opening a document. */
+  private async routeEntry(name: string, details: boolean): Promise<void> {
+    try {
+      if (await this.preview.routeSignal(name)) return;
+      if (details) this.editor.selectEntry(name); else this.editor.plotEntry(name);
+    } catch (error) { void vscode.window.showErrorMessage(messageOf(error)); }
+  }
+
   async openLog(logPath: string, spec: ExplorerSpec = this.spec(), listed?: ListedLog): Promise<void> {
     await openValidated({ path: logPath, entries: [], kind: "time_series" },
       async file => (await this.clientFor(spec)).callTool("list_entries", { path: file, limit: 1 }),
@@ -518,7 +540,13 @@ export class Explorer implements vscode.Disposable {
       // A server at a new URL was started again, perhaps with other directories: its streams are new
       this.data.clear();
     }
-    const client = new McpClient(url, this.extensionVersion, spec.kind === "pit" ? undefined : this.registration, this.headersFor);
+    const registration = spec.kind === "pit" ? undefined : async (): Promise<SessionRegistration> => {
+      const base = this.registration ? await this.registration() : { directories: { paths: [], team: null }, key: null };
+      const roots = this.context.workspaceState.get<string[]>(`wpilog-mcp.visualizationStores.${spec.name}`) ?? [];
+      return { ...base, directories: { ...base.directories, paths: [...base.directories.paths,
+        ...roots.map(path => ({ path, team: null }))] } };
+    };
+    const client = new McpClient(url, this.extensionVersion, registration, this.headersFor);
     this.clients.set(spec.name, { url, client });
     return client;
   }
@@ -769,6 +797,7 @@ export class EntriesProvider implements vscode.TreeDataProvider<EntryItem> {
   readonly onDidChangeTreeData = this.changed.event;
   private active?: OpenLog;
   private activeListing?: EntryListing;
+  targetLabel = "";
   private filter = "";
   private filterReset = 0;
   private groupingValue: EntryGrouping;
@@ -807,9 +836,10 @@ export class EntriesProvider implements vscode.TreeDataProvider<EntryItem> {
   }
 
   /** Shows a log's entries: the one the editor just loaded, or none. */
-  setActive(log: OpenLog | undefined): void {
+  setActive(log: OpenLog | undefined, target = ""): void {
     // Returning focus from the sidebar to this editor does not change its listing or search.
-    if (log === this.active && log?.listing === this.activeListing) return;
+    if (log === this.active && log?.listing === this.activeListing && this.targetLabel === target) return;
+    this.targetLabel = target;
     if (log?.path !== this.active?.path || log?.spec !== this.active?.spec) {
       this.updateFilter("");
     }
@@ -1049,7 +1079,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       const listing = (await client.callTool("list_entries", { path: logPath })) as EntryListing;
       editor.log = { ...editor.log, path: logPath, spec, listing };
       post({ type: "log", name, path: logPath, listing, copy: editor.log.copy ?? (spec.kind === "pit" ? "Reading the pit server" : "Reading this laptop"), live: spec.kind === "pit" && editor.log.source?.session?.open === true });
-      if (this.editors.get(this.activeKey ?? "") === editor) this.explorer.entries.setActive(editor.log);
+      if (editor.panel.active && this.editors.get(this.activeKey ?? "") === editor) this.explorer.entries.setActive(editor.log);
       return;
     } catch (error) {
       const hint = error instanceof ToolError ? (error.result?.hint as string | undefined) : undefined;
@@ -1084,7 +1114,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       const listing = await client.callTool("list_entries", { path: editor.log.path }) as EntryListing;
       if (editor.following) {
         editor.log.listing = listing;
-        if (this.editors.get(this.activeKey ?? "") === editor) this.explorer.entries.setActive(editor.log);
+        if (editor.panel.active && this.editors.get(this.activeKey ?? "") === editor) this.explorer.entries.setActive(editor.log);
         void editor.panel.webview.postMessage({ type: "live", listing });
       }
     } catch (error) {
@@ -1267,7 +1297,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
   /** Plots an entry in the active editor: the Entries view's click. */
   plotEntry(name: string): void {
     const editor = this.editors.get(this.activeKey ?? "");
-    if (!editor || name === "") return;
+    if (!editor || !editor.panel.active || name === "") return;
     editor.panel.reveal(undefined, true);
     void editor.panel.webview.postMessage({ type: "plotEntry", name });
   }
@@ -1275,7 +1305,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
   /** Shows an entry in the active editor: the Entries view's click. */
   selectEntry(name: string): void {
     const editor = this.editors.get(this.activeKey ?? "");
-    if (!editor) return;
+    if (!editor || !editor.panel.active) return;
     editor.panel.reveal(undefined, true);
     void editor.panel.webview.postMessage({ type: "selectEntry", name });
   }

@@ -61,6 +61,9 @@ import org.triplehelix.wpilogmcp.sync.SyncResult;
  * removed without changing their originals. A committed payload is never rolled back.
  */
 public final class LogStore implements AutoCloseable {
+  /** Placement and recorded-source admission share one content proof. Callers validate grants first. */
+  public static String contentHash(Path path) throws IOException { return StoreFiles.hash(path); }
+
   public record Request(List<Path> paths, boolean move, String statedRobot) {
     public Request {
       paths = List.copyOf(paths);

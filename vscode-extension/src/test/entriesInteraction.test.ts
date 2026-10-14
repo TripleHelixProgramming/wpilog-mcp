@@ -32,6 +32,7 @@ const host = {
     async executeCommand(name: string) { calls.push(name); },
   },
   window: {
+    tabGroups: { activeTabGroup: {}, onDidChangeTabs: disposable, onDidChangeTabGroups: disposable },
     registerTreeDataProvider: disposable,
     registerWebviewViewProvider(id: string, provider: unknown) { views.set(id, provider); return disposable(); },
     registerCustomEditorProvider: disposable,
@@ -51,7 +52,7 @@ try {
 function fixture(savedGrouping?: unknown) {
   dialogs = 0; commands.clear(); calls.length = 0; views.clear();
   const saved = new Map<string, unknown>([["wpilog-mcp.entryGrouping", savedGrouping]]);
-  const context = { globalState: { get: () => undefined }, extensionUri: {}, workspaceState: {
+  const context = { globalStorageUri: { fsPath: "unused-entries-fixture" }, globalState: { get: () => undefined }, extensionUri: {}, workspaceState: {
     get: (key: string) => saved.get(key),
     update: async (key: string, value: unknown) => { saved.set(key, value); },
   } };
@@ -176,5 +177,35 @@ test("grouping changes are saved to workspace state and unknown saved values def
     explorer.entries.setGrouping("path");
     assert.deepEqual(saved, [["wpilog-mcp.entryGrouping", "type"], ["wpilog-mcp.entryGrouping", "path"]]);
     assert.equal(state.get("wpilog-mcp.entryGrouping"), "path");
+  } finally { explorer.dispose(); }
+});
+
+test("a hidden legacy editor cannot reclaim Entries or receive a later Entries command", async () => {
+  const explorer = fixture();
+  const provider: any = explorer.editor;
+  let activations = 0, reveals = 0;
+  explorer.entries.setActive = () => { activations++; };
+  (explorer as any).clientFor = async () => ({ callTool: async () => ({ entries: [] }) });
+  const editor = { log: { path: "/fixture.wpilog", spec: { name: "http" } }, panel: { active: false, visible: false,
+    reveal: () => { reveals++; }, webview: { postMessage: () => true } } };
+  provider.editors.set("hidden", editor); provider.activeKey = "hidden";
+  try {
+    await provider.load(editor); provider.plotEntry("/v"); provider.selectEntry("/v");
+    assert.equal(activations, 0); assert.equal(reveals, 0);
+  } finally { explorer.dispose(); }
+});
+
+test("returning from the legacy editor restores the preview Entries target without resetting its filter", () => {
+  const explorer = fixture();
+  const route = (explorer.preview as any).host.entries;
+  try {
+    route("/a.wpilog", "A · Plot");
+    explorer.entries.setActive({ path: "/b.wpilog", spec: { name: "http" } as any });
+    route("/a.wpilog", "A · Plot");
+    assert.equal((explorer.entries as any).active.path, "/a.wpilog");
+    assert.equal(explorer.entries.targetLabel, "A · Plot");
+    explorer.entries.setFilter("Drive");
+    route("/a.wpilog", "A · Plot");
+    assert.equal(explorer.entries.filterText, "Drive", "repeated focus in the same target is inert");
   } finally { explorer.dispose(); }
 });

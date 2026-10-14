@@ -27,6 +27,17 @@ class StoreReadCatalogTest {
   @TempDir Path temp;
   private static final String WHEN = "2026-01-01T00:00:00Z";
 
+  @Test void recordedViewResolvesExactOriginAndContentAcrossServingLocations() throws Exception {
+    var fixture = fixture("view-mirror", true);
+    try (var catalog = new StoreReadCatalog(List.of(fixture.root()))) {
+      assertEquals("origin-id", StoreReadCatalog.originId(catalog.snapshot().stores().get(0)));
+      var resolved = catalog.resolveContent("origin-id", fixture.anchorFile().sha256());
+      assertEquals(fixture.anchor(), resolved.facts().path());
+      assertThrows(IOException.class, () -> catalog.resolveContent("store-view-mirror", fixture.anchorFile().sha256()), "serving store identity is not the origin");
+      assertThrows(IOException.class, () -> catalog.resolveContent("origin-id", "0".repeat(64)), "similar names cannot substitute other content");
+    }
+  }
+
   @Test void manifestsAreTheOnlyMembershipAndMirrorsRetainTheirRecordedFactsWithoutWrites() throws Exception {
     var fixture = fixture("mirror", true);
     Files.writeString(fixture.root().resolve("stray.wpilog"), "not adopted");

@@ -481,17 +481,21 @@ identity or failed anchors load afresh.
 
 ### 9.4 Reusable visualization documents
 
-[VISUALIZATION_PLAN.md](VISUALIZATION_PLAN.md) stages the replacement. Stage 1 supplies internal
-contracts and an isolated native lifecycle prototype, accepted by its second implementation review;
-Stage 2a is next. Client
-session expiry must release crashed-window attachments in Stage 2a, and Stage 2b must preserve
-raw JSON through duplicate-key validation at its adapters; neither integration exists in Stage 1. Source
-overviews, unsaved-view navigation, real source binding, the public adapters and templates,
-notification delivery, and live following are not enabled by this foundation. Native Save As
-requires proof of the real picker, destination alias, and replacement behavior; until then it
-refuses with a Save view… hint. The decoded-buffer setting (64 MiB default) belongs to the Stage 3
-broker, not to the legacy editor. Record unresolved native/platform gates in the Stage 1 report
-before proceeding.
+[VISUALIZATION_PLAN.md](VISUALIZATION_PLAN.md) stages the replacement. Stage 1 is committed;
+Stage 2a adds the optional recorded overview, independent plots/value tables, Entries targeting,
+saved views and draft recovery. The real Java/editor path and session-expiry cleanup are now
+integrated. The Stage 2a review requires isolated saved-file errors, locator reclamation and
+presentation-only data reuse; these are addressed by the focused re-check. Stage 2b still owes
+one endpoint-owned store catalog refreshed on root changes; native first-save coverage using the
+product's empty-import/store-id path with supplied pickers (then removal of the fixture-only
+`store_path` branch); request-counted hidden/revealed views and native overview Resume/Open-new-view;
+and unavailable listings for older unmanaged fingerprints. Keep these in the Stage 2b review.
+Other Stage 2b work includes templates, roles/compatibility, JCS sharing,
+statistics/raw tables, public MCP operations and notifications. Native Save As
+still refuses with a Save view hint until its picker/destination/replacement gate is proven.
+The decoded-buffer setting (64 MiB default), aggregate recorded/live budget, continuous follower,
+remote admission and large-log/live performance gates remain Stage 3. Native Linux/Windows
+checks and the manual Close-cancellation click remain outstanding; Mac fixtures do not prove them.
 
 ### 9.3 Data Browser and Charts
 Priority: High. Complexity: Medium.

@@ -81,6 +81,9 @@ public final class StoreDoor {
     return new Inventory(List.copyOf(result), List.copyOf(unreadable));
   }
 
+  /** A local first-store mutation invalidates the discovery cache immediately. */
+  public void refresh() { discovered = null; }
+
   public Selected select(String id) throws IOException {
     var found = stores();
     if (id == null && found.size() == 1) return found.get(0);

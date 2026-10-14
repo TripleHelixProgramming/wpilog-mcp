@@ -5,12 +5,15 @@ import { Backend, DocumentController, Journal, Recovery, ViewSnapshot } from "./
 export interface ViewDocument extends vscode.CustomDocument { controller: DocumentController; }
 export interface DocumentResources {
   read(uri: vscode.Uri): Promise<ViewSnapshot>;
+  render?(document: ViewDocument, panel: vscode.WebviewPanel): Promise<void>;
+  paint?(document: ViewDocument): void;
+  closed?(document: ViewDocument): void;
   trace?(event: string, uri: vscode.Uri, snapshot: ViewSnapshot): void;
   /** May be enabled only after the native picker/replacement/recovery gates pass. */
   saveAs?(document: ViewSnapshot, destination: vscode.Uri): Promise<void>;
 }
 
-/** Stage 1 provider is registered only by the isolated lifecycle fixture, not normal activation. */
+/** Native lifecycle owner, independent of the fixture or recorded-preview renderer. */
 export class VisualizationEditorProvider implements vscode.CustomEditorProvider<ViewDocument>, vscode.Disposable {
   private events = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<ViewDocument>>();
   readonly onDidChangeCustomDocument = this.events.event;
@@ -51,7 +54,7 @@ export class VisualizationEditorProvider implements vscode.CustomEditorProvider<
         } });
       this.paint(document);
     }, () => this.paint(document));
-    document = { uri, controller, dispose: () => { controller.dispose(); this.documents.delete(uri.toString()); this.panels.delete(uri.toString()); this.ready.delete(uri.toString()); } };
+    document = { uri, controller, dispose: () => { controller.dispose(); this.resources.closed?.(document); this.documents.delete(uri.toString()); this.panels.delete(uri.toString()); this.ready.delete(uri.toString()); } };
     this.documents.set(uri.toString(), document);
     const recovery = await this.journal.read?.(snapshot.view_id);
     if (recovery) {
@@ -67,6 +70,7 @@ export class VisualizationEditorProvider implements vscode.CustomEditorProvider<
   }
   async resolveCustomEditor(document: ViewDocument, panel: vscode.WebviewPanel): Promise<void> {
     this.panels.set(document.uri.toString(), panel);
+    if (this.resources.render) { await this.resources.render(document, panel); return; }
     panel.webview.options = { enableScripts: true, localResourceRoots: [] };
     const nonce = randomBytes(18).toString("hex");
     panel.webview.html = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}';"></head><body>
@@ -92,7 +96,8 @@ export class VisualizationEditorProvider implements vscode.CustomEditorProvider<
     });
     this.paint(document);
   }
-  private paint(document: ViewDocument): void {
+  paint(document: ViewDocument): void {
+    if (this.resources.paint) { this.resources.paint(document); return; }
     void this.panels.get(document.uri.toString())?.webview.postMessage({ snapshot: document.controller.snapshot, warning: document.controller.warning });
   }
   async saveCustomDocument(document: ViewDocument): Promise<void> { await document.controller.save(); }

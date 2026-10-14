@@ -90,6 +90,26 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "wpilog-mcp.sourceOverview",
+        "displayName": "WPILog Source Overview (Preview)",
+        "selector": [
+          {
+            "filenamePattern": "*.wpilog"
+          }
+        ],
+        "priority": "option"
+      },
+      {
+        "viewType": "wpilog-mcp.visualization",
+        "displayName": "WPILog Visualization (Preview)",
+        "selector": [
+          {
+            "filenamePattern": "*.wpiview"
+          }
+        ],
+        "priority": "default"
       }
     ],
     "commands": [
@@ -309,6 +329,11 @@
         "title": "Ask about This Selection",
         "category": "WPILog Explorer",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.openSourceOverview",
+        "title": "Open Source Overview (Preview)",
+        "category": "WPILog Explorer"
       }
     ],
     "menus": {
@@ -404,6 +429,11 @@
           "command": "wpilog-mcp.unpinSession",
           "when": "view == wpilog-mcp.logs && viewItem == wpilogPitLog",
           "group": "navigation@4"
+        },
+        {
+          "command": "wpilog-mcp.explorer.openSourceOverview",
+          "when": "view == wpilog-mcp.logs && viewItem =~ /^wpilog(Plain)?Log$/",
+          "group": "open@2"
         }
       ],
       "editor/title": [
@@ -632,7 +662,8 @@
     "test:smoke": "tsc -p ./ && node out/smoke/run.js",
     "test:smoke:plants": "tsc -p ./ && node out/smoke/plants.js",
     "package": "vsce package",
-    "test:visualization": "tsc -p ./ && node out/smoke/visualizationRun.js"
+    "test:visualization": "tsc -p ./ && node out/smoke/visualizationRun.js",
+    "test:recorded-visualization": "tsc -p ./ && node out/smoke/recordedRun.js"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

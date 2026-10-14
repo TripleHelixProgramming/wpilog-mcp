@@ -60,17 +60,18 @@ export class DataClient {
   constructor(
     private readonly maxEntries = 32,
     private readonly maxBytes = 256 * 1024 * 1024,
-    private readonly headersFor: HttpHeaders = noHeaders
+    private readonly headersFor: HttpHeaders = noHeaders,
+    private readonly responseLimit = 64 * 1024 * 1024
   ) {}
 
   /** Fetches a request's stream from the server whose MCP endpoint is `mcpUrl`. */
-  async fetch(mcpUrl: string, request: DataRequest): Promise<DataResponse> {
+  async fetch(mcpUrl: string, request: DataRequest, signal?: AbortSignal): Promise<DataResponse> {
     const key = `${mcpUrl} ${dataQuery(request)}`;
     const known = this.remembered.get(key);
     const headers: Record<string, string> = { ...await this.headersFor(mcpUrl), Accept: "application/vnd.apache.arrow.stream, application/json" };
     if (known) headers["If-None-Match"] = known.etag;
     const url = dataUrl(mcpUrl, request);
-    const response = await this.get(url, headers);
+    const response = await this.get(url, headers, signal);
     const kind = classifyStatus(response.status);
     if (kind.kind === "unchanged") {
       if (!known) throw new DataError("The server answered 304 to a request with no ETag", 304);
@@ -132,11 +133,16 @@ export class DataClient {
     }
   }
 
-  private get(url: string, headers: Record<string, string>): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Uint8Array }> {
+  private get(url: string, headers: Record<string, string>, signal?: AbortSignal): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Uint8Array }> {
     return new Promise((resolve, reject) => {
       const request = (new URL(url).protocol === "https:" ? https : http).get(url, { headers, timeout: REQUEST_TIMEOUT_MS }, (response) => {
         const chunks: Buffer[] = [];
-        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        let received = 0;
+        response.on("data", (chunk: Buffer) => {
+          received += chunk.length;
+          if (received > this.responseLimit) { reject(new DataError("Response exceeds the byte limit")); response.destroy(); request.destroy(); return; }
+          chunks.push(chunk);
+        });
         response.on("end", () => {
           const body = Buffer.concat(chunks);
           resolve({
@@ -148,6 +154,10 @@ export class DataClient {
         });
         response.on("error", (error) => reject(new DataError(`The stream from ${url} failed: ${error.message}`)));
       });
+      const abort = () => request.destroy(new Error("Request cancelled"));
+      signal?.addEventListener("abort", abort, { once: true });
+      request.once("close", () => signal?.removeEventListener("abort", abort));
+      if (signal?.aborted) abort();
       request.on("timeout", () => request.destroy(new Error("the request timed out")));
       request.on("error", (error) => reject(new DataError(`The server could not be reached: ${error.message}`)));
     });

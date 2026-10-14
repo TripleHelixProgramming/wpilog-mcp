@@ -22,7 +22,7 @@ export function entriesViewPage(assets: EntriesPageAssets): string {
   <link rel="stylesheet" href="${attribute(assets.styleUri)}">
   <title>Log entries</title>
 </head>
-<body>
+<body><p id="visualization-target" aria-live="polite"></p>
   <div class="toolbar">
     <div class="toolbar-row" role="search" aria-label="Search log entries">
       <div class="filter-box">

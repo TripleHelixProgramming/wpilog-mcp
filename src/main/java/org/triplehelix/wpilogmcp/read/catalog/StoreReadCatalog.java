@@ -200,6 +200,21 @@ public final class StoreReadCatalog implements AutoCloseable {
     return Optional.ofNullable(member);
   }
 
+  /** A mirror retains the originating store's identity; serving location is not identity. */
+  public static String originId(StoreCatalog.Snapshot store) {
+    return store.header().mirror() && store.header().origin() != null ? store.header().origin().storeId() : store.header().id();
+  }
+
+  /** Recorded visualization references resolve by manifested content, never a similar filename. */
+  public StoreFile resolveContent(String originStoreId, String sha256) throws IOException {
+    for (var store : snapshot().stores()) if (originId(store).equals(originStoreId)) {
+      for (var file : store.allFiles()) if ("wpilog".equals(file.file().kind()) && sha256.equals(file.file().sha256())) {
+        security.validate(file.path()); return new StoreFile(store.header().id(), store.root(), file);
+      }
+    }
+    throw new IOException("SOURCE_UNAVAILABLE: no configured store contains the recorded content");
+  }
+
   /** The native reader owns one mapped prefix; the catalog does not open another mapping. */
   public ReadSnapshot openWpilog(Path path) throws IOException {
     var member = requireMember(path);

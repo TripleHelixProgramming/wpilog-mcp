@@ -28,7 +28,7 @@ A log viewer such as AdvantageScope shows you the data, but only if you know whe
 
 A store organizes logs by robot and session. Continuous folder imports through **Set Up Data Store** are experimental and disabled by default; [enable them on the named server](doc/STANDALONE.md#keeping-a-data-store-up-to-date) to test the setup commands and offer. When enabled, the extension lets you choose the store location and the folders to keep importing. Copy is the default: source logs stay where they are. Move is available for folders you explicitly identify as receiving completed files; duplicate originals are retained. The shared server continues syncing while it runs, even after the editor closes. Its default listing shows the store and pending or refused source files; **Show All Sources** includes originals. Nothing is enrolled without approval. [Data store setup](doc/STANDALONE.md#keeping-a-data-store-up-to-date) explains the choices; one-shot import and organizing remain available.
 
-The reusable visualization replacement is at its [Stage 1 contract and lifecycle prototype](doc/VISUALIZATION_PLAN.md). Normal log opening still uses the existing Explorer editor.
+The [recorded visualization preview](doc/VISUALIZATION_PLAN.md) adds **Open Source Overview**, independent layouts, plots and cursor-value tables, and saved views. Normal log opening still uses the existing Explorer editor; the preview is an explicit choice while the staged replacement is reviewed.
 
 ### What You Can Ask
 

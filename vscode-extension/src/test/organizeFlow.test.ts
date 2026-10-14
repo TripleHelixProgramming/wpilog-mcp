@@ -47,6 +47,7 @@ const host = {
     assert.equal(command, "setContext"); ui.contexts.set(key, value);
   } },
   window: {
+    tabGroups: { activeTabGroup: {}, onDidChangeTabs: disposable, onDidChangeTabGroups: disposable },
     registerTreeDataProvider: disposable, registerWebviewViewProvider: disposable, registerCustomEditorProvider: disposable,
     registerUriHandler: disposable,
     showInformationMessage: async (message: string, ...choices: unknown[]) => {
@@ -117,7 +118,7 @@ async function fixture(action: (explorer: import("../explorer").Explorer, listin
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}/mcp`;
   const spec = { kind: "standalone", name: "http" } as DaemonSpec;
-  const context = { globalState: { get: (key: string) => key === "wpilog-mcp.neverOfferDataStore" ? ui.neverOffer : undefined, update: async () => {} } } as unknown as vscode.ExtensionContext;
+  const context = { globalStorageUri: { fsPath: path.join(root, "state") }, globalState: { get: (key: string) => key === "wpilog-mcp.neverOfferDataStore" ? ui.neverOffer : undefined, update: async () => {} } } as unknown as vscode.ExtensionContext;
   const explorer = new Explorer(context, { appendLine: (line: string) => { ui.output.push(line); } } as vscode.OutputChannel,
     {} as ServerManager, () => spec);
   const listing: LogListing = { status: "ok", log_directories: [source],

@@ -1,6 +1,12 @@
 # WPILog Explorer reusable visualization design
 
-Status: Stage 1 foundation and isolated prototype implemented locally on 2026-10-14 after owner authorization. The second implementation review accepts Stage 1 for Stage 2a; Close cancellation remains unverified, and Save As uses the specified refusal fallback. Commits, version changes, and publication remain separate decisions.
+Status: Stage 1 committed as `632b492` after owner authorization. Stage 2a recorded foundation is
+implemented locally on 2026-10-14, including the real Java/controller connection and
+session-expiry ownership. Its independent review accepted the gate subject to three fixes;
+those fixes now pass the focused re-check described below. Stage 2b has not started. Close cancellation remains unverified on
+the manual dialog, Linux/Windows native runs are outstanding, and Save As uses the specified
+refusal fallback. No publication or version change is part of this work.
+
 
 Revision 2, 2026-10-14: incorporates the [independent design review](VISUALIZATION_PLAN_REVIEW.md). The review describes revision 1 (570 lines, SHA-256 `275d58298bd737e9c537a2014c89b099c6321d2de021cfc968aaa851fe5b903b`). Review disposition and verification are recorded at the end of this document.
 
@@ -852,3 +858,37 @@ Focused regression/plant evidence and native reruns are in
 `/private/tmp/wpilog-visualization-stage1-review-2/validation.md`. Close cancellation, native
 Linux/Windows runs, combined Java-service/editor integration and the Save As refusal fallback
 retain their stated limits. Stage 2a implementation is not part of this follow-up.
+
+
+### Stage 2a evidence and focused review follow-up
+
+The independent Stage 2a review reproduced the original full build (3,613 passed, 84 skipped),
+420 extension tests, both recorded editor runs, and the Stage 1 lifecycle checks. The original
+evidence remains in `/private/tmp/wpilog-visualization-stage2a/validation.md`.
+
+The three required corrections now have failing-first tests and plants:
+
+- Saved records are validated independently. Invalid/newer files stay intact and appear in
+  `unreadable`; record/byte limits return an explained partial listing. Opening a saved UUID
+  reads only that file, even beyond the listing budget.
+- Locator recovery drops unreferenced entries at restart, on draft expiry and under quota
+  pressure, retaining every unexpired working view's locator. Opening an unchanged unmanaged
+  file restores its deterministic locator.
+- Source/requirements/series-use/time identify a data query separately from the configuration
+  revision. Title, layout and style changes retain series, cursor values and in-flight replies.
+  Programmatic uPlot cursor recalculations do not become new user cursor queries.
+
+Focused validation: 67 Java tests, 38 Node tests and 24 regression plants pass; license and
+claim checks pass. Both VS Code 1.101.0 and 1.141.0 pass seven native recorded-workflow checks,
+including restart. Each run keeps Arrow/cursor counts at 2/3 before and after a title change
+and keyboard resize, with no webview renderer or CSP errors. The evidence, intermediate failures,
+source hashes and scope limits are in
+`/private/tmp/wpilog-visualization-stage2a-review/validation.md`. This follow-up did not rerun the
+full build or Stage 1 lifecycle round; it used the review's requested focused scope.
+
+The unmanaged fingerprint limitation and route documentation placement are corrected. Stage 2b
+still carries the endpoint-owned catalog cache, product-path native first-save fixture with
+supplied pickers, request-counted hidden/reveal behavior, native overview Resume/Open-new-view,
+and unavailable listings for older unmanaged fingerprints; see [IDEAS.md](IDEAS.md#94-reusable-visualization-documents).
+Native Linux/Windows, the manual Close-cancellation click, the Save As gate and performance
+claims remain unverified. No commit or publication is part of this follow-up.

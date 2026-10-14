@@ -615,8 +615,42 @@ the server logs a warning and continues with a fresh ephemeral identity. Unnamed
 report `working_state: "ephemeral"`. In both cases, `working_state_reason` explains why durable
 recovery is unavailable; restarting may change the owner ID. This fallback does not stop log
 analysis or recording.
-This identity creates no log store or ingestion policy. Reusable visualization editing is still
-an isolated development prototype, not an enabled server route or Explorer workflow.
+This identity creates no log store or ingestion policy. The explicit recorded preview uses
+`/visualizations/v1` on a loopback-bound HTTP server, with a loopback peer, the normal Origin
+check and a live `Mcp-Session-Id`. Network-bound servers refuse these routes even to a local peer.
+They are an internal preview API, not public MCP tools. GET supplies `/capabilities`, `/stores`
+and `/views/<uuid>`; POST supplies `/source`, `/source/describe`, `/source/resolve`,
+`/source/value`, `/source/views`, `/views`, `/views/<uuid>`, `/views/<uuid>/attach`,
+`/views/<uuid>/detach`, `/views/<uuid>/describe`, `/views/<uuid>/save` and `/saved/open`.
+Requests preserve raw JSON for strict duplicate-key/schema validation; configuration mutations
+use expected revisions and session ownership. Working drafts detach on session removal/expiry
+and expire after 30 days. Save writes `visualizations/saved-views/<uuid>.json` through the store's
+normal containment, lock, atomic-write and revision checks. First save can create an empty store
+without enrollment. It never grants access to a source outside configured or leased directories.
+
+The preview supports recorded local WPILOGs: managed identity is origin-store UUID plus content
+hash; an unmanaged source uses an owner-local fingerprint locator in `sources.json`. Neither
+locator nor credential is embedded in portable configuration. Managed bytes must match the
+manifested content hash; proofs are cached only for unchanged file boundaries. An unmanaged
+file is refused if it disappears or its fingerprint (file identity, size, modification and creation
+times) changes. This is not a content hash: an in-place rewrite preserving all those attributes
+can be read under the same reference. An unmanaged overview's unavailable robot/session/match
+facts mean there is no store catalog for the file; they do not establish what its signals record.
+Locators are bounded to 1,024 entries and 1 MiB within the working-state budget. Restart removes
+locators with no unexpired working view; draft expiry releases its unused locator, and quota
+pressure prunes other unreferenced locators before refusing new ones. Recent identifications can
+coexist before a draft is created. Reopening an unchanged file in Source Overview restores its
+deterministic locator, including for a saved view whose working copies have expired. Capabilities report 256 working views, 30-day detached recovery and the current plot
+limits (4,096 points and 32 series per view). HTTP JSON replies are bounded to 16 MiB; plot replies
+are bounded to 1 MiB each in the preview client. Saved metadata listing stops at 1,024 records or
+8 MiB per store. Invalid/newer records are skipped intact and reported in `unreadable` with
+`store_id`, `file` and `reason`. A bounded partial listing sets `listing_incomplete`; opening a
+known saved UUID reads only that record and is independent of the listing budget. Saved/draft
+overview lists carry summaries, not configuration buffers. A full or unavailable state workspace
+explains the refusal; health remains available. Plots use the shared Arrow reader, while cursor
+tables select original samples and their decoder diagnostics. Title, geometry and style edits
+reuse loaded series and values; changing the required series or recorded range starts a new
+query. Public operation adapters, templates and GUI/MCP notifications remain Stage 2b.
 
 Without a PID record, `start` and `connect` adopt a server only when its health name matches
 the requested configuration. Another name is refused with its owner, PID, stop command and

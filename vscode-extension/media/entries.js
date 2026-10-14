@@ -290,6 +290,8 @@
         requested = new Set();
         allCollapsed = false;
       }
+      const target = document.getElementById("visualization-target");
+      if (target && message.target !== undefined) target.textContent = message.target;
       generation = message.generation;
       acceptedFilter = message.filter;
       acceptedGrouping = message.grouping;

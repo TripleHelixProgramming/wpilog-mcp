@@ -3075,3 +3075,6 @@ Guidance is added for:
 - a change-only series (long intervals are holds, not missing data, and a sample count is a count of changes)
 - NaN or infinite values ("non-finite values were filtered")
 - a time span under 10 seconds ("Short time span")
+
+
+The recorded visualization preview registers no MCP tools; its internal routes are described in [STANDALONE.md](STANDALONE.md).

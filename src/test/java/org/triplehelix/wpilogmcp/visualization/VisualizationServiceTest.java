@@ -28,6 +28,88 @@ class VisualizationServiceTest {
     var config = VisualizationContracts.blank(); config.getAsJsonObject("links").addProperty("cursor", false); return config;
   }
 
+  @Test void sourceLocatorsRespectTheCombinedStateQuota() throws Exception {
+    try (var service = new VisualizationService(ServerIdentity.ephemeral(), Clock.systemUTC(), 10, 8192)) {
+      var locator = new JsonObject(); locator.addProperty("path", "x".repeat(5000));
+      var failure = assertThrows(ExecutionException.class, () -> service.rememberSource(LOCAL, UUID.randomUUID(), locator).get());
+      assertTrue(failure.getCause().getMessage().contains("WORKSPACE_LIMIT"));
+    }
+  }
+
+  @Test void sourceLocatorPressureReclaimsUnreferencedFilesWithoutOrphaningDrafts() throws Exception {
+    try (var service = new VisualizationService(ServerIdentity.ephemeral())) {
+      var ref = source(); var kept = UUID.fromString(ref.get("source_id").getAsString());
+      var locator = new JsonObject(); locator.addProperty("path", "/fixture/kept.wpilog");
+      service.rememberSource(LOCAL, kept, locator).get();
+      var draft = service.create(LOCAL, UUID.randomUUID(), ref, VisualizationContracts.blank()).get();
+      assertEquals(locator, service.sourceLocator(kept), "creating a draft must keep its newly identified locator");
+      var firstOrphan = UUID.randomUUID(); service.rememberSource(LOCAL, firstOrphan, locator).get();
+      UUID latest = null;
+      for (int i = 0; i < 1100; i++) {
+        latest = UUID.randomUUID(); service.rememberSource(LOCAL, latest, locator).get();
+      }
+      assertEquals(locator, service.sourceLocator(kept)); assertEquals(locator, service.sourceLocator(latest));
+      assertEquals(draft.get("source_ref"), service.get(id(draft)).get("source_ref"));
+      assertThrows(java.io.IOException.class, () -> service.sourceLocator(firstOrphan));
+      service.rememberSource(LOCAL, firstOrphan, locator).get();
+      assertEquals(locator, service.sourceLocator(firstOrphan), "reopening an unchanged file restores its deterministic id");
+    }
+  }
+
+  @Test void restartAndExpiryPruneOrphanedLocatorsOnDiskWhilePreservingUnexpiredViews() throws Exception {
+    var now = new java.util.concurrent.atomic.AtomicReference<>(Instant.parse("2026-01-01T00:00:00Z"));
+    var clock = new Clock() {
+      public ZoneId getZone() { return ZoneOffset.UTC; }
+      public Clock withZone(ZoneId zone) { return this; }
+      public Instant instant() { return now.get(); }
+    };
+    var identity = ServerIdentity.open(temp.toRealPath().resolve("locator-state"));
+    var ref = source(); var kept = UUID.fromString(ref.get("source_id").getAsString()); var orphan = UUID.randomUUID();
+    var locator = new JsonObject(); locator.addProperty("path", "/fixture/log.wpilog");
+    UUID draft;
+    try (var service = new VisualizationService(identity, clock, 10, MAX_BYTES_FOR_SETUP)) {
+      service.rememberSource(LOCAL, kept, locator).get();
+      draft = id(service.create(LOCAL, UUID.randomUUID(), ref, VisualizationContracts.blank()).get());
+      service.rememberSource(LOCAL, orphan, locator).get();
+    }
+    try (var service = new VisualizationService(identity, clock, 10, MAX_BYTES_FOR_SETUP)) {
+      assertEquals(locator, service.sourceLocator(kept));
+      assertThrows(java.io.IOException.class, () -> service.sourceLocator(orphan));
+      var disk = VisualizationContracts.parse(Files.readString(identity.stateDirectory().resolve("sources.json")));
+      assertEquals(java.util.Set.of(kept.toString()), disk.keySet());
+      now.set(now.get().plus(Duration.ofDays(31)));
+      service.rememberSource(LOCAL, orphan, locator).get();
+      assertThrows(java.io.IOException.class, () -> service.sourceLocator(kept));
+      assertFalse(Files.exists(identity.stateDirectory().resolve("views/" + draft + ".json")));
+      disk = VisualizationContracts.parse(Files.readString(identity.stateDirectory().resolve("sources.json")));
+      assertEquals(java.util.Set.of(orphan.toString()), disk.keySet());
+    }
+  }
+
+  @Test void expiryDuringQueuedAttachmentCannotResurrectTheOldClientOrDetachItsReplacement() throws Exception {
+    try (var service = new VisualizationService(ServerIdentity.ephemeral())) {
+      var view = id(service.create(LOCAL, UUID.randomUUID(), source(), VisualizationContracts.blank()).get());
+      var field = VisualizationService.class.getDeclaredField("queue"); field.setAccessible(true);
+      var queue = (ThreadPoolExecutor) field.get(service);
+      var entered = new CountDownLatch(1); var proceed = new CountDownLatch(1);
+      var old = UUID.randomUUID(); var live = new java.util.concurrent.atomic.AtomicBoolean(true);
+      queue.execute(() -> { entered.countDown(); try { proceed.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } });
+      assertTrue(entered.await(2, TimeUnit.SECONDS));
+      var pending = service.attach(LOCAL, view, old, live::get);
+      try {
+        // Fill the queue so removal also has to survive rejection of its cleanup job.
+        for (int i = 0; i < 63; i++) queue.execute(() -> {});
+        live.set(false); service.releaseClient(old);
+      } finally { proceed.countDown(); }
+      var failure = assertThrows(ExecutionException.class, () -> pending.get(2, TimeUnit.SECONDS));
+      assertTrue(failure.getCause().getMessage().contains("SESSION_EXPIRED"));
+      while (!queue.getQueue().isEmpty()) Thread.yield();
+      var replacement = UUID.randomUUID(); service.attach(LOCAL, view, replacement).get();
+      service.releaseClient(old);
+      assertEquals(replacement.toString(), service.attach(LOCAL, view, replacement).get().get("attached_client_id").getAsString());
+    }
+  }
+
   @Test void independentViewsSurviveRestartAndRejectStaleUpdates() throws Exception {
     var identity = ServerIdentity.open(temp.toRealPath().resolve("state")); UUID a, b;
     try (var service = new VisualizationService(identity)) {

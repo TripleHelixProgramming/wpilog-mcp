@@ -16,6 +16,79 @@ import org.triplehelix.wpilogmcp.visualization.VisualizationContracts;
 public final class VisualizationMetadata {
   private final LogStore store;
   public VisualizationMetadata(LogStore store) { this.store = store; }
+  public record Unreadable(String file, String reason) {}
+  public record Listing(java.util.List<JsonObject> views, java.util.List<Unreadable> unreadable, boolean incomplete) {}
+  private static final int MAX_RECORDS = 1024;
+  private static final long MAX_RECORD_BYTES = 2L * 1024 * 1024, MAX_LIST_BYTES = 8L * 1024 * 1024;
+
+  /** Shared/synced records can come from newer writers. Keep them intact and report each refusal;
+   * one unreadable neighbor must not hide this reader's valid records. Limits count failed reads too. */
+  public static Listing list(StoreDoor.Selected selected) throws IOException {
+    var io = new StoreFiles(selected.root(), selected.security());
+    var directory = io.check(selected.root().resolve("visualizations/saved-views"));
+    var records = new java.util.ArrayList<JsonObject>();
+    var unreadable = new java.util.ArrayList<Unreadable>();
+    boolean incomplete = false;
+    if (Files.exists(directory)) try (var children = Files.list(directory)) {
+      long bytes = 0;
+      int examined = 0;
+      var iterator = children.iterator();
+      while (iterator.hasNext()) {
+        var path = iterator.next();
+        var name = path.getFileName().toString();
+        if (!name.endsWith(".json")) continue;
+        if (examined++ >= MAX_RECORDS) {
+          unreadable.add(new Unreadable(name, "WORKSPACE_LIMIT: listing stopped after 1024 records; later files were not read"));
+          incomplete = true; break;
+        }
+        try {
+          io.check(path);
+          long size = Files.size(path);
+          if (size > MAX_RECORD_BYTES) throw new IOException("Invalid saved-view metadata size (maximum 2 MiB)");
+          if (bytes + size > MAX_LIST_BYTES) {
+            unreadable.add(new Unreadable(name, "WORKSPACE_LIMIT: listing stopped before exceeding 8 MiB; later files were not read"));
+            incomplete = true; break;
+          }
+          bytes += size;
+          records.add(read(io, path));
+        } catch (IOException | RuntimeException invalid) {
+          String reason = invalid.getMessage() == null ? invalid.getClass().getSimpleName() : invalid.getMessage();
+          unreadable.add(new Unreadable(name, reason.substring(0, Math.min(reason.length(), 512))));
+        }
+      }
+    }
+    return new Listing(records.stream().sorted(java.util.Comparator.comparing(r -> r.get("saved_view_id").getAsString())).toList(),
+        java.util.List.copyOf(unreadable), incomplete);
+  }
+
+  /** Opening an identified record does not scan or depend on its neighbors or listing budget. */
+  public static JsonObject read(StoreDoor.Selected selected, UUID id) throws IOException {
+    var io = new StoreFiles(selected.root(), selected.security());
+    var path = io.check(selected.root().resolve("visualizations/saved-views/" + id + ".json"));
+    if (!Files.exists(path)) throw new IOException("SOURCE_UNAVAILABLE: saved view is missing");
+    return read(io, path);
+  }
+  private static JsonObject read(StoreFiles io, java.nio.file.Path path) throws IOException {
+    io.check(path);
+    if (Files.size(path) > MAX_RECORD_BYTES) throw new IOException("Invalid saved-view metadata size (maximum 2 MiB)");
+    var value = io.read(path, JsonObject.class);
+    UUID id = UUID.fromString(value.get("saved_view_id").getAsString());
+    if (!path.getFileName().toString().equals(id + ".json") || value.get("schema_version").getAsInt() != 1)
+      throw new IOException("Invalid saved-view identity or unsupported schema version");
+    // Validate every field the listing/open adapters consume before admitting this record.
+    if (!value.keySet().equals(java.util.Set.of("schema_version", "saved_view_id", "revision", "request_id", "title", "source_ref", "configuration")))
+      throw new IOException("Invalid saved-view fields");
+    long revision = value.get("revision").getAsLong();
+    if (revision < 1 || revision > 9_007_199_254_740_991L || revision != value.get("revision").getAsDouble())
+      throw new IOException("Invalid saved-view revision");
+    UUID.fromString(value.get("request_id").getAsString());
+    if (!value.get("title").isJsonPrimitive() || !value.getAsJsonPrimitive("title").isString()
+        || value.get("title").getAsString().isBlank() || value.get("title").getAsString().length() > 256)
+      throw new IOException("Invalid saved-view title");
+    VisualizationContracts.source(value.getAsJsonObject("source_ref"));
+    VisualizationContracts.configuration(value.getAsJsonObject("configuration"));
+    return value;
+  }
   public CompletableFuture<JsonObject> save(Authority caller, UUID id, long expectedRevision,
       UUID request, String title, JsonObject source, JsonObject configuration) {
     final JsonObject candidate;

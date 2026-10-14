@@ -796,10 +796,10 @@ or a test command. It does not expose the extension context, SecretStorage, or s
 The smoke owns a disposable standalone install and an argv-recording Claude executable;
 ordinary Node tests and packaged extension code do not load its Electron runner.
 
-### Visualization Stage 1 contracts
+### Visualization contracts and recorded preview
 
-The replacement editor is an isolated lifecycle prototype; normal activation still registers the
-existing editor. The Java visualization contract resource is the authority for source references
+Stage 2a registers an optional source overview and independent working-view documents beside
+the existing default editor. The Java visualization contract resource is the authority for source references
 and declarative configuration. Strict raw-text parsing rejects duplicate keys, non-finite
 numbers, lone surrogates, unknown fields, future versions, and excessive depth/size before state
 admission. The internal object-taking validators cannot recover duplicate keys discarded by an
@@ -819,13 +819,19 @@ A malformed or unknown working record moves intact to `quarantine/<uuid>/` under
 directory with a warning; valid records still load. Quarantine is outside the active-state quota
 and is retained for manual inspection. A failed quarantine move retains the original and fails
 recovery. Detached records carry a 30-day recovery expiry; attachments currently last until
-explicit detach or restart. Stage 2a client registration must detach a crashed window on session
-expiry, through this queue, without releasing other windows. Shutdown stops admission,
+explicit detach, session expiry/removal or restart. The removal callback coalesces session IDs
+and only enqueues cleanup; it performs no I/O under the session map lock. Admitted jobs drain
+coalesced releases even when the queue is full. An attachment rechecks session liveness on the
+state queue, so expiry while queued cannot resurrect a dead client. A late old-session release
+cannot detach its replacement. Shutdown stops admission,
 allows queued operations to drain, and waits at most two seconds; a daemon cleanup task retains
-the state lock until that drain completes. The Stage 1 API is internal, without public routes.
+the state lock until that drain completes. The local `/visualizations/v1` adapter is internal preview transport; public MCP operations remain Stage 2b.
 
 Saved-view writes use the store's existing queue, cross-process lock, containment checks, mirror
-refusal, and atomic writer. Revision comparison happens under that lock. Visualization metadata
+refusal, and atomic writer. Revision comparison happens under that lock. Saved listings validate
+records independently and report unreadable shared files without moving them. Their record/byte
+budgets include failed reads and return an explained partial listing; opening by saved UUID reads
+only that file. Visualization metadata
 is excluded from unmanaged-file discovery; older readers can still list it as stray metadata.
 
 Caller authority is a separate immutable request value. Stdio explicitly grants trusted-local
@@ -833,6 +839,37 @@ authority. HTTP derives it from the actual loopback listener, loopback peer, and
 single or batch call. An omitted context is untrusted. The handler clears authority and session
 state in `finally`; queued mutations receive the captured value rather than reading a later
 thread-local. No new acquisition connection or telemetry pipeline is introduced.
+
+Recorded sources reuse the catalog's manifested origin/hash and the shared security/reader owners.
+Managed content is checked with the existing store hash owner before decoding; successful proofs
+are cached for up to 256 file boundaries for ten idle minutes. A changed boundary or server restart
+requires another proof, so modified bytes cannot silently retain an old SourceRef. Catalog facts
+can still appear before this work. Unmanaged locators persist separately from SourceRef and include file identity, size and times;
+changing that fingerprint invalidates the view. An in-place rewrite preserving every fingerprint
+attribute is not detected for an unmanaged file; the fingerprint is not a content proof.
+Locators with no unexpired working view are reclaimed at restart and under quota pressure;
+expiry also releases its unreferenced locator. Recent identifications remain available between
+identifying a source and creating a draft. The 1,024-entry/1 MiB bounds are checked after reclamation,
+and reopening the unchanged file restores its deterministic ID. Overview facts precede the index request. Duration,
+entry counts and completeness reuse the existing index, without decoding values. Cursor tables
+stream original samples through `RecordedValue`: greatest timestamp at or before the cursor,
+then greatest file ordinal for equal timestamps, with true problem counts and bounded details.
+Plots reuse the existing Arrow endpoint, decoder and uPlot; they never derive table statistics
+from buckets. No second log cache or acquisition client is introduced.
+
+Each working UUID owns its controller, panel, data generation and cancellation. Configuration
+revisions always reach the renderer, but the data key contains only source identity, requirements,
+series use and recorded range. Title, geometry, style and checkpoint edits preserve current buffers
+and in-flight answers. Query changes, hide and disposal abort obsolete requests. A reply is accepted
+only for its exact UUID/query generation; another view's resources remain live. Entries derives its
+target from the current native tab and selected panel and serializes additions with that view's
+other gestures. Hidden legacy editors cannot regain Entries through a late listing reply.
+Bundled GridStack owns layout presentation; server configuration remains authoritative. The
+preview requests at most 4,096 plot points and 32 series per view, sequentially, with a 1 MiB
+encoded-response cap and no host response cache. Each renderer retains only its current query's
+series and values across presentation edits. The configurable aggregate decoded budget and shared
+live broker remain Stage 3; this preview makes no one-hour live or 1 GiB performance claim.
+
 
 ## Known Limits
 
