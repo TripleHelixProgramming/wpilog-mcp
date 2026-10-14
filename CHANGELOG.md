@@ -112,6 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- SSH providers replace the misleading disconnected status during startup with the current identity, program-discovery or statistics-read step. Context and pulls now share one device-identity attempt per SSH connection, and replies from an old connection cannot supply identity or stand down its replacement.
+
 - Failed SSH followers retain a bounded stderr prefix and the command exit status in their stand-down reason. Previously stderr was discarded, so a failed console command appeared only as an unavailable source.
 
 - Console following uses an integer one-second interval accepted by BusyBox and GNU tail, and reports that interval. The former fractional interval made roboRIO BusyBox tail exit immediately. Robot facts now identify each provider utility separately, and the synthetic roboRIO uses BusyBox tail.

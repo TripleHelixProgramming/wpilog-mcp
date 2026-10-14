@@ -438,6 +438,15 @@ NT4 presence admits them all; only file pulling has the disabled-state gate. Fir
 records identity even with pulling disabled. Pin writes and identity promotion use the store
 queue, while provider readers never wait for it.
 
+`SharedSsh.Host.identity` owns one device-identity attempt per authenticated connection.
+Context and borrowed pulls share its in-flight or completed result, including an unavailable
+identity. Atomic admission picks one reader, which performs SFTP on its requesting worker;
+contenders wait on their own workers. No I/O runs under a lock, and connection lifecycle work
+does not wait for the read. Reconnect creates a fresh attempt and a returned identity is
+checked against the current connection. Provider phase snapshots bind state and reason to
+that SSH connection and NT4 episode. A newly connected host reports its identity wait before
+the sampling worker starts, and old replies cannot overwrite its replacement's state.
+
 `ProcStats` parses explicit Linux ticks, pages and KiB; no unit comes from the pit computer. Busy
 CPU excludes idle/iowait and does not count guest time twice. Rates need two monotonic kernel
 samples, and program CPU needs the same PID and start tick. Missing-program discovery retries every

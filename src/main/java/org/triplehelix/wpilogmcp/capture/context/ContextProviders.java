@@ -28,6 +28,7 @@ import org.triplehelix.wpilogmcp.store.LogStore;
  * Providers share the robot's presence, not the puller's disabled-state gate.
  */
 public final class ContextProviders implements AutoCloseable {
+  private record StatsState(SshConnection connection, long episode, String state, String reason) {}
   private record Reading(SshConnection connection, long episode, StatsProvider.Result value, long dropped, long period) {}
   private static final class Follower {
     final ProviderConfig.Tail config;
@@ -56,7 +57,7 @@ public final class ContextProviders implements AutoCloseable {
   private long sampledEpisode;
   private volatile long periodUs;
   private volatile ProviderStatus statsStatus;
-  private volatile String statsState = "offline", statsReason = "NT4 is disconnected";
+  private volatile StatsState statsState = new StatsState(null, 0, "offline", "NT4 is disconnected");
   private SshConnection sampledConnection;
   private volatile CaptureWriter.Session session;
   private CaptureWriter.Session blockedStatsSession;
@@ -129,6 +130,7 @@ public final class ContextProviders implements AutoCloseable {
   private SharedSsh.Host host(String address, org.triplehelix.wpilogmcp.config.PullConfig.Ssh settings) {
     var host = ssh.host(address, settings);
     host.onConnect(connection -> {
+      requestDrain();
       store.recordHostKey(address, connection.fingerprint()).exceptionally(error -> {
         LoggerFactory.getLogger(ContextProviders.class).warn("Could not persist SSH fingerprint for {}: {}", address, error.getMessage()); return null;
       });
@@ -173,52 +175,69 @@ public final class ContextProviders implements AutoCloseable {
     var current = robot;
     var connection = current == null || !current.address().equals(address) ? null : current.connection();
     if (connection == null) throw new IOException("Shared SSH is waiting for " + address);
-    return SftpTransport.using(connection, settings.enabled() ? settings.directories() : List.of(), address, false);
+    return SftpTransport.using(connection, settings.enabled() ? settings.directories() : List.of(), address, false,
+        () -> current.identity(connection));
   }
   private void sample() {
     if (stopped.get()) return;
+    var host = robot; var connection = host == null ? null : host.connection();
+    long generation = episode.get();
     try {
-      var host = robot; var connection = host == null ? null : host.connection();
-      if (connection == null) { sampledConnection = null; statsState = "offline"; statsReason = "SSH or NT4 is disconnected"; return; }
-      long generation = episode.get();
+      if (connection == null) {
+        sampledConnection = null;
+        statsState = new StatsState(null, generation, "offline", "SSH or NT4 is disconnected"); return;
+      }
       if (sampledConnection != connection || sampledEpisode != generation) {
         sampledConnection = connection; sampledEpisode = generation; stats.reconnect(); nextSample = 0;
+        statsState(host, connection, generation, "waiting", "Reading the device identity");
         // Device identity is useful even when pulling is disabled or the robot is enabled.
-        try (var remote = SftpTransport.using(connection, config.pull().directories(), host.address(), false)) {
-          var identity = remote.identity();
+        try {
+          var identity = host.identity(connection);
           store.identify(identity, wall).whenComplete((ignored, error) -> {
             if (error != null) LoggerFactory.getLogger(ContextProviders.class).warn("SSH identity: {}", error.getMessage());
             else if (!stopped.get()) loop.execute(() -> {
-              if (connected && robot == host && host.connection() == connection) writer.identity(identity);
+              if (current(host, connection, generation)) writer.identity(identity);
             });
           });
         } catch (IOException e) { LoggerFactory.getLogger(ContextProviders.class).warn("SSH device identity unavailable: {}", e.getMessage()); }
       }
+      if (!current(host, connection, generation)) return;
       if (blockedStatsReason != null) {
         var current = session;
         if (blockedStatsSession == null && current != null) blockedStatsSession = current;
         if (blockedStatsSession != null && current != null && current != blockedStatsSession) {
           blockedStatsReason = null; blockedStatsSession = null; nextSample = 0;
-        } else { statsState = "stand_down"; statsReason = blockedStatsReason; return; }
+        } else { statsState(host, connection, generation, "stand_down", blockedStatsReason); return; }
       }
       if (!config.providers().stats().enabled() || pending.get() != null || loop.nowUs() < nextSample) return;
       var sampledSession = session;
       StatsProvider.Result result;
-      try { result = stats.sample(connection); }
+      try { result = stats.sample(connection,
+          reason -> statsState(host, connection, generation, "waiting", reason)); }
       catch (ProcStats.UnsupportedOutputException e) {
         // An old connection's reply cannot stand down the next boot's provider.
-        if (generation != episode.get()) return;
+        if (!current(host, connection, generation)) return;
         blockedStatsSession = sampledSession; blockedStatsReason = e.getMessage();
-        statsState = "stand_down"; statsReason = blockedStatsReason; requestDrain(); return;
+        statsState(host, connection, generation, "stand_down", blockedStatsReason); return;
       }
+      if (!current(host, connection, generation)) return;
       periodUs = stats.periodUs();
       pending.set(new Reading(connection, generation, result, stats.droppedBeforeSync(), periodUs));
-      statsState = result.timestampUs() == null ? "waiting_for_sync" : "sampling";
-      statsReason = result.timestampUs() == null ? "No NT4 clock estimate; sample dropped" : result.sample().notes().isEmpty() ? null : String.join("; ", result.sample().notes());
+      String reason = result.timestampUs() == null ? "No NT4 clock estimate; sample dropped" : result.sample().notes().isEmpty() ? null : String.join("; ", result.sample().notes());
+      statsState(host, connection, generation, result.timestampUs() == null ? "waiting_for_sync" : "sampling", reason);
       nextSample = loop.nowUs() + periodUs; requestDrain();
     } catch (Exception e) {
-      statsState = "waiting"; statsReason = e.getMessage(); nextSample = loop.nowUs() + periodUs;
+      statsState(host, connection, generation, "waiting", e.getMessage()); nextSample = loop.nowUs() + periodUs;
     } finally { if (!stopped.get()) worker.schedule(this::sample, 250_000); }
+  }
+  private boolean current(SharedSsh.Host host, SshConnection connection, long generation) {
+    return !stopped.get() && connected && robot == host && host != null
+        && host.connection() == connection && episode.get() == generation;
+  }
+  private void statsState(SharedSsh.Host host, SshConnection connection, long generation, String state, String reason) {
+    if (current(host, connection, generation)) {
+      statsState = new StatsState(connection, generation, state, reason); requestDrain();
+    }
   }
   private void requestDrain() {
     if (!stopped.get() && deliveryQueued.compareAndSet(false, true)) loop.execute(() -> { deliveryQueued.set(false); deliver(); });
@@ -246,7 +265,8 @@ public final class ContextProviders implements AutoCloseable {
         }
         kernel = result.kernelClock();
       }
-      statsStatus = new ProviderStatus("roboRIO", statsState, statsReason, reading.period() / 1_000_000.0,
+      var state = statsState;
+      statsStatus = new ProviderStatus("roboRIO", state.state(), state.reason(), reading.period() / 1_000_000.0,
           result.roundTripUs() / 1000.0, result.sample().robotCpuSeconds(), 0, 0, reading.dropped(), records, bytes, sampleBytes);
     }
     Double mapping = live.timeEstimate().map(s -> (double) s.offsetUs()).orElse(null);
@@ -272,8 +292,12 @@ public final class ContextProviders implements AutoCloseable {
     var snapshots = new ArrayList<ProviderStatus>();
     if (config.providers().stats().enabled()) {
       var value = statsStatus;
-      String state = connected ? statsState : "offline", reason = connected ? statsReason : "NT4 is disconnected";
-      if (connected && robot != null && robot.connection() == null) { state = robot.state().state(); reason = robot.state().reason(); }
+      var phase = statsState; var host = robot; var connection = host == null ? null : host.connection();
+      String state = connected ? phase.state() : "offline", reason = connected ? phase.reason() : "NT4 is disconnected";
+      if (connected && host != null && connection == null) { state = host.state().state(); reason = host.state().reason(); }
+      else if (connected && connection != null && (phase.connection() != connection || phase.episode() != episode.get())) {
+        state = "waiting"; reason = "Reading the device identity";
+      }
       if (!java.util.Objects.equals(state, reportedStatsState) || !java.util.Objects.equals(reason, reportedStatsReason)) {
         LoggerFactory.getLogger(ContextProviders.class).info("SSH stats {}{}", state, reason == null ? "" : ": " + reason);
         reportedStatsState = state; reportedStatsReason = reason;

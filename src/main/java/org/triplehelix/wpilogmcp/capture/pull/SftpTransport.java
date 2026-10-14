@@ -15,6 +15,8 @@ import org.triplehelix.wpilogmcp.sync.FileTransfer;
 
 /** Read-only robot files over a consumer-owned channel of a shared SSH connection. */
 public final class SftpTransport implements RobotRemote, SystemRemote {
+  /** A borrowed transport uses its host's one identity read without owning that connection. */
+  @FunctionalInterface public interface IdentitySource { DeviceIdentity read() throws IOException; }
   record Item(String name, long size, long mtimeMillis, boolean directory, boolean regular, boolean symlink) {}
   interface Channel extends AutoCloseable {
     List<Item> list(String directory) throws IOException;
@@ -24,11 +26,16 @@ public final class SftpTransport implements RobotRemote, SystemRemote {
     @Override void close();
   }
   private final Channel channel;
+  private final IdentitySource identity;
   private final List<String> directories;
   private final String address, fingerprint;
 
   SftpTransport(Channel channel, List<String> directories, String address, String fingerprint) {
+    this(channel, directories, address, fingerprint, null);
+  }
+  private SftpTransport(Channel channel, List<String> directories, String address, String fingerprint, IdentitySource identity) {
     this.channel = channel; this.directories = List.copyOf(directories); this.address = address; this.fingerprint = fingerprint;
+    this.identity = identity;
   }
 
   /** Standalone callers own their connection; the capture service instead lends a shared one. */
@@ -37,6 +44,10 @@ public final class SftpTransport implements RobotRemote, SystemRemote {
   }
   public static SftpTransport using(org.triplehelix.wpilogmcp.ssh.SshConnection ssh, List<String> directories,
       String address, boolean ownConnection) throws IOException {
+    return using(ssh, directories, address, ownConnection, null);
+  }
+  public static SftpTransport using(org.triplehelix.wpilogmcp.ssh.SshConnection ssh, List<String> directories,
+      String address, boolean ownConnection, IdentitySource identity) throws IOException {
     org.triplehelix.wpilogmcp.ssh.SshConnection.Files files;
     try { files = ssh.files(); }
     catch (IOException | RuntimeException e) { if (ownConnection) ssh.close(); throw e; }
@@ -48,11 +59,12 @@ public final class SftpTransport implements RobotRemote, SystemRemote {
       public Optional<String> exec(String command, long timeoutMs) throws IOException { return ssh.exec(command, timeoutMs, 4096); }
       public org.triplehelix.wpilogmcp.ssh.SshConnection.Command follow(String command) throws IOException { return ssh.follow(command); }
       public void close() { files.close(); if (ownConnection) ssh.close(); }
-    }, directories, address, ssh.fingerprint());
+    }, directories, address, ssh.fingerprint(), identity);
   }
   static String fingerprint(byte[] key) { return org.triplehelix.wpilogmcp.ssh.JschConnection.fingerprint(key); }
 
   @Override public DeviceIdentity identity() throws IOException {
+    if (identity != null) return identity.read();
     return RobotIdentityReader.read(new RobotIdentityReader.Files() {
       @Override public List<String> environments() throws IOException {
         return channel.list("/proc").stream().filter(i -> i.directory() && !i.symlink() && i.name().matches("[0-9]+"))

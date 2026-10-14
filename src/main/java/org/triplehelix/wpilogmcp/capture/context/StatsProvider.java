@@ -39,14 +39,20 @@ public final class StatsProvider {
   public long droppedBeforeSync() { return droppedBeforeSync; }
   public void reconnect() { previous = null; }
   public Result sample(SshConnection connection) throws IOException {
+    return sample(connection, ignored -> {});
+  }
+  /** Startup/discovery activity is published before blocking; steady samples keep their state. */
+  public Result sample(SshConnection connection, java.util.function.Consumer<String> activity) throws IOException {
     if (preparedConnection != connection) {
       preparedConnection = connection; known = null; locateProgram = true; previous = null;
     }
     if (locateProgram) {
+      activity.accept("Discovering the robot program");
       String discovery = connection.exec(StatsCommand.lookup(known == null), COMMAND_DEADLINE_MS, MAX_REPLY_BYTES)
           .orElseThrow(() -> new IOException("SSH exec is unavailable for stats discovery"));
       known = ProcStats.configuration(discovery, known); locateProgram = false; samplesSinceLookup = 0;
       command = StatsCommand.sample(directories, known);
+      activity.accept("Reading robot statistics");
     }
     long usedPeriod = period.periodUs();
     // Capture both at send. A time estimate arriving during exec cannot retroactively timestamp it.

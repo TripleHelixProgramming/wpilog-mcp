@@ -196,6 +196,13 @@ capture:
 sent before an NT4 time estimate exists is counted and dropped. CPU and network rates are per
 interval and need two samples.
 
+**Startup state.** As soon as SSH connects, the stats provider reports `waiting` with
+`Reading the device identity`, then `Discovering the robot program` and
+`Reading robot statistics` while those operations run. A completed sample becomes
+`sampling`, or `waiting_for_sync` if no NT4 clock estimate exists. The device identity is
+read once per SSH connection and shared with pulls; an unavailable identity is also retained
+for that connection, and reconnect starts a fresh attempt.
+
 **Finding the robot program.** The program fields come from the deployed JAR. Its path is the
 quoted `-jar` argument in `/home/lvuser/robotCommand`, then the exact arguments in
 `/proc/*/cmdline`. A missing or ambiguous JAR omits the program fields with a reason, and a

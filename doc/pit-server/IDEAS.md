@@ -137,3 +137,10 @@ The new per-utility robot-facts evidence must establish which other executables 
 applets and their enabled options on the actual image. The synthetic image replaces only
 tail until that evidence exists. Check symlink appends, rotation and observed receipt delay
 on the next run. A source audit and scripted SSH tests do not execute the NI image.
+
+## Shop startup follow-up
+
+Confirm the startup phase durations on the NI image from the journal's identity, program
+discovery and statistics-read transitions, and confirm that enabling pulls on an established
+SSH connection adds no second identity scan. The local blocking fixtures establish state and
+sharing behavior; they do not measure the original 7–17 second startup window on the robot.

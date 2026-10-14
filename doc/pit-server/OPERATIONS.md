@@ -106,7 +106,10 @@ server starts at once and the client retries until the robot answers.
    `/SystemStats/BatteryVoltage` (as `NT:/SystemStats/BatteryVoltage` in the capture): the
    value, the robot's timestamp and a small age.
 6. Each session's `providers[]` in `list_sessions`, one entry per provider by name: with `pull.ssh`
-   configured, `roboRIO` (system stats) reads `sampling` and `tail/robot/program_console`
+   configured, `roboRIO` first reads `waiting`, with a reason naming the current
+   device-identity read, program discovery or first statistics read. These are startup steps
+   on an established SSH connection; a missing NT4 clock estimate reads `waiting_for_sync`.
+   Once ready, `roboRIO` (system stats) reads `sampling` and `tail/robot/program_console`
    reads `following`; with PhotonVision configured, `photonvision/<host>:5800` reads `following`;
    with JVM configured, `jvm` reads `sampling`. A provider that reads `stand_down` carries
    the reason, and the fix is almost always in it.

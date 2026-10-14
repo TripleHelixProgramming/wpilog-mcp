@@ -5,6 +5,7 @@
 package org.triplehelix.wpilogmcp.ssh;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -12,6 +13,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.capture.context.DeviceIdentity;
+import org.triplehelix.wpilogmcp.capture.pull.SftpTransport;
 import org.triplehelix.wpilogmcp.config.PullConfig;
 import org.triplehelix.wpilogmcp.nt4.client.ClientScheduler;
 
@@ -25,6 +28,9 @@ public final class SharedSsh implements AutoCloseable {
     SshConnection connect(String host, PullConfig.Ssh config, String fingerprint) throws IOException;
   }
   public record State(String state, String reason) {}
+  private record IdentityRead(SshConnection connection, CompletableFuture<DeviceIdentity> value, AtomicBoolean started) {
+    IdentityRead(SshConnection connection) { this(connection, new CompletableFuture<>(), new AtomicBoolean()); }
+  }
   private final Map<String, Host> hosts = new ConcurrentHashMap<>();
   private final Connector connector;
   private final Function<String, CompletableFuture<String>> pins;
@@ -53,6 +59,7 @@ public final class SharedSsh implements AutoCloseable {
     private final CompletableFuture<Void> closed = new CompletableFuture<>();
     private volatile boolean required;
     private volatile SshConnection connection;
+    private volatile IdentityRead identity;
     private volatile State state = new State("offline", "NT4 is disconnected");
     private volatile Consumer<SshConnection> onConnect = ignored -> {};
     private long retryUs = 1_000_000, nextAttemptUs;
@@ -70,6 +77,34 @@ public final class SharedSsh implements AutoCloseable {
       var value = connection;
       return required && !stopped.get() && value != null && value.connected() ? value : null;
     }
+    /**
+     * One scan per authenticated connection, shared by context and pull workers. The winning
+     * caller reads on its own worker; contenders wait on the future, never on a lifecycle lock.
+     * An unavailable identity is evidence for this connection too, and reconnect starts fresh.
+     */
+    public DeviceIdentity identity(SshConnection expected) throws IOException {
+      var reading = identity;
+      if (reading == null || reading.connection() != expected || connection() != expected) {
+        throw new IOException("SSH connection changed before reading the device identity");
+      }
+      if (reading.started().compareAndSet(false, true)) {
+        try (var remote = SftpTransport.using(expected, List.of(), address, false)) {
+          reading.value().complete(remote.identity());
+        } catch (IOException | RuntimeException e) { reading.value().completeExceptionally(e); }
+      }
+      DeviceIdentity result;
+      try { result = reading.value().get(); }
+      catch (InterruptedException e) {
+        Thread.currentThread().interrupt(); throw new IOException("Interrupted while reading the device identity", e);
+      } catch (java.util.concurrent.ExecutionException e) {
+        if (e.getCause() instanceof IOException cause) throw cause;
+        throw new IOException("Could not read the device identity: " + e.getCause().getMessage(), e.getCause());
+      }
+      if (identity != reading || connection() != expected) {
+        throw new IOException("SSH connection changed while reading the device identity");
+      }
+      return result;
+    }
     private void state(String name, String reason) {
       var after = new State(name, reason);
       if (!after.equals(state)) {
@@ -77,7 +112,7 @@ public final class SharedSsh implements AutoCloseable {
         LoggerFactory.getLogger(SharedSsh.class).info("SSH {} {}{}", address, name, reason == null ? "" : ": " + reason);
       }
     }
-    private void discard() { var old = connection; connection = null; if (old != null) old.close(); }
+    private void discard() { var old = connection; connection = null; identity = null; if (old != null) old.close(); }
     private void tick() {
       try {
         if (stopped.get()) { discard(); state("stopped", null); closed.complete(null); worker.close(); return; }
@@ -92,6 +127,7 @@ public final class SharedSsh implements AutoCloseable {
         if (!pin.isDone()) { state("waiting", "Reading the pinned host key"); return; }
         var connected = connector.connect(address, config, learnedPin == null ? pin.join() : learnedPin);
         if (!required || stopped.get()) { connected.close(); return; }
+        identity = new IdentityRead(connected);
         connection = connected; learnedPin = connected.fingerprint(); retryUs = 1_000_000; nextAttemptUs = 0; pin = null;
         state("connected", null); onConnect.accept(connected);
       } catch (Exception e) {

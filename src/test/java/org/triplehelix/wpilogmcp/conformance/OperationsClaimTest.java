@@ -62,7 +62,7 @@ class OperationsClaimTest {
       skipped source stall_current_threshold stand_down start start_time stated_robot status sync
       sync_status syslog tba tba_key team temperature_entry text_event_counts text_event_summary
       threshold threshold_ms time_series timeout_ms unassigned velocity_entry vision_entries
-      voltage_analysis waiting warning windows year
+      voltage_analysis waiting waiting_for_sync warning windows year
       """).strip().split("\\s+"));
 
   private static List<String> code() {
