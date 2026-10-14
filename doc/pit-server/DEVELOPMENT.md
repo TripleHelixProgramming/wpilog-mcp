@@ -228,6 +228,14 @@ struct-array topics with schemas, verified pulls matched near zero offset, DataL
 event/match manifests, and SFTP reads gated by disabled state. Saved manifests, HTTP results,
 server/robot output, and the SFTP read audit explain failures. CI uploads this evidence.
 
+Both backends compare verified pull receipts with the final remote log inventory, saved as
+`remote-log-names.json`. DataLogManager can rename a listed pre-match file before its first SFTP
+open; its saved zero-byte attempt cannot supply a content proof for rename recovery. The oracle
+permits that leftover only when the remote name has vanished, its owned staged file is empty,
+and it has no retry or failure. Partial, failed, duplicate and still-current unfinished pulls
+remain failures. `HarnessPullManifestTest` forces this race and checks the refusal cases without
+depending on thread timing; `RemoteLogInventoryTest` checks both backend listings.
+
 The simulated robot also owns a separate ntcore client instance connected only to the gateway. It
 subscribes to every scripted topic and schema, records the received server timestamps in a separate
 observation log, and waits for gateway announcements before the runner releases the timeline. The

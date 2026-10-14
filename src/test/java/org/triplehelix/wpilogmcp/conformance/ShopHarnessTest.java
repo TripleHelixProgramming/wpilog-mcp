@@ -106,7 +106,7 @@ class ShopHarnessTest {
       });
       Files.writeString(run.resolve("ssh-reads.json"), StoreJson.JSON.toJson(rio.reads()));
       var listing = http.call("list_available_logs", new JsonObject()); Files.writeString(run.resolve("listing.json"), listing.toString());
-      HarnessExpectations.verify(timeline, run, store, http, listing, rio.reads());
+      HarnessExpectations.verify(timeline, run, store, http, listing, rio.reads(), true, java.util.Set.copyOf(rio.logNames()));
     } finally {
       for (var robot : robots) if (robot.isAlive()) { robot.destroyForcibly(); robot.waitFor(10, TimeUnit.SECONDS); }
       if (server != null) { server.destroy(); if (!server.waitFor(35, TimeUnit.SECONDS)) { server.destroyForcibly(); server.waitFor(10, TimeUnit.SECONDS); } }

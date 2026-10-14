@@ -108,6 +108,14 @@ public final class FakeRoboRio implements AutoCloseable {
     });
   }
   public Path logs() { return root.resolve("home/lvuser/logs"); }
+  /** The final inventory includes files renamed while a pull was paused. */
+  public List<String> logNames() throws IOException {
+    try (var paths = Files.list(logs())) {
+      return paths.filter(Files::isRegularFile).map(path -> path.getFileName().toString())
+          .filter(name -> name.endsWith(".wpilog"))
+          .map(name -> "/home/lvuser/logs/" + name).sorted().toList();
+    }
+  }
   public List<Read> reads() { return List.copyOf(reads); }
   /** Exact provider commands may have scripted replies; this fixture still never executes a shell. */
   public void script(String command, Script script) { scripts.put(command, script); }

@@ -23,12 +23,10 @@ final class HarnessExpectations {
   private HarnessExpectations() {}
   private static JsonObject json(Path path) throws Exception { return JsonParser.parseString(Files.readString(path)).getAsJsonObject(); }
 
-  static void verify(JsonObject timeline, Path run, Path store, HarnessHttp http, JsonObject listing,
-      List<FakeRoboRio.Read> reads) throws Exception {
-    verify(timeline, run, store, http, listing, reads, true);
-  }
-  static void verify(JsonObject timeline, Path run, Path store, HarnessHttp http, JsonObject listing,
-      List<FakeRoboRio.Read> reads, boolean gateway) throws Exception {
+  static JsonObject verify(JsonObject timeline, Path run, Path store, HarnessHttp http, JsonObject listing,
+      List<FakeRoboRio.Read> reads, boolean gateway, Set<String> remoteNames) throws Exception {
+    Files.writeString(run.resolve("remote-log-names.json"),
+        new com.google.gson.Gson().toJson(new java.util.TreeSet<>(remoteNames)));
     String serial = timeline.get("serial_number").getAsString(); var root = store.resolve("robots").resolve(serial);
     var robot = json(root.resolve("robot.json"));
     assertEquals("device", robot.get("basis").getAsString()); assertEquals(serial, robot.get("serial_number").getAsString());
@@ -83,17 +81,49 @@ final class HarnessExpectations {
       if (gateway) verifyValues(timeline, boot, bootIndex, run.resolve("gateway-probes").resolve("boot-" + bootIndex + ".wpilog"), http, run);
       if (reads != null) verifyGate(boot, run.resolve("boot-" + bootIndex).resolve("ticks.csv"), reads);
     }
-    var progress = json(root.resolve("pull.json"));
-    assertEquals(timeline.getAsJsonArray("boots").size(), progress.getAsJsonArray("files").size());
-    for (var value : progress.getAsJsonArray("files")) {
-      var file = value.getAsJsonObject(); assertTrue(file.get("verified").getAsBoolean());
-      assertEquals(file.get("size"), file.get("bytes_copied"));
-    }
-    if (reads == null) return; // OpenSSH has no per-block read tap; the parallel MINA run proves the gate.
+    var progress = verifiedPulls(json(root.resolve("pull.json")), timeline.getAsJsonArray("boots").size(),
+        store, remoteNames);
+    if (reads == null) return progress; // OpenSSH has no per-block read tap; the parallel MINA run proves the gate.
     var events = timeline.getAsJsonArray("boots").asList().stream()
         .map(b -> "_" + b.getAsJsonObject().getAsJsonObject("match").get("event").getAsString() + "_").toList();
     assertTrue(reads.stream().anyMatch(r -> r.path().endsWith(".wpilog") && events.stream().noneMatch(r.path()::contains)), "Pull began before DataLogManager's match rename");
     for (String event : events) assertTrue(reads.stream().anyMatch(r -> r.path().contains(event)), "Pull followed DataLogManager's match rename: " + event);
+    return progress;
+  }
+
+  static JsonObject verifiedPulls(JsonObject progress, int expected, Path store, Set<String> remoteNames)
+      throws java.io.IOException {
+    var completed = new com.google.gson.JsonArray();
+    var names = new java.util.HashSet<String>();
+    var storeRoot = store.toRealPath();
+    for (var value : progress.getAsJsonArray("files")) {
+      var file = value.getAsJsonObject();
+      String name = file.get("remote_name").getAsString();
+      assertTrue(!file.has("failure") || file.get("failure").isJsonNull(), "No refused pull: " + name);
+      if (file.get("verified").getAsBoolean()) {
+        assertEquals(file.get("size"), file.get("bytes_copied"), "Verified copy is complete: " + name);
+        assertTrue(names.add(name), "No duplicate verified remote name: " + name);
+        completed.add(file.deepCopy());
+      } else {
+        // A saved attempt can outlive a DataLogManager rename before its first open. With no
+        // held bytes there is no content proof to merge it into the final name's receipt.
+        assertEquals(0, file.get("bytes_copied").getAsLong(), "No unfinished partial copy: " + name);
+        assertEquals(0, file.get("retries").getAsInt(), "No abandoned retry: " + name);
+        assertFalse(remoteNames.contains(name), "No unfinished current remote file: " + name);
+        String basename = name.substring(name.lastIndexOf('/') + 1);
+        assertTrue(basename.matches("FRC_(?:TBD_[0-9a-f]+|[0-9]{8}_[0-9]{6})\\.wpilog"),
+            "Only a vanished pre-match DataLogManager name may remain unopened: " + name);
+        var stage = storeRoot.resolve(file.get("local_name").getAsString()).normalize();
+        assertTrue(stage.startsWith(storeRoot), "Abandoned stage belongs to this store: " + stage);
+        assertTrue(Files.isRegularFile(stage), "Abandoned stage exists: " + stage);
+        assertTrue(stage.toRealPath().startsWith(storeRoot), "Abandoned stage resolves inside this store: " + stage);
+        assertEquals(0, Files.size(stage), "Abandoned stage contains no uncounted bytes: " + stage);
+      }
+    }
+    assertEquals(expected, completed.size(), "One verified pull per scripted boot");
+    assertEquals(remoteNames, names, "Every current remote log has exactly one verified pull");
+    var result = progress.deepCopy(); result.add("files", completed);
+    return result;
   }
 
   private static void verifyValues(JsonObject timeline, JsonObject boot, int bootIndex, Path file,

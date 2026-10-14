@@ -106,10 +106,10 @@ class RioHarnessTest {
       });
       var listing = http.call("list_available_logs", new JsonObject());
       Files.writeString(run.resolve("listing.json"), listing.toString());
-      HarnessExpectations.verify(timeline, run, store, http, listing, null, false);
+      var completedPulls = HarnessExpectations.verify(timeline, run, store, http, listing, null, false,
+          java.util.Set.copyOf(rio.logNames()));
       RioExpectations.captures(timeline, listing, http);
-      var pullManifest = store.resolve("robots").resolve(timeline.get("serial_number").getAsString()).resolve("pull.json");
-      RioExpectations.pullsOnce(JsonParser.parseString(Files.readString(pullManifest)).getAsJsonObject(),
+      RioExpectations.pullsOnce(completedPulls,
           timeline.getAsJsonArray("boots").size());
       if (photon != null) {
         photon.check();

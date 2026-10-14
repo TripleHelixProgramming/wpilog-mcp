@@ -12,11 +12,14 @@ import java.util.concurrent.TimeUnit;
 
 /** A fresh OpenSSH/JRE process namespace. No privileged mode, host proc mount, or NI image. */
 public final class RioContainer implements AutoCloseable {
+  @FunctionalInterface interface CommandRunner { String run(String... arguments) throws Exception; }
+  private final CommandRunner commands;
   private final String id;
   private final Path run;
   public RioContainer(String image, Path run, String serial, String comments, int ssh, int nt, int jmx) throws Exception {
     this.run = run;
-    id = command("run", "--detach", "--rm", "--init",
+    commands = RioContainer::command;
+    id = commands.run("run", "--detach", "--rm", "--init",
         "--publish", "127.0.0.1:" + ssh + ":22",
         "--publish", "127.0.0.1:" + nt + ":" + nt,
         "--publish", "127.0.0.1:" + jmx + ":" + jmx,
@@ -24,13 +27,22 @@ public final class RioContainer implements AutoCloseable {
         "--env", "HARNESS_SERIAL=" + serial, "--env", "HARNESS_COMMENTS=" + comments,
         "--env", "HARNESS_NT_PORT=" + nt, "--env", "HARNESS_JMX_PORT=" + jmx, image).strip();
   }
+  RioContainer(String id, Path run, CommandRunner commands) {
+    this.id = id; this.run = run; this.commands = commands;
+  }
   public Process robot(int boot, Path output) throws Exception {
     return new ProcessBuilder("docker", "exec", "--user", "lvuser", id,
         "/home/lvuser/robotCommand", Integer.toString(boot))
         .redirectErrorStream(true).redirectOutput(output.toFile()).start();
   }
-  public String console() throws Exception { return command("exec", id, "cat", "/var/local/natinst/log/FRC_UserProgram.log"); }
-  public String modules() throws Exception { return command("exec", id, "/opt/java/bin/java", "--list-modules"); }
+  public String console() throws Exception { return commands.run("exec", id, "cat", "/var/local/natinst/log/FRC_UserProgram.log"); }
+  public String modules() throws Exception { return commands.run("exec", id, "/opt/java/bin/java", "--list-modules"); }
+  /** Read the final USB inventory rather than predicting names from robot boot numbers. */
+  public List<String> logNames() throws Exception {
+    return commands.run("exec", id, "ls", "-1", "/u/logs").lines()
+        .filter(name -> name.endsWith(".wpilog"))
+        .map(name -> "/u/logs/" + name).sorted().toList();
+  }
   private static String command(String... arguments) throws Exception {
     var cmd = new ArrayList<>(List.of("docker")); cmd.addAll(List.of(arguments));
     var output = Files.createTempFile("rio-docker-", ".txt");
@@ -45,10 +57,10 @@ public final class RioContainer implements AutoCloseable {
     } finally { Files.deleteIfExists(output); }
   }
   @Override public void close() throws Exception {
-    try { Files.writeString(run.resolve("sshd.log"), command("logs", id)); }
+    try { Files.writeString(run.resolve("sshd.log"), commands.run("logs", id)); }
     finally {
       try { Files.writeString(run.resolve("console.log"), console()); }
-      finally { command("rm", "--force", id); }
+      finally { commands.run("rm", "--force", id); }
     }
   }
 }
