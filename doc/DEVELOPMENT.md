@@ -403,7 +403,7 @@ configuration validation. The fixture backend is a synthetic lifecycle test doub
 production persistence service. Native Save As stays unavailable with a Save view… hint until
 its picker, destination alias, and replacement-tab gates are established. Stage 1 remains an isolated lifecycle regression; Stage 2a registers the optional product preview described below.
 
-### Visualization Stage 2a recorded preview
+### Visualization recorded preview
 
 Run `./gradlew shadowJar extensionSmokeFixture`, then `npm run test:recorded-visualization`
 in `vscode-extension`, with an explicit `VSCODE_VERSION=1.101.0` or current stable version.
@@ -413,21 +413,36 @@ service or robot logs. It exercises the actual overview/working providers, bundl
 and uPlot under CSP, Arrow and typed cursor replies, panel controls via Enter, A/A/B isolation,
 and transport counts proving title/resize edits issue no new Arrow or cursor request,
 Entries routing, first-store metadata save and a second Java/editor launch for draft/saved
-recovery. Results, renderer diagnostics and screenshots stay under `build/visualization-stage2a`.
-The narrow DevTools connection belongs only to this disposable editor. The first-store native
-fixture exercises the real save operation directly; picker sequencing/cancellation is checked
-separately with supplied VS Code dialogs. Native lifecycle regression remains
+recovery. Stage 2b also drives searchable templates, exact compatibility, template update and
+export/import, independently checked statistics/raw rows, MCP revision delivery/conflict,
+request-counted hidden/reveal behavior and overview Resume/Open new view. Results, renderer
+diagnostics and screenshots stay under `build/visualization-stage2b`. The narrow DevTools
+connection belongs only to this disposable editor. Supplied dialogs select the test store/file;
+the native fixture runs the product empty-import and store-ID first-save path. Cancellation is
+also covered in the Node fixture. Template digest checks use RFC 8785 vectors and an independent
+SHA-256 over the expected canonical string. The canonicalization dependency's upstream license
+and copyright notice ship under `META-INF/licenses/JCS-LICENSE.txt`. Native lifecycle regression remains
 `npm run test:visualization`. Run both on the oldest supported/current editor; Linux requires
 Xvfb, and actual Linux/Windows native results must not be inferred from Mac or mocked tests.
 
-Focused Java tests include `VisualizationEndpointTest`, `VisualizationServiceTest`,
+Focused Java tests include `TemplateDefinitionTest`, `TemplateMetadataTest`,
+`VisualizationBindingsTest`, `ControlNotificationsTest`, `RecordedSourcesTest`,
+`VisualizationEndpointTest`, `VisualizationServiceTest`, `VisualizationTombstoneTest`,
 `VisualizationMetadataTest` and `CallerContextTest`. Node tests cover optional registration,
 layout purity, Entries generations, lease/save ordering, aborts and response bounds. The focused
 review checks also cover per-record saved-file failures, direct open beyond a listing budget,
 locator reclamation, and host/renderer buffer retention across presentation revisions. Plants
 must catch owner/revision bypass, session cleanup/race failures, stale replies and budget
-removal. Templates/public MCP adapters and notification wiring belong to Stage 2b; the recorded
-preview's new route preserves raw JSON before shared contract admission.
+removal. Template CAS/import receipts, role/type/unit refusal, JCS vectors, raw ordinal pages,
+notification audience/replay/overflow and every named MCP success path have focused checks.
+Deleted-view tests cross the live cap, exercise independent retry count/byte pressure, expiry,
+legacy recovery and locator release. Removed-template cases drive get/apply/export/update
+through real HTTP and MCP, plus deletion while an update waits on the store queue. Use
+`cleanTest` before a counted rerun; an up-to-date build executes no test cases.
+The frozen reader-equivalence corpus explicitly records these machine-local visualization
+operations as exclusions; `VisualizationConformance` supplies their isolated successful
+state transitions instead of comparing machine-specific IDs across frozen builds.
+Plant their corresponding failures before trusting a changed check.
 
 ### The data endpoint's streams
 

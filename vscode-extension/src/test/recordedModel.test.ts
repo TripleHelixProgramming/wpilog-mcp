@@ -52,3 +52,21 @@ test("a recovered definition cannot bypass recorded preview resource admission",
   (config.panels[0] as any).type = "histogram";
   assert.throws(() => requireRecordedPreview(config), /later visualization stage/);
 });
+
+test("recorded reuse admits statistics and bounded raw panels without enabling later panels", () => {
+  for (const type of ["statistics", "raw"] as const) {
+    const config = addPanel(blank(), "p", type as any);
+    assert.doesNotThrow(() => requireRecordedPreview(config));
+    assert.equal(config.panels[0].title, type === "statistics" ? "Statistics" : "Raw records");
+  }
+});
+test("data identity includes explicit role and unit compatibility constraints", () => {
+  const { recordedDataKey } = require("../visualization/recordedModel");
+  const config = addSignals(addPanel(blank(), "p", "time_series"), "p", [signal], () => "r");
+  const source = { kind: "unmanaged", source_id: "a" };
+  const r: any = config.requirements[0]; r.selector_kind = "role"; delete r.entry; r.role = "battery_voltage";
+  const before = recordedDataKey(source, config); r.role = "total_current";
+  assert.notEqual(recordedDataKey(source, config), before);
+  const role = recordedDataKey(source, config); r.unit = { symbol: "V", basis: "user_declared" };
+  assert.notEqual(recordedDataKey(source, config), role);
+});

@@ -311,7 +311,7 @@ needed. The [extension guide](../vscode-extension/README.md#exploring-logs) has 
 1. On a local WPILOG in Logs, choose **Open Source Overview (Preview)**. Source facts appear
    before signal indexing completes. Missing robot, session or match information says unavailable.
    Ordinary open still uses the existing Explorer editor during the preview.
-2. Choose **Blank layout**, then **Add plot** or **Add value table**. Expand **Add signals**,
+2. Choose **Blank layout**, then **Add plot**, **Add value table**, **Add statistics** or **Add raw table**. Expand **Add signals**,
    choose a panel and select exact entry names. Entries also names the active view/panel as its
    destination. Switching to another view changes that destination; a hidden view is not a fallback.
 3. Use **Move, resize or remove panel** with Tab/Enter, or drag/resize the panel.
@@ -329,8 +329,27 @@ needed. The [extension guide](../vscode-extension/README.md#exploring-logs) has 
    Invalid/newer saved files are reported beside the readable ones and left intact. If an unmanaged
    file's fingerprint changed or the source is no longer allowed, the view reports unavailability
    rather than selecting a similar file. The fingerprint checks file attributes, not its content;
-   see the [standalone reference](STANDALONE.md) for this limit and locator recovery. Templates,
-   public MCP editing and live following are later stages.
+   see the [standalone reference](STANDALONE.md) for this limit and locator recovery. Older
+   fingerprints are listed as unavailable; configuration remains readable through MCP.
+7. Expand **Reusable templates**, search by name/description and select a built-in or store
+   template. Its compatibility reports exact names or resolver roles, accepted types and unit
+   reasons. **Open new view** keeps the current layout; **Replace this layout…** offers Save or
+   Discard. Unresolved signals remain explained and are not guessed from similar names.
+8. **Save template…** stores the configuration without source files or local paths. Exact names
+   are the default; keeping explicit roles is a choice. **Update selected template…** compares
+   its revision; open views keep their pinned configurations. Export the definition to JSON,
+   then Import it into a writable store. Identical reimports are no-ops. Same revision/different
+   content is a conflict; newer known content offers Import copy or an explicit Update existing.
+   If the selected store template file has been removed, `TEMPLATE_UNAVAILABLE` asks you to
+   refresh the catalog or save a new template from an existing view. Open views keep their layout.
+9. Statistics summarize original samples in the selected interval, not plot buckets. Raw tables
+   retain physical ordinals and integer timestamps in bounded replacement pages. Use First/Next
+   page to inspect more; duplicate or backward timestamps do not collapse records.
+10. An agent can use the `visualization_*` tools to inspect and edit local views. Supply
+    `api_version: 1`, UUID request IDs and expected revisions for mutations; definition arguments
+    are JSON text. A lost reply retries with the same ID/arguments. A revision conflict requires
+    inspection before another edit. An attached Explorer receives the accepted revision without
+    a popup. Live following and explicit display handoff remain later stages.
 
 ## Part II: Running the server
 

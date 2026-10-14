@@ -35,11 +35,25 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
 public final class ReadBehaviorCorpus {
   private static final Set<String> GLOBAL_READS = Set.of("list_available_logs", "get_server_guide",
       "suggest_tools", "get_game_info", "get_tba_status", "list_sessions", "get_latest_values", "wait_for_change");
-  private static final Map<String, String> EXCLUDED = Map.of(
+  private static final Map<String, String> EXCLUDED = excluded();
+  private static Map<String, String> excluded() {
+    var excluded = new java.util.LinkedHashMap<String, String>(Map.of(
       "health_check", "Runtime heap/cache counters are checked separately, not equal across processes.",
       "list_loaded_logs", "Runtime cache residency depends on heap pressure; lifecycle checks cover it separately.",
       "set_revlog_offset", "Changes shared alignment state; this frozen corpus compares read-only requests.",
-      "get_tba_match_data", "External service results are outside the read-layer equivalence boundary.");
+      "get_tba_match_data", "External service results are outside the read-layer equivalence boundary."));
+    // These definitions and machine-local source IDs did not exist in the frozen reader baseline.
+    // Their successful state transitions are exercised through VisualizationConformance.
+    for (String tool : List.of(
+        "visualization_capabilities_get", "visualization_source_inspect", "visualization_template_list",
+        "visualization_template_get", "visualization_template_check", "visualization_template_create",
+        "visualization_template_update", "visualization_template_import", "visualization_template_export",
+        "visualization_view_list", "visualization_view_get", "visualization_view_create",
+        "visualization_view_update", "visualization_view_clone", "visualization_view_save",
+        "visualization_view_discard", "visualization_view_delete"))
+      excluded.put(tool, "Machine-local visualization state; isolated success/receipt conformance covers it, not frozen reader equivalence.");
+    return Map.copyOf(excluded);
+  }
   private ReadBehaviorCorpus() {}
 
   public static void main(String[] args) throws Exception {

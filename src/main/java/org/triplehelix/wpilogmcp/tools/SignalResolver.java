@@ -204,6 +204,25 @@ public final class SignalResolver {
     }
   }
 
+  /** Visualization labels reuse resolver knowledge; no numerical scaling or name guess is added.
+   * Logged metadata wins. Published roles establish units only after that role selected an entry. */
+  static JsonObject visualizationUnit(LogData log, String entry, Role role) {
+    var unit = new JsonObject(); String symbol = null, basis = "unknown";
+    try {
+      var metadata = com.google.gson.JsonParser.parseString(log.entries().get(entry).metadata());
+      if (metadata.isJsonObject() && metadata.getAsJsonObject().has("unit")
+          && metadata.getAsJsonObject().get("unit").isJsonPrimitive()
+          && metadata.getAsJsonObject().getAsJsonPrimitive("unit").isString()) {
+        symbol = metadata.getAsJsonObject().get("unit").getAsString(); basis = "logged metadata";
+      }
+    } catch (RuntimeException ignored) { /* Metadata need not be JSON. */ }
+    if (symbol == null && role != null) {
+      symbol = switch (role) { case BATTERY_VOLTAGE -> "V"; case TOTAL_CURRENT -> "A"; case LOOP_TIME_USER -> "ms"; default -> null; };
+      if (symbol != null) basis = "published convention of resolved " + role.name().toLowerCase(Locale.ROOT);
+    }
+    unit.addProperty("symbol", symbol); unit.addProperty("basis", basis); return unit;
+  }
+
   // ==================== all roles ====================
 
   /** Every role, in declaration order. */

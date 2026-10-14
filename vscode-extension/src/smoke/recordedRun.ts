@@ -12,7 +12,7 @@ async function main(): Promise<void> {
   const extension = path.resolve(__dirname, "../.."), repository = path.dirname(extension);
   const version = process.env.VSCODE_VERSION ?? "1.101.0";
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Use an explicit editor version");
-  const base = path.join(repository, "build/visualization-stage2a", version); fs.mkdirSync(base, { recursive: true });
+  const base = path.join(repository, "build/visualization-stage2b", version); fs.mkdirSync(base, { recursive: true });
   const root = fs.mkdtempSync(path.join(base, "run-")); console.log("Recorded fixture: " + root);
   for (const folder of ["logs", "home", "workspace", "extension", "profile/User"]) fs.mkdirSync(path.join(root, folder), { recursive: true });
   fs.writeFileSync(path.join(root, "fixture-only"), "Synthetic recorded preview\n");
@@ -21,7 +21,7 @@ async function main(): Promise<void> {
   fs.cpSync(path.join(extension, "out"), path.join(root, "extension/out"), { recursive: true });
   fs.cpSync(path.join(extension, "media"), path.join(root, "extension/media"), { recursive: true });
   const manifest = JSON.parse(fs.readFileSync(path.join(extension, "package.json"), "utf8"));
-  fs.writeFileSync(path.join(root, "extension/package.json"), JSON.stringify({ name: "recorded-fixture", publisher: "wpilog-stage2a", version: "0.0.0", engines: { vscode: "^1.101.0" }, main: "out/smoke/recordedFixture.js", activationEvents: ["onStartupFinished"], contributes: { customEditors: manifest.contributes.customEditors.filter((e: any) => e.viewType !== "wpilog-mcp.explorer") } }));
+  fs.writeFileSync(path.join(root, "extension/package.json"), JSON.stringify({ name: "recorded-fixture", publisher: "wpilog-stage2b", version: "0.0.0", engines: { vscode: "^1.101.0" }, main: "out/smoke/recordedFixture.js", activationEvents: ["onStartupFinished"], contributes: { customEditors: manifest.contributes.customEditors.filter((e: any) => e.viewType !== "wpilog-mcp.explorer") } }));
   fs.writeFileSync(path.join(root, "profile/User/settings.json"), JSON.stringify({ "window.restoreWindows": "all", "files.hotExit": "onExitAndWindowClose", "workbench.startupEditor": "none", "security.workspace.trust.enabled": false, "telemetry.telemetryLevel": "off", "update.mode": "none", "extensions.autoUpdate": false, "git.openRepositoryInParentFolders": "never" }));
   const port = await freePort(), debug = await freePort();
   const config = path.join(root, "servers.yaml"); fs.writeFileSync(config, `diskcachedisable: true\nservers:\n  fixture:\n    transport: http\n    port: ${port}\n    logdir: ${JSON.stringify(path.join(root, "logs"))}\n`);

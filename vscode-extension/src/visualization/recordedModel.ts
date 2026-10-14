@@ -8,11 +8,11 @@ export interface RecordedView extends ViewSnapshot {
   has_unsaved_changes: boolean;
 }
 export interface Requirement {
-  id: string; selector_kind: "entry"; entry: string; field_path: string | null;
-  accepted_entry_types: string[]; value_type: "number" | "boolean" | "string"; unit: null;
+  id: string; selector_kind: "entry" | "role"; entry?: string; role?: string; field_path: string | null;
+  accepted_entry_types: string[]; value_type: "number" | "boolean" | "string" | "raw"; unit: null | { symbol: string; basis: string };
 }
 export interface Panel {
-  panel_id: string; type: "time_series" | "latest"; title: string;
+  panel_id: string; type: "time_series" | "latest" | "statistics" | "raw"; title: string;
   series: { requirement_id: string; axis_id: string; color: string }[];
   axes: { axis_id: string; label: string; scale: "linear" | "log"; range: "auto" | { min: number; max: number } }[];
   display: { legend: boolean; line_width: number };
@@ -53,7 +53,7 @@ export function layoutEdit(input: RecordedConfiguration, panelId: string, action
 export function addPanel(input: RecordedConfiguration, id: string, type: Panel["type"]): RecordedConfiguration {
   const config = structuredClone(input);
   if (config.panels.length >= 32 || config.panels.some(p => p.panel_id === id)) throw new Error("Panel limit or duplicate identity");
-  config.panels.push({ panel_id: id, type, title: type === "latest" ? "Recorded values" : "Time series", series: [],
+  config.panels.push({ panel_id: id, type, title: type === "latest" ? "Recorded values" : type === "statistics" ? "Statistics" : type === "raw" ? "Raw records" : "Time series", series: [],
     axes: [{ axis_id: "y", label: "Logged values", scale: "linear", range: "auto" }], display: { legend: true, line_width: 1.5 } });
   const y = Math.max(0, ...config.layout.items.map(p => p.y + p.h));
   config.layout.items.push({ panel_id: id, x: 0, y, w: 12, h: 5 }); return config;
@@ -62,12 +62,12 @@ export function addSignals(input: RecordedConfiguration, panelId: string, signal
   const config = structuredClone(input), panel = config.panels.find(p => p.panel_id === panelId);
   if (!panel) throw new Error("Choose a panel before adding signals");
   for (const signal of signals) {
-    if (!signal.field && !["double", "float", "int64", "boolean", "string"].includes(signal.type)) throw new Error("Select a scalar field in Entries first");
-    if (panel.type === "time_series" && !signal.field && signal.type === "string") throw new Error("Text signals belong in a value table");
+    if (panel.type !== "raw" && !signal.field && !["double", "float", "int64", "boolean", "string"].includes(signal.type)) throw new Error("Select a scalar field in Entries first");
+    if (["time_series", "statistics"].includes(panel.type) && !signal.field && signal.type === "string") throw new Error("Text signals belong in a value table");
     let requirement = config.requirements.find(r => r.entry === signal.name && r.field_path === (signal.field ?? null) && r.accepted_entry_types.includes(signal.type));
     if (!requirement) {
       requirement = { id: id(), selector_kind: "entry", entry: signal.name, field_path: signal.field ?? null,
-        accepted_entry_types: [signal.type], value_type: signal.field ? "number" : signal.type === "string" ? "string" : signal.type === "boolean" ? "boolean" : "number", unit: null };
+        accepted_entry_types: [signal.type], value_type: panel.type === "raw" ? "raw" : signal.field ? "number" : signal.type === "string" ? "string" : signal.type === "boolean" ? "boolean" : "number", unit: null };
       config.requirements.push(requirement);
     }
     if (!panel.series.some(s => s.requirement_id === requirement!.id)) {
@@ -82,7 +82,7 @@ export function addSignals(input: RecordedConfiguration, panelId: string, signal
  * (plot or cursor table), regardless of which panel displays them or where that panel is placed. */
 export function recordedDataKey(source: SourceRef, config: RecordedConfiguration): string {
   const requirements = config.requirements.map(r => ({
-    id: r.id, selector_kind: r.selector_kind, entry: r.entry, field_path: r.field_path,
+    id: r.id, selector_kind: r.selector_kind, entry: r.entry, role: r.role, unit: r.unit, field_path: r.field_path,
     accepted_entry_types: [...r.accepted_entry_types].sort(), value_type: r.value_type,
     uses: [...new Set(config.panels.filter(p => p.series.some(s => s.requirement_id === r.id)).map(p => p.type))].sort(),
   })).sort((a, b) => a.id.localeCompare(b.id));
@@ -104,8 +104,13 @@ export class ViewGeneration {
 }
 
 
-/** Stage 2a can render this bounded subset of the durable schema. */
+/** The recorded preview can render this bounded subset of the durable schema. */
 export function requireRecordedPreview(config: RecordedConfiguration): void {
-  if (config.panels.some(p => !["time_series", "latest"].includes(p.type))) throw new Error("This panel needs a later visualization stage");
+  if (config.panels.some(p => !["time_series", "latest", "statistics", "raw"].includes(p.type))) throw new Error("This panel needs a later visualization stage");
   if (config.panels.reduce((n, p) => n + p.series.length, 0) > 32) throw new Error("At most 32 series per recorded view");
 }
+
+export interface Binding { requirement_id: string; state: "resolved" | "unresolved"; entry: string | null; field_path: string | null; reason: string; basis?: string; unit?: { symbol: string | null; basis: string }; warnings: string[]; }
+export interface Compatibility { compatibility: "compatible" | "partial" | "incompatible"; bindings: Binding[]; }
+export interface TemplateRef { origin: "bundled" | "store"; store_id?: string; template_id: string; revision: number; }
+export interface TemplateItem { template_ref: TemplateRef; template: { name: string; description: string; configuration: RecordedConfiguration }; store_label?: string; }

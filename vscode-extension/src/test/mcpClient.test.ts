@@ -22,7 +22,7 @@ test("initialize names the client and the protocol version the server speaks; in
   assert.equal(init.id, 1);
   assert.deepEqual(init.params, {
     protocolVersion: PROTOCOL_VERSION,
-    capabilities: {},
+    capabilities: { experimental: { "wpilog/visualizationNotifications": true } },
     clientInfo: { name: "wpilog-explorer", version: "0.9.1" },
   });
   assert.equal(PROTOCOL_VERSION, "2025-03-26", "McpMessageHandler.PROTOCOL_VERSION");

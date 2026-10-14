@@ -301,13 +301,20 @@ final class ToolArguments {
     for (var param : required) {
       if (param.equals("path")) continue;
       switch (param) {
+        case "api_version", "expected_revision" -> args.addProperty(param, 1);
+        case "request_id", "view_id", "store_id" -> args.addProperty(param, "00000000-0000-4000-8000-000000000001");
+        case "description" -> args.addProperty(param, "Conformance fixture");
+        case "configuration_json" -> args.addProperty(param, org.triplehelix.wpilogmcp.visualization.VisualizationContracts.blank().toString());
+        case "source_ref" -> args.add(param, com.google.gson.JsonParser.parseString("{\"kind\":\"unmanaged\",\"source_id\":\"00000000-0000-4000-8000-000000000001\"}"));
+        case "template_ref" -> args.add(param, org.triplehelix.wpilogmcp.visualization.TemplateDefinition.reference(null, org.triplehelix.wpilogmcp.visualization.BundledTemplates.all().get(0)));
+        case "envelope_json" -> args.addProperty(param, "{}"); // Invalid import exercises the adapter's refusal; the isolated workflow covers success.
         case "compare_path" -> {
           var other = all.stream()
               .filter(f -> !f.id().equals(fixture.id()) && f.id().startsWith("akit_"))
               .findFirst().orElse(fixture);
           args.addProperty(param, other.path().toString());
         }
-        case "name" -> args.addProperty(param, pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
+        case "name" -> args.addProperty(param, log == null ? "Fixture template" : pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
         case "velocity_entry" -> args.addProperty(param,
             pick(log, Kind.NUMERIC, n -> n.contains("Velocity"), 0)
                 .or(() -> pick(log, Kind.NUMERIC)).orElse("/Missing/Velocity"));

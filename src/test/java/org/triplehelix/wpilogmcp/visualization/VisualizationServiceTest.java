@@ -110,6 +110,41 @@ class VisualizationServiceTest {
     }
   }
 
+  @Test void invalidTemplateReferenceCannotBeCreated() throws Exception {
+    try (var service = new VisualizationService(ServerIdentity.ephemeral())) {
+      assertThrows(ExecutionException.class, () -> service.create(LOCAL, UUID.randomUUID(), source(), VisualizationContracts.blank(), new JsonObject()).get());
+      assertTrue(service.list(source()).isEmpty());
+    }
+  }
+  @Test void malformedRetainedTemplateReferenceIsQuarantined() throws Exception {
+    var identity = ServerIdentity.open(temp.toRealPath().resolve("receipt-reference-state")); var request = UUID.randomUUID(); UUID view;
+    try (var service = new VisualizationService(identity)) {
+      view = id(service.create(LOCAL, UUID.randomUUID(), source(), VisualizationContracts.blank()).get());
+      service.revise(LOCAL, view, 1, request, changed(), false, false).get();
+    }
+    var path = identity.stateDirectory().resolve("views/" + view + ".json"); var record = VisualizationContracts.parse(Files.readString(path));
+    record.getAsJsonObject("requests").getAsJsonObject(request.toString()).getAsJsonObject("result").addProperty("template_ref", "bad receipt provenance");
+    Files.writeString(path, record.toString());
+    try (var restored = new VisualizationService(identity)) { assertThrows(java.io.IOException.class, () -> restored.get(view)); }
+  }
+  @Test void malformedTemplateReferenceRecoveryIsQuarantined() throws Exception {
+    var identity = ServerIdentity.open(temp.toRealPath().resolve("reference-state")); UUID bad, good;
+    try (var service = new VisualizationService(identity)) {
+      bad = id(service.create(LOCAL, UUID.randomUUID(), source(), VisualizationContracts.blank()).get());
+      good = id(service.create(LOCAL, UUID.randomUUID(), source(), VisualizationContracts.blank()).get());
+    }
+    var path = identity.stateDirectory().resolve("views/" + bad + ".json");
+    var record = VisualizationContracts.parse(Files.readString(path)); record.addProperty("template_ref", "not a reference");
+    String bytes = record.toString(); Files.writeString(path, bytes);
+    try (var restored = new VisualizationService(identity)) {
+      assertThrows(java.io.IOException.class, () -> restored.get(bad)); assertEquals(good, id(restored.get(good)));
+      try (var files = Files.walk(identity.stateDirectory().resolve("quarantine"))) {
+        assertTrue(files.filter(Files::isRegularFile).anyMatch(file -> {
+          try { return Files.readString(file).equals(bytes); } catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+        }));
+      }
+    }
+  }
   @Test void independentViewsSurviveRestartAndRejectStaleUpdates() throws Exception {
     var identity = ServerIdentity.open(temp.toRealPath().resolve("state")); UUID a, b;
     try (var service = new VisualizationService(identity)) {
@@ -240,4 +275,21 @@ class VisualizationServiceTest {
     }
   }
   private static final long MAX_BYTES_FOR_SETUP = 1024 * 1024;
+  @Test void interruptedSaveReservationKeepsTheOriginalCheckpointAndLaterEditAcrossRestart() throws Exception {
+    var identity = ServerIdentity.open(temp.toRealPath().resolve("reservation-state")); UUID view, request = UUID.randomUUID();
+    var intent = new JsonObject(); intent.addProperty("operation", "save"); intent.addProperty("revision", 1);
+    try (var service = new VisualizationService(identity)) {
+      view = id(service.create(LOCAL, UUID.randomUUID(), source(), VisualizationContracts.blank()).get());
+      service.prepareMutation(LOCAL, view, 1, request, intent, null).get(); service.update(LOCAL, view, 1, changed()).get();
+    }
+    try (var service = new VisualizationService(identity)) {
+      var reservation = service.prepareMutation(LOCAL, view, 1, request, intent, null).get();
+      assertEquals(VisualizationContracts.blank(), reservation.getAsJsonObject("snapshot").get("configuration"));
+      var ref = new JsonObject(); ref.addProperty("store_id", UUID.randomUUID().toString()); ref.addProperty("saved_view_id", UUID.randomUUID().toString()); ref.addProperty("revision", 1);
+      var result = service.completeMutation(LOCAL, view, request, null, ref).get();
+      assertEquals(changed(), result.get("configuration")); assertEquals(VisualizationContracts.blank(), result.get("checkpoint_configuration")); assertTrue(result.get("native_dirty").getAsBoolean());
+      assertEquals(result, service.prepareMutation(LOCAL, view, 1, request, intent, null).get().get("result"));
+    }
+  }
+
 }

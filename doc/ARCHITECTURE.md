@@ -798,13 +798,13 @@ ordinary Node tests and packaged extension code do not load its Electron runner.
 
 ### Visualization contracts and recorded preview
 
-Stage 2a registers an optional source overview and independent working-view documents beside
+The recorded preview registers an optional source overview and independent working-view documents beside
 the existing default editor. The Java visualization contract resource is the authority for source references
 and declarative configuration. Strict raw-text parsing rejects duplicate keys, non-finite
 numbers, lone surrogates, unknown fields, future versions, and excessive depth/size before state
 admission. The internal object-taking validators cannot recover duplicate keys discarded by an
-earlier parser. Stage 2b adapters must validate raw JSON before ordinary JSON-RPC parsing (or
-carry the definition as raw text); parsed-object validation alone does not establish that promise.
+earlier parser. MCP adapters carry configuration/envelope definitions as JSON text until this
+validator runs; the HTTP adapter validates raw JSON before object conversion.
 No source connection, credential, sample buffer, or filesystem locator is part of a durable source
 reference. Binding and telemetry still belong to the existing resolver and reader.
 
@@ -813,8 +813,13 @@ folder. If opening that optional state fails, startup warns and uses an ephemera
 health and the guide report the reason. Working-state operations use their own bounded,
 single-worker queue (64 pending jobs),
 atomic replacement, and exclusive cross-process state lock. They never join recording or import
-work. Limits are 256 working records, 256 MiB aggregate metadata, and 1 MiB per configuration;
+work. Limits are 256 non-deleted working records, 256 MiB aggregate live metadata, and 1 MiB per configuration;
 quota exhaustion retains existing work, and every budget check first removes expired records.
+Deleting a view releases both live quotas. Its retry tombstone has a separate six-hour lifetime,
+256-record cap and 8 MiB byte cap; pressure evicts the oldest tombstones, never live views.
+Recovery applies those bounds too and persists any shortening of the unreleased prototype's
+30-day tombstone deadline to at most six hours from recovery. Restart cannot extend that deadline.
+Deleted views do not pin source locators. Expiry or eviction ends their retry guarantee.
 A malformed or unknown working record moves intact to `quarantine/<uuid>/` under the state
 directory with a warning; valid records still load. Quarantine is outside the active-state quota
 and is retained for manual inspection. A failed quarantine move retains the original and fails
@@ -825,7 +830,33 @@ coalesced releases even when the queue is full. An attachment rechecks session l
 state queue, so expiry while queued cannot resurrect a dead client. A late old-session release
 cannot detach its replacement. Shutdown stops admission,
 allows queued operations to drain, and waits at most two seconds; a daemon cleanup task retains
-the state lock until that drain completes. The local `/visualizations/v1` adapter is internal preview transport; public MCP operations remain Stage 2b.
+the state lock until that drain completes. `VisualizationWorkspace`, owned once by the registry,
+is the application boundary for HTTP and the named MCP adapters. `RecordedSources` retains a
+reference-counted catalog across requests; root changes retire it after readers release it.
+Construction and disposal run outside admission locks. Bindings delegate to `SignalResolver`
+and numeric field validation; statistics delegate to `get_statistics`, raw pages to the reader.
+No browser duplicates those deductions.
+
+`TemplateDefinition` validates the portable envelope and uses the Apache-licensed JCS library
+for RFC 8785 binary64 formatting/property order. SHA-256 covers the envelope without its digest.
+`TemplateMetadata` owns store template revisions and portable import proof. Metadata/receipts
+commit together; a complete bounded registry is required before import conflicts are decided.
+Template records are limited to 1 MiB/64 receipts per map, catalog reads to 1,024 files/8 MiB.
+The store reader reports a removed template as `TEMPLATE_UNAVAILABLE`; updates read the existing
+record under the store lock instead of treating a missing file as revision zero. Existing views
+keep their copied configuration and pinned provenance even when that template disappears.
+Working mutation receipts share their atomic record, up to 4 MiB/4,096 receipts. Save/clone
+reserve the original intent before work on another queue; completion retains its original answer.
+Save records the reserved checkpoint without discarding a later working edit. Configurations
+are copied into each view; updates to a template never rewrite them.
+
+`ControlNotifications` publishes small immutable invalidations into negotiated per-session
+rings (256 events/1 MiB). It never performs socket I/O on the state queue. SSE workers and a
+direct-stdio daemon perform delivery, with serialized stdio writes; epoch/sequence replay
+requests resynchronization when history is gone. Explorer's control channel is independent of
+sample HTTP requests, and its ordered document controller applies incoming revisions with CAS.
+Hidden views receive definitions without data work; a changed query or reveal cancels/replaces
+owned reads. Explicit cross-client display and continuous telemetry remain later stages.
 
 Saved-view writes use the store's existing queue, cross-process lock, containment checks, mirror
 refusal, and atomic writer. Revision comparison happens under that lock. Saved listings validate

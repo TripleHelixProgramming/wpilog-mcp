@@ -18,7 +18,7 @@ import org.triplehelix.wpilogmcp.store.*;
 
 /** Source admission does no value decoding. Locators stay local; catalog identities stay portable.
  * Each operation rechecks the current grants and fixed file boundary before using a source. */
-public final class RecordedSources {
+public final class RecordedSources implements AutoCloseable {
   private record ContentBoundary(Path path, FileSnapshot boundary, String sha256) {}
   private final com.github.benmanes.caffeine.cache.Cache<ContentBoundary, Boolean> verified =
       com.github.benmanes.caffeine.cache.Caffeine.newBuilder().maximumSize(256)
@@ -29,15 +29,58 @@ public final class RecordedSources {
   public RecordedSources(LogManager logs, VisualizationService views, StoreDoor door) {
     this.logs = logs; this.views = views; this.door = door;
   }
-  private StoreReadCatalog catalog() throws IOException {
-    var roots = door.stores().stream().map(StoreDoor.Selected::root).toList();
-    return roots.isEmpty() ? null : new StoreReadCatalog(ReadOptions.defaults(roots), logs.readAccess(), StoreReadCatalog.DEFAULT_SESSION_INDEX_BYTES);
+  private final Object catalogLock = new Object();
+  private Catalog current;
+  private boolean closed;
+  private static final class Catalog {
+    final List<Path> roots; final StoreReadCatalog value; int users; boolean retired;
+    Catalog(List<Path> roots, StoreReadCatalog value) { this.roots = roots; this.value = value; }
+  }
+  private final class Lease implements AutoCloseable {
+    final Catalog owner; Lease(Catalog owner) { this.owner = owner; }
+    StoreReadCatalog value() { return owner.value; }
+    public void close() throws IOException {
+      boolean release;
+      synchronized (catalogLock) { release = --owner.users == 0 && owner.retired; }
+      if (release && owner.value != null) owner.value.close();
+    }
+  }
+  private Lease catalog() throws IOException {
+    var roots = door.stores().stream().map(StoreDoor.Selected::root).sorted().toList();
+    synchronized (catalogLock) {
+      if (closed) throw new IOException("Source catalog is closed");
+      if (current != null && current.roots.equals(roots)) { current.users++; return new Lease(current); }
+    }
+    // Construction resolves filesystem roots; never hold the admission lock over that I/O.
+    var fresh = new Catalog(roots, roots.isEmpty() ? null : new StoreReadCatalog(ReadOptions.defaults(roots), logs.readAccess(), StoreReadCatalog.DEFAULT_SESSION_INDEX_BYTES));
+    Catalog retiring = null, discard = null, selected;
+    synchronized (catalogLock) {
+      if (closed) { discard = fresh; selected = null; }
+      else if (current != null && current.roots.equals(roots)) { discard = fresh; selected = current; selected.users++; }
+      else {
+        if (current != null) { current.retired = true; if (current.users == 0) retiring = current; }
+        current = fresh; fresh.users++; selected = fresh;
+      }
+    }
+    if (discard != null && discard.value != null) discard.value.close();
+    if (retiring != null && retiring.value != null) retiring.value.close();
+    if (selected == null) throw new IOException("Source catalog is closed");
+    return new Lease(selected);
+  }
+  @Override public void close() throws IOException {
+    Catalog retiring = null;
+    synchronized (catalogLock) {
+      closed = true;
+      if (current != null) { current.retired = true; if (current.users == 0) retiring = current; current = null; }
+    }
+    if (retiring != null && retiring.value != null) retiring.value.close();
   }
   public JsonObject identify(Authority caller, Path requested) throws Exception {
     caller.requireLocal(); var path = logs.validateSourcePath(requested);
     if (!path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".wpilog")) throw new IOException("SOURCE_UNAVAILABLE: recorded preview requires a WPILOG");
     var result = new JsonObject(); var ref = new JsonObject();
-    try (var catalog = catalog()) {
+    try (var lease = catalog()) {
+      var catalog = lease.value();
       if (StoreCatalog.containing(path).isPresent()) {
         if (catalog == null) throw new IOException("SOURCE_UNAVAILABLE: no configured store catalog");
         var file = catalog.resolve(path).orElseThrow(() -> new IOException("SOURCE_UNAVAILABLE: file is not manifested"));
@@ -62,7 +105,8 @@ public final class RecordedSources {
   public Path resolve(JsonObject source) throws IOException {
     var ref = VisualizationContracts.source(source);
     if (ref.get("kind").getAsString().equals("recorded")) {
-      try (var catalog = catalog()) {
+      try (var lease = catalog()) {
+      var catalog = lease.value();
         if (catalog == null) throw new IOException("SOURCE_UNAVAILABLE: originating store is not configured");
         String expected = ref.get("content_sha256").getAsString();
         var path = logs.validateSourcePath(catalog.resolveContent(ref.get("origin_store_id").getAsString(), expected).facts().path());

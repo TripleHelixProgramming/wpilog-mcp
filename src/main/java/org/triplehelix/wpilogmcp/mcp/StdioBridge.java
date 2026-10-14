@@ -295,49 +295,56 @@ public final class StdioBridge {
   /** Remembers the session the server gave and opens its stream of server messages. */
   private void startSession(String id) {
     sessionId = id;
-    var request = HttpRequest.newBuilder(endpoint)
-        .header("Accept", "text/event-stream")
-        .header(SESSION_HEADER, id)
-        .GET()
-        .build();
-    eventThread = new Thread(() -> readEvents(request), "mcp-bridge-events");
-    eventThread.setDaemon(true);
-    eventThread.start();
+    eventThread = new Thread(() -> readEvents(id), "mcp-bridge-events");
+    eventThread.setDaemon(true); eventThread.start();
   }
 
-  /** Reads the GET stream for the session and writes each event's data as a line. */
-  private void readEvents(HttpRequest request) {
-    try {
-      var response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
-      if (response.statusCode() != 200) {
-        logger.debug("No event stream: the server answered {}", response.statusCode());
-        return;
-      }
-      eventStream = response.body();
-      try (var reader = new BufferedReader(
-          new InputStreamReader(eventStream, StandardCharsets.UTF_8))) {
-        var event = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) {
-          if (line.isEmpty()) {
-            if (event.length() > 0) {
-              writeEvent(event.toString());
-              event.setLength(0);
-            }
-          } else if (line.startsWith("data:")) {
-            if (event.length() > 0) event.append('\n');
-            event.append(line.substring(5).stripLeading());
-          }
-          // Comments (":ping") and other fields are not messages
+  /** Reconnect a dropped stream with bounded backoff. Session expiry still needs a new client
+   * initialize (and permission registration), as it does for ordinary bridge calls. */
+  private void readEvents(String session) {
+    String last = null; long delay = 250;
+    while (!closing.get() && session.equals(sessionId) && !Thread.currentThread().isInterrupted()) {
+      try {
+        var builder = HttpRequest.newBuilder(endpoint).header("Accept", "text/event-stream").header(SESSION_HEADER, session).GET();
+        if (last != null) builder.header("Last-Event-ID", last);
+        var response = http.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+        if (response.statusCode() != 200) {
+          response.body().close();
+          if (response.statusCode() == 404 || response.statusCode() == 405) return;
+          throw new IOException("Event stream HTTP " + response.statusCode());
         }
-      }
-    } catch (IOException e) {
-      if (!closing.get()) {
-        logger.debug("The event stream ended: {}", e.toString());
-      }
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
+        eventStream = response.body();
+        try (var reader = new BufferedReader(new InputStreamReader(eventStream, StandardCharsets.UTF_8))) {
+          var event = new StringBuilder(); String id = null, line;
+          while ((line = controlLine(reader)) != null && session.equals(sessionId)) {
+            if (line.isEmpty()) {
+              if (event.length() > 0 && (id == null || !id.equals(last))) {
+                writeEvent(event.toString()); if (id != null) last = id; delay = 250;
+              }
+              event.setLength(0); id = null;
+            } else if (line.startsWith("id:")) id = line.substring(3).stripLeading();
+            else if (line.startsWith("data:")) {
+              if (event.length() > 0) event.append('\n'); event.append(line.substring(5).stripLeading());
+              if (event.length() > 65536) throw new IOException("Control event exceeds 64 KiB of text");
+            }
+          }
+        }
+      } catch (IOException e) { if (!closing.get()) logger.debug("Event stream reconnect: {}", e.toString()); }
+      catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+      if (closing.get() || !session.equals(sessionId)) return;
+      try { Thread.sleep(delay + java.util.concurrent.ThreadLocalRandom.current().nextLong(100)); }
+      catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+      delay = Math.min(10000, delay * 2);
     }
+  }
+  private static String controlLine(BufferedReader reader) throws IOException {
+    var line = new StringBuilder(); int next;
+    while ((next = reader.read()) != -1) {
+      if (next == '\n') return line.toString().replaceFirst("\\r$", "");
+      if (line.length() >= 65536) throw new IOException("Control line exceeds 64 KiB of text");
+      line.append((char) next);
+    }
+    return line.length() == 0 ? null : line.toString();
   }
 
   /** Ends the stream and the session, so that an idle server may exit. */
@@ -348,6 +355,8 @@ public final class StdioBridge {
 
   /** Closes the event stream, deletes the session, and waits for the stream's thread. */
   private void endSession() {
+    var session = sessionId; sessionId = null;
+    if (eventThread != null) eventThread.interrupt();
     var stream = eventStream;
     if (stream != null) {
       try {
@@ -356,7 +365,6 @@ public final class StdioBridge {
         logger.debug("Closing the event stream: {}", e.toString());
       }
     }
-    var session = sessionId;
     if (session != null) {
       try {
         var delete = HttpRequest.newBuilder(endpoint)

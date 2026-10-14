@@ -35,7 +35,7 @@ public class McpServer {
   private final ToolRegistry toolRegistry;
   private final McpMessageHandler handler;
 
-  private boolean running = false;
+  private volatile boolean running = false;
 
   public McpServer() {
     this(new ToolRegistry());
@@ -64,7 +64,20 @@ public class McpServer {
   public void run() throws IOException {
     logger.info("MCP server listening on stdin");
     running = true;
+    var notifications = new Thread(() -> {
+      String last = null;
+      while (running) try {
+        var control = toolRegistry.visualizations().notifications;
+        for (var event : control.after("stdio", last, 1000)) {
+          sendMessage(JsonParser.parseString(event.json()).getAsJsonObject()); last = event.id();
+        }
+        if (!control.negotiated("stdio")) Thread.sleep(250);
+      } catch (InterruptedException e) { return; }
+      catch (IOException e) { logger.warn("Visualization notifications unavailable: {}", e.getMessage()); return; }
+    }, "visualization-stdio-events");
+    notifications.setDaemon(true); notifications.start();
 
+    try {
     while (running) {
       var line = reader.readLine();
       if (line == null) {
@@ -90,10 +103,11 @@ public class McpServer {
         sendMessage(JsonRpc.createErrorResponse(null, JsonRpc.PARSE_ERROR, "Parse error"));
       }
     }
+    } finally { running = false; notifications.interrupt(); toolRegistry.closeVisualizations(); }
     logger.info("MCP server stopped");
   }
 
-  private void sendMessage(com.google.gson.JsonObject message) {
+  private synchronized void sendMessage(com.google.gson.JsonObject message) {
     writer.println(gson.toJson(message));
     writer.flush();
   }

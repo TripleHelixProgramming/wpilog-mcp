@@ -6,7 +6,8 @@
   const el = (tag, text, className) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (className) e.className = className; return e; };
   let snapshot, inventory, generation = "", source, visible = true, cursorTimer;
   const charts = new Map(), panels = new Map(), data = new Map(), values = new Map();
-  const cursorEvents = new WeakMap();
+  const cursorEvents = new WeakMap(), bindings = new Map(), statistics = new Map(), raw = new Map();
+  let templates = [], selectedTemplate;
   let grid, applying = false;
   const send = (type, extra = {}) => api.postMessage({ type, view_id: snapshot?.view_id, revision: snapshot?.revision, generation, ...extra });
   const button = (label, action) => { const b = el("button", label); b.onclick = action; return b; };
@@ -26,6 +27,13 @@
     rows.push(["File size", `${summary.size_bytes} bytes`]);
     get("facts").replaceChildren(...rows.flatMap(([a, b]) => [el("dt", a), el("dd", String(b))]));
   }
+  function templateAction(type) { if (type === "importTemplate" || type === "saveTemplate" || selectedTemplate) send(type, { template_ref: selectedTemplate }); }
+  if (get("template-find")) get("template-find").onclick = () => send("templateSearch", { query: get("template-search").value });
+  if (get("templates")) get("templates").onchange = () => {
+    selectedTemplate = templates[Number(get("templates").value)]?.template_ref;
+    if (selectedTemplate) { get("template-status").textContent = "Checking compatibility…"; templateAction("templateCheck"); }
+  };
+  for (const [id, type] of [["template-open", "applyTemplate"], ["template-replace", "replaceTemplate"], ["template-save", "saveTemplate"], ["template-update", "updateTemplate"], ["template-export", "exportTemplate"], ["template-import", "importTemplate"]]) if (get(id)) get(id).onclick = () => templateAction(type);
   if (overview) {
     action("blank", "blank"); action("refresh", "refresh");
   } else {
@@ -34,7 +42,7 @@
     grid.on("change", () => {
       if (!applying && snapshot) send("geometry", { items: grid.save(false).map(w => ({ panel_id: w.id, x: w.x, y: w.y, w: w.w, h: w.h })) });
     });
-    for (const [id, type] of [["overview", "overview"], ["plot", "addPanel"], ["values", "addPanel"], ["save", "save"], ["duplicate", "duplicate"], ["undo", "undo"], ["redo", "redo"], ["reset", "reset"]]) action(id, type, id === "plot" || id === "values" ? { panel_type: id === "plot" ? "time_series" : "latest" } : {});
+    for (const [id, type] of [["overview", "overview"], ["plot", "addPanel"], ["values", "addPanel"], ["statistics", "addPanel"], ["raw", "addPanel"], ["save", "save"], ["duplicate", "duplicate"], ["undo", "undo"], ["redo", "redo"], ["reset", "reset"]]) action(id, type, ["plot", "values", "statistics", "raw"].includes(id) ? { panel_type: id === "plot" ? "time_series" : id === "values" ? "latest" : id } : {});
     get("search").oninput = signals;
     get("target").onchange = () => send("target", { panel_id: get("target").value });
     get("add").onclick = () => send("addSignals", { panel_id: get("target").value, names: [...get("signals").selectedOptions].map(o => o.value) });
@@ -96,11 +104,38 @@
   function draw(id) {
     const panel = panels.get(id), spec = snapshot?.configuration.panels.find(p => p.panel_id === id);
     if (!panel || !spec || !visible || panel.body.clientWidth <= 0 || panel.body.clientHeight <= 0) return;
-    if (spec.type === "latest") {
+    if (spec.type !== "time_series") { charts.get(id)?.destroy(); charts.delete(id); }
+    if (spec.type === "statistics" || spec.type === "raw") {
+      const content = el("div");
+      for (const series of spec.series) {
+        const r = snapshot.configuration.requirements.find(r => r.id === series.requirement_id), binding = bindings.get(r.id);
+        const result = (spec.type === "statistics" ? statistics : raw).get(r.id);
+        content.append(el("h3", (binding?.entry ?? r.entry ?? r.role) + (r.field_path ?? "")));
+        if (binding?.state === "unresolved") { content.append(el("p", binding.reason)); continue; }
+        if (!result) { content.append(el("p", "Loading…")); continue; }
+        if (result.status === "error") { content.append(el("p", result.error)); continue; }
+        const table = el("table"); table.className = spec.type === "raw" ? "raw-records" : "recorded-statistics";
+        const head = el("tr");
+        if (spec.type === "statistics") {
+          for (const name of ["Measurement", "Value"]) head.append(el("th", name)); table.append(head);
+          for (const key of ["count", "min", "max", "mean", "median", "std_dev", "non_finite_count"]) if (key in result) {
+            const row = el("tr"); row.append(el("td", key), el("td", result[key] == null ? "Unavailable" : String(result[key]))); table.append(row);
+          }
+          content.append(table, el("p", JSON.stringify({ data_quality: result.data_quality, inputs: result.inputs, skipped: result.skipped })));
+        } else {
+          for (const name of ["Ordinal", "Timestamp (µs)", "Value"]) head.append(el("th", name)); table.append(head);
+          for (const sample of result.samples) { const row = el("tr"); row.append(el("td", String(sample.ordinal)), el("td", sample.timestamp_us), el("td", display(sample.value))); table.append(row); }
+          content.append(table, el("p", `${result.records_visited} visited; next ordinal ${result.next_ordinal} of ${result.total_records}. ${result.complete ? "End of entry." : "More records available."} ${result.problems.length} decode/projection problems.`));
+          content.append(button("First page", () => send("rawPage", { requirement_id: r.id, first_ordinal: 0 })));
+          if (!result.complete) content.append(button("Next page", () => send("rawPage", { requirement_id: r.id, first_ordinal: result.next_ordinal })));
+        }
+      }
+      panel.body.replaceChildren(content); panel.note.textContent = spec.type === "statistics" ? "Server statistics over original samples in the selected time interval; plots are not inputs." : "Physical record order; bounded pages replace the previous page. Timestamps do not identify records.";
+    } else if (spec.type === "latest") {
       const table = el("table"), head = el("tr"); table.className = "recorded-values"; for (const label of ["Signal", "Recorded value", "Timestamp (µs)"]) head.append(el("th", label)); table.append(head);
       for (const series of spec.series) {
         const requirement = snapshot.configuration.requirements.find(r => r.id === series.requirement_id), result = values.get(series.requirement_id);
-        const row = el("tr"); row.append(el("td", requirement.entry + (requirement.field_path ?? "")), el("td", result ? display(result.value) : "Loading…"), el("td", result?.timestamp_us ?? "Unavailable")); table.append(row);
+        const row = el("tr"); row.append(el("td", (bindings.get(requirement.id)?.entry ?? requirement.entry ?? requirement.role) + (requirement.field_path ?? "")), el("td", bindings.get(requirement.id)?.state === "unresolved" ? bindings.get(requirement.id).reason : result ? display(result.value) : "Loading…"), el("td", result?.timestamp_us ?? "Unavailable")); table.append(row);
       }
       panel.body.replaceChildren(table);
       const problems = spec.series.reduce((n, s) => n + (values.get(s.requirement_id)?.problem_count ?? 0), 0);
@@ -111,7 +146,7 @@
         const item = data.get(s.requirement_id); if (!item) continue;
         const req = snapshot.configuration.requirements.find(r => r.id === s.requirement_id);
         const index = definitions.length;
-        definitions.push({ label: req.entry + (req.field_path ?? ""), stroke: s.color, width: spec.display.line_width, points: { show: item.count < 100 } });
+        definitions.push({ label: (bindings.get(req.id)?.entry ?? req.entry ?? req.role) + (req.field_path ?? ""), stroke: s.color, width: spec.display.line_width, points: { show: item.count < 100 } });
         const values = Array.from(item.values, v => Number.isFinite(v) ? v : null);
         if (item.bucketed) {
           definitions.push({ label: "max", stroke: "transparent", points: { show: false } }, { label: "min", stroke: "transparent", points: { show: false } });
@@ -146,6 +181,20 @@
   }
   window.addEventListener("message", event => {
     const message = event.data;
+    if (message.type === "templates") {
+      templates = message.catalog.templates; selectedTemplate = undefined;
+      get("templates")?.replaceChildren(...templates.map((item, i) => {
+        const ref = item.template_ref, option = el("option", `${item.template.name} · ${ref.origin === "bundled" ? "Built-in" : item.store_label ?? ref.store_id} · r${ref.revision} · ${ref.template_id.slice(0, 8)}`); option.value = String(i); return option;
+      }));
+      if (get("template-status")) get("template-status").textContent = "Select a template to check compatibility before opening.";
+      get("template-problems")?.replaceChildren(...(message.catalog.unreadable ?? []).map(p => el("p", `${p.file}: ${p.reason}`)));
+      if (message.catalog.listing_incomplete) get("template-problems")?.append(el("p", "Template listing is incomplete at its metadata budget."));
+      return;
+    }
+    if (message.type === "templateCompatibility") {
+      if (JSON.stringify(message.template_ref) !== JSON.stringify(selectedTemplate)) return;
+      get("template-status").textContent = `${message.result.compatibility}: ` + message.result.bindings.map(b => `${b.entry ?? b.selector ?? b.requirement_id}: ${b.reason}; ${b.basis ?? ""} ${b.warnings.join("; ")}`).join(" | "); return;
+    }
     if (message.type === "warning") { get("warning").textContent = message.message; return; }
     if (message.type === "summary" && overview) { facts(message.summary); get("status").textContent = "Source details available; signal inventory loading…"; return; }
     if (message.type === "inventory") {
@@ -155,6 +204,7 @@
       return;
     }
     if (message.type === "lists" && overview) {
+      get("unavailable")?.replaceChildren(...(message.lists.unavailable_views ?? []).map(v => el("p", `Unavailable view ${v.view_id}: ${v.reason}`)));
       get("unreadable").replaceChildren(...(message.lists.unreadable ?? []).map(p => el("p", `${p.file}: ${p.reason} (store ${p.store_id})`)));
       if (message.lists.listing_incomplete) get("unreadable").append(el("p", "Saved-view listing is incomplete at its metadata budget. Known saved views can still be opened directly."));
       for (const [id, views] of [["saved", message.lists.saved_views], ["drafts", message.lists.working_views.filter(v => !v.saved_view_ref)]]) {
@@ -178,7 +228,7 @@
       const range = snapshot.configuration.time.recorded;
       if (range.mode === "fixed") { get("start").value = range.start_sec; get("end").value = range.end_sec; }
       if (changedQuery) {
-        data.clear(); values.clear();
+        data.clear(); values.clear(); bindings.clear(); statistics.clear(); raw.clear();
         for (const chart of charts.values()) chart.setData(chart.series.map(() => []));
       }
       layout(); return;
@@ -187,6 +237,12 @@
     if (message.generation !== generation) return;
     if (message.type === "series") { data.set(message.requirement_id, Plot.seriesOf(new Uint8Array(message.bytes), message.name)); }
     if (message.type === "value") values.set(message.requirement_id, message.result);
+    if (message.type === "statistics") statistics.set(message.requirement_id, message.result);
+    if (message.type === "raw") raw.set(message.requirement_id, message.result);
+    if (message.type === "bindings") {
+      for (const binding of message.result.bindings) bindings.set(binding.requirement_id, binding);
+      get("binding-status")?.replaceChildren(...message.result.bindings.map(b => el("p", `${b.entry ?? b.selector ?? b.requirement_id}: ${b.state} — ${b.reason}. ${b.basis ?? ""} Unit: ${b.unit?.symbol ?? "unknown"} (${b.unit?.basis ?? "unknown"}). ${b.warnings.join("; ")}`)));
+    }
     for (const id of panels.keys()) draw(id);
   });
   window.addEventListener("unload", () => { clearTimeout(cursorTimer); for (const id of [...panels.keys()]) destroyPanel(id); grid?.destroy(false); });

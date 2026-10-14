@@ -1,6 +1,6 @@
 # wpilog-mcp Tool Reference
 
-What each wpilog-mcp tool takes, what it does, and what it returns. Every tool that reads a log takes a required `path` (from `list_available_logs`) and loads the log on first use. [TOOL_RESPONSES.md](TOOL_RESPONSES.md) shows the JSON each tool returned on real logs.
+What each wpilog-mcp tool takes, what it does, and what it returns. Analysis tools take a required `path` (from `list_available_logs`) and load the log on first use. Recorded visualization operations use a durable `source_ref`; `visualization_source_inspect` creates it from an authorized path. [TOOL_RESPONSES.md](TOOL_RESPONSES.md) shows the JSON each tool returned on real logs.
 
 For fresh data, use `list_sessions`, `get_latest_values` and `wait_for_change`. The current
 capture is the file `list_available_logs` marks `open`.
@@ -89,6 +89,24 @@ assertion that fresh values were published throughout that window.
   - [sync_status](#sync_status)
   - [set_revlog_offset](#set_revlog_offset)
   - [wait_for_sync](#wait_for_sync)
+- [Visualization Tools](#visualization-tools)
+  - [visualization_capabilities_get](#visualization_capabilities_get)
+  - [visualization_source_inspect](#visualization_source_inspect)
+  - [visualization_template_list](#visualization_template_list)
+  - [visualization_template_get](#visualization_template_get)
+  - [visualization_template_check](#visualization_template_check)
+  - [visualization_template_create](#visualization_template_create)
+  - [visualization_template_update](#visualization_template_update)
+  - [visualization_template_import](#visualization_template_import)
+  - [visualization_template_export](#visualization_template_export)
+  - [visualization_view_list](#visualization_view_list)
+  - [visualization_view_get](#visualization_view_get)
+  - [visualization_view_create](#visualization_view_create)
+  - [visualization_view_update](#visualization_view_update)
+  - [visualization_view_clone](#visualization_view_clone)
+  - [visualization_view_save](#visualization_view_save)
+  - [visualization_view_discard](#visualization_view_discard)
+  - [visualization_view_delete](#visualization_view_delete)
 - [Data Types](#data-types)
   - [Primitive types](#primitive-types)
   - [Structs](#structs)
@@ -112,7 +130,7 @@ These two tools tell an agent which tools exist and when to use them. The descri
 An overview of every tool, grouped by category, with usage guidance and the mistakes each category is meant to prevent. Its `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}`, so Claude Code keeps the description loaded even when it defers other MCP tools.
 
 **Parameters:**
-- `category` (optional): Only this category: `core`, `query`, `statistics`, `robot_analysis`, `frc_domain`, `export`, `tba`, `revlog`, `discovery`, or `live` (answers for the present only with capture). Any other value is an error that lists the categories
+- `category` (optional): Only this category: `core`, `query`, `statistics`, `robot_analysis`, `frc_domain`, `export`, `tba`, `revlog`, `discovery`, `visualization`, or `live` (answers for the present only with capture). Any other value is an error that lists the categories
 - `include_examples` (optional): Include example uses for each tool (default: true)
 
 **Returns:**
@@ -2937,6 +2955,244 @@ strings are omitted. The [standalone guide](pit-server/STANDALONE.md#metrics-and
 lists the fields, configuration and starter Grafana dashboard. A scrape can miss changes:
 the capture is the record, and tools reading it analyze a fixed prefix of that record.
 
+## Visualization Tools
+
+The recorded preview has the following local-only MCP operations. Every call names `api_version: 1`.
+Definitions travel as JSON text so duplicate keys are checked before parsing loses them.
+Mutations require a UUID request id and the expected revision of an existing object. Keep the
+same request id and arguments after a lost response; never retry against a newer revision automatically.
+These tools create and edit definitions; they do not open a window or start acquisition. Live
+presentation and explicit display handoff are later stages. HTTP routes, permissions, limits and
+notification negotiation are in [STANDALONE.md](STANDALONE.md#recorded-visualization-preview).
+`TEMPLATE_UNAVAILABLE` means a referenced template is missing: refresh the catalog or save a new
+template from an existing view, whose copied configuration is unaffected. A missing store
+template is not revision zero.
+
+### `visualization_capabilities_get`
+
+Supported configuration schema, type and role vocabulary, persistent identity, budgets and preview limits.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+
+**Returns:** `api_version`, `status`, `capabilities` on success; `code` and `error` on refusal.
+
+### `visualization_source_inspect`
+
+Inspect a recorded source by an admitted path or durable source_ref. Returns identity, entry types, schemas, sample counts and clock bounds.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `path` (optional, string): Allowed local WPILOG file; alternative to source_ref.
+- `source_ref` (optional, object): Durable recorded source identity from source inspection.
+
+**Returns:** `api_version`, `status`, `source` on success; `code` and `error` on refusal.
+
+### `visualization_template_list`
+
+Search immutable bundled and configured-store templates by query. Returns templates, unreadable records and listing_incomplete.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `query` (optional, string): Case-insensitive substring in template name or description.
+
+**Returns:** `api_version`, `status`, `catalog` on success; `code` and `error` on refusal.
+
+### `visualization_template_get`
+
+Read an exact pinned template_ref; a changed revision refuses rather than silently substituting.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `template_ref` (required, object): Origin, template UUID and pinned revision; store origins also name a store ID.
+
+**Returns:** `api_version`, `status`, `definition` on success; `code` and `error` on refusal.
+
+### `visualization_template_check`
+
+Check exact entries or explicit shared-resolver roles against a source. Returns compatibility and per-requirement bindings, reasons, candidates, unit basis and warnings; missing exact names never fall back.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `source_ref` (required, object): Durable recorded source identity from source inspection.
+- `template_ref` (optional, object): Origin, template UUID and pinned revision; store origins also name a store ID.
+- `configuration_json` (optional, string): Strict configuration JSON text; mutually exclusive with a template or working-view input.
+
+**Returns:** `api_version`, `status`, `compatibility` on success; `code` and `error` on refusal.
+
+### `visualization_template_create`
+
+Create a store template from configuration_json or a pinned working view. Returns template_ref and portable template. No source bytes or paths are stored in templates; no writable store yields NO_WRITABLE_STORE.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `request_id` (required, string): UUID identifying this exact intent.
+- `store_id` (required, string): ID of a configured writable local store.
+- `name` (required, string): Template name, 1–256 characters.
+- `description` (required, string): Template description, up to 4096 characters.
+- `configuration_json` (optional, string): Strict configuration JSON text; mutually exclusive with a template or working-view input.
+- `view_id` (optional, string): Working view UUID.
+- `expected_view_revision` (optional, integer): Required with view_id when creating a template.
+
+**Returns:** `api_version`, `status`, `definition` on success; `code` and `error` on refusal.
+
+### `visualization_template_update`
+
+Explicitly update a store template at expected_revision. Returns template_ref and template; existing views keep pinned configurations. Bundled definitions are immutable.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `request_id` (required, string): UUID identifying this exact intent.
+- `template_ref` (required, object): Origin, template UUID and pinned revision; store origins also name a store ID.
+- `expected_revision` (required, integer): Current revision to compare before mutation.
+- `name` (required, string): Template name, 1–256 characters.
+- `description` (required, string): Template description, up to 4096 characters.
+- `configuration_json` (required, string): Strict configuration JSON text; mutually exclusive with a template or working-view input.
+
+**Returns:** `api_version`, `status`, `definition` on success; `code` and `error` on refusal.
+
+### `visualization_template_import`
+
+Validate a portable envelope_json and RFC 8785 SHA-256 before an atomic import. Default mode copy; explicit update requires expected_revision and a newer import. Durable portable receipts deduplicate retries. Same identity/revision with differing content conflicts.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `request_id` (required, string): UUID identifying this exact intent.
+- `store_id` (required, string): ID of a configured writable local store.
+- `envelope_json` (required, string): Strict portable template envelope JSON, including its RFC 8785 digest.
+- `mode` (optional, string): copy (default) or update; update requires a newer portable revision and the current local expected_revision.
+- `expected_revision` (optional, integer): Current revision to compare before mutation.
+
+**Returns:** `api_version`, `status`, `definition` on success; `code` and `error` on refusal.
+
+### `visualization_template_export`
+
+Return envelope_json with format, schema_version, template and content_sha256. Contains declarative configuration only, no source locators, sample buffers or credentials.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `template_ref` (required, object): Origin, template UUID and pinned revision; store origins also name a store ID.
+
+**Returns:** `api_version`, `status`, `export` on success; `code` and `error` on refusal.
+
+### `visualization_view_list`
+
+List unexpired working views, optionally for source_ref. Returns views with revision, configuration, source_ref, checkpoint, saved/template references, attachment and expiry.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `source_ref` (optional, object): Durable recorded source identity from source inspection.
+
+**Returns:** `api_version`, `status`, `workspace` on success; `code` and `error` on refusal.
+
+### `visualization_view_get`
+
+Read one working view: revision, configuration, source_ref, checkpoint, saved/template references, attachment, expiry, has_unsaved_changes and native_dirty. Does not display it.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `view_id` (required, string): Working view UUID.
+
+**Returns:** `api_version`, `status`, `view` on success; `code` and `error` on refusal.
+
+### `visualization_view_create`
+
+Create an independent working view from source_ref and configuration_json or template_ref, or an empty layout. Returns its stable view_id and revision, configuration and persistence state. Creation does not request display or start acquisition.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `request_id` (required, string): UUID identifying this exact intent.
+- `source_ref` (required, object): Durable recorded source identity from source inspection.
+- `configuration_json` (optional, string): Strict configuration JSON text; mutually exclusive with a template or working-view input.
+- `template_ref` (optional, object): Origin, template UUID and pinned revision; store origins also name a store ID.
+
+**Returns:** `api_version`, `status`, `view` on success; `code` and `error` on refusal.
+
+### `visualization_view_update`
+
+CAS edit a working view with strict configuration_json at expected_revision. Returns the updated view and notifies its attached Explorer. Conflicts retain both edits; never retry automatically against a newer revision.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `request_id` (required, string): UUID identifying this exact intent.
+- `view_id` (required, string): Working view UUID.
+- `expected_revision` (required, integer): Current revision to compare before mutation.
+- `configuration_json` (required, string): Strict configuration JSON text; mutually exclusive with a template or working-view input.
+
+**Returns:** `api_version`, `status`, `view` on success; `code` and `error` on refusal.
+
+### `visualization_view_clone`
+
+Create another working UUID from the pinned expected_revision. Returns an independent view with the same source and configuration; selection and later edits are not shared.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `request_id` (required, string): UUID identifying this exact intent.
+- `view_id` (required, string): Working view UUID.
+- `expected_revision` (required, integer): Current revision to compare before mutation.
+
+**Returns:** `api_version`, `status`, `view` on success; `code` and `error` on refusal.
+
+### `visualization_view_save`
+
+Save source-bound configuration at expected_revision into a local store and advance its checkpoint. First save requires store_id and title; existing saves retain their destination. A concurrent edit remains uncheckpointed. Returns the view.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `request_id` (required, string): UUID identifying this exact intent.
+- `view_id` (required, string): Working view UUID.
+- `expected_revision` (required, integer): Current revision to compare before mutation.
+- `store_id` (optional, string): ID of a configured writable local store.
+- `title` (optional, string): First-save title, 1–256 characters.
+
+**Returns:** `api_version`, `status`, `view` on success; `code` and `error` on refusal.
+
+### `visualization_view_discard`
+
+CAS restore the checkpoint or initial draft layout at expected_revision. Returns the view with an advanced revision; saved store definitions are unchanged.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `request_id` (required, string): UUID identifying this exact intent.
+- `view_id` (required, string): Working view UUID.
+- `expected_revision` (required, integer): Current revision to compare before mutation.
+
+**Returns:** `api_version`, `status`, `view` on success; `code` and `error` on refusal.
+
+### `visualization_view_delete`
+
+Delete an unattached working view at expected_revision, releasing its live count and byte quota.
+Retry tombstones expire after six hours, with separate caps of 256 records and 8 MiB; pressure
+evicts the oldest first. Expired/evicted delete retries return `VIEW_UNAVAILABLE`. Saved definitions
+and source files remain intact; close an attached editor first. Returns the deleted view receipt.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `request_id` (required, string): UUID identifying this exact intent.
+- `view_id` (required, string): Working view UUID.
+- `expected_revision` (required, integer): Current revision to compare before mutation.
+
+**Returns:** `api_version`, `status`, `view` on success; `code` and `error` on refusal.
+
+---
+
 ## Data Types
 
 What the server reads from a WPILOG file, and what a value looks like in a result.
@@ -3075,6 +3331,3 @@ Guidance is added for:
 - a change-only series (long intervals are holds, not missing data, and a sample count is a count of changes)
 - NaN or infinite values ("non-finite values were filtered")
 - a time span under 10 seconds ("Short time span")
-
-
-The recorded visualization preview registers no MCP tools; its internal routes are described in [STANDALONE.md](STANDALONE.md).

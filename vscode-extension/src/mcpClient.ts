@@ -62,6 +62,74 @@ export class McpClient {
   private heartbeat?: ReturnType<typeof setInterval>;
   private temporaryDirectories: readonly string[] = [];
 
+  private readonly visualizationListeners = new Set<(event: Record<string, unknown>) => void>();
+  private controlRequest?: http.ClientRequest;
+  private controlSession?: string;
+  private controlRetry?: ReturnType<typeof setTimeout>;
+  private lastControlEvent?: string;
+  private controlDelay = 250;
+  onVisualization(listener: (event: Record<string, unknown>) => void): { dispose(): void } {
+    this.visualizationListeners.add(listener);
+    void this.ensureSession().then(() => this.startControl()).catch(() => this.retryControl());
+    return { dispose: () => { this.visualizationListeners.delete(listener); if (!this.visualizationListeners.size) { clearTimeout(this.controlRetry); this.controlRequest?.destroy(); this.controlRequest = undefined; } } };
+  }
+  private notifyVisualization(value: Record<string, unknown>): void {
+    for (const listener of this.visualizationListeners) { try { listener(value); } catch { /* One closed UI cannot stop delivery to another. */ } }
+  }
+  private async startControl(): Promise<void> {
+    if (this.disposed || !this.visualizationListeners.size || !this.sessionId || this.controlRequest) return;
+    const session = this.sessionId;
+    if (this.controlSession !== session) {
+      this.lastControlEvent = undefined; this.controlSession = session;
+      this.notifyVisualization({ kind: "resync_required" });
+    }
+    const headers = { ...await this.headersFor(this.endpoint), Accept: "text/event-stream", [SESSION_HEADER]: session,
+      ...(this.lastControlEvent ? { "Last-Event-ID": this.lastControlEvent } : {}) };
+    if (this.disposed || this.sessionId !== session || this.controlRequest || !this.visualizationListeners.size) return;
+    const request = (new URL(this.endpoint).protocol === "https:" ? https : http).request(this.endpoint, { method: "GET", headers, timeout: 45000 }, response => {
+      if (response.statusCode !== 200) {
+        if (response.statusCode === 404 && this.sessionId === session) this.sessionId = undefined;
+        response.resume(); request.destroy(); return;
+      }
+      this.controlDelay = 250; response.setEncoding("utf8"); let buffer = "", data = "", eventId = "";
+      response.on("data", (chunk: string) => {
+        buffer += chunk;
+        if (Buffer.byteLength(buffer) + Buffer.byteLength(data) > 65536) { request.destroy(new Error("Control event exceeds its byte bound")); return; }
+        let end: number;
+        while ((end = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, end).replace(/\r$/, ""); buffer = buffer.slice(end + 1);
+          if (!line) {
+            if (data && eventId !== this.lastControlEvent) try {
+              const value = JSON.parse(data);
+              if (value.method === "notifications/experimental/visualization") this.notifyVisualization(value.params);
+              this.lastControlEvent = eventId || this.lastControlEvent;
+            } catch { this.notifyVisualization({ kind: "resync_required" }); }
+            data = ""; eventId = "";
+          } else if (line.startsWith("data:")) data += line.slice(5).trimStart();
+          else if (line.startsWith("id:")) eventId = line.slice(3).trimStart();
+        }
+      });
+      response.on("end", () => request.destroy()); response.on("error", () => request.destroy());
+    });
+    this.controlRequest = request;
+    request.on("error", () => {}); request.on("timeout", () => request.destroy());
+    request.on("close", () => {
+      if (this.controlRequest !== request) return;
+      this.controlRequest = undefined;
+      if (this.disposed || !this.visualizationListeners.size) return;
+      this.retryControl();
+    }); request.end();
+  }
+
+  private retryControl(): void {
+    if (this.disposed || !this.visualizationListeners.size) return;
+    clearTimeout(this.controlRetry);
+    this.controlRetry = setTimeout(() => {
+      void this.ensureSession().then(() => this.startControl()).catch(() => this.retryControl());
+    }, this.controlDelay + Math.floor(Math.random() * 100));
+    this.controlDelay = Math.min(10000, this.controlDelay * 2); this.controlRetry.unref();
+  }
+
   /**
    * @param endpoint the server's MCP endpoint, such as `http://127.0.0.1:41234/mcp`
    * @param clientVersion the extension's version, sent as the client's
@@ -139,6 +207,8 @@ export class McpClient {
       await this.register(session);
       if (this.disposed) throw new ToolError("The client was disposed", "initialize");
       this.sessionId = session;
+      if (this.controlSession && this.controlSession !== session) { this.controlRequest?.destroy(); this.controlRequest = undefined; }
+      void this.startControl();
       // A window remains a lease holder even while only its agents are making tool calls.
       if (this.registration && !this.heartbeat) {
         this.heartbeat = setInterval(() => void this.keepAlive().catch(() => {}), 30_000);
@@ -268,7 +338,7 @@ export class McpClient {
   /** Ends the session even when disposal races its handshake, releasing directories and the key. */
   async dispose(): Promise<void> {
     this.disposed = true;
-    clearInterval(this.heartbeat);
+    clearInterval(this.heartbeat); clearTimeout(this.controlRetry); this.controlRequest?.destroy(); this.controlRequest = undefined; this.visualizationListeners.clear();
     await this.initializing?.catch(() => {});
     await this.updating.catch(() => {});
     const session = this.sessionId;

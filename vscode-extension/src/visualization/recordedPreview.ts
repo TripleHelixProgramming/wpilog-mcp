@@ -8,7 +8,7 @@ import { DataClient } from "../dataClient";
 import { VisualizationEditorProvider, ViewDocument } from "./editorProvider";
 import { RecoveryJournal } from "./recoveryJournal";
 import { RecordedClient, SourceSummary, StoreChoice } from "./recordedClient";
-import { addPanel, addSignals, Inventory, layoutEdit, LayoutAction, RecordedConfiguration, RecordedView, Signal, SourceRef, ViewGeneration, recordedDataKey, requireRecordedPreview } from "./recordedModel";
+import { addPanel, addSignals, Inventory, layoutEdit, LayoutAction, RecordedConfiguration, RecordedView, Compatibility, Binding, TemplateItem, TemplateRef, Signal, SourceRef, ViewGeneration, recordedDataKey, requireRecordedPreview } from "./recordedModel";
 import { recordedPage } from "./recordedPage";
 
 export const OVERVIEW_TYPE = "wpilog-mcp.sourceOverview", VIEW_TYPE = "wpilog-mcp.visualization";
@@ -17,12 +17,13 @@ export interface PreviewHost {
   client(): Promise<McpClient>;
   entries(path: string | undefined, target: string): void;
   grantStore(path: string): Promise<void>;
+  dialogs?: Pick<typeof vscode.window, "showQuickPick" | "showOpenDialog" | "showInputBox" | "showSaveDialog" | "showWarningMessage">;
 }
 interface ViewPage {
   document: ViewDocument; panel: vscode.WebviewPanel; generation: ViewGeneration; key: string;
   inventory?: Inventory; activePanel?: string; ready: boolean; closed: boolean;
   serial: Promise<void>; cursor?: number; cursorGeneration: number; valueAbort?: AbortController;
-  dataKey?: string; rendering?: Promise<void>;
+  dataKey?: string; rendering?: Promise<void>; dataSignal?: AbortSignal; bindings?: Map<string, Binding>;
 }
 interface OverviewPage { uri: vscode.Uri; panel: vscode.WebviewPanel; summary?: SourceSummary; ready: boolean; closed: boolean; abort: AbortController; }
 
@@ -38,6 +39,24 @@ export class RecordedPreview implements vscode.Disposable {
   private owner?: string;
   private stateWarning?: string;
   private entriesOwned = false;
+  private controlClient?: McpClient;
+  private controlSubscription?: { dispose(): void };
+  private dialogs() { return this.host.dialogs ?? vscode.window; }
+  private async controls(): Promise<void> {
+    const client = await this.host.client(); if (client === this.controlClient) return;
+    this.controlSubscription?.dispose(); this.controlClient = client;
+    this.controlSubscription = client.onVisualization(event => {
+      for (const page of this.pages.values()) {
+        const id = page.document.controller.snapshot.view_id;
+        if (event.kind !== "resync_required" && (event.view_id !== id || Number(event.revision) <= page.document.controller.snapshot.revision)) continue;
+        page.serial = page.serial.then(async () => {
+          if (page.closed) return;
+          const incoming = event.kind === "resync_required" ? await this.backend.attach(id) : await this.backend.read(id);
+          await page.document.controller.agentChanged(incoming); this.paint(page.document);
+        }).catch(error => this.warning(page.panel, error));
+      }
+    });
+  }
   constructor(private host: PreviewHost) {
     this.backend = new RecordedClient(() => host.client());
     this.provider = new VisualizationEditorProvider(this.backend,
@@ -68,6 +87,7 @@ export class RecordedPreview implements vscode.Disposable {
   async identity(): Promise<string> {
     const caps = await this.backend.capabilities(); this.owner = caps.server_instance_id;
     this.stateWarning = caps.working_state === "ephemeral" ? `Drafts will not survive a server restart: ${caps.working_state_reason ?? "durable state is unavailable"}` : undefined;
+    if (this.host) await this.controls();
     return this.owner;
   }
   async idFor(uri: vscode.Uri): Promise<string> {
@@ -124,6 +144,7 @@ export class RecordedPreview implements vscode.Disposable {
       }, error => { if (!page.closed) this.warning(page.panel, `Signal inventory failed: ${error}`); });
       await this.refreshOverview(page);
     } else if (message.type === "refresh") await this.refreshOverview(page);
+    else if (message.type === "templateSearch" || message.type === "templateCheck" || message.type === "applyTemplate" || message.type === "importTemplate" || message.type === "exportTemplate") await this.templateMessage(page, message);
     else if (message.type === "blank" && page.summary) await this.open(await this.backend.create(page.summary.source_ref));
     else if (message.type === "resume") await this.open(await this.backend.read(String(message.view_id)));
     else if (message.type === "openSaved") await this.open(await this.backend.call<RecordedView>("/saved/open", {
@@ -133,7 +154,7 @@ export class RecordedPreview implements vscode.Disposable {
   private async refreshOverview(page: OverviewPage): Promise<void> {
     if (!page.summary || page.closed) return;
     const lists = await this.backend.lists(page.summary.source_ref);
-    if (!page.closed) await page.panel.webview.postMessage({ type: "lists", lists });
+    if (!page.closed) { await page.panel.webview.postMessage({ type: "lists", lists }); await this.templateList(page.panel); }
   }
   private async render(document: ViewDocument, panel: vscode.WebviewPanel): Promise<void> {
     const id = document.controller.snapshot.view_id;
@@ -170,7 +191,7 @@ export class RecordedPreview implements vscode.Disposable {
       if (page.dataKey !== dataKey) {
         this.rendered.delete(snapshot.view_id); page.valueAbort?.abort();
         load = page.generation.begin(snapshot.view_id, snapshot.revision);
-        page.key = load.key; page.dataKey = dataKey;
+        page.key = load.key; page.dataKey = dataKey; page.dataSignal = load.signal;
       }
       // A title, resize, style or checkpoint still publishes its new revision for gesture CAS,
       // while an in-flight answer remains valid for the unchanged query.
@@ -192,19 +213,35 @@ export class RecordedPreview implements vscode.Disposable {
     requireRecordedPreview(config);
     const client = await this.host.client();
     const resolved = await this.backend.call<{ path: string }>("/source/resolve", { source_ref: view.source_ref }, signal);
+    const compatibility = await this.backend.call<Compatibility>("/templates/check", { source_ref: view.source_ref, configuration: config }, signal);
+    if (!page.generation.current(key)) return;
+    page.bindings = new Map(compatibility.bindings.map(b => [b.requirement_id, b]));
+    await page.panel.webview.postMessage({ type: "bindings", generation: key, result: compatibility });
     const used = new Set(config.panels.filter(p => p.type === "time_series").flatMap(p => p.series.map(s => s.requirement_id)));
     for (const requirement of config.requirements.filter(r => used.has(r.id))) {
       if (!page.generation.current(key) || !page.panel.visible) return;
-      const entry = page.inventory.entries.find(e => e.name === requirement.entry);
-      if (!entry || !requirement.accepted_entry_types.includes(entry.type)) throw new Error(`Signal unavailable or declared type changed: ${requirement.entry}`);
-      const name = requirement.entry + (requirement.field_path ?? ""), time = config.time.recorded;
+      const binding = page.bindings.get(requirement.id); if (binding?.state !== "resolved" || !binding.entry) continue;
+      const name = binding.entry + (binding.field_path ?? ""), time = config.time.recorded;
       const response = await this.data.fetch(client.endpoint, { path: resolved.path, names: [name], maxPoints: 4096,
         ...(time.mode === "fixed" ? { startTime: time.start_sec, endTime: time.end_sec } : {}) }, signal);
       await this.backend.call("/source/resolve", { source_ref: view.source_ref }, signal);
       if (!page.generation.current(key) || !page.panel.visible) return;
       await page.panel.webview.postMessage({ type: "series", generation: key, requirement_id: requirement.id, name, bytes: response.bytes });
     }
+    for (const type of ["statistics", "raw"] as const) {
+      const needed = new Set(config.panels.filter(p => p.type === type).flatMap(p => p.series.map(s => s.requirement_id)));
+      for (const id of needed) await this.loadAnalysis(page, id, type, 0, signal, key);
+    }
     if (page.generation.current(key)) await this.loadValues(page);
+  }
+  private async loadAnalysis(page: ViewPage, requirement: string, type: "statistics" | "raw", first: number, signal?: AbortSignal, key = page.key): Promise<void> {
+    if (page.closed || !page.panel.visible || !page.generation.current(key)) return;
+    const binding = page.bindings?.get(requirement); if (binding?.state !== "resolved" || !binding.entry) return;
+    const view = page.document.controller.snapshot as RecordedView, time = (view.configuration as RecordedConfiguration).time.recorded;
+    const result = await this.backend.call(`/source/${type}`, { source_ref: view.source_ref, entry: binding.entry,
+      ...(binding.field_path ? { field: binding.field_path } : {}), ...(time.mode === "fixed" ? { start_time: time.start_sec, end_time: time.end_sec } : {}),
+      ...(type === "raw" ? { first_ordinal: first, limit: 256 } : {}) }, signal);
+    if (!page.closed && page.panel.visible && page.generation.current(key)) await page.panel.webview.postMessage({ type, generation: key, requirement_id: requirement, result });
   }
   private async loadValues(page: ViewPage): Promise<void> {
     page.valueAbort?.abort(); const abort = new AbortController(); page.valueAbort = abort;
@@ -213,19 +250,20 @@ export class RecordedPreview implements vscode.Disposable {
     const needed = new Set(config.panels.filter(p => p.type === "latest").flatMap(p => p.series.map(s => s.requirement_id)));
     for (const requirement of config.requirements.filter(r => needed.has(r.id))) {
       if (page.closed || !page.panel.visible || generation !== page.cursorGeneration || !page.generation.current(key)) return;
-      const entry = page.inventory?.entries.find(e => e.name === requirement.entry);
-      if (!entry || !requirement.accepted_entry_types.includes(entry.type)) throw new Error(`Signal unavailable or declared type changed: ${requirement.entry}`);
-      const result = await this.backend.call("/source/value", { source_ref: view.source_ref, entry: requirement.entry,
-        ...(requirement.field_path ? { field: requirement.field_path } : {}), ...(page.cursor === undefined ? {} : { at_sec: page.cursor }) }, abort.signal);
+      const binding = page.bindings?.get(requirement.id); if (binding?.state !== "resolved" || !binding.entry) continue;
+      const result = await this.backend.call("/source/value", { source_ref: view.source_ref, entry: binding.entry,
+        ...(binding.field_path ? { field: binding.field_path } : {}), ...(page.cursor === undefined ? {} : { at_sec: page.cursor }) }, abort.signal);
       if (page.closed || generation !== page.cursorGeneration || !page.generation.current(key)) return;
       await page.panel.webview.postMessage({ type: "value", generation: key, requirement_id: requirement.id, result });
     }
   }
   private async message(page: ViewPage, message: any): Promise<void> {
     if (page.closed) return;
-    if (message.type === "ready") { page.ready = true; this.provider.ready.add(page.document.uri.toString()); this.paint(page.document); return; }
+    if (message.type === "ready") { page.ready = true; this.provider.ready.add(page.document.uri.toString()); this.paint(page.document); await this.templateList(page.panel); return; }
     if (message.view_id !== page.document.controller.snapshot.view_id || message.generation !== page.key) return;
     const controller = page.document.controller, view = controller.snapshot as RecordedView;
+    if (["templateSearch", "templateCheck", "applyTemplate", "replaceTemplate", "saveTemplate", "updateTemplate", "importTemplate", "exportTemplate"].includes(message.type)) { await this.templateMessage(page, message); return; }
+    if (message.type === "rawPage") { await this.loadAnalysis(page, String(message.requirement_id), "raw", Number(message.first_ordinal), page.dataSignal); return; }
     if (message.type === "target") {
       if ((view.configuration as RecordedConfiguration).panels.some(p => p.panel_id === message.panel_id)) page.activePanel = message.panel_id;
       this.targetEntries(); return;
@@ -239,7 +277,7 @@ export class RecordedPreview implements vscode.Disposable {
     if (message.revision !== view.revision) throw new Error("The view changed; retry this gesture against the current layout");
     let config = structuredClone(view.configuration) as RecordedConfiguration;
     if (message.type === "addPanel") {
-      if (!["time_series", "latest"].includes(message.panel_type)) throw new Error("Unsupported preview panel");
+      if (!["time_series", "latest", "statistics", "raw"].includes(message.panel_type)) throw new Error("Unsupported preview panel");
       const id = randomUUID(); config = addPanel(config, id, message.panel_type); page.activePanel = id;
     } else if (message.type === "addSignals") {
       const names = Array.isArray(message.names) ? message.names : [];
@@ -252,7 +290,7 @@ export class RecordedPreview implements vscode.Disposable {
     } else if (message.type === "range") config.time.recorded = { mode: "fixed", start_sec: message.start, end_sec: message.end };
     else if (message.type === "full") config.time.recorded = { mode: "full" };
     else if (message.type === "reset") {
-      const answer = await vscode.window.showWarningMessage("Reset this draft to its initial layout?", { modal: true }, "Reset draft");
+      const answer = await this.dialogs().showWarningMessage("Reset this draft to its initial layout?", { modal: true }, "Reset draft");
       if (answer !== "Reset draft") return; config = view.initial_configuration as RecordedConfiguration;
     } else return;
     await controller.edit(config, "Edit recorded view"); this.paint(page.document);
@@ -266,18 +304,25 @@ export class RecordedPreview implements vscode.Disposable {
   private async save(page: ViewPage): Promise<void> {
     const controller = page.document.controller, view = controller.snapshot;
     if (view.saved_view_ref) { await vscode.commands.executeCommand("workbench.action.files.save"); return; }
+    const destination = await this.chooseDestination(page.panel.title); if (!destination) return;
+    const { store_id: storeId, title } = destination;
+    this.backend.destinations.set(view.view_id, { store_id: storeId, title });
+    await controller.promote(); page.panel.title = title; this.paint(page.document);
+    for (const overview of this.overviews.values()) void this.refreshOverview(overview).catch(() => {});
+  }
+  private async chooseDestination(initialTitle: string): Promise<{ store_id: string; title: string } | undefined> {
     const stores = await this.backend.call<{ stores: StoreChoice[] }>("/stores");
-    const picked = await vscode.window.showQuickPick([...stores.stores.filter(s => s.writable).map(s => ({ label: s.label, description: s.path, store: s })), { label: "Create store…", description: "Create metadata storage without automatic enrollment", store: undefined }], { title: "Save view destination" });
-    if (!picked) return;
+    const picked = await this.dialogs().showQuickPick([...stores.stores.filter(s => s.writable).map(s => ({ label: s.label, description: s.path, store: s })), { label: "Create store…", description: "Create metadata storage without automatic enrollment", store: undefined }], { title: "Visualization store destination" });
+    if (!picked) return undefined;
     let storePath: string | undefined;
     if (!picked.store) {
-      const folder = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false, canSelectMany: false, openLabel: "Create store here" });
-      if (!folder?.[0]) return;
+      const folder = await this.dialogs().showOpenDialog({ canSelectFolders: true, canSelectFiles: false, canSelectMany: false, openLabel: "Create store here" });
+      if (!folder?.[0]) return undefined;
       if (folder[0].scheme !== "file") throw new Error("Choose a local folder for the visualization store");
       storePath = await fs.realpath(folder[0].fsPath);
     }
-    const title = await vscode.window.showInputBox({ title: "Save view", prompt: "A title for this source-bound layout", value: page.panel.title, validateInput: v => !v.trim() || v.length > 256 ? "Use 1–256 characters" : undefined });
-    if (!title) return;
+    const title = await this.dialogs().showInputBox({ title: "Save visualization", prompt: "A title for this definition", value: initialTitle, validateInput: v => !v.trim() || v.length > 256 ? "Use 1–256 characters" : undefined });
+    if (!title) return undefined;
     let storeId = picked.store?.store_id;
     if (storePath) {
       await this.host.grantStore(storePath);
@@ -287,9 +332,73 @@ export class RecordedPreview implements vscode.Disposable {
       storeId = available.stores.find(s => path.resolve(s.path) === path.resolve(storePath!))?.store_id;
       if (!storeId) throw new Error("The created store could not be found; refresh the overview and retry");
     }
-    this.backend.destinations.set(view.view_id, { store_id: storeId, title });
-    await controller.promote(); page.panel.title = title; this.paint(page.document);
-    for (const overview of this.overviews.values()) void this.refreshOverview(overview).catch(() => {});
+    if (!storeId) throw new Error("NO_WRITABLE_STORE: choose a writable local store");
+    return { store_id: storeId, title };
+  }
+  private async templateList(panel: vscode.WebviewPanel, query = ""): Promise<void> {
+    const catalog = await this.backend.call<{ templates: TemplateItem[] }>("/templates/list", { query });
+    // The renderer sends the complete immutable reference; asynchronous searches cannot retarget it by index.
+    await panel.webview.postMessage({ type: "templates", catalog });
+  }
+  private async templateMessage(page: ViewPage | OverviewPage, message: any): Promise<void> {
+    if (message.type === "templateSearch") { await this.templateList(page.panel, String(message.query ?? "")); return; }
+    const view = "document" in page ? page.document.controller.snapshot as RecordedView : undefined;
+    const source = view?.source_ref ?? (page as OverviewPage).summary?.source_ref; if (!source) return;
+    const ref = message.template_ref as TemplateRef;
+    if (message.type === "templateCheck") {
+      const result = await this.backend.call<Compatibility>("/templates/check", { source_ref: source, template_ref: ref });
+      await page.panel.webview.postMessage({ type: "templateCompatibility", template_ref: ref, result }); return;
+    }
+    if (message.type === "applyTemplate" || message.type === "replaceTemplate") {
+      const item = await this.backend.call<TemplateItem>("/templates/get", { template_ref: ref });
+      if (message.type === "replaceTemplate" && view && "document" in page) {
+        const answer = await this.dialogs().showWarningMessage("Replace this layout? Its current configuration may have unsaved changes.", { modal: true }, "Save then replace", "Discard and replace");
+        if (!answer) return;
+        if (answer === "Save then replace") { await this.save(page); if (!(page.document.controller.snapshot as RecordedView).saved_view_ref || (page.document.controller.snapshot as RecordedView).has_unsaved_changes || page.document.controller.pending) return; }
+        await page.document.controller.edit(item.template.configuration, "Replace with template"); this.paint(page.document);
+      } else await this.open(await this.backend.call<RecordedView>("/views", { source_ref: source, template_ref: ref, request_id: randomUUID() }), true);
+      return;
+    }
+    if (message.type === "saveTemplate" && view) {
+      const destination = await this.chooseDestination("New template"); if (!destination) return;
+      let configuration = structuredClone(view.configuration) as RecordedConfiguration;
+      if (configuration.requirements.some(r => r.selector_kind === "role")) {
+        const mode = await this.dialogs().showQuickPick(["Exact entry names", "Keep explicit roles"], { title: "Reusable signal selectors" }); if (!mode) return;
+        if (mode === "Exact entry names") {
+          const check = await this.backend.call<Compatibility>("/templates/check", { source_ref: source, configuration });
+          configuration.requirements = configuration.requirements.map(r => {
+            const binding = check.bindings.find(b => b.requirement_id === r.id);
+            if (!binding?.entry || binding.state !== "resolved") throw new Error("Resolve every role before saving exact entry names, or explicitly keep roles");
+            const { role, ...rest } = r; return { ...rest, selector_kind: "entry", entry: binding.entry };
+          });
+        }
+      }
+      await this.backend.call("/templates/create", { store_id: destination.store_id, name: destination.title, description: "", configuration, request_id: randomUUID() });
+    } else if (message.type === "updateTemplate" && view) {
+      if (ref?.origin !== "store") throw new Error("Choose a store template to update; built-ins are immutable");
+      const item = await this.backend.call<TemplateItem>("/templates/get", { template_ref: ref });
+      if (await this.dialogs().showWarningMessage(`Update ${item.template.name} revision ${ref.revision}? Open views retain their own configurations.`, { modal: true }, "Update template") !== "Update template") return;
+      await this.backend.call("/templates/update", { template_ref: ref, expected_revision: ref.revision, name: item.template.name, description: item.template.description, configuration: view.configuration, request_id: randomUUID() });
+    } else if (message.type === "exportTemplate") {
+      const result = await this.backend.call<{ envelope_json: string }>("/templates/export", { template_ref: ref });
+      const uri = await this.dialogs().showSaveDialog({ title: "Export template", filters: { "Visualization template": ["json"] } });
+      if (uri) await vscode.workspace.fs.writeFile(uri, Buffer.from(result.envelope_json + "\n"));
+    } else if (message.type === "importTemplate") {
+      const files = await this.dialogs().showOpenDialog({ title: "Import template", canSelectFiles: true, canSelectFolders: false, canSelectMany: false, filters: { "Visualization template": ["json"] } }); if (!files?.[0]) return;
+      if ((await vscode.workspace.fs.stat(files[0])).size > 1024 * 1024) throw new Error("Template exceeds 1 MiB");
+      const bytes = await vscode.workspace.fs.readFile(files[0]); if (bytes.byteLength > 1024 * 1024) throw new Error("Template exceeds 1 MiB");
+      const destination = await this.chooseDestination("Imported template"); if (!destination) return;
+      const envelope = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      const preview = await this.backend.call<{ can_update: boolean; name: string; expected_revision: number | null }>("/templates/import-preview", { store_id: destination.store_id, envelope_json: envelope });
+      let mode = "copy";
+      if (preview.can_update) {
+        const choice = await this.dialogs().showQuickPick(["Import copy", "Update existing"], { title: `${preview.name}: a newer revision is available` });
+        if (!choice) return; mode = choice === "Update existing" ? "update" : "copy";
+      }
+      await this.backend.call("/templates/import", { store_id: destination.store_id, envelope_json: envelope, request_id: randomUUID(), mode,
+        ...(mode === "update" ? { expected_revision: preview.expected_revision } : {}) });
+    }
+    await this.templateList(page.panel);
   }
   private active(): ViewPage | OverviewPage | undefined {
     const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
@@ -341,5 +450,6 @@ export class RecordedPreview implements vscode.Disposable {
     page.serial = task.catch(() => {}); await task; return true;
   }
   private warning(panel: vscode.WebviewPanel, error: unknown): void { void panel.webview.postMessage({ type: "warning", message: String(error) }); }
-  dispose(): void { for (const id of [...this.pages.keys()]) this.closePage(id); for (const d of this.disposables) d.dispose(); }
+  dispose(): void {
+    this.controlSubscription?.dispose(); for (const id of [...this.pages.keys()]) this.closePage(id); for (const d of this.disposables) d.dispose(); }
 }

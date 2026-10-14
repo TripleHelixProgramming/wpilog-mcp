@@ -205,6 +205,8 @@ class StdioBridgeTest {
     private final CountDownLatch streamOpen = new CountDownLatch(1);
     private volatile java.io.OutputStream stream;
     private volatile boolean sessionGone;
+    private final List<String> replayIds = new CopyOnWriteArrayList<>();
+    private volatile int opens;
 
     @BeforeEach
     void start() throws IOException {
@@ -240,6 +242,8 @@ class StdioBridgeTest {
           }
         }
         case "GET" -> {
+          replayIds.add(java.util.Objects.toString(exchange.getRequestHeaders().getFirst("Last-Event-ID"), "none"));
+          opens++;
           exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
           exchange.sendResponseHeaders(200, 0);
           stream = exchange.getResponseBody();
@@ -267,6 +271,19 @@ class StdioBridgeTest {
       exchange.sendResponseHeaders(status, bytes.length);
       try (var os = exchange.getResponseBody()) {
         os.write(bytes);
+      }
+    }
+
+    @Test void droppedStreamReplaysFromItsLastIdWithoutDuplicateDelivery() throws Exception {
+      try (var client = new Client(endpoint)) {
+        client.send(request(1, "initialize", "{}")); client.next(); assertTrue(streamOpen.await(5, TimeUnit.SECONDS));
+        String first = "id: fixture:1\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"fixture/one\"}\n\n";
+        stream.write(first.getBytes(StandardCharsets.UTF_8)); stream.flush(); assertEquals("fixture/one", client.next().get("method").getAsString()); stream.close();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+        while (opens < 2 && System.nanoTime() < deadline) Thread.sleep(20);
+        assertEquals(2, opens, "a dropped GET stream must reconnect"); assertEquals("fixture:1", replayIds.get(1));
+        stream.write((first + "id: fixture:2\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"fixture/two\"}\n\n").getBytes(StandardCharsets.UTF_8)); stream.flush();
+        assertEquals("fixture/two", client.next().get("method").getAsString()); assertTrue(client.silentFor(100));
       }
     }
 

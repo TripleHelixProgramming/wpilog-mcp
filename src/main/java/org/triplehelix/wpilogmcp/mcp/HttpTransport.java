@@ -244,7 +244,7 @@ public class HttpTransport {
   }
 
   public void start() throws IOException {
-    try { visualization = new VisualizationEndpoint(sessionManager, toolRegistry.serverIdentity()); }
+    try { visualization = new VisualizationEndpoint(sessionManager, toolRegistry); }
     catch (IOException failure) { visualizationFailure = failure.getMessage(); logger.warn("Visualization preview unavailable: {}", visualizationFailure); }
     server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
     server.createContext(this.mcpPath, counted(this::handleRequest));
@@ -360,7 +360,7 @@ public class HttpTransport {
       return;
     }
     mirrorEndpoint.close();
-    if (visualization != null) visualization.close();
+    if (visualization != null) toolRegistry.closeVisualizations();
     readEndpoint.close();
     if (localIngestion != null) { localIngestion.close(); stores.clearLocalIngestion(localIngestion); }
     // 1. End the SSE streams. Their loops sleep between pings; the interrupt ends the loop,
@@ -674,10 +674,15 @@ public class HttpTransport {
           exchange.getResponseHeaders().set("Connection", "keep-alive");
           exchange.sendResponseHeaders(200, 0);
           try (OutputStream os = exchange.getResponseBody()) {
+            String lastEvent = exchange.getRequestHeaders().getFirst("Last-Event-ID");
             while (sessionManager.getSession(sessionId) != null) {
-              os.write(":ping\n\n".getBytes(StandardCharsets.UTF_8));
-              os.flush();
-              Thread.sleep(15_000);
+              var control = toolRegistry.visualizations().notifications;
+              var events = control.after(sessionId, lastEvent, 1000);
+              for (var event : events) {
+                os.write(("id: " + event.id() + "\ndata: " + event.json() + "\n\n").getBytes(StandardCharsets.UTF_8)); lastEvent = event.id();
+              }
+              os.write(":ping\n\n".getBytes(StandardCharsets.UTF_8)); os.flush();
+              if (!control.negotiated(sessionId)) Thread.sleep(15_000);
             }
           }
         } catch (IOException | InterruptedException e) {

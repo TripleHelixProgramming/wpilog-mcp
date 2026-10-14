@@ -39,6 +39,39 @@ class VisualizationMetadataTest {
       assertEquals(sample, VisualizationMetadata.read(selected, UUID.fromString(sample.get("saved_view_id").getAsString())));
     }
   }
+  @Test void malformedTemplateReferencesAreUnreadableWithoutHidingTheGoodSavedView() throws Exception {
+    root = root.toRealPath(); var security = new SecurityValidator(); security.addAllowedDirectory(root);
+    try (var registry = new StoreRegistry(security)) {
+      var source = new JsonObject(); source.addProperty("kind", "unmanaged"); source.addProperty("source_id", UUID.randomUUID().toString());
+      var metadata = new VisualizationMetadata(registry.store(root));
+      var good = metadata.save(Authority.STDIO_LOCAL, UUID.randomUUID(), 0, UUID.randomUUID(), "Fixture", source, VisualizationContracts.blank()).get();
+      var reference = org.triplehelix.wpilogmcp.visualization.TemplateDefinition.reference(null,
+          org.triplehelix.wpilogmcp.visualization.BundledTemplates.all().get(0));
+      var invalid = new java.util.ArrayList<com.google.gson.JsonElement>(); invalid.add(new com.google.gson.JsonPrimitive("not a reference"));
+      var revision = reference.deepCopy(); revision.addProperty("revision", 0); invalid.add(revision);
+      var identity = reference.deepCopy(); identity.addProperty("template_id", "invalid"); invalid.add(identity);
+      var future = reference.deepCopy(); future.addProperty("newer_field", true); invalid.add(future);
+      var store = reference.deepCopy(); store.addProperty("origin", "store"); store.addProperty("store_id", "invalid"); invalid.add(store);
+      var bytes = new java.util.LinkedHashMap<Path, String>();
+      for (var value : invalid) {
+        var record = good.deepCopy(); var id = UUID.randomUUID(); record.addProperty("saved_view_id", id.toString()); record.add("template_ref", value);
+        var path = root.resolve("visualizations/saved-views/" + id + ".json"); bytes.put(path, record.toString()); Files.writeString(path, record.toString());
+      }
+      var selected = new StoreDoor(() -> java.util.Set.of(root)).stores().get(0);
+      var listing = VisualizationMetadata.list(selected); assertEquals(1, listing.views().size()); assertEquals(invalid.size(), listing.unreadable().size());
+      for (var entry : bytes.entrySet()) assertEquals(entry.getValue(), Files.readString(entry.getKey()));
+      assertEquals(good, VisualizationMetadata.read(selected, UUID.fromString(good.get("saved_view_id").getAsString())));
+    }
+  }
+  @Test void invalidTemplateReferenceIsRefusedBeforeSavedMetadataIsCreated() throws Exception {
+    root = root.toRealPath(); var security = new SecurityValidator(); security.addAllowedDirectory(root);
+    try (var registry = new StoreRegistry(security)) {
+      var source = new JsonObject(); source.addProperty("kind", "unmanaged"); source.addProperty("source_id", UUID.randomUUID().toString());
+      var metadata = new VisualizationMetadata(registry.store(root));
+      assertThrows(ExecutionException.class, () -> metadata.save(Authority.STDIO_LOCAL, UUID.randomUUID(), 0, UUID.randomUUID(), "Fixture", source, VisualizationContracts.blank(), new JsonObject()).get());
+      assertFalse(Files.exists(root.resolve("visualizations/saved-views")));
+    }
+  }
   @Test void savedViewsUseTheStoreLockAndCasAndReplayALostReply() throws Exception {
     root = root.toRealPath(); var security = new SecurityValidator(); security.addAllowedDirectory(root);
     try (var registry = new StoreRegistry(security)) {

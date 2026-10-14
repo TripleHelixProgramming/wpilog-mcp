@@ -75,8 +75,10 @@ public final class VisualizationMetadata {
     UUID id = UUID.fromString(value.get("saved_view_id").getAsString());
     if (!path.getFileName().toString().equals(id + ".json") || value.get("schema_version").getAsInt() != 1)
       throw new IOException("Invalid saved-view identity or unsupported schema version");
+    if (!value.has("template_ref")) value.add("template_ref", com.google.gson.JsonNull.INSTANCE);
+    org.triplehelix.wpilogmcp.visualization.TemplateDefinition.validateReference(value.get("template_ref"));
     // Validate every field the listing/open adapters consume before admitting this record.
-    if (!value.keySet().equals(java.util.Set.of("schema_version", "saved_view_id", "revision", "request_id", "title", "source_ref", "configuration")))
+    if (!value.keySet().equals(java.util.Set.of("schema_version", "saved_view_id", "revision", "request_id", "title", "source_ref", "configuration", "template_ref")))
       throw new IOException("Invalid saved-view fields");
     long revision = value.get("revision").getAsLong();
     if (revision < 1 || revision > 9_007_199_254_740_991L || revision != value.get("revision").getAsDouble())
@@ -91,6 +93,10 @@ public final class VisualizationMetadata {
   }
   public CompletableFuture<JsonObject> save(Authority caller, UUID id, long expectedRevision,
       UUID request, String title, JsonObject source, JsonObject configuration) {
+    return save(caller, id, expectedRevision, request, title, source, configuration, com.google.gson.JsonNull.INSTANCE);
+  }
+  public CompletableFuture<JsonObject> save(Authority caller, UUID id, long expectedRevision,
+      UUID request, String title, JsonObject source, JsonObject configuration, com.google.gson.JsonElement templateReference) {
     final JsonObject candidate;
     try {
       java.util.Objects.requireNonNullElse(caller, Authority.UNTRUSTED).requireLocal();
@@ -101,13 +107,14 @@ public final class VisualizationMetadata {
       candidate.addProperty("request_id", request.toString()); candidate.addProperty("title", title);
       candidate.add("source_ref", VisualizationContracts.source(source));
       candidate.add("configuration", VisualizationContracts.configuration(configuration));
+      candidate.add("template_ref", org.triplehelix.wpilogmcp.visualization.TemplateDefinition.validateReference(templateReference));
     } catch (Exception e) { return CompletableFuture.failedFuture(e); }
     // captureAsync supplies the queue, lock, current grants, mirror refusal and atomic writer.
     return store.captureAsync(io -> {
       var path = io.check(store.root().resolve("visualizations/saved-views/" + id + ".json"));
       long actual = 0;
       if (Files.exists(path)) {
-        var current = io.read(path, JsonObject.class);
+        var current = read(io, path);
         if (current.get("schema_version").getAsInt() != 1 || !id.toString().equals(current.get("saved_view_id").getAsString())) throw new IOException("Invalid saved-view metadata");
         if (request.toString().equals(current.get("request_id").getAsString())) {
           if (!candidate.equals(current)) throw new IOException("REQUEST_CONFLICT: saved-view request has different content");

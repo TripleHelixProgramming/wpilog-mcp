@@ -21,6 +21,9 @@ public final class VisualizationService implements AutoCloseable {
   public static final int MAX_DOCUMENTS = 256;
   public static final long MAX_STATE_BYTES = 256L * 1024 * 1024;
   public static final Duration DRAFT_LIFETIME = Duration.ofDays(30);
+  public static final int MAX_TOMBSTONES = 256;
+  public static final long MAX_TOMBSTONE_BYTES = 8L * 1024 * 1024;
+  public static final Duration TOMBSTONE_LIFETIME = Duration.ofHours(6);
   private final StateFiles files;
   private final FileChannel lock;
   private final Clock clock;
@@ -30,6 +33,8 @@ public final class VisualizationService implements AutoCloseable {
   private final ThreadPoolExecutor queue = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
       new ArrayBlockingQueue<>(64), task -> { var t = new Thread(task, "visualization-state"); t.setDaemon(true); return t; });
   private volatile boolean closed;
+  private volatile java.util.function.Consumer<JsonObject> changed = ignored -> {};
+  public void onChanged(java.util.function.Consumer<JsonObject> listener) { changed = listener; }
   private final ConcurrentMap<UUID, JsonObject> locators = new ConcurrentHashMap<>();
   private final Set<UUID> endedClients = ConcurrentHashMap.newKeySet();
 
@@ -46,6 +51,7 @@ public final class VisualizationService implements AutoCloseable {
       if (files != null && Files.exists(files.path("views"))) {
         try (var children = Files.list(files.path("views"))) {
           long loadedBytes = 4096;
+          int loadedDocuments = 0;
           var iterator = children.iterator();
           while (iterator.hasNext()) {
             var path = iterator.next();
@@ -65,7 +71,18 @@ public final class VisualizationService implements AutoCloseable {
             }
             if (expired(record)) { Files.delete(files.path("views/" + name)); continue; }
             // A valid record over a lowered quota stays in place; it is not corrupt.
-            if (views.size() >= documentLimit || (loadedBytes += size(record)) > byteLimit) throw new IOException("WORKSPACE_LIMIT: existing state exceeds its configured quota");
+            if (!deleted(record) && (++loadedDocuments > documentLimit || (loadedBytes += size(record)) > byteLimit))
+              throw new IOException("WORKSPACE_LIMIT: existing working views exceed their configured quota");
+            // The unreleased prototype retained deleted records for 30 days. Shorten that retry
+            // window once on recovery, persisting it so repeated restarts cannot extend it.
+            if (deleted(record)) {
+              var deadline = clock.instant().plus(TOMBSTONE_LIFETIME);
+              if (record.get("detached_expires_at").isJsonNull()
+                  || Instant.parse(record.get("detached_expires_at").getAsString()).isAfter(deadline)) {
+                record.addProperty("detached_expires_at", deadline.toString());
+                files.write("views/" + name, record.toString());
+              }
+            }
             // A process restart ends all old window attachments, never the recoverable draft.
             if (!record.get("attached_client_id").isJsonNull()) {
               record.add("attached_client_id", JsonNull.INSTANCE);
@@ -73,6 +90,7 @@ public final class VisualizationService implements AutoCloseable {
               files.write("views/" + name, record.toString());
             }
             views.put(id, record);
+            trimTombstones(null, null);
           }
         }
       }
@@ -85,10 +103,25 @@ public final class VisualizationService implements AutoCloseable {
 
   private static void validateRecord(UUID id, JsonObject record) throws IOException {
     if (record.get("schema_version").getAsInt() != 1 || !id.toString().equals(record.get("view_id").getAsString())) throw new IOException("Invalid working-state identity");
-    if (!record.keySet().equals(Set.of("schema_version", "view_id", "creation_request_id", "revision", "source_ref", "configuration", "initial_configuration", "checkpoint_configuration", "saved_view_ref", "attached_client_id", "detached_expires_at"))) throw new IOException("Unknown working-state fields");
+    if (!record.has("requests")) record.add("requests", new JsonObject());
+    if (!record.has("deleted")) record.addProperty("deleted", false);
+    if (!record.has("template_ref")) record.add("template_ref", JsonNull.INSTANCE);
+    TemplateDefinition.validateReference(record.get("template_ref"));
+    if (!record.keySet().equals(Set.of("schema_version", "view_id", "creation_request_id", "template_ref", "requests", "deleted", "revision", "source_ref", "configuration", "initial_configuration", "checkpoint_configuration", "saved_view_ref", "attached_client_id", "detached_expires_at"))) throw new IOException("Unknown working-state fields");
     long revision = record.get("revision").getAsLong();
     if (revision < 1 || revision > 9_007_199_254_740_991L || revision != record.get("revision").getAsDouble()) throw new IOException("Invalid working revision");
     UUID.fromString(record.get("creation_request_id").getAsString());
+    if (!record.get("deleted").isJsonPrimitive() || !record.getAsJsonPrimitive("deleted").isBoolean()) throw new IOException("Invalid deleted marker");
+    var receipts = record.getAsJsonObject("requests");
+    if (receipts.size() > 4096) throw new IOException("Invalid working receipt count");
+    for (var entry : receipts.entrySet()) {
+      UUID.fromString(entry.getKey()); var receipt = entry.getValue().getAsJsonObject();
+      if (!(receipt.keySet().equals(Set.of("digest", "result")) || receipt.keySet().equals(Set.of("digest", "snapshot")))
+          || !receipt.get("digest").getAsString().matches("[a-f0-9]{64}")) throw new IOException("Invalid working receipt");
+      var retained = receipt.getAsJsonObject(receipt.has("result") ? "result" : "snapshot");
+      TemplateDefinition.validateReference(retained.get("template_ref"));
+      UUID.fromString(retained.get("view_id").getAsString()); VisualizationContracts.configuration(retained.getAsJsonObject("configuration"));
+    }
     VisualizationContracts.configuration(record.getAsJsonObject("initial_configuration"));
     VisualizationContracts.source(record.getAsJsonObject("source_ref"));
     VisualizationContracts.configuration(record.getAsJsonObject("configuration"));
@@ -98,19 +131,24 @@ public final class VisualizationService implements AutoCloseable {
   }
 
   public CompletableFuture<JsonObject> create(Authority caller, UUID request, JsonObject source, JsonObject configuration) {
+    return create(caller, request, source, configuration, null);
+  }
+  public CompletableFuture<JsonObject> create(Authority caller, UUID request, JsonObject source, JsonObject configuration, JsonObject templateRef) {
+    var reference = templateRef == null ? JsonNull.INSTANCE : templateRef.deepCopy();
     var sourceCopy = source.deepCopy(); var configCopy = configuration.deepCopy();
     return submit(caller, () -> {
       var validSource = VisualizationContracts.source(sourceCopy);
       var validConfig = VisualizationContracts.configuration(configCopy);
+      TemplateDefinition.validateReference(reference);
+      prune();
       for (var record : views.values()) if (request.toString().equals(record.get("creation_request_id").getAsString())) {
-        if (!validSource.equals(record.get("source_ref")) || !validConfig.equals(record.get("initial_configuration"))) throw new IOException("REQUEST_CONFLICT: create request reused with different content");
+        if (!validSource.equals(record.get("source_ref")) || !validConfig.equals(record.get("initial_configuration")) || !reference.equals(record.get("template_ref"))) throw new IOException("REQUEST_CONFLICT: create request reused with different content");
         return record;
       }
-      prune();
       var id = UUID.randomUUID(); var record = new JsonObject();
       record.addProperty("schema_version", 1); record.addProperty("view_id", id.toString());
-      record.addProperty("creation_request_id", request.toString()); record.addProperty("revision", 1);
-      record.add("source_ref", validSource); record.add("configuration", validConfig);
+      record.addProperty("creation_request_id", request.toString()); record.addProperty("revision", 1); record.add("requests", new JsonObject()); record.addProperty("deleted", false);
+      record.add("source_ref", validSource); record.add("configuration", validConfig); record.add("template_ref", reference);
       record.add("initial_configuration", validConfig.deepCopy());
       record.add("checkpoint_configuration", JsonNull.INSTANCE); record.add("saved_view_ref", JsonNull.INSTANCE);
       record.add("attached_client_id", JsonNull.INSTANCE);
@@ -128,6 +166,72 @@ public final class VisualizationService implements AutoCloseable {
       var config = VisualizationContracts.configuration(copy); var record = checked(view, revision);
       requireOwner(record, client);
       record.add("configuration", config); next(record); write(view, record); return record;
+    });
+  }
+
+  /** Public-tool edits retain original results across session retries. Receipts share the atomic
+   * working record and its quota/lifetime. Deleting releases the live quota; the resulting retry
+   * record has its own short lifetime and yields to older-first eviction under pressure. */
+  public CompletableFuture<JsonObject> revise(Authority caller, UUID view, long revision, UUID request,
+      JsonObject configuration, boolean discard, boolean delete) {
+    var copy = configuration == null ? null : configuration.deepCopy();
+    return enqueue(caller, () -> {
+      var signature = new JsonObject(); signature.addProperty("revision", revision); signature.addProperty("discard", discard); signature.addProperty("delete", delete);
+      signature.add("configuration", copy == null ? JsonNull.INSTANCE : copy); String digest = TemplateDefinition.digest(signature);
+      var original = views.get(view);
+      if (original != null && !expired(original) && original.getAsJsonObject("requests").has(request.toString())) {
+        var receipt = original.getAsJsonObject("requests").getAsJsonObject(request.toString());
+        if (!digest.equals(receipt.get("digest").getAsString())) throw new IOException("REQUEST_CONFLICT: request id reused with different content");
+        return receipt.getAsJsonObject("result").deepCopy();
+      }
+      var record = checked(view, revision);
+      if (delete && !record.get("attached_client_id").isJsonNull()) throw new IOException("VIEW_ATTACHED: close the owning editor before deleting its working view");
+      JsonObject config = discard ? (record.get("checkpoint_configuration").isJsonNull() ? record.getAsJsonObject("initial_configuration") : record.getAsJsonObject("checkpoint_configuration")) : copy;
+      if (!delete) record.add("configuration", VisualizationContracts.configuration(config));
+      if (delete) { record.addProperty("deleted", true); record.addProperty("detached_expires_at", clock.instant().plus(TOMBSTONE_LIFETIME).toString()); }
+      next(record); var result = describe(record);
+      var receipts = record.getAsJsonObject("requests");
+      if (receipts.size() >= 4096) throw new IOException("WORKSPACE_LIMIT: working request receipts are full; clone or save this view");
+      var receipt = new JsonObject(); receipt.addProperty("digest", digest); receipt.add("result", result.deepCopy()); receipts.add(request.toString(), receipt);
+      write(view, record); return result;
+    });
+  }
+
+  /** Reserve the exact intent before work on the store queue. Pending receipts survive a crash;
+   * retries use the original snapshot even if another caller edits the working view meanwhile. */
+  public CompletableFuture<JsonObject> prepareMutation(Authority caller, UUID view, long revision,
+      UUID request, JsonObject intent, UUID client) {
+    var copy = intent.deepCopy();
+    return enqueue(caller, () -> {
+      String digest = TemplateDefinition.digest(copy); var record = raw(view); requireOwner(record, client);
+      var receipts = record.getAsJsonObject("requests"); var existing = receipts.get(request.toString());
+      if (existing != null) {
+        if (!digest.equals(existing.getAsJsonObject().get("digest").getAsString())) throw new IOException("REQUEST_CONFLICT: request id reused with different content");
+        return existing.deepCopy().getAsJsonObject();
+      }
+      if (record.get("revision").getAsLong() != revision) throw new IOException("REVISION_CONFLICT: current revision is " + record.get("revision"));
+      if (receipts.size() >= 4096) throw new IOException("WORKSPACE_LIMIT: working retry history is full; save a new copy");
+      var receipt = new JsonObject(); receipt.addProperty("digest", digest); receipt.add("snapshot", describe(record));
+      receipts.add(request.toString(), receipt); write(view, record); return receipt.deepCopy();
+    });
+  }
+
+  /** A saved checkpoint records the reserved configuration, leaving intervening edits dirty.
+   * Clone completion only retains its receipt. Neither operation holds the state queue over I/O
+   * on another owner's queue. */
+  public CompletableFuture<JsonObject> completeMutation(Authority caller, UUID view, UUID request,
+      JsonObject result, JsonObject savedReference) {
+    var answer = result == null ? null : result.deepCopy();
+    var ref = savedReference == null ? null : savedReference.deepCopy();
+    return enqueue(caller, () -> {
+      var record = raw(view); var receipt = record.getAsJsonObject("requests").getAsJsonObject(request.toString());
+      if (receipt.has("result")) return receipt.getAsJsonObject("result").deepCopy();
+      JsonObject completed = answer;
+      if (ref != null) {
+        record.add("saved_view_ref", ref); record.add("checkpoint_configuration", receipt.getAsJsonObject("snapshot").get("configuration").deepCopy());
+        next(record); completed = describe(record);
+      }
+      receipt.remove("snapshot"); receipt.add("result", completed.deepCopy()); write(view, record); return completed;
     });
   }
 
@@ -178,22 +282,26 @@ public final class VisualizationService implements AutoCloseable {
   public JsonObject get(UUID view) throws IOException { return describe(raw(view)); }
   public List<JsonObject> list(JsonObject source) throws IOException {
     var checked = VisualizationContracts.source(source);
-    return views.values().stream().filter(r -> !expired(r) && checked.equals(r.get("source_ref")))
+    return views.values().stream().filter(r -> !expired(r) && !r.get("deleted").getAsBoolean() && checked.equals(r.get("source_ref")))
         .sorted(Comparator.comparing(r -> r.get("view_id").getAsString())).map(this::describe).toList();
   }
   /** Navigation never copies configurations or recovery checkpoints into the response. */
   public List<JsonObject> summaries(JsonObject source) throws IOException {
     var checked = VisualizationContracts.source(source);
-    return views.values().stream().filter(r -> !expired(r) && checked.equals(r.get("source_ref")))
+    return views.values().stream().filter(r -> !expired(r) && !r.get("deleted").getAsBoolean() && checked.equals(r.get("source_ref")))
         .sorted(Comparator.comparing(r -> r.get("view_id").getAsString())).map(r -> {
           var summary = new JsonObject();
           for (var key : List.of("view_id", "revision", "saved_view_ref", "attached_client_id", "detached_expires_at")) summary.add(key, r.get(key).deepCopy());
           return summary;
         }).toList();
   }
+  public List<JsonObject> all() {
+    return views.values().stream().filter(r -> !expired(r) && !r.get("deleted").getAsBoolean()).map(this::describe).toList();
+  }
+
   private JsonObject raw(UUID id) throws IOException {
     var record = views.get(id);
-    if (record == null || expired(record)) throw new IOException("VIEW_UNAVAILABLE: draft is missing or expired");
+    if (record == null || expired(record) || record.get("deleted").getAsBoolean()) throw new IOException("VIEW_UNAVAILABLE: draft is missing or expired");
     return record.deepCopy();
   }
   private JsonObject checked(UUID id, long revision) throws IOException {
@@ -207,7 +315,7 @@ public final class VisualizationService implements AutoCloseable {
     record.addProperty("revision", revision + 1);
   }
   private JsonObject describe(JsonObject original) {
-    var record = original.deepCopy();
+    var record = original.deepCopy(); record.remove("requests");
     boolean unsaved = record.get("checkpoint_configuration").isJsonNull() || !record.get("configuration").equals(record.get("checkpoint_configuration"));
     record.addProperty("has_unsaved_changes", unsaved);
     record.addProperty("native_dirty", unsaved && !record.get("saved_view_ref").isJsonNull());
@@ -216,6 +324,25 @@ public final class VisualizationService implements AutoCloseable {
   private boolean expired(JsonObject record) {
     return record.get("attached_client_id").isJsonNull() && !record.get("detached_expires_at").isJsonNull()
         && !Instant.parse(record.get("detached_expires_at").getAsString()).isAfter(clock.instant());
+  }
+  private static boolean deleted(JsonObject record) { return record.get("deleted").getAsBoolean(); }
+
+  /** Retry receipts are disposable only after explicit deletion. Account for the pending write
+   * before publishing it, and remove files before their in-memory entries. A failed write can
+   * lose old retry proof under pressure, never a live draft or its acknowledged edits. */
+  private void trimTombstones(UUID replacing, JsonObject replacement) throws IOException {
+    var tombstones = views.entrySet().stream()
+        .filter(e -> !e.getKey().equals(replacing) && deleted(e.getValue()))
+        .sorted(Comparator.<Map.Entry<UUID, JsonObject>, Instant>comparing(e -> Instant.parse(e.getValue().get("detached_expires_at").getAsString()))
+            .thenComparing(Map.Entry::getKey)).toList();
+    boolean adding = replacement != null && deleted(replacement);
+    long bytes = (adding ? size(replacement) : 0L) + tombstones.stream().mapToLong(e -> size(e.getValue())).sum();
+    int count = tombstones.size() + (adding ? 1 : 0);
+    for (var entry : tombstones) {
+      if (count <= MAX_TOMBSTONES && bytes <= MAX_TOMBSTONE_BYTES) break;
+      if (files != null) Files.deleteIfExists(files.path("views/" + entry.getKey() + ".json"));
+      views.remove(entry.getKey()); count--; bytes -= size(entry.getValue());
+    }
   }
   private void prune() throws IOException {
     var expiredSources = new HashSet<UUID>();
@@ -233,6 +360,7 @@ public final class VisualizationService implements AutoCloseable {
   private void retainReferencedLocators(JsonObject all, UUID keep, Set<UUID> candidates) {
     var referenced = new HashSet<String>();
     for (var record : views.values()) {
+      if (deleted(record)) continue;
       var source = record.getAsJsonObject("source_ref");
       if (source.get("kind").getAsString().equals("unmanaged")) referenced.add(source.get("source_id").getAsString());
     }
@@ -252,9 +380,9 @@ public final class VisualizationService implements AutoCloseable {
   }
   private void checkBudget(UUID replacing, JsonObject record) throws IOException {
     prune();
-    long total = record == null ? 0 : size(record);
-    for (var entry : views.entrySet()) if (!entry.getKey().equals(replacing)) total += size(entry.getValue());
-    int count = views.size() + (record != null && !views.containsKey(replacing) ? 1 : 0);
+    long total = record == null || deleted(record) ? 0 : size(record);
+    int count = record == null || deleted(record) ? 0 : 1;
+    for (var entry : views.entrySet()) if (!entry.getKey().equals(replacing) && !deleted(entry.getValue())) { total += size(entry.getValue()); count++; }
     // Keep recent identifications until pressure: two overviews can identify A/B before either creates a view.
     if (total + 4096 + size(locatorRecords()) > byteLimit) {
       var source = record == null ? null : record.getAsJsonObject("source_ref");
@@ -262,13 +390,23 @@ public final class VisualizationService implements AutoCloseable {
       pruneLocators(keep, null);
     }
     // Reserve space for identity and the lock; temporary replacement uses at most one extra record.
-    if (count > documentLimit || total + 4096 + locators.values().stream().mapToLong(VisualizationService::size).sum() > byteLimit) throw new IOException("WORKSPACE_LIMIT: save or remove a view; unexpired drafts were retained");
+    if (count > documentLimit) {
+      long live = views.values().stream().filter(r -> !deleted(r)).count();
+      long attached = views.values().stream().filter(r -> !deleted(r) && !r.get("attached_client_id").isJsonNull()).count();
+      throw new IOException("WORKSPACE_LIMIT: " + live + " working views (" + attached + " attached, " + (live - attached)
+          + " detached) hold the " + documentLimit + "-view limit; close and delete an unneeded working view; saving alone does not release its slot");
+    }
+    if (total + 4096 + locators.values().stream().mapToLong(VisualizationService::size).sum() > byteLimit)
+      throw new IOException("WORKSPACE_LIMIT: working views, checkpoints, edit receipts and source locators exceed the " + byteLimit
+          + "-byte metadata limit; delete an unneeded working view; deleted retry records use a separate budget");
   }
   private static int size(JsonObject record) { return record.toString().getBytes(StandardCharsets.UTF_8).length; }
   private void write(UUID id, JsonObject record) throws IOException {
+    if (size(record) > 4 * 1024 * 1024) throw new IOException("WORKSPACE_LIMIT: working record and receipts exceed 4 MiB; save a new copy");
     checkBudget(id, record);
+    trimTombstones(id, record);
     if (files != null) files.write("views/" + id + ".json", record.toString());
-    views.put(id, record.deepCopy());
+    views.put(id, record.deepCopy()); changed.accept(describe(record));
   }
   /** Locators are owner-local recovery metadata, never part of a portable SourceRef. */
   public CompletableFuture<JsonObject> rememberSource(Authority caller, UUID id, JsonObject locator) {
@@ -276,7 +414,7 @@ public final class VisualizationService implements AutoCloseable {
     return enqueue(caller, () -> {
       prune();
       var all = locatorRecords(); all.add(id.toString(), copy);
-      long workingBytes = 4096L + views.values().stream().mapToLong(VisualizationService::size).sum();
+      long workingBytes = 4096L + views.values().stream().filter(r -> !deleted(r)).mapToLong(VisualizationService::size).sum();
       if (all.size() > 1024 || size(all) > 1024 * 1024 || workingBytes + size(all) > byteLimit)
         retainReferencedLocators(all, id, null);
       if (all.size() > 1024) throw new IOException("WORKSPACE_LIMIT: source locator limit reached; unexpired views were retained");

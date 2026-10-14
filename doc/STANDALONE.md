@@ -606,6 +606,8 @@ wpilog-mcp start http
 
 The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. `GET /health` answers as soon as the server is up, with the server's version, configuration `name`, process ID, `managed` ownership, `server_instance_id`, and `working_state`. `name` is null for HTTP started with the unnamed legacy flags; stdio has no health route.
 
+<a id="recorded-visualization-preview"></a>
+
 Named servers persist their local visualization owner identity in
 `~/.wpilog-mcp/state/visualizations/<config-key>/server.json`. The key is SHA-256 of the real
 configuration path, a newline, and the server name; changing the port preserves it. Health and
@@ -618,10 +620,15 @@ analysis or recording.
 This identity creates no log store or ingestion policy. The explicit recorded preview uses
 `/visualizations/v1` on a loopback-bound HTTP server, with a loopback peer, the normal Origin
 check and a live `Mcp-Session-Id`. Network-bound servers refuse these routes even to a local peer.
-They are an internal preview API, not public MCP tools. GET supplies `/capabilities`, `/stores`
+The `visualization_*` MCP tools share the same application owner and require trusted local
+transport authority (direct stdio or loopback HTTP). The HTTP preview adapter uses GET for `/capabilities`, `/stores`
 and `/views/<uuid>`; POST supplies `/source`, `/source/describe`, `/source/resolve`,
 `/source/value`, `/source/views`, `/views`, `/views/<uuid>`, `/views/<uuid>/attach`,
 `/views/<uuid>/detach`, `/views/<uuid>/describe`, `/views/<uuid>/save` and `/saved/open`.
+POST also supplies `/source/statistics`, `/source/raw`, and `/templates/list`, `/templates/get`,
+`/templates/check`, `/templates/create`, `/templates/update`, `/templates/import-preview`,
+`/templates/import`, `/templates/export`. The import preview is read-only; mutation rechecks
+under the store lock. MCP schemas and results are listed in [TOOLS.md](TOOLS.md).
 Requests preserve raw JSON for strict duplicate-key/schema validation; configuration mutations
 use expected revisions and session ownership. Working drafts detach on session removal/expiry
 and expire after 30 days. Save writes `visualizations/saved-views/<uuid>.json` through the store's
@@ -640,7 +647,8 @@ Locators are bounded to 1,024 entries and 1 MiB within the working-state budget.
 locators with no unexpired working view; draft expiry releases its unused locator, and quota
 pressure prunes other unreferenced locators before refusing new ones. Recent identifications can
 coexist before a draft is created. Reopening an unchanged file in Source Overview restores its
-deterministic locator, including for a saved view whose working copies have expired. Capabilities report 256 working views, 30-day detached recovery and the current plot
+deterministic locator, including for a saved view whose working copies have expired. Deleted views
+do not retain locators under pressure. Capabilities report 256 non-deleted working views, 30-day detached recovery and the current plot
 limits (4,096 points and 32 series per view). HTTP JSON replies are bounded to 16 MiB; plot replies
 are bounded to 1 MiB each in the preview client. Saved metadata listing stops at 1,024 records or
 8 MiB per store. Invalid/newer records are skipped intact and reported in `unreadable` with
@@ -650,7 +658,59 @@ overview lists carry summaries, not configuration buffers. A full or unavailable
 explains the refusal; health remains available. Plots use the shared Arrow reader, while cursor
 tables select original samples and their decoder diagnostics. Title, geometry and style edits
 reuse loaded series and values; changing the required series or recorded range starts a new
-query. Public operation adapters, templates and GUI/MCP notifications remain Stage 2b.
+query. Statistics delegate to `get_statistics`; raw pages use the reader's physical ordinals
+and retain equal/backward timestamps. The API permits 4,096 records and 1 MiB per raw response;
+Explorer requests 256 and replaces its previous page. The source catalog is owned once per
+workspace and replaced when its configured roots change; access is revalidated on each operation.
+
+Store templates use `visualizations/templates/<uuid>.json`. Each atomic metadata record includes
+the definition and retry/import receipts, under the existing store queue/lock. A file is bounded
+to 1 MiB, each receipt map to 64 entries, and listings to 1,024 records or 8 MiB per store.
+Unknown/newer/bad neighbors are reported intact. Imports require a complete readable registry
+before deciding identity conflicts. Receipt exhaustion refuses rather than forgetting proof;
+save a new template copy. Bundled templates are immutable. Exported JSON contains format,
+schema version, definition and an RFC 8785 SHA-256 digest, never store locators or samples.
+The raw envelope is limited to 1 MiB; HTTP's entire JSON request has the same 1 MiB bound,
+including escaping/argument overhead. Unknown fields, duplicate keys, invalid Unicode, unsafe
+revisions, non-finite numbers and excessive depth are refused. Exact reimports keep a durable
+portable identity/revision/digest receipt even when the imported copy got another UUID or local
+revision. A higher revision updates only with explicit mode/expected revision; copy is the default.
+If a store template file is removed, get, compatibility, apply, export and update return
+`TEMPLATE_UNAVAILABLE` with a missing-template reason and a hint to refresh the catalog or save
+a new template from an existing view. A missing file is not revision zero. Existing working
+and saved views retain their copied configurations and pinned references.
+
+Non-deleted working state also retains acknowledged operation receipts until its detached expiry. Save and
+clone reserve their input snapshot before crossing to another owner; their original answers
+survive retries/restarts. Save checkpoints its reserved configuration, leaving intervening edits
+dirty. Records, checkpoints and receipts share the 256 MiB aggregate quota, a 4 MiB per-record
+limit and 4,096 receipts per working view. Capacity refuses without evicting unexpired work.
+Deleting a working view releases its live count and byte quota. Its deleted record and receipts
+remain retryable for up to six hours, under separate limits of 256 records and 8 MiB; pressure
+evicts the oldest first. After expiry or eviction, a delete retry returns `VIEW_UNAVAILABLE`;
+the old creation request no longer reserves that UUID. Capabilities expose
+`max_deleted_view_receipts`, `max_deleted_view_metadata_bytes` and `deleted_view_lifetime_hours`.
+Recovery enforces the same bounds and shortens legacy longer deadlines to at most six hours
+from recovery, persisting the deadline so later restarts cannot extend it. A live quota refusal
+names the records or metadata holding capacity. Saving a view alone does not release its slot;
+close its editor and delete the unneeded working copy. Saved definitions and source files stay.
+A new view can be created from the inspectable configuration. Saved views preserve the starting
+template reference as provenance; subsequent edits remain their own configuration snapshots.
+References are validated on admission and recovery. A malformed saved reference is reported
+as an unreadable record; a malformed working reference or retained receipt is quarantined intact.
+
+Clients opt into `capabilities.experimental["wpilog/visualizationNotifications"]: true` during
+MCP initialize. The server advertises the same namespaced capability. Notifications use
+`notifications/experimental/visualization`, with API version, server epoch, sequence, kind,
+view UUID and revision. They contain no samples/configurations. Only negotiated sessions
+watching that view or owning its attachment receive them. GET `/mcp` carries SSE `id:` values;
+reconnect with `Last-Event-ID`. A ring holds at most 256 events or 1 MiB per session. Expired
+replay or an epoch mismatch returns `resync_required`, so clients reread/reattach current views.
+Explorer reinitializes and re-registers its grants after session replacement, with bounded
+reconnection backoff. `connect` reconnects a dropped stream with replay IDs; an expired session
+still needs the bridge's existing new-initialize/restart remedy. Direct stdio serializes control
+notifications beside responses. This stage delivers revisions only: display requests, client
+selection, automatic window opening, live presentation and telemetry follow are later stages.
 
 Without a PID record, `start` and `connect` adopt a server only when its health name matches
 the requested configuration. Another name is refused with its owner, PID, stop command and

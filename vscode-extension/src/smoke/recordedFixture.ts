@@ -16,14 +16,19 @@ async function until(label: string, check: () => boolean | Promise<boolean>): Pr
 export function activate(context: vscode.ExtensionContext): void {
   const root = process.env.WPILOG_RECORDED_FIXTURE!;
   if (!root || !fs.existsSync(path.join(root, "fixture-only"))) throw new Error("An isolated recorded fixture is required");
-  const client = new McpClient(process.env.WPILOG_RECORDED_ENDPOINT!, "fixture");
+  const fixtureGrants: string[] = [];
+  const client = new McpClient(process.env.WPILOG_RECORDED_ENDPOINT!, "fixture", async () => ({ directories: { paths: [{ path: path.join(root, "logs"), team: null }, ...fixtureGrants.map(p => ({ path: p, team: null }))], team: null }, key: null }));
   let target = "";
-  const preview = new RecordedPreview({ context, client: async () => client, entries: (_path, label) => { target = label; }, grantStore: async () => {} });
+  const storePath = path.join(root, "logs/store"); fs.mkdirSync(storePath, { recursive: true });
+  const exportPath = path.join(root, "fixture-template.json");
+  const preview = new RecordedPreview({ context, client: async () => client, entries: (_path, label) => { target = label; }, grantStore: async directory => { fixtureGrants.push(directory); await client.refreshRegistration(); },
+    dialogs: { showQuickPick: async (items: any[]) => items.find(i => i.store) ?? items[0], showOpenDialog: async (options: any) => [vscode.Uri.file(options.canSelectFolders ? storePath : exportPath)],
+      showInputBox: async () => "Saved fixture", showWarningMessage: async (_message: string, _options: unknown, ...items: string[]) => items.includes("Update template") ? "Update template" : undefined, showSaveDialog: async () => vscode.Uri.file(exportPath) } as any });
   // Count the real product transports; presentation edits must not issue another sample request.
-  const requests = { arrow: 0, cursor: 0 };
+  const requests = { arrow: 0, cursor: 0, statistics: 0, raw: 0 };
   const data = (preview as any).data, fetchData = data.fetch.bind(data), call = preview.backend.call.bind(preview.backend);
   data.fetch = (...args: any[]) => { requests.arrow++; return fetchData(...args); };
-  preview.backend.call = ((route: string, ...args: any[]) => { if (route === "/source/value") requests.cursor++; return call(route, ...args); }) as typeof preview.backend.call;
+  preview.backend.call = ((route: string, ...args: any[]) => { if (route === "/source/value") requests.cursor++; if (route === "/source/statistics") requests.statistics++; if (route === "/source/raw") requests.raw++; return call(route, ...args); }) as typeof preview.backend.call;
   context.subscriptions.push(preview, { dispose: () => { void client.dispose(); } });
   const checks: string[] = [];
   let presentationRequests: { before: typeof requests; after: typeof requests } | undefined;
@@ -112,11 +117,85 @@ export function activate(context: vscode.ExtensionContext): void {
         assert.deepEqual((await preview.backend.read(id)).configuration, aConfig);
         assert.deepEqual((await preview.backend.read(a2.view_id)).configuration, aConfig);
         checks.push("Enter resizes a focused panel; Entries routes to B's selected table and leaves both A views unchanged");
-        preview.backend.destinations.set(id, { store_path: path.join(root, "logs/store"), title: "Saved fixture" });
-        await a.controller.promote(); preview.provider.paint(a);
+        await preview.open(a.controller.snapshot as RecordedView); await ready(aUri);
+        await click(id, "#save");
+        await until("product first-store Save view", () => !!a.controller.snapshot.saved_view_ref);
         assert.ok(a.controller.snapshot.saved_view_ref); assert.equal(a.controller.draftUndoDepth, 0);
         assert.ok(fs.existsSync(path.join(root, "logs/store/store.json")));
         checks.push("real first-store metadata save checkpoints the draft and clears draft undo without enrollment");
+        // Drive store templates and portable sharing through the product controls and dialogs.
+        await click(id, "#template-picker summary"); await click(id, "#template-save");
+        await until("store template listed", async () => (await driver.evaluate(selector(id), "document.getElementById('templates')?.textContent"))?.includes("Saved fixture"));
+        const selectTemplate = async (viewId: string) => {
+          await driver.evaluate(selector(viewId), "(() => { const q=document.getElementById('template-search'); q.value='Saved fixture'; document.getElementById('template-find').click(); return true; })()");
+          await until("searched template", async () => await driver.evaluate(selector(viewId), "document.getElementById('templates')?.options.length") === 1);
+          await driver.evaluate(selector(viewId), "(() => { const t=document.getElementById('templates'); t.value='0'; t.dispatchEvent(new Event('change')); return true; })()");
+          await until("compatible template", async () => (await driver.evaluate(selector(viewId), "document.getElementById('template-status')?.textContent"))?.startsWith("compatible:"));
+        };
+        await selectTemplate(id); await click(id, "#template-export"); await until("portable export file", () => fs.existsSync(exportPath));
+        const portable = JSON.parse(fs.readFileSync(exportPath, "utf8")); assert.ok(portable.content_sha256); assert.ok(!fs.readFileSync(exportPath, "utf8").includes(root));
+        await click(id, "#template-import"); await (preview as any).pages.get(id).serial;
+        await preview.open(bDoc.controller.snapshot as RecordedView); await ready(bUri); await click(b.view_id, "#template-picker summary"); await selectTemplate(b.view_id);
+        const existing = new Set(preview.provider.documents.keys()); await click(b.view_id, "#template-open");
+        await until("template opens independent B view", () => [...preview.provider.documents.keys()].some(k => !existing.has(k)));
+        const reused = [...preview.provider.documents.values()].find(d => !existing.has(d.uri.toString()))!; await ready(reused.uri);
+        const reusedId = reused.controller.snapshot.view_id;
+        assert.deepEqual(reused.controller.snapshot.configuration, aConfig); assert.deepEqual((reused.controller.snapshot as RecordedView).source_ref, bRef);
+        await until("reused B values", async () => (await driver.evaluate(selector(reusedId), "document.querySelector('.recorded-values')?.textContent"))?.includes("2000000"));
+        checks.push("search, exact compatibility, Save template, portable export/import and Open new view reuse A's definition on B");
+        for (const kind of ["statistics", "raw"]) {
+          await click(reusedId, "#" + kind);
+          await until("new analysis panel", () => (reused.controller.snapshot.configuration as RecordedConfiguration).panels.some(p => p.type === kind));
+          const panel = (reused.controller.snapshot.configuration as RecordedConfiguration).panels.find(p => p.type === kind)!;
+          await driver.evaluate(selector(reusedId), `(() => { document.getElementById('picker').open=true; document.getElementById('target').value=${JSON.stringify(panel.panel_id)}; for(const o of document.getElementById('signals').options) o.selected=o.value==='/Value'; document.getElementById('add').click(); return true; })()`);
+          await until("analysis signal persisted", () => (reused.controller.snapshot.configuration as RecordedConfiguration).panels.find(p => p.type === kind)!.series.length === 1);
+        }
+        await until("statistics and original raw records", async () => (await driver.evaluate(selector(reusedId), "document.querySelector('.recorded-statistics')?.textContent"))?.includes("mean8") && await driver.evaluate(selector(reusedId), "document.querySelectorAll('.raw-records tr').length") === 4);
+        const rawRows = await driver.evaluate(selector(reusedId), "[...document.querySelectorAll('.raw-records tr')].slice(1).map(r=>[...r.children].map(c=>c.textContent))");
+        assert.deepEqual(rawRows, [["0", "0", "7"], ["1", "1000000", "8"], ["2", "2000000", "9"]]);
+        checks.push("statistics mean 8 uses original B samples; raw table preserves ordinals 0/1/2 and times 0/1000000/2000000");
+        const pinned = structuredClone(reused.controller.snapshot.configuration);
+        await click(reusedId, "#template-picker summary"); await selectTemplate(reusedId); await click(reusedId, "#template-update");
+        await until("template revision updated", async () => (await driver.evaluate(selector(reusedId), "document.getElementById('templates')?.textContent"))?.includes("r2"));
+        assert.deepEqual((await preview.backend.read(id)).configuration, aConfig); assert.deepEqual(reused.controller.snapshot.configuration, pinned);
+        checks.push("explicit template revision update leaves all existing view configurations pinned");
+        const agent = new McpClient(client.endpoint, "independent-agent");
+        try {
+          await preview.open(a.controller.snapshot as RecordedView); await ready(aUri);
+          const current = a.controller.snapshot, edited = structuredClone(current.configuration) as RecordedConfiguration; edited.panels[0].title = "Agent revised";
+          const edit = { api_version: 1, request_id: require('node:crypto').randomUUID(), view_id: id, expected_revision: current.revision, configuration_json: JSON.stringify(edited) };
+          const changed: any = await agent.callTool("visualization_view_update", edit);
+          await until("MCP notification reaches editor", () => a.controller.snapshot.revision === changed.view.revision);
+          await until("agent edit renders", async () => await driver.evaluate(selector(id), "document.querySelector('.panel-title')?.value") === "Agent revised");
+          await assert.rejects(agent.callTool("visualization_view_update", { ...edit, request_id: require('node:crypto').randomUUID() }), (e: any) => e.result?.code === "REVISION_CONFLICT");
+          assert.deepEqual((await preview.backend.read(id)).configuration, edited);
+          await vscode.commands.executeCommand("workbench.action.files.save");
+          checks.push("separate MCP agent edit reaches the saved editor over SSE; a stale revision is refused without replacing the accepted edit");
+          // Replace this group's editor with a text document. A hidden view cannot fetch samples.
+          await preview.open(reused.controller.snapshot as RecordedView); await ready(reused.uri);
+          await (preview as any).pages.get(reusedId).rendering;
+          const page = (preview as any).pages.get(reusedId);
+          const textDocument = await vscode.workspace.openTextDocument({ content: "Hidden preview fixture" });
+          await vscode.window.showTextDocument(textDocument, { viewColumn: page.panel.viewColumn, preview: false });
+          await until("view hidden", () => !page.panel.visible); await pause(200); const beforeHidden = { ...requests };
+          const hidden = reused.controller.snapshot, config = structuredClone(hidden.configuration) as RecordedConfiguration; config.panels[0].title = "Hidden agent edit";
+          const hiddenResult: any = await agent.callTool("visualization_view_update", { api_version: 1, request_id: require('node:crypto').randomUUID(), view_id: reusedId, expected_revision: hidden.revision, configuration_json: JSON.stringify(config) });
+          await until("hidden invalidation received", () => reused.controller.snapshot.revision === hiddenResult.view.revision); await page.serial; await pause(250);
+          assert.deepEqual(requests, beforeHidden, "hidden revisions must not issue sample requests");
+          await preview.open(reused.controller.snapshot as RecordedView); await ready(reused.uri); await until("revealed data refetch", () => requests.arrow > beforeHidden.arrow); await page.rendering;
+          checks.push("hidden view receives configuration only with zero sample requests; reveal requests its bounded data again");
+        } finally { await agent.dispose(); }
+        // Native overview buttons must resume the same UUID and fork a saved checkpoint.
+        await preview.openOverview(vscode.Uri.file(path.join(root, "logs/a.wpilog")));
+        const overviewSelector = "document.body?.dataset.overview === 'true'";
+        await driver.evaluate(overviewSelector, "(document.getElementById('refresh').click(), true)");
+        await until("resume button", async () => (await driver.evaluate(overviewSelector, "document.getElementById('drafts')?.textContent"))?.includes(a2.view_id.slice(0,8)));
+        await driver.evaluate(overviewSelector, `(() => { [...document.querySelectorAll('#drafts .view-row')].find(r=>r.textContent.includes(${JSON.stringify(a2.view_id.slice(0,8))})).querySelector('button').click(); return true; })()`);
+        await until("native Resume reopens same UUID", () => (vscode.window.tabGroups.activeTabGroup.activeTab?.input as vscode.TabInputCustom)?.uri?.toString() === a2Uri.toString());
+        await preview.openOverview(vscode.Uri.file(path.join(root, "logs/a.wpilog"))); const previousViews = new Set(preview.provider.documents.keys());
+        await driver.evaluate(overviewSelector, "(document.querySelector('#saved button').click(), true)");
+        await until("saved Open new view forks", () => [...preview.provider.documents.keys()].some(k => !previousViews.has(k)));
+        checks.push("overview Resume reopens the draft UUID and saved Open new view creates a distinct working UUID");
         const views = await Promise.all([id, a2.view_id, b.view_id].map(view => preview.backend.read(view)));
         fs.writeFileSync(path.join(root, "expected.json"), JSON.stringify({ owner: await preview.identity(), views }));
       }

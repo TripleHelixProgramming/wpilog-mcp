@@ -116,6 +116,8 @@ dependencies {
 
     // JSON processing for MCP protocol
     implementation 'com.google.code.gson:gson:2.11.0'
+    // RFC 8785 number serialization, used by portable visualization template digests.
+    implementation 'io.github.erdtman:java-json-canonicalization:1.1'
 
     // Arrow's IPC format (the Flatbuffers schema and message headers) for the data endpoint,
     // written at the format level: no arrow-vector, no off-heap allocator (see ARCHITECTURE.md)

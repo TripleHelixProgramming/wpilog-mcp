@@ -18,7 +18,7 @@ export interface JsonRpcMessage {
   params?: unknown;
 }
 
-/** The `initialize` request: the client's name and version, and no capabilities of its own. */
+/** The `initialize` request: the client's name and version, and the optional visualization control-notification capability. */
 export function initializeRequest(id: number, clientVersion: string): JsonRpcMessage {
   return {
     jsonrpc: "2.0",
@@ -26,7 +26,7 @@ export function initializeRequest(id: number, clientVersion: string): JsonRpcMes
     method: "initialize",
     params: {
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: {},
+      capabilities: { experimental: { "wpilog/visualizationNotifications": true } },
       clientInfo: { name: "wpilog-explorer", version: clientVersion },
     },
   };

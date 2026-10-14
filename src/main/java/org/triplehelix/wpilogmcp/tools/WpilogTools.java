@@ -130,6 +130,7 @@ public final class WpilogTools {
    */
   public static void registerAll(ToolRegistry registry) {
     CoreTools.registerAll(registry);
+    VisualizationTools.registerAll(registry);
     QueryTools.registerAll(registry);
     StatisticsTools.registerAll(registry);
     RobotAnalysisTools.registerAll(registry);

@@ -409,11 +409,46 @@ public final class DiscoveryTools {
         List.of("What tool should I use for X?", "Help me analyze Y", "Recommend tools for Z"),
         false, List.of("get_server_guide")));
 
+    tools.add(new ToolInfo("visualization_capabilities_get", "visualization", "Supported configuration schema, type and role vocabulary, persistent identity, budgets and preview limits.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_source_inspect", "visualization", "Inspect a recorded source by an admitted path or durable source_ref. Returns identity, entry types, schemas, sample counts and clock bounds.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_list", "visualization", "Search immutable bundled and configured-store templates by query. Returns templates, unreadable records and listing_incomplete.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_get", "visualization", "Read an exact pinned template_ref; a changed revision refuses rather than silently substituting.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_check", "visualization", "Check exact entries or explicit shared-resolver roles against a source. Returns compatibility and per-requirement bindings, reasons, candidates, unit basis and warnings; missing exact names never fall back.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_create", "visualization", "Create a store template from configuration_json or a pinned working view. Returns template_ref and portable template. No source bytes or paths are stored in templates; no writable store yields NO_WRITABLE_STORE.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_update", "visualization", "Explicitly update a store template at expected_revision. Returns template_ref and template; existing views keep pinned configurations. Bundled definitions are immutable.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_import", "visualization", "Validate a portable envelope_json and RFC 8785 SHA-256 before an atomic import. Default mode copy; explicit update requires expected_revision and a newer import. Durable portable receipts deduplicate retries. Same identity/revision with differing content conflicts.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_export", "visualization", "Return envelope_json with format, schema_version, template and content_sha256. Contains declarative configuration only, no source locators, sample buffers or credentials.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_list", "visualization", "List unexpired working views, optionally for source_ref. Returns views with revision, configuration, source_ref, checkpoint, saved/template references, attachment and expiry.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_get", "visualization", "Read one working view: revision, configuration, source_ref, checkpoint, saved/template references, attachment, expiry, has_unsaved_changes and native_dirty. Does not display it.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_create", "visualization", "Create an independent working view from source_ref and configuration_json or template_ref, or an empty layout. Returns its stable view_id and revision, configuration and persistence state. Creation does not request display or start acquisition.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_update", "visualization", "CAS edit a working view with strict configuration_json at expected_revision. Returns the updated view and notifies its attached Explorer. Conflicts retain both edits; never retry automatically against a newer revision.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_clone", "visualization", "Create another working UUID from the pinned expected_revision. Returns an independent view with the same source and configuration; selection and later edits are not shared.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_save", "visualization", "Save source-bound configuration at expected_revision into a local store and advance its checkpoint. First save requires store_id and title; existing saves retain their destination. A concurrent edit remains uncheckpointed. Returns the view.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_discard", "visualization", "CAS restore the checkpoint or initial draft layout at expected_revision. Returns the view with an advanced revision; saved store definitions are unchanged.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_delete", "visualization", "Delete an unattached working view at expected_revision, retaining a bounded retry tombstone until expiry. Saved definitions and source files remain intact; close an attached editor first. Returns the deleted view receipt.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
     return tools;
   }
 
   private static List<CategoryInfo> buildCategories() {
     return List.of(
+        new CategoryInfo("visualization", "Reusable recorded views and templates", "Read compatibility reasons, use explicit revisions, and keep numerical analysis on the server"),
         new CategoryInfo("live", "Live capture sessions and publications",
             "A stale publication does not prove the robot stopped; use logged history for analysis"),
         new CategoryInfo("core",
@@ -518,7 +553,7 @@ public final class DiscoveryTools {
     public JsonObject inputSchema() {
       return new SchemaBuilder()
           .addProperty("category", "string",
-              "Filter by category: core, query, statistics, robot_analysis, frc_domain, export, tba, revlog, discovery, live (capture only)",
+              "Filter by category: core, query, statistics, robot_analysis, frc_domain, export, tba, revlog, discovery, visualization, live (capture only)",
               false)
           .addProperty("include_examples", "boolean",
               "Include example use cases for each tool (default: true)", false)

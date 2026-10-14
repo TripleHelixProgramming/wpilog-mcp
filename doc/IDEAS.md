@@ -481,21 +481,36 @@ identity or failed anchors load afresh.
 
 ### 9.4 Reusable visualization documents
 
-[VISUALIZATION_PLAN.md](VISUALIZATION_PLAN.md) stages the replacement. Stage 1 is committed;
-Stage 2a adds the optional recorded overview, independent plots/value tables, Entries targeting,
-saved views and draft recovery. The real Java/editor path and session-expiry cleanup are now
-integrated. The Stage 2a review requires isolated saved-file errors, locator reclamation and
-presentation-only data reuse; these are addressed by the focused re-check. Stage 2b still owes
-one endpoint-owned store catalog refreshed on root changes; native first-save coverage using the
-product's empty-import/store-id path with supplied pickers (then removal of the fixture-only
-`store_path` branch); request-counted hidden/revealed views and native overview Resume/Open-new-view;
-and unavailable listings for older unmanaged fingerprints. Keep these in the Stage 2b review.
-Other Stage 2b work includes templates, roles/compatibility, JCS sharing,
-statistics/raw tables, public MCP operations and notifications. Native Save As
-still refuses with a Save view hint until its picker/destination/replacement gate is proven.
-The decoded-buffer setting (64 MiB default), aggregate recorded/live budget, continuous follower,
-remote admission and large-log/live performance gates remain Stage 3. Native Linux/Windows
-checks and the manual Close-cancellation click remain outstanding; Mac fixtures do not prove them.
+[VISUALIZATION_PLAN.md](VISUALIZATION_PLAN.md) stages the replacement. Stage 1 and accepted
+Stage 2a are committed locally. Stage 2b implements reusable templates, explicit compatibility,
+JCS sharing, statistics/raw tables, named MCP operations and revision notifications. Review
+accepted the macOS gate subject to two focused fixes: deleted-view capacity and missing-template
+diagnostics, now addressed in the unreleased work. Its focused carry-overs are addressed: one catalog owner, the product native first-save
+path, request-counted hidden/revealed views, native overview Resume/Open new view, and unavailable
+older-fingerprint listings. Opening an overview across a server restart still requires reopening
+it to refresh an ephemeral source reference; no silent source retargeting is attempted.
+
+Native Save As still refuses with a Save view hint until its picker/destination/replacement gate
+is proven. Continuous following, the decoded-buffer setting (64 MiB default), aggregate
+recorded/live budgets, remote admission and large-log/live performance gates remain Stage 3.
+Explicit display requests, client selection and default-editor retirement remain Stage 4.
+The preview's field projection is numeric only; richer typed projections remain with the
+existing editor until the shared reader/renderer contract supports them. Template/working
+receipt exhaustion for non-deleted records currently refuses and requires a new definition/view
+rather than pruning acknowledged proof. Explicitly deleted working records have a separate
+six-hour retry window, count/byte caps and oldest-first eviction. Native Linux/Windows checks and the manual Close-cancellation click remain
+outstanding; Mac fixtures do not prove them. No performance claim is made.
+
+The Stage 2b review leaves six minor follow-ups outside the focused acceptance fixes:
+
+- Before Stage 3, stop SSE delivery before disposing its workspace and prevent its loop from
+  lazily recreating a closed workspace; unavailable optional state should still allow pings.
+- Replace the resolver enum exception for an unknown role with a public vocabulary hint.
+- Stop asking for an import title that is discarded in favor of the envelope name.
+- Consolidate the bundled Driver Station definition into the planned single four-role table.
+- Drive cross-store import in the native fixture; its current same-store import proves the
+  idempotent path. API tests and the independent review probe cover cross-store transfer.
+- Expand the visualization tool reference's inner result fields before release.
 
 ### 9.3 Data Browser and Charts
 Priority: High. Complexity: Medium.

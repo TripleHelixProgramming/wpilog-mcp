@@ -4,7 +4,7 @@ import { Backend, Configuration } from "./documentController";
 import { Inventory, RecordedView, SourceRef } from "./recordedModel";
 export interface SourceSummary { source_ref: SourceRef; path: string; label: string; catalog: unknown; inventory_state: string; }
 export interface StoreChoice { store_id: string; label: string; path: string; writable: boolean; }
-export interface SaveChoice { store_id?: string; store_path?: string; title: string; }
+export interface SaveChoice { store_id?: string; title: string; }
 export interface Capabilities { server_instance_id: string; working_state: string; working_state_reason?: string; blank_configuration: Configuration; }
 
 /** One window's adapter borrows its existing MCP session and directory grants. */

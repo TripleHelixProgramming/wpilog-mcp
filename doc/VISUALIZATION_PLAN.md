@@ -1,11 +1,10 @@
 # WPILog Explorer reusable visualization design
 
-Status: Stage 1 committed as `632b492` after owner authorization. Stage 2a recorded foundation is
-implemented locally on 2026-10-14, including the real Java/controller connection and
-session-expiry ownership. Its independent review accepted the gate subject to three fixes;
-those fixes now pass the focused re-check described below. Stage 2b has not started. Close cancellation remains unverified on
-the manual dialog, Linux/Windows native runs are outstanding, and Save As uses the specified
-refusal fallback. No publication or version change is part of this work.
+Status: Stage 1 committed as `632b492`; accepted Stage 2a committed as `c6436d6` after owner
+authorization. Stage 2b is implemented locally and validated on macOS on 2026-10-14, with
+its evidence recorded separately below. It remains uncommitted for review before Stage 3. Close cancellation
+remains unverified on the manual dialog, Linux/Windows native runs are outstanding, and Save As
+uses the specified refusal fallback. No publication or version change is part of this work.
 
 
 Revision 2, 2026-10-14: incorporates the [independent design review](VISUALIZATION_PLAN_REVIEW.md). The review describes revision 1 (570 lines, SHA-256 `275d58298bd737e9c537a2014c89b099c6321d2de021cfc968aaa851fe5b903b`). Review disposition and verification are recorded at the end of this document.
@@ -287,7 +286,7 @@ All visualization metadata writes use a narrow `LogStore` mutation entry point, 
 
 Create the owning server's independent state directory at `~/.wpilog-mcp/state/visualizations/<config-key>/`, reusing/extracting the existing config identity derivation: SHA-256 of the real configuration path, a newline, and the named server name. This is the [LocalIngestion state-location convention](../src/main/java/org/triplehelix/wpilogmcp/store/LocalIngestion.java#L122), not ingestion policy or permission to enable it. Atomically create `server.json` under a state lock with a persistent `server_instance_id`; expose that ID through `/health` and `get_server_guide`. Today health reports configuration name/version/PID, not such an ID. Anonymous servers without a durable configuration identity advertise ephemeral working-state support and cannot promise restart recovery. If a named server cannot open this optional state, it warns and continues with an ephemeral identity; health and the guide include `working_state_reason`.
 
-Store working instances in `views/<view-id>.json`, operation receipts in `receipts/`, and native Save As destination aliases with their working records. Bound this state to 256 working documents and 256 MiB aggregate metadata, including checkpoints, receipts, and aliases; each configuration remains bounded to 1 MiB. Detached working records, including drafts and saved views' working copies, expire after 30 days; attached records do not. Quarantine malformed or unknown files intact under `quarantine/<uuid>/`, log a warning, and continue loading valid records. Keep quarantined files for manual inspection outside the active-state quota; if the move fails, retain the original and fail recovery. Prune expired records before every budget check, including updates, then return `WORKSPACE_LIMIT` rather than evicting attached or unexpired unsaved work. Responses and capabilities publish these limits and the supported idempotency-retention interval. Saved definitions and templates in log stores do not expire automatically.
+Store working instances in `views/<view-id>.json`, operation receipts in `receipts/`, and native Save As destination aliases with their working records. Bound live state to 256 non-deleted working documents and 256 MiB aggregate metadata, including checkpoints, receipts, and aliases; each configuration remains bounded to 1 MiB. Detached working records, including drafts and saved views' working copies, expire after 30 days; attached records do not. Quarantine malformed or unknown files intact under `quarantine/<uuid>/`, log a warning, and continue loading valid records. Keep quarantined files for manual inspection outside the active-state quota; if the move fails, retain the original and fail recovery. Prune expired records before every budget check, including updates, then return `WORKSPACE_LIMIT` rather than evicting attached or unexpired unsaved work. Responses and capabilities publish these limits and the supported idempotency-retention interval. Deleted working records instead have a six-hour retry window and separate caps of 256 records and 8 MiB, evicting the oldest under pressure. Expiry or eviction ends their retry guarantee; capabilities publish these bounds. Recovery shortens legacy longer tombstone deadlines once and persists the deadline. Saved definitions and templates in log stores do not expire automatically.
 
 GUI semantic edits commit through compare-and-swap and become inspectable through MCP. Commit on completed actions, not every pointer movement. The extension recovery journal protects offline/unacknowledged edits; native backups supplement it where VS Code invokes them. Responses distinguish configuration/checkpoint differences from native dirty state.
 
@@ -408,6 +407,9 @@ This requires implementation at every layer: populate the currently ping-only SS
 When Explorer is closed, creation still returns a recoverable view reference and a URI resolved only through configured trusted connections. No indefinite popup is queued. Subscriptions start when an eligible view attaches, not when an agent creates its definition.
 
 ### Example
+
+This is the target Stage 3/4 live handoff. Stage 2b admits recorded sources only, uses
+`configuration_json` text for MCP definitions, and does not yet request display.
 
 All identifiers and signal names below are synthetic. The user says:
 
@@ -892,3 +894,64 @@ supplied pickers, request-counted hidden/reveal behavior, native overview Resume
 and unavailable listings for older unmanaged fingerprints; see [IDEAS.md](IDEAS.md#94-reusable-visualization-documents).
 Native Linux/Windows, the manual Close-cancellation click, the Save As gate and performance
 claims remain unverified. No commit or publication is part of this follow-up.
+
+
+### Stage 2b implementation and scope
+
+The shared workspace now serves HTTP and 17 named MCP operations for capabilities, recorded
+source inspection, template list/get/check/create/update/import/export, and working view
+list/get/create/update/clone/save/discard/delete. Definition JSON travels as text on MCP to keep
+duplicate-key evidence. Display handoff/client operations remain Stage 4; view presentation/live
+state remains Stage 3. Revision notifications are implemented now across SSE, Explorer, bridge
+replay and direct stdio, without creating telemetry or a deferred popup.
+
+Templates use immutable built-ins, exact entry names or explicit resolver roles, pinned view
+snapshots, store CAS and portable identity/revision/digest receipts. The RFC 8785 digest is
+computed by the JCS library. The GUI supports default-copy import and explicit newer-revision
+update. Statistics use original server samples; raw pages retain physical ordinals and replace
+prior pages. The schema can describe later panels, but this preview admits plot/latest/statistics/
+raw only, up to 32 series, and numeric field projections only. Template and working receipts
+are atomic with their owner record, rather than a separate receipts directory; this avoids an
+acknowledged definition without its retry proof. Store receipts are bounded to 64 entries per
+map and 1 MiB per record; working records to 4,096 receipts and 4 MiB within the existing 256 MiB
+live workspace budget. Exhaustion refuses for non-deleted views; explicit deletion moves retained proof into the separate bounded retry window described above.
+
+The five Stage 2a minor carry-overs are implemented and tested: cached catalog ownership with
+root invalidation, product-path native first save with supplied dialogs, request-counted hidden
+views, native overview buttons, and unavailable listings for changed unmanaged fingerprints.
+An overview left open across a restart still needs reopening to refresh its source reference.
+Native Linux/Windows, manual Close cancellation, native Save As, aggregate resource budgets,
+remote/live behavior and performance retain their disclosed staged limits.
+
+Final local validation: `./gradlew build license` passed (3,654 passed, 84 skipped, no
+failures); all 428 extension tests passed. VS Code 1.101.0 and 1.141.0 each passed 13 recorded
+workflow checks, including a real Java/editor restart, and 20 native lifecycle checks with
+20 Undo/Redo pairs. Fifty fault plants were caught and restored. The final build also checks
+all 17 tool schemas/catalog/scenarios and their explicit frozen-reader-corpus classification;
+the independent state-transition conformance covers successful calls for every operation.
+
+Additional regression probes corrected serialized metadata byte accounting, overflow while a
+notification reader sleeps, and malformed pinned references on admission/recovery. The first
+full build found missing integration classifications/documentation sections; those checks now
+pass and their plants fail. Earlier attempts, exact commands/times, screenshots, source hashes
+and scope limits are recorded in `/private/tmp/wpilog-visualization-stage2b/validation.md`.
+Stage 2b awaits review; no push, version change or Stage 3 work is included.
+
+### Stage 2b focused review follow-up (2026-10-14)
+
+The independent review reproduced the macOS gate and 118 API/oracle checks, conditional on
+correcting deleted-view capacity; the missing-template diagnostic goes with that fix. Both are
+addressed in the unreleased tree. Deleted records no longer consume live document/byte quotas
+or pin unused source locators. Their separate 256-record/8 MiB retry budget evicts oldest first
+and expires after six hours, including bounded recovery of legacy longer deadlines. Real live
+quota refusals identify what holds capacity. A removed store template now yields
+`TEMPLATE_UNAVAILABLE` through get/apply/export/update, including removal while an update waits
+for the store queue. Existing views retain their copied configuration.
+
+Nineteen new regression cases failed against the reviewed code before passing; 17 deliberate
+plants were caught and restored. Focused execution logs, fixture corrections, final test counts
+and hashes are in `/private/tmp/wpilog-visualization-stage2b-review/validation.md`. The independent
+review's full build, Node and native results remain separate evidence; this focused follow-up
+does not claim to rerun them. The six minor follow-ups, including SSE shutdown ordering before
+Stage 3, are recorded in [IDEAS.md](IDEAS.md#94-reusable-visualization-documents). No commit,
+push, version change or Stage 3 work is part of this follow-up.

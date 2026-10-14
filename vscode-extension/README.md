@@ -78,7 +78,7 @@ Choose **WPILog Explorer: Open Source Overview (Preview)** on a local WPILOG in 
 **Reopen Editor With → WPILog Source Overview (Preview)**. Ordinary opening still uses the
 existing Explorer editor. The overview shows catalog facts first, then the indexed duration,
 signal inventory and completeness; unavailable facts are labeled, never guessed from signal names.
-**Blank layout** opens an independent working view. Add a plot or value table, select signals
+**Blank layout** opens an independent working view. Add a plot, value table, statistics panel or raw table, select signals
 in **Add signals**, and use each panel's **Move, resize or remove panel** controls with Tab/Enter
 or drag its header and resize its edge. Panel titles are editable. Title, size, position and style
 edits keep the current samples; series/range changes start a new data query. The Entries target label names the current view and panel; a click adds to that target, or creates a view from the overview.
@@ -105,10 +105,39 @@ of being silently substituted. For a file outside a store, identity checks file 
 content: a rewrite preserving the fingerprint is not detected. Unreferenced source locators may
 be reclaimed; reopen the unchanged file in Source Overview to restore its saved views.
 
-This Stage 2a preview is local, recorded WPILOG only. Templates, statistics/raw tables, public
-visualization MCP operations and notifications arrive in Stage 2b. Keep using the existing editor
+**Reusable templates** searches built-in and configured-store definitions. Select one to see
+compatibility reasons, then **Open new view** to keep the current view. **Replace this layout…**
+offers Save or Discard before replacing it. Missing exact names stay unresolved; explicit roles
+use the shared resolver. Unit mismatches refuse the binding; unknown units remain a stated
+assumption and no conversion is performed. **Signal bindings and units** shows the details.
+The built-ins cover Robot power, Driver Station state and User-code timing; timing uses the
+published user-code duration, never the full-loop clock.
+
+**Save template…** uses exact entry names by default; retaining role selectors is an explicit
+choice. **Update selected template…** compares the selected revision. Built-ins are immutable,
+and changing a store template never changes an existing view's configuration. Export/import
+shares only definition JSON with an RFC 8785 digest. Reimporting identical content is a no-op;
+a conflicting identity/revision is refused. For a newer known revision, **Import copy** is the
+default and **Update existing** explicitly compares the current revision. Templates live in a
+writable store; creating that store does not enable ingestion.
+
+Statistics use the server's existing statistics tool over original samples in the selected
+interval, with inputs/quality details beside the numbers. Raw tables show physical entry
+ordinals and original integer timestamps, including duplicates/backward times. Each page has
+at most 256 records in Explorer (the API permits 4,096), is bounded to 1 MiB and replaces the
+previous page; First/Next page do not accumulate the entire log. Numeric struct/array projections
+use the existing field-path owner; nonnumeric fields and wildcards remain unsupported in this
+preview. Use the existing editor for those projections.
+
+Local visualization MCP edits notify the attached view over the session control stream. A stale
+revision refuses; a pending local gesture remains available for comparison. Notifications carry
+no samples and request no popup. Hidden views accept configuration changes without requesting
+data, then reload their interval on reveal. Older unmanaged fingerprints appear as unavailable
+views rather than disappearing; their configuration remains inspectable through MCP.
+
+This Stage 2b preview is local, recorded WPILOG only. Keep using the existing editor
 for specialized field, console, REV, notebook and Advanced Data workflows. See
-[development checks](../doc/DEVELOPMENT.md#visualization-stage-2a-recorded-preview) for the isolated
+[development checks](../doc/DEVELOPMENT.md#visualization-recorded-preview) for the isolated
 real-service/editor fixture and its remaining platform gates.
 
 ## A Data Store That Follows Your Folders

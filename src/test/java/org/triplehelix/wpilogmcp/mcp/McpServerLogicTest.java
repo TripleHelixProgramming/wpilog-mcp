@@ -332,4 +332,20 @@ class McpServerLogicTest {
         "Server initialize response should contain version " +
         org.triplehelix.wpilogmcp.Version.VERSION + ". Output: " + output);
   }
+  @Test void directStdioSerializesNegotiatedRevisionNotificationsBesideResponses() throws Exception {
+    var input = new java.io.PipedOutputStream(); System.setIn(new java.io.PipedInputStream(input)); System.setOut(new PrintStream(outputStream));
+    var registry = new ToolRegistry(); var server = new McpServer(registry); var task = executor.submit(() -> { server.run(); return null; });
+    try {
+      input.write(("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"experimental\":{\"wpilog/visualizationNotifications\":true}}}}\n").getBytes(StandardCharsets.UTF_8)); input.flush();
+      var control = registry.visualizations().notifications; long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+      while (!control.negotiated("stdio") && System.nanoTime() < deadline) Thread.sleep(10);
+      assertTrue(control.negotiated("stdio")); control.watch("stdio", "fixture");
+      var view = new JsonObject(); view.addProperty("view_id", "fixture"); view.addProperty("revision", 2); view.add("attached_client_id", com.google.gson.JsonNull.INSTANCE); control.changed(view);
+      while (!outputStream.toString(StandardCharsets.UTF_8).contains("view_revision_changed") && System.nanoTime() < deadline) Thread.sleep(10);
+      assertTrue(outputStream.toString(StandardCharsets.UTF_8).contains("view_revision_changed"));
+    } finally { input.close(); task.get(3, TimeUnit.SECONDS); }
+    var messages = outputStream.toString(StandardCharsets.UTF_8).lines().map(com.google.gson.JsonParser::parseString).map(com.google.gson.JsonElement::getAsJsonObject).toList();
+    assertEquals(2, messages.size()); assertEquals(1, messages.stream().filter(m -> m.has("id")).count());
+  }
+
 }

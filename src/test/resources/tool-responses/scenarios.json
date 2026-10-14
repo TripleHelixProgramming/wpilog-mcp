@@ -76,6 +76,23 @@
 
     {"tool": "list_sessions", "title": "Recent sessions (capture-disabled reference server)", "args": {"limit": 20}},
     {"tool": "get_latest_values", "title": "Latest publications need a running capture", "args": {"entries": ["/Example/Counter"]}},
-    {"tool": "wait_for_change", "title": "A live wait needs a running capture", "args": {"entry": "/Example/Counter", "timeout_ms": 5000}}
+    {"tool": "wait_for_change", "title": "A live wait needs a running capture", "args": {"entry": "/Example/Counter", "timeout_ms": 5000}},
+    {"tool": "visualization_capabilities_get", "title": "Recorded preview: capabilities get", "args": {"api_version": 1}},
+    {"tool": "visualization_source_inspect", "title": "Recorded preview: source inspect", "args": {"api_version": 1, "path": "${q10}"}},
+    {"tool": "visualization_template_list", "title": "Recorded preview: template list", "args": {"api_version": 1}},
+    {"tool": "visualization_template_get", "title": "Recorded preview: template get", "args": {"api_version": 1, "template_ref": {"origin": "bundled", "template_id": "0788b5fb-061d-4a1c-872f-a0585b904e10", "revision": 1}}},
+    {"tool": "visualization_template_check", "title": "Recorded preview: template check", "args": {"api_version": 1, "source_ref": {"kind": "unmanaged", "source_id": "00000000-0000-4000-8000-000000000004"}}},
+    {"tool": "visualization_template_create", "title": "Recorded preview: template create", "args": {"api_version": 1, "request_id": "00000000-0000-4000-8000-000000000001", "store_id": "00000000-0000-4000-8000-000000000003", "name": "Reference template", "description": "Reference scenario"}},
+    {"tool": "visualization_template_update", "title": "Recorded preview: template update", "args": {"api_version": 1, "request_id": "00000000-0000-4000-8000-000000000001", "template_ref": {"origin": "bundled", "template_id": "0788b5fb-061d-4a1c-872f-a0585b904e10", "revision": 1}, "expected_revision": 1, "name": "Reference template", "description": "Reference scenario", "configuration_json": "{}"}},
+    {"tool": "visualization_template_import", "title": "Recorded preview: template import", "args": {"api_version": 1, "request_id": "00000000-0000-4000-8000-000000000001", "store_id": "00000000-0000-4000-8000-000000000003", "envelope_json": "{}"}},
+    {"tool": "visualization_template_export", "title": "Recorded preview: template export", "args": {"api_version": 1, "template_ref": {"origin": "bundled", "template_id": "0788b5fb-061d-4a1c-872f-a0585b904e10", "revision": 1}}},
+    {"tool": "visualization_view_list", "title": "Recorded preview: view list", "args": {"api_version": 1}},
+    {"tool": "visualization_view_get", "title": "Recorded preview: view get", "args": {"api_version": 1, "view_id": "00000000-0000-4000-8000-000000000002"}},
+    {"tool": "visualization_view_create", "title": "Recorded preview: view create", "args": {"api_version": 1, "request_id": "00000000-0000-4000-8000-000000000001", "source_ref": {"kind": "unmanaged", "source_id": "00000000-0000-4000-8000-000000000004"}}},
+    {"tool": "visualization_view_update", "title": "Recorded preview: view update", "args": {"api_version": 1, "request_id": "00000000-0000-4000-8000-000000000001", "view_id": "00000000-0000-4000-8000-000000000002", "expected_revision": 1, "configuration_json": "{}"}},
+    {"tool": "visualization_view_clone", "title": "Recorded preview: view clone", "args": {"api_version": 1, "request_id": "00000000-0000-4000-8000-000000000001", "view_id": "00000000-0000-4000-8000-000000000002", "expected_revision": 1}},
+    {"tool": "visualization_view_save", "title": "Recorded preview: view save", "args": {"api_version": 1, "request_id": "00000000-0000-4000-8000-000000000001", "view_id": "00000000-0000-4000-8000-000000000002", "expected_revision": 1}},
+    {"tool": "visualization_view_discard", "title": "Recorded preview: view discard", "args": {"api_version": 1, "request_id": "00000000-0000-4000-8000-000000000001", "view_id": "00000000-0000-4000-8000-000000000002", "expected_revision": 1}},
+    {"tool": "visualization_view_delete", "title": "Recorded preview: view delete", "args": {"api_version": 1, "request_id": "00000000-0000-4000-8000-000000000001", "view_id": "00000000-0000-4000-8000-000000000002", "expected_revision": 1}}
   ]
 }

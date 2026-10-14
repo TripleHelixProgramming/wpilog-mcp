@@ -263,6 +263,7 @@ class ToolConformanceTest {
       } finally { logManager.unloadLog(path); }
     }
 
+    calls.addAll(VisualizationConformance.exercise(FixtureLogs.defaultDirectory().resolve("visualization-state"), fixtures.get(0).path()));
     writeReport(calls);
     var results = calls.stream()
         .map(c -> java.util.Map.entry(c.tool(), c.result() == null

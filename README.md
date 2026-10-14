@@ -28,7 +28,7 @@ A log viewer such as AdvantageScope shows you the data, but only if you know whe
 
 A store organizes logs by robot and session. Continuous folder imports through **Set Up Data Store** are experimental and disabled by default; [enable them on the named server](doc/STANDALONE.md#keeping-a-data-store-up-to-date) to test the setup commands and offer. When enabled, the extension lets you choose the store location and the folders to keep importing. Copy is the default: source logs stay where they are. Move is available for folders you explicitly identify as receiving completed files; duplicate originals are retained. The shared server continues syncing while it runs, even after the editor closes. Its default listing shows the store and pending or refused source files; **Show All Sources** includes originals. Nothing is enrolled without approval. [Data store setup](doc/STANDALONE.md#keeping-a-data-store-up-to-date) explains the choices; one-shot import and organizing remain available.
 
-The [recorded visualization preview](doc/VISUALIZATION_PLAN.md) adds **Open Source Overview**, independent layouts, plots and cursor-value tables, and saved views. Normal log opening still uses the existing Explorer editor; the preview is an explicit choice while the staged replacement is reviewed.
+The [recorded visualization preview](doc/VISUALIZATION_PLAN.md) adds **Open Source Overview**, independent layouts, plots, cursor/statistics/raw tables, saved views, reusable templates and local MCP editing. Templates use explicit bindings and portable JSON sharing. Normal log opening still uses the existing Explorer editor; the preview is an explicit choice while the staged replacement is reviewed.
 
 ### What You Can Ask
 
@@ -136,7 +136,7 @@ built from this repository.
 
 ## Tools
 
-Every tool that reads a log takes a `path` parameter. The server loads a log the first time a tool names it; it unloads a log that sits idle, or any log when memory runs short. The tools, in the categories `get_server_guide` uses:
+Analysis tools take a `path` parameter; visualization tools can use a durable `source_ref` obtained from `visualization_source_inspect`. The server loads a log the first time a tool names it; it unloads a log that sits idle, or any log when memory runs short. The tools, in the categories `get_server_guide` uses:
 
 | Category | Tools |
 |----------|-------|
@@ -149,6 +149,7 @@ Every tool that reads a log takes a `path` parameter. The server loads a log the
 | **TBA** | `get_tba_status`, `get_tba_match_data` |
 | **RevLog** | `list_revlog_signals`, `get_revlog_data`, `sync_status`, `set_revlog_offset`, `wait_for_sync` |
 | **Export** | `export_csv`, `generate_report` |
+| **Visualization** | `visualization_capabilities_get`, `visualization_source_inspect`, `visualization_template_list`, `visualization_template_get`, `visualization_template_check`, `visualization_template_create`, `visualization_template_update`, `visualization_template_import`, `visualization_template_export`, `visualization_view_list`, `visualization_view_get`, `visualization_view_create`, `visualization_view_update`, `visualization_view_clone`, `visualization_view_save`, `visualization_view_discard`, `visualization_view_delete` |
 | **Live** | `list_sessions`, `get_latest_values`, `wait_for_change` |
 
 `get_server_guide` describes every tool by category, along with the analysis principles. Its description tells the agent to call it first, so that the agent reaches for a built-in tool rather than writing analysis code of its own.

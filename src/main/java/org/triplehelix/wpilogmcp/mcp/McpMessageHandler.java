@@ -209,6 +209,8 @@ public class McpMessageHandler {
     var capabilities = new JsonObject();
     capabilities.add("tools", new JsonObject());
     capabilities.add("resources", new JsonObject());
+    var experimental = new JsonObject(); experimental.addProperty(org.triplehelix.wpilogmcp.visualization.ControlNotifications.CAPABILITY, true);
+    capabilities.add("experimental", experimental);
     result.add("capabilities", capabilities);
 
     var serverInfo = new JsonObject();
@@ -225,10 +227,21 @@ public class McpMessageHandler {
     // Create a new session if session management is enabled
     if (sessionManager != null) {
       var session = sessionManager.createSession();
+      negotiate(params, session.getId());
       return HandlerResult.withSession(JsonRpc.createResponse(id, result), session.getId());
     }
 
+    negotiate(params, "stdio");
     return HandlerResult.of(JsonRpc.createResponse(id, result));
+  }
+
+  private void negotiate(JsonElement params, String session) {
+    try {
+      if (CallerContext.current() == CallerContext.Authority.UNTRUSTED || params == null || !params.isJsonObject()) return;
+      var caps = params.getAsJsonObject().getAsJsonObject("capabilities");
+      if (caps != null && caps.has("experimental") && new com.google.gson.JsonPrimitive(true).equals(caps.getAsJsonObject("experimental").get(org.triplehelix.wpilogmcp.visualization.ControlNotifications.CAPABILITY)))
+        toolRegistry.visualizations().notifications.negotiate(session);
+    } catch (Exception e) { logger.warn("Visualization notifications unavailable: {}", e.getMessage()); }
   }
 
   private HandlerResult handleResourceRead(JsonElement id, JsonElement params) {

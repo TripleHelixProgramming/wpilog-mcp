@@ -26,6 +26,26 @@ public class ToolRegistry {
       org.triplehelix.wpilogmcp.visualization.ServerIdentity.ephemeral();
   public org.triplehelix.wpilogmcp.visualization.ServerIdentity serverIdentity() { return identity; }
   public void serverIdentity(org.triplehelix.wpilogmcp.visualization.ServerIdentity value) { identity = java.util.Objects.requireNonNull(value); }
+  private final java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CompletableFuture<
+      org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace>> visualization = new java.util.concurrent.atomic.AtomicReference<>();
+  public org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace visualizations() throws java.io.IOException {
+    var future = visualization.get();
+    if (future == null) {
+      var pending = new java.util.concurrent.CompletableFuture<org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace>();
+      if (visualization.compareAndSet(null, pending)) {
+        try { pending.complete(new org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace(identity, org.triplehelix.wpilogmcp.log.LogManager.getInstance())); }
+        catch (Exception e) { pending.completeExceptionally(e); visualization.compareAndSet(pending, null); }
+        future = pending;
+      } else return visualizations();
+    }
+    try { return future.get(); }
+    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new java.io.IOException("Workspace admission interrupted", e); }
+    catch (java.util.concurrent.ExecutionException e) { throw new java.io.IOException("Workspace unavailable: " + e.getCause().getMessage(), e.getCause()); }
+  }
+  public void closeVisualizations() {
+    var pending = visualization.getAndSet(null);
+    if (pending != null) pending.thenAccept(org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace::close);
+  }
   private volatile boolean managed;
   public void setManaged(boolean value) { managed = value; }
   public boolean isManaged() { return managed; }

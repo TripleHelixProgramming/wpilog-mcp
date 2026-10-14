@@ -70,6 +70,7 @@ class ToolResponsesDoc {
     titles.put("export", "Export Tools");
     titles.put("tba", "TBA Tools");
     titles.put("revlog", "RevLog Tools");
+    titles.put("visualization", "Visualization Tools");
     return titles;
   }
 
