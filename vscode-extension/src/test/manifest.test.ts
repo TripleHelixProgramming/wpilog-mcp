@@ -21,7 +21,7 @@ const experimentalGuide = fs.readFileSync(
 test("the experimental gateway guide stays outside the main README with a relative link", () => {
   const guide = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
   assert.doesNotMatch(guide, /pit[- ]server|wpilog-mcp\.pitServerUrl/i);
-  assert.ok(experimentalGuide.includes("has not had real-world testing"));
+  assert.ok(experimentalGuide.includes("has limited controlled-shop evidence"));
   assert.ok(experimentalGuide.includes("[NT4 gateway configuration](STANDALONE.md#nt4-gateway-for-dashboards)"));
   assert.doesNotMatch(guide, /https:\/\/github\.com\/TripleHelixProgramming\/wpilog-mcp\/blob\/main\//);
 });
@@ -144,6 +144,7 @@ test("the commands are the ones the README names, each under the extension's or 
     "wpilog-mcp.explorer.clearLogFilter",
     "wpilog-mcp.explorer.filterEntries",
     "wpilog-mcp.explorer.clearEntryFilter",
+    "wpilog-mcp.explorer.collapseEntries",
     "wpilog-mcp.explorer.openLog",
     "wpilog-mcp.explorer.revealLog",
     "wpilog-mcp.explorer.copyLogPath",
@@ -170,6 +171,8 @@ test("the explorer is one activity bar container with the Logs and Entries views
   const views = manifest.contributes.views["wpilog-explorer"] as { id: string; name: string; icon: string }[];
   assert.deepEqual(views.map((v) => [v.id, v.name]), [["wpilog-mcp.logs", "Logs"], ["wpilog-mcp.entries", "Entries"]]);
   for (const view of views) assert.ok(fs.existsSync(path.join(__dirname, "..", "..", view.icon)), view.id);
+  assert.equal(manifest.contributes.views["wpilog-explorer"][1].type, "webview",
+    "Entries owns its inline filter rather than invoking a Quick Input dialog");
   const welcome = manifest.contributes.viewsWelcome as { view: string; when: string }[];
   assert.deepEqual(welcome.map((w) => [w.view, w.when]), [["wpilog-mcp.entries", "!wpilog-mcp.hasActiveLog"]],
     "the Entries view says how to get entries until a log is open");

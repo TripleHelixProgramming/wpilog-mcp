@@ -1,0 +1,180 @@
+/** Exercise Entries commands through the extension glue, without opening a user's editor. */
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import type * as vscode from "vscode";
+import type { ServerManager } from "../serverManager";
+
+const disposable = () => ({ dispose() {} });
+let dialogs = 0;
+const commands = new Map<string, (...args: any[]) => any>();
+const calls: string[] = [];
+const views = new Map<string, unknown>();
+const host = {
+  TreeItem: class {
+    constructor(public label: string, public collapsibleState: number) {}
+  },
+  TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
+  ThemeIcon: class { static Folder = {}; constructor(public id: string) {} },
+  EventEmitter: class {
+    private listeners: ((event: unknown) => void)[] = [];
+    event = (listener: (event: unknown) => void) => {
+      this.listeners.push(listener); return disposable();
+    };
+    fire(event: unknown) { for (const listener of this.listeners) listener(event); }
+    dispose() {}
+  },
+  Disposable: class { dispose() {} },
+  workspace: { registerFileSystemProvider: disposable },
+  commands: {
+    registerCommand(name: string, action: (...args: any[]) => any) {
+      commands.set(name, action); return disposable();
+    },
+    async executeCommand(name: string) { calls.push(name); },
+  },
+  window: {
+    registerTreeDataProvider: disposable,
+    registerWebviewViewProvider(id: string, provider: unknown) { views.set(id, provider); return disposable(); },
+    registerCustomEditorProvider: disposable,
+    registerUriHandler: disposable,
+    async showInputBox() { dialogs++; return undefined; },
+  },
+};
+
+const loader = require("node:module") as { _load: (...args: any[]) => any };
+const originalLoad = loader._load;
+let Explorer: typeof import("../explorer").Explorer;
+try {
+  loader._load = (name, ...args) => name === "vscode" ? host : originalLoad(name, ...args);
+  Explorer = require("../explorer").Explorer;
+} finally { loader._load = originalLoad; }
+
+function fixture(savedGrouping?: unknown) {
+  dialogs = 0; commands.clear(); calls.length = 0; views.clear();
+  const saved = new Map<string, unknown>([["wpilog-mcp.entryGrouping", savedGrouping]]);
+  const context = { globalState: { get: () => undefined }, extensionUri: {}, workspaceState: {
+    get: (key: string) => saved.get(key),
+    update: async (key: string, value: unknown) => { saved.set(key, value); },
+  } };
+  return new Explorer(context as unknown as vscode.ExtensionContext,
+    { appendLine() {} } as unknown as vscode.OutputChannel,
+    {} as ServerManager, () => ({ name: "http", url: "http://localhost:2363/mcp" }) as any);
+}
+
+test("Entries filter focuses an inline field without opening Quick Input", async () => {
+  const explorer = fixture();
+  try {
+    await commands.get("wpilog-mcp.explorer.filterEntries")!();
+    assert.equal(dialogs, 0, "filtering must not open a command-palette-style input");
+    assert.ok(calls.includes("wpilog-mcp.entries.focus"), "the Entries view receives focus");
+    assert.ok(views.has("wpilog-mcp.entries"), "the inline filter belongs to Entries itself");
+  } finally { explorer.dispose(); }
+});
+
+test("Entries exposes Collapse All independently of filtering", async () => {
+  const explorer = fixture();
+  try {
+    assert.equal(typeof commands.get("wpilog-mcp.explorer.collapseEntries"), "function");
+    await commands.get("wpilog-mcp.explorer.collapseEntries")!();
+    assert.equal(dialogs, 0);
+  } finally { explorer.dispose(); }
+});
+
+test("Entries filtering sends the full path to the server before any branch is opened", async () => {
+  const explorer = fixture();
+  const requests: unknown[] = [];
+  (explorer as any).clientFor = async () => ({ callTool: async (tool: string, args: unknown) => {
+    requests.push([tool, args]);
+    return { entries: [{ name: "/Drive/Odometry/Position", type: "double", sample_count: 3 }] };
+  } });
+  try {
+    explorer.entries.setActive({ path: "/synthetic.wpilog", spec: { name: "http" } as any,
+      listing: { entries: [{ name: "/Unrelated/Current", type: "double", sample_count: 2 }] } });
+    explorer.entries.setFilter("Drive/Odometry");
+    const roots = await explorer.entries.getChildren();
+    assert.deepEqual(requests, [["list_entries", { path: "/synthetic.wpilog", pattern: "Drive/Odometry" }]]);
+    assert.equal(roots[0].node.label, "Drive");
+    const groups = await explorer.entries.getChildren(roots[0]);
+    const leaves = await explorer.entries.getChildren(groups[0]);
+    assert.equal(leaves[0].node.label, "Position");
+    explorer.entries.setFilter("");
+    assert.equal((await explorer.entries.getChildren())[0].node.label, "Unrelated");
+    assert.equal(requests.length, 1, "clearing restores the log's original listing");
+  } finally { explorer.dispose(); }
+});
+
+test("Entries keeps focus changes inert but refreshes live listings and resets new-log searches", () => {
+  const explorer = fixture();
+  let refreshes = 0;
+  explorer.entries.onDidChangeTreeData(() => { refreshes++; });
+  const log = { path: "/synthetic.wpilog", spec: { name: "http" } as any, listing: { entries: [] } };
+  try {
+    explorer.entries.setActive(log);
+    explorer.entries.setFilter("Drive");
+    const version = explorer.entries.filterResetVersion;
+    explorer.entries.setActive(log);
+    assert.equal(refreshes, 2, "returning editor focus does not rebuild the tree");
+    assert.equal(explorer.entries.filterText, "Drive");
+    log.listing = { entries: [] };
+    explorer.entries.setActive(log);
+    assert.equal(refreshes, 3, "a new live listing still refreshes");
+    assert.equal(explorer.entries.filterResetVersion, version);
+    explorer.entries.setFilter("");
+    explorer.entries.setFilter("");
+    assert.equal(explorer.entries.filterResetVersion, version + 2,
+      "even a repeated explicit clear cancels a pending unsent query");
+    explorer.entries.setActive({ ...log, path: "/another.wpilog" });
+    assert.equal(explorer.entries.filterResetVersion, version + 3);
+  } finally { explorer.dispose(); }
+});
+
+test("type grouping retains full signal names, lazy fields, and the selected mode across logs", async () => {
+  const explorer = fixture("type");
+  const requests: [string, any][] = [];
+  (explorer as any).clientFor = async () => ({ callTool: async (tool: string, args: any) => {
+    requests.push([tool, args]);
+    return tool === "get_entry_info" ? { numeric_leaf_paths: [".x"] }
+      : { entries: [{ name: "/Arm/State", type: "struct:Pose", sample_count: 2 }] };
+  } });
+  try {
+    explorer.entries.setActive({ path: "/synthetic.wpilog", spec: { name: "http" } as any,
+      listing: { entries: [
+        { name: "/Drive/State", type: "double", sample_count: 4 },
+        { name: "/Arm/State", type: "struct:Pose", sample_count: 2 },
+      ] } });
+    assert.equal(explorer.entries.grouping, "type", "restore the workspace's choice");
+    const roots = await explorer.entries.getChildren();
+    assert.deepEqual(roots.map(root => root.label), ["double", "struct:Pose"]);
+    assert.ok(roots.every(root => root.collapsibleState === host.TreeItemCollapsibleState.Collapsed));
+    const entries = await explorer.entries.getChildren(roots[1]);
+    assert.equal(entries[0].label, "/Arm/State");
+    assert.equal(requests.length, 0, "grouping does not request struct schemas");
+    const fields = await explorer.entries.getChildren(entries[0]);
+    assert.equal(fields[0].label, ".x");
+    assert.deepEqual(requests, [["get_entry_info", { path: "/synthetic.wpilog", name: "/Arm/State" }]]);
+    explorer.entries.setGrouping("path", "Arm");
+    assert.equal(explorer.entries.filterText, "Arm", "the pending inline query and mode change together");
+    assert.equal((await explorer.entries.getChildren())[0].label, "Arm");
+    assert.deepEqual(requests[1], ["list_entries", { path: "/synthetic.wpilog", pattern: "Arm" }]);
+    explorer.entries.setGrouping("type");
+    explorer.entries.setActive({ path: "/next.wpilog", listing: { entries: [] } });
+    assert.equal(explorer.entries.grouping, "type");
+    assert.equal(explorer.entries.filterText, "", "the query still resets for a different log");
+  } finally { explorer.dispose(); }
+});
+
+test("grouping changes are saved to workspace state and unknown saved values default to path", async () => {
+  const explorer = fixture("obsolete-choice");
+  const saved: [string, unknown][] = [];
+  // This is the same context used by the provider, kept separate from shared global preferences.
+  const state = (explorer as any).context.workspaceState;
+  const update = state.update;
+  state.update = async (key: string, value: unknown) => { saved.push([key, value]); await update(key, value); };
+  try {
+    assert.equal(explorer.entries.grouping, "path");
+    explorer.entries.setGrouping("type");
+    explorer.entries.setGrouping("type");
+    explorer.entries.setGrouping("path");
+    assert.deepEqual(saved, [["wpilog-mcp.entryGrouping", "type"], ["wpilog-mcp.entryGrouping", "path"]]);
+    assert.equal(state.get("wpilog-mcp.entryGrouping"), "path");
+  } finally { explorer.dispose(); }
+});

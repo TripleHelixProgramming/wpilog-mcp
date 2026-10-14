@@ -66,6 +66,7 @@
         },
         {
           "id": "wpilog-mcp.entries",
+          "type": "webview",
           "name": "Entries",
           "icon": "images/explorer.svg",
           "contextualTitle": "WPILog Explorer"
@@ -256,6 +257,12 @@
         "icon": "$(filter-filled)"
       },
       {
+        "command": "wpilog-mcp.explorer.collapseEntries",
+        "title": "Collapse All Entries",
+        "category": "WPILog Explorer",
+        "icon": "$(collapse-all)"
+      },
+      {
         "command": "wpilog-mcp.explorer.openLog",
         "title": "Open in WPILog Explorer",
         "category": "WPILog Explorer"
@@ -323,13 +330,13 @@
         },
         {
           "command": "wpilog-mcp.explorer.filterEntries",
-          "when": "view == wpilog-mcp.entries && wpilog-mcp.hasActiveLog && !wpilog-mcp.entryFilter",
+          "when": "view == wpilog-mcp.entries && wpilog-mcp.hasActiveLog",
           "group": "navigation@1"
         },
         {
-          "command": "wpilog-mcp.explorer.clearEntryFilter",
-          "when": "view == wpilog-mcp.entries && wpilog-mcp.entryFilter",
-          "group": "navigation@1"
+          "command": "wpilog-mcp.explorer.collapseEntries",
+          "when": "view == wpilog-mcp.entries && wpilog-mcp.hasActiveLog",
+          "group": "navigation@2"
         },
         {
           "command": "wpilog-mcp.explorer.organizeLogs",
@@ -371,21 +378,6 @@
         {
           "command": "wpilog-mcp.explorer.copyLogPath",
           "when": "view == wpilog-mcp.logs && (viewItem == wpilogLog || viewItem == wpilogPlainLog)",
-          "group": "navigation@2"
-        },
-        {
-          "command": "wpilog-mcp.explorer.plotEntry",
-          "when": "view == wpilog-mcp.entries && viewItem == wpilogEntry",
-          "group": "navigation@1"
-        },
-        {
-          "command": "wpilog-mcp.explorer.plotElements",
-          "when": "view == wpilog-mcp.entries && viewItem == wpilogFieldPooled",
-          "group": "navigation@1"
-        },
-        {
-          "command": "wpilog-mcp.explorer.showEntry",
-          "when": "view == wpilog-mcp.entries && (viewItem == wpilogEntry || viewItem == wpilogField)",
           "group": "navigation@2"
         },
         {
@@ -491,6 +483,10 @@
         {
           "command": "wpilog-mcp.explorer.clearEntryFilter",
           "when": "wpilog-mcp.entryFilter"
+        },
+        {
+          "command": "wpilog-mcp.explorer.collapseEntries",
+          "when": "wpilog-mcp.hasActiveLog"
         },
         {
           "command": "wpilog-mcp.explorer.refreshLog",

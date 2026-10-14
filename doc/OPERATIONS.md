@@ -286,7 +286,13 @@ WPILog Explorer is the extension's viewer: the same server's numbers, plotted, w
 needed. The [extension guide](../vscode-extension/README.md#exploring-logs) has the details.
 
 1. Click a log in the **Logs** view. The editor shows the time range, entries, sample counts
-   and any truncation note. The **Entries** view follows the active log.
+   and any truncation note. The **Entries** view follows the active log. Type part of a full
+   entry name into its inline filter; matches inside unopened groups are included. Clear the
+   field to restore all entries. Use **Collapse All Entries** to close the branches while
+   keeping the filter. The filter icon focuses the inline field instead of opening a dialog.
+   Choose **Group by → Data type** to collect entries under their exact logged types, with
+   entry counts and full paths. **Path** restores the usual name hierarchy. This choice is
+   remembered for the workspace; filtering and expandable fields work in either mode.
 2. Click an entry to plot it; expand a struct or array to its numeric fields. Drag to zoom,
    wheel to zoom about the cursor, shift-wheel or arrow keys to pan, double-click to reset.
 3. The **Timeline** pane shows the Driver Station segments; drag a region to select a window.

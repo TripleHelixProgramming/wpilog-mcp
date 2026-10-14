@@ -5,7 +5,7 @@ How to build, test, and change wpilog-mcp. [ARCHITECTURE.md](ARCHITECTURE.md) ex
 ## Requirements
 
 - JDK 17 or newer; the WPILib JDK is recommended (see [STANDALONE.md](STANDALONE.md#requirements) for where WPILib puts it). `./gradlew` uses `JAVA_HOME`, or `java` on your `PATH`.
-- [Node.js](https://nodejs.org/) 20, the version CI uses, with `npm` on your `PATH`: needed only to build or test the VS Code extension.
+- [Node.js](https://nodejs.org/) 20, the version CI uses, with `npm` on your `PATH`: needed only to build or test the VS Code extension. Once its dependencies are installed, the extension development tasks need only Node; they can also use an existing Codex runtime as described below.
 
 ## Building
 
@@ -22,6 +22,10 @@ The JAR is `build/libs/wpilog-mcp-{version}-all.jar`. `install` runs the fat JAR
 
 ```bash
 ./gradlew bundleExtension    # Copy the server JAR into the extension (for local development)
+./gradlew runExtension       # Open VS Code with the local extension and keep watching TypeScript
+./gradlew openExtension      # Compile and open the development window, without a watcher
+./gradlew compileExtension   # Compile TypeScript once
+./gradlew watchExtension     # Watch TypeScript only; does not open a window (Ctrl+C to stop)
 ./gradlew buildExtension     # Build, compile, and package the .vsix
 ./gradlew installExtension   # Build, package, and install into VS Code
 ```
@@ -29,6 +33,39 @@ The JAR is `build/libs/wpilog-mcp-{version}-all.jar`. `install` runs the fat JAR
 `installExtension` delegates to the JAR’s `install --force --with-extension --vsix <file>` verb, installing the standalone layout and the matching extension. VS Code lookup lives in that verb: the newest WPILib season whose VS Code the extension accepts, found without PATH ([STANDALONE.md](STANDALONE.md#the-matching-extension) has the folders). `-Pvscode=2025` names a season, and `-Pvscode=system` a VS Code installed apart from WPILib. `-PinstallDir=/path/to/scratch` overrides the server’s install directory. Close VS Code before running the task, and restart VS Code when the task is done. The `.vsix` is written to `vscode-extension/wpilog-analyzer-{version}.vsix`.
 
 The extension's version is the project version in `build.gradle`. Every extension task runs `./gradlew syncExtensionVersion`, which writes it into `vscode-extension/package.json` and `package-lock.json`. A development version such as `0.9.0-dev` installs over the previous release, and the release that follows it installs over the development version.
+
+#### Trying UI changes without installing an extension
+
+From the repository root, run `./gradlew runExtension`. It compiles the extension, prepares its
+bundled server JAR, opens an **Extension Development Host** window, and keeps compiling when
+TypeScript files change. A compilation error prevents launch. The extension is loaded directly
+from this checkout; no VSIX packaging or extension installation is involved.
+
+The default editor is system VS Code, including the normal macOS app location even when `code`
+is not on `PATH`. The task reuses the installer's editor lookup and compatibility checks. Use
+`-Pvscode=2026` to select a WPILib season instead, or `-PextensionWorkspace=/path/to/robot/project`
+to open a particular project in the development window:
+
+```bash
+./gradlew runExtension -Pvscode=2026 -PextensionWorkspace=/path/to/robot/project
+```
+
+Open a robot project or log in the new window. After an edit, wait for compilation to finish,
+then run **Developer: Reload Window** there. JavaScript and CSS under `media/` are read directly
+from the checkout and need only the reload. Stop the watcher with **Ctrl+C**; the VS Code window
+stays open. To open the window without leaving a watcher running, use `./gradlew openExtension`.
+Stop an existing watcher before starting another Gradle command. `watchExtension` alone only compiles and watches; it does
+not open VS Code. This checkout has no F5 launch configuration.
+
+These tasks use `node` on `PATH`, then an existing Node runtime under
+`~/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/`. To choose another runtime,
+pass `-PnodeExecutable=/absolute/path/to/node`. An invalid explicit path is an error; it does
+not fall back to another runtime. No Node runtime is downloaded. A fresh checkout still needs
+`npm ci` in `vscode-extension/` to install its development dependencies once.
+
+The development host uses the normal shared standalone server through the extension's usual
+activation. For Java server changes, use `./gradlew install` and restart the shared server.
+Rebuilding the bundled JAR alone does not replace an installed server at the same version.
 
 ## Verification policy
 
@@ -285,6 +322,7 @@ npm test
 - MCP sessions and registrations against a fake transport, including reconnect, disposal, overlapping updates, refusal words, and secret redaction. The real-JAR client test proves a third session sees leased directories and key availability, then loses them when the holder closes. It uses a scratch home and no live TBA requests. That test skips only when no JAR or Java is available; CI builds the JAR first.
 - Shared-server preparation and startup against fake launches with real HTTP health and temporary PID/configuration files: one start for concurrent consumers, declined installation, failed starts, missing PID records, and ordered manual restart. Settings change leases rather than rewriting configuration or restarting the daemon.
 - The explorer's tree models (plain/store/mixed listings, directory origins, structs and arrays), organizing decisions and quick picks, MCP/data/import request handling, pagination, refusals and retry limits, content security policy, and manifest declarations/order/command links.
+- The Entries sidebar's inline-filter command, full-path filtering before branches are opened, lazy field expansion, stale asynchronous replies, keyboard navigation and Collapse All behavior.
 - The webview's Arrow reader against Java-produced streams and CSVs, including enums and decode problems; plot arithmetic on known arrays; a decode-warning chip through the real handler with a small test DOM; and console, field, and REV models. Arrow fixtures skip when the Java build has not produced them.
 
 New checks must fail on planted production faults. In particular, queue checks use latches and immediate exchanges to force ordering; a passing test that never exercised the competing update proves little.

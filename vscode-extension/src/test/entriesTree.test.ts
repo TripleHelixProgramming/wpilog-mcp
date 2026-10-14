@@ -40,6 +40,82 @@ test("entries are a tree by the segments of their names, groups before entries, 
     { Vision: [{ Camera0: ["PoseObservations"] }] },
     "Drive",
   ]);
+  assert.deepEqual(buildEntryTree({ entries }, "path"), buildEntryTree({ entries }), "path remains the default");
+});
+
+const typedEntries: ListedEntry[] = [
+  { name: "/Z/Value", type: "double", sample_count: 12 },
+  { name: "/Drive/States", type: "struct:ModuleState[]", sample_count: 7 },
+  { name: "/Z/Count", type: "int64", sample_count: 3 },
+  { name: "/A/Value", type: "double", sample_count: 5 },
+  { name: "/Drive/State", type: "struct:ModuleState", sample_count: 8 },
+  { name: "/Drive/Voltage", type: "float", sample_count: 9 },
+  { name: "/Drive/Currents", type: "double[]", sample_count: 4 },
+  { name: "NT:/FMSInfo/EventName", type: "string", sample_count: 1 },
+  { name: "/DriverStation/Enabled", type: "boolean", sample_count: 6 },
+  { name: "/Camera/Frame", type: "raw", sample_count: 2 },
+  { name: "/Odometry/Pose", type: "struct:Pose2d", sample_count: 10 },
+];
+
+test("type grouping preserves exact logged types and full paths, sorted independently of listing order", () => {
+  const tree = buildEntryTree({ entries: typedEntries }, "type");
+  assert.deepEqual(shape(tree), [
+    { boolean: ["/DriverStation/Enabled"] },
+    { double: ["/A/Value", "/Z/Value"] },
+    { "double[]": ["/Drive/Currents"] },
+    { float: ["/Drive/Voltage"] },
+    { int64: ["/Z/Count"] },
+    { raw: ["/Camera/Frame"] },
+    { string: ["NT:/FMSInfo/EventName"] },
+    { "struct:ModuleState": ["/Drive/State"] },
+    { "struct:ModuleState[]": ["/Drive/States"] },
+    { "struct:Pose2d": ["/Odometry/Pose"] },
+  ]);
+  assert.deepEqual(buildEntryTree({ entries: [...typedEntries].reverse() }, "type"), tree);
+  assert.deepEqual(buildEntryTree({ entries: [...typedEntries.slice(4), ...typedEntries.slice(0, 4)] }, "type"), tree);
+  const doubles = tree[1];
+  assert.ok(doubles.kind === "group");
+  assert.equal(doubles.path, "Data type: double");
+  assert.equal(doubles.description, "2 entries");
+  assert.ok(doubles.children.every((node) => node.kind === "entry" && !node.expandable));
+  const boolean = tree[0];
+  assert.ok(boolean.kind === "group");
+  assert.equal(boolean.description, "1 entry");
+});
+
+test("type grouping keeps the original entries, sample details, and lazy field behavior", () => {
+  const tree = buildEntryTree({ entries: typedEntries }, "type");
+  for (const group of tree) {
+    assert.ok(group.kind === "group");
+    for (const node of group.children) {
+      assert.ok(node.kind === "entry");
+      assert.strictEqual(node.entry, typedEntries.find((entry) => entry.name === node.label));
+      assert.equal(node.description, `${node.entry.type} · ${node.entry.sample_count}`);
+      assert.equal(node.tooltip, `${node.entry.name}\n${node.entry.type}, ${node.entry.sample_count} samples`);
+    }
+  }
+  const arrays = tree[2];
+  assert.ok(arrays.kind === "group");
+  const currents = arrays.children[0];
+  assert.ok(currents.kind === "entry" && currents.expandable);
+  const fields = buildFieldNodes(currents.entry, { numeric_leaf_paths: ["[*]"], sample_values: [{ value: [1, 2] }] });
+  assert.ok(fields[0].kind === "field" && fields[0].entry === typedEntries[6]);
+  assert.deepEqual(elementNodes(fields[0]).map((node) => node.label), ["[0]", "[1]"]);
+  for (const index of [7, 8, 9]) {
+    const group = tree[index];
+    assert.ok(group.kind === "group");
+    assert.ok(group.children[0].kind === "entry" && group.children[0].expandable);
+  }
+});
+
+test("type grouping leaves failed and empty listings as the server's notes", () => {
+  assert.deepEqual(buildEntryTree({ status: "error", error: "Cannot read log", hint: "Check the file" }, "type"), [
+    { kind: "note", label: "Cannot read log", tooltip: "Check the file" },
+  ]);
+  assert.deepEqual(buildEntryTree({ entries: [], reason: "No matching entries", hint: "Clear the filter" }, "type"), [
+    { kind: "note", label: "No matching entries", tooltip: "Clear the filter" },
+  ]);
+  assert.deepEqual(buildEntryTree({}, "type"), [{ kind: "note", label: "No entries", tooltip: undefined }]);
 });
 
 test("an entry's line carries its type and count, and says whether it has fields to expand", () => {

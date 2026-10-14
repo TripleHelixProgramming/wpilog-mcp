@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Entries sidebar now offers **Group by: Path / Data type**, remembered per workspace. Data-type groups show entry counts and full signal paths while retaining filtering and lazy field expansion; previously entries could only be browsed by their path hierarchy.
+- `./gradlew runExtension` compiles the extension, opens it in a VS Code development window, and watches TypeScript changes. `openExtension` opens without watching; `watchExtension` watches without opening. These tasks find Node on PATH or in an existing Codex runtime, with an explicit executable override, and reuse the installer's editor lookup. Previously local UI iteration required separate compiler and editor commands.
+- The Entries sidebar now filters full signal paths in an inline text field, with clear and Collapse All controls. Previously filtering opened a separate input dialog and the view had no collapse-all action; unopened groups remain searchable and matching paths open to reveal their entries.
 - Optional data-store setup enrolls reviewed source folders for server-owned imports that continue while the shared server runs, even with editors closed. Previously the organizing offer performed only a one-time operation. Copy is the default; automatic Move requires a completed-file acknowledgment, and duplicates stay at their source. Revisioned machine-local policy, durable source receipts, status, pause/resume and Sync Now preserve provenance without rewriting YAML.
 - The default log listing uses an opted-in store and pending/refused source versions, hiding verified originals before counts and paging; Show All Sources retains the full view. Previously copied originals and their store entries appeared together. Explicit paths and clients without an enrolled policy retain their existing behavior.
 

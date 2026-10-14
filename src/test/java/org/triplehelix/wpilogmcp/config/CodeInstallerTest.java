@@ -221,4 +221,30 @@ class CodeInstallerTest {
         CodeInstaller.command(true, code, vsix));
     assertThrows(IOException.class, () -> CodeInstaller.command(true, code, temp.resolve("%PATH%.vsix")));
   }
+
+  @Test
+  void developmentCommandPreservesEachArgumentAndQuotesWindowsValues() throws Exception {
+    var code = temp.resolve("VS Code").resolve("code.cmd").toAbsolutePath();
+    var extension = "--extensionDevelopmentPath=" + temp.resolve("extension & (local)!").toAbsolutePath();
+    var workspace = temp.resolve("robot project").toAbsolutePath().toString();
+    var arguments = List.of("--new-window", extension, workspace);
+    assertEquals(List.of(code.toString(), "--new-window", extension, workspace),
+        CodeInstaller.command(false, code, arguments));
+    assertEquals(List.of("cmd", "/d", "/v:off", "/s", "/c",
+        "\"\"" + code + "\" --new-window \"" + extension + "\" \"" + workspace + "\"\""),
+        CodeInstaller.command(true, code, arguments));
+  }
+
+  @Test
+  void windowsCommandRejectsExpansionAndLineBreaksInAnyArgument() throws Exception {
+    var code = temp.resolve("code.cmd");
+    for (var unsafe : List.of("\"", "%PATH%", "\n", "\r")) {
+      var argument = "--extensionDevelopmentPath=checkout" + unsafe;
+      assertThrows(IOException.class, () -> CodeInstaller.command(true, code, List.of(argument)));
+      assertEquals(List.of(code.toAbsolutePath().toString(), argument),
+          CodeInstaller.command(false, code, List.of(argument)), "Unix arguments do not pass through a shell");
+    }
+    assertThrows(IOException.class,
+        () -> CodeInstaller.command(true, temp.resolve("%CODE%"), List.of("--new-window")));
+  }
 }

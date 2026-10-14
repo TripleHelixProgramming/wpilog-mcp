@@ -454,8 +454,7 @@ tasks.register('syncExtensionVersion') {
 }
 
 // Copies the shadow JAR into vscode-extension/server/ for local development.
-// After running this, cd into vscode-extension/ and run: npm install && npm run compile
-// Then press F5 in VS Code to launch an Extension Development Host.
+// runExtension compiles the UI, opens a development window, and watches for changes.
 
 tasks.register('bundleExtension', Copy) {
     dependsOn shadowJar, 'syncExtensionVersion'
@@ -465,6 +464,73 @@ tasks.register('bundleExtension', Copy) {
     from(shadowJar.archiveFile)
     into("${projectDir}/vscode-extension/server")
     rename { 'wpilog-mcp-all.jar' }
+}
+
+// One runtime lookup for compilation and watching, evaluated only when an extension task runs.
+def extensionCompilerCommand = {
+  def compiler = file('vscode-extension/node_modules/typescript/bin/tsc')
+  if (!compiler.isFile()) {
+    throw new GradleException('Extension dependencies are missing. Install Node.js with npm, ' +
+        'then run npm ci in vscode-extension/ once before running extension development tasks.')
+  }
+
+  def isWindows = System.getProperty('os.name').toLowerCase().startsWith('windows')
+  def nodeName = isWindows ? 'node.exe' : 'node'
+  def explicitNode = findProperty('nodeExecutable')
+  def candidates = explicitNode != null ? [file(explicitNode.toString())] :
+      (System.getenv('PATH') ?: '').split(java.util.regex.Pattern.quote(File.pathSeparator))
+          .findAll { !it.isEmpty() }.collect { new File(it, nodeName) }
+  if (explicitNode == null) {
+    candidates.add(new File(System.getProperty('user.home'),
+        ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/${nodeName}"))
+  }
+  def node = candidates.find { it.isFile() && (isWindows || it.canExecute()) }
+  if (node == null) {
+    throw new GradleException(explicitNode != null
+        ? "Node executable is not a runnable file: ${explicitNode}"
+        : 'Node.js was not found on PATH or in the Codex runtime cache. Install Node.js, ' +
+            'or pass -PnodeExecutable=/absolute/path/to/node.')
+  }
+  logger.lifecycle("Extension compiler uses ${node.absolutePath}")
+  [node.absolutePath, compiler.absolutePath, '-p', './']
+}
+
+tasks.register('compileExtension', Exec) {
+  dependsOn 'syncExtensionVersion'
+  group = 'application'
+  description = 'Compile the VS Code extension once, without packaging or installing it'
+  workingDir file('vscode-extension')
+  doFirst { commandLine extensionCompilerCommand() }
+}
+
+// Reuse the installer's editor discovery and Windows command quoting through a build-only helper.
+tasks.register('openExtension', JavaExec) {
+  dependsOn 'compileExtension', 'bundleExtension', testClasses
+  group = 'application'
+  description = 'Compile and open the local extension in a VS Code development window'
+  classpath = sourceSets.test.runtimeClasspath
+  mainClass = 'org.triplehelix.wpilogmcp.config.ExtensionDevelopmentHost'
+  doFirst {
+    args (findProperty('vscode') ?: 'system').toString(), file('vscode-extension').absolutePath
+    if (findProperty('extensionWorkspace')) {
+      args file(findProperty('extensionWorkspace')).absolutePath
+    }
+  }
+}
+
+['watchExtension', 'runExtension'].each { taskName ->
+  tasks.register(taskName, Exec) {
+    dependsOn taskName == 'runExtension' ? 'openExtension' : 'syncExtensionVersion'
+    group = 'application'
+    description = taskName == 'runExtension'
+        ? 'Open the local extension in VS Code and watch for TypeScript changes (Ctrl+C to stop watching)'
+        : 'Compile and watch TypeScript changes only; use runExtension to open VS Code too'
+    workingDir file('vscode-extension')
+    doFirst {
+      logger.lifecycle('Reload the Extension Development Host with Developer: Reload Window after changes. Ctrl+C stops watching.')
+      commandLine extensionCompilerCommand() + ['--watch', '--preserveWatchOutput']
+    }
+  }
 }
 
 // A real editor runs separately from the ordinary Java and Node suites, using no team's log.

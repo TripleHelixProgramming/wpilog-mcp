@@ -1,10 +1,9 @@
 /**
  * The Entries view's model, built from `list_entries` and `get_entry_info` results
- * (EXPLORER_PLAN.md §4): the active log's entries as a tree by the segments of their names
- * (`/Drive/Odometry/Pose` under `Drive`, then `Odometry`), each leaf with its type and sample
- * count, and a struct or array entry expandable into the numeric field paths `get_entry_info`
- * reports, which the numeric tools take appended to the entry's name. Pure functions, tested
- * from recorded results.
+ * (EXPLORER_PLAN.md §4): the active log's entries grouped by name segments or exact logged
+ * data types, each leaf with its type and sample count, and a struct or array entry expandable
+ * into the numeric field paths `get_entry_info` reports, which the numeric tools take appended
+ * to the entry's name. Pure functions, tested from recorded results.
  */
 
 /** An entry as `list_entries` lists it. */
@@ -28,11 +27,14 @@ export interface EntryListing {
   reason?: string;
 }
 
+/** The organization selected for the Entries view. */
+export type EntryGrouping = "path" | "type";
+
 /** A node of the tree. */
 export type EntryNode =
-  /** A name segment with entries beneath it. */
-  | { kind: "group"; label: string; path: string; children: EntryNode[] }
-  /** An entry: its last segment, its type and count, and whether it has field paths to show. */
+  /** A name segment or data type with entries beneath it. */
+  | { kind: "group"; label: string; path: string; description?: string; children: EntryNode[] }
+  /** An entry: its displayed name, type and count, and whether it has field paths to show. */
   | { kind: "entry"; label: string; description: string; tooltip: string; entry: ListedEntry; expandable: boolean }
   /** A numeric field path inside an entry, as the numeric tools address it; a `[*]` path expands to its elements. */
   | { kind: "field"; label: string; description: string; fieldPath: string; entry: ListedEntry; elements?: number }
@@ -67,15 +69,34 @@ function entryNode(entry: ListedEntry, label: string): EntryNode {
  * The tree for a listing: groups by name segment, with the groups before the entries at each
  * level and both in name order, as `list_entries` orders them. An entry named like a group
  * (`/Drive` beside `/Drive/Pose`) is an entry under the group's parent, not the group itself.
+ * Type grouping uses the exact recorded type, with full entry names beneath it: different
+ * numeric types, structs, and arrays must not acquire a shared meaning from this presentation.
  * A listing that failed, or matched nothing, is one note with the server's words.
  */
-export function buildEntryTree(listing: EntryListing): EntryNode[] {
+export function buildEntryTree(listing: EntryListing, grouping: EntryGrouping = "path"): EntryNode[] {
   if (listing.status === "error") {
     return [{ kind: "note", label: listing.error ?? "The entry listing failed", tooltip: listing.hint }];
   }
   const entries = listing.entries ?? [];
   if (entries.length === 0) {
     return [{ kind: "note", label: listing.reason ?? "No entries", tooltip: listing.hint }];
+  }
+  if (grouping === "type") {
+    const byType = new Map<string, ListedEntry[]>();
+    for (const entry of entries) {
+      const group = byType.get(entry.type);
+      if (group) group.push(entry);
+      else byType.set(entry.type, [entry]);
+    }
+    return [...byType.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([type, group]) => ({
+        kind: "group",
+        label: type,
+        path: `Data type: ${type}`,
+        description: `${formatCount(group.length)} ${group.length === 1 ? "entry" : "entries"}`,
+        children: group.sort((a, b) => a.name.localeCompare(b.name)).map((entry) => entryNode(entry, entry.name)),
+      }));
   }
   interface Group {
     children: Map<string, Group>;

@@ -17,7 +17,7 @@ import { DataClient, DataError, TooLargeError } from "./dataClient";
 import { McpClient, ToolError, LocalControlError } from "./mcpClient";
 import { SessionRegistration } from "./directoryLease";
 import { DaemonSpec, ServerManager } from "./serverManager";
-import { EntryListing, EntryNode, ListedEntry, buildEntryTree, buildFieldNodes, elementNodes, elementPaths } from "./explorer/entriesTree";
+import { EntryGrouping, EntryListing, EntryNode, ListedEntry, buildEntryTree, buildFieldNodes, elementNodes, elementPaths } from "./explorer/entriesTree";
 import { ListedLog, LogListing, LogNode, buildLogTree } from "./explorer/logsTree";
 import { Choices, MOVE_CHOICES, ORGANIZE_CHOICES, OrganizeOffer, containsPath, importDestinationError, importPlan, offerFor, organizeFolders, rememberChoice, robotItems, robotNameError, withImportDirectory } from "./explorer/organize";
 import { completeListing, progressText, resultDetails, resultSummary, runImport, sameRobotMessages } from "./explorer/importJobs";
@@ -27,6 +27,7 @@ import { mirroredCopy, originOf, pitEndpoint, pitLogTree, readRemoteLogUri, remo
 import { Selection, parseExplorerUri, openValidated, selectionPrompt } from "./explorer/selection";
 import { notebook } from "./explorer/notebook";
 import { explorerPage } from "./explorer/webviewHtml";
+import { EntriesView } from "./explorer/entriesView";
 
 /** The custom editor's view type, as package.json declares it. */
 export const EDITOR_VIEW_TYPE = "wpilog-mcp.explorer";
@@ -35,6 +36,7 @@ export const ENTRIES_VIEW = "wpilog-mcp.entries";
 
 const NEVER_STORE_SETUP_KEY = "wpilog-mcp.neverOfferDataStore";
 const NEVER_ORGANIZE_KEY = "wpilog-mcp.neverOrganizeFolders";
+const ENTRY_GROUPING_KEY = "wpilog-mcp.entryGrouping";
 /** How many of an array's elements "Plot Every Element" plots: a pane can hold that many. */
 const ELEMENTS_PLOTTED = 16;
 /** How many console matches one request lists. */
@@ -58,6 +60,7 @@ export class Explorer implements vscode.Disposable {
   readonly data = new DataClient(32, 256 * 1024 * 1024, url => this.headersFor(url));
   readonly logs: LogsProvider;
   readonly entries: EntriesProvider;
+  private readonly entriesView: EntriesView;
   readonly editor: ExplorerEditorProvider;
   private readonly disposables: vscode.Disposable[] = [];
   private choices: Choices;
@@ -81,7 +84,8 @@ export class Explorer implements vscode.Disposable {
     void vscode.commands.executeCommand("setContext", DATA_STORE_ENABLED_CONTEXT, false);
     this.choices = { never: context.globalState.get<string[]>(NEVER_ORGANIZE_KEY) ?? [], deferred: [], offered: {} };
     this.logs = new LogsProvider(this);
-    this.entries = new EntriesProvider(this);
+    this.entries = new EntriesProvider(this, context.workspaceState);
+    this.entriesView = new EntriesView(this.entries, context.extensionUri);
     this.editor = new ExplorerEditorProvider(this);
     this.disposables.push(
       // Custom editor URIs are documents, not paths on this laptop. No file contents cross this provider.
@@ -97,7 +101,10 @@ export class Explorer implements vscode.Disposable {
         rename: () => { throw vscode.FileSystemError.NoPermissions(); },
       }, { isReadonly: true, isCaseSensitive: true }),
       vscode.window.registerTreeDataProvider(LOGS_VIEW, this.logs),
-      vscode.window.registerTreeDataProvider(ENTRIES_VIEW, this.entries),
+      this.entriesView,
+      vscode.window.registerWebviewViewProvider(ENTRIES_VIEW, this.entriesView, {
+        webviewOptions: { retainContextWhenHidden: true },
+      }),
       vscode.window.registerCustomEditorProvider(EDITOR_VIEW_TYPE, this.editor, {
         webviewOptions: { retainContextWhenHidden: true },
         supportsMultipleEditorsPerDocument: false,
@@ -116,8 +123,9 @@ export class Explorer implements vscode.Disposable {
       vscode.commands.registerCommand("wpilog-mcp.explorer.refreshLogs", () => this.logs.refresh()),
       vscode.commands.registerCommand("wpilog-mcp.explorer.filterLogs", () => this.logs.askFilter()),
       vscode.commands.registerCommand("wpilog-mcp.explorer.clearLogFilter", () => this.logs.setFilter("")),
-      vscode.commands.registerCommand("wpilog-mcp.explorer.filterEntries", () => this.entries.askFilter()),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.filterEntries", () => this.entriesView.focusFilter()),
       vscode.commands.registerCommand("wpilog-mcp.explorer.clearEntryFilter", () => this.entries.setFilter("")),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.collapseEntries", () => this.entriesView.collapseAll()),
       vscode.commands.registerCommand("wpilog-mcp.explorer.openLog", (logPath: string, spec?: ExplorerSpec, listed?: ListedLog) => this.openLog(logPath, spec, listed)),
       vscode.window.registerUriHandler({ handleUri: async uri => {
         try {
@@ -713,13 +721,14 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
   }
 }
 
-class EntryItem extends vscode.TreeItem {
+export class EntryItem extends vscode.TreeItem {
   constructor(readonly node: EntryNode, collapsibleState: vscode.TreeItemCollapsibleState) {
     super(node.label, collapsibleState);
     switch (node.kind) {
       case "group":
         this.iconPath = vscode.ThemeIcon.Folder;
         this.tooltip = node.path;
+        this.description = node.description;
         break;
       case "entry":
         this.description = node.description;
@@ -759,7 +768,10 @@ export class EntriesProvider implements vscode.TreeDataProvider<EntryItem> {
   private readonly changed = new vscode.EventEmitter<EntryItem | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
   private active?: OpenLog;
+  private activeListing?: EntryListing;
   private filter = "";
+  private filterReset = 0;
+  private groupingValue: EntryGrouping;
   private readonly infos = new EntryInfo<ExplorerSpec>(async (spec, logPath, name) => {
     try {
       const client = await this.explorer.clientFor(spec);
@@ -770,32 +782,52 @@ export class EntriesProvider implements vscode.TreeDataProvider<EntryItem> {
     }
   });
 
-  constructor(private readonly explorer: Explorer) {}
+  constructor(private readonly explorer: Explorer,
+    private readonly state?: Pick<vscode.Memento, "get" | "update">) {
+    this.groupingValue = state?.get(ENTRY_GROUPING_KEY) === "type" ? "type" : "path";
+  }
+
+  /** The sidebar displays the same query that the server uses for the entry listing. */
+  get filterText(): string { return this.filter; }
+  /** Explicit clears and log changes also cancel a query still being typed in the sidebar. */
+  get filterResetVersion(): number { return this.filterReset; }
+  get grouping(): EntryGrouping { return this.groupingValue; }
+
+  /** Apply the visible query with a grouping change, even if its debounce has not fired yet. */
+  setGrouping(grouping: EntryGrouping, filter = this.filter): void {
+    if (grouping === this.groupingValue && filter === this.filter) return;
+    const changedGrouping = grouping !== this.groupingValue;
+    this.groupingValue = grouping;
+    if (filter !== this.filter) this.updateFilter(filter);
+    if (changedGrouping && this.state) {
+      void this.state.update(ENTRY_GROUPING_KEY, grouping).then(undefined,
+        error => this.explorer.log(`Could not save Entries grouping: ${messageOf(error)}`));
+    }
+    this.changed.fire(undefined);
+  }
 
   /** Shows a log's entries: the one the editor just loaded, or none. */
   setActive(log: OpenLog | undefined): void {
-    if (log?.path !== this.active?.path) {
-      this.filter = "";
-      void vscode.commands.executeCommand("setContext", "wpilog-mcp.entryFilter", false);
+    // Returning focus from the sidebar to this editor does not change its listing or search.
+    if (log === this.active && log?.listing === this.activeListing) return;
+    if (log?.path !== this.active?.path || log?.spec !== this.active?.spec) {
+      this.updateFilter("");
     }
     this.active = log;
+    this.activeListing = log?.listing;
     void vscode.commands.executeCommand("setContext", "wpilog-mcp.hasActiveLog", log !== undefined);
     this.changed.fire(undefined);
   }
 
   setFilter(filter: string): void {
-    this.filter = filter;
-    void vscode.commands.executeCommand("setContext", "wpilog-mcp.entryFilter", filter.trim() !== "");
+    this.updateFilter(filter);
     this.changed.fire(undefined);
   }
 
-  async askFilter(): Promise<void> {
-    const value = await vscode.window.showInputBox({
-      title: "Filter entries",
-      prompt: "Part of an entry's name, as list_entries takes it (blank shows every entry)",
-      value: this.filter,
-    });
-    if (value !== undefined) this.setFilter(value);
+  private updateFilter(filter: string): void {
+    this.filter = filter;
+    this.filterReset++;
+    void vscode.commands.executeCommand("setContext", "wpilog-mcp.entryFilter", filter.trim() !== "");
   }
 
   getTreeItem(element: EntryItem): vscode.TreeItem {
@@ -805,11 +837,12 @@ export class EntriesProvider implements vscode.TreeDataProvider<EntryItem> {
   async getChildren(element?: EntryItem): Promise<EntryItem[]> {
     if (!element) {
       const active = this.active;
+      const grouping = this.grouping;
       if (!active) {
         return [new EntryItem({ kind: "note", label: "Open a log in WPILog Explorer to list its entries" }, vscode.TreeItemCollapsibleState.None)];
       }
       const listing = await this.listing(active);
-      return buildEntryTree(listing).map((node) => this.item(node, true));
+      return buildEntryTree(listing, grouping).map((node) => this.item(node, grouping === "path"));
     }
     const node = element.node;
     if (node.kind === "group") return node.children.map((child) => this.item(child, false));

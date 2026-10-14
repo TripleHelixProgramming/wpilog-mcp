@@ -316,18 +316,28 @@ final class CodeInstaller {
     }
   }
 
-  /** cmd owns .cmd launchers on Windows; quote its single command without exposing shell expansion. */
   static List<String> command(boolean windows, Path code, Path vsix) throws IOException {
+    return command(windows, code, List.of("--install-extension", vsix.toAbsolutePath().toString(), "--force"));
+  }
+
+  /** cmd owns .cmd launchers on Windows; quote its single command without exposing shell expansion. */
+  static List<String> command(boolean windows, Path code, List<String> arguments) throws IOException {
     var cli = code.toAbsolutePath().toString();
-    var file = vsix.toAbsolutePath().toString();
+    var command = new ArrayList<String>();
+    command.add(cli);
+    command.addAll(arguments);
     if (!windows) {
-      return List.of(cli, "--install-extension", file, "--force");
+      return List.copyOf(command);
     }
-    if (cli.contains("\"") || file.contains("\"") || cli.contains("%") || file.contains("%")
-        || cli.contains("\n") || file.contains("\n")) {
-      throw new IOException("VS Code paths cannot contain quotes, percent signs, or newlines on Windows");
+    if (command.stream().anyMatch(value -> value.contains("\"") || value.contains("%")
+        || value.contains("\n") || value.contains("\r"))) {
+      throw new IOException("VS Code paths and arguments cannot contain quotes, percent signs, or newlines on Windows");
     }
-    return List.of("cmd", "/d", "/v:off", "/s", "/c", "\"\"" + cli + "\" --install-extension \"" + file + "\" --force\"");
+    var quotedArguments = arguments.stream()
+        .map(value -> value.matches("--?[A-Za-z][A-Za-z0-9-]*") ? value : "\"" + value + "\"")
+        .collect(Collectors.joining(" "));
+    return List.of("cmd", "/d", "/v:off", "/s", "/c",
+        "\"\"" + cli + "\"" + (quotedArguments.isEmpty() ? "" : " " + quotedArguments) + "\"");
   }
 
   static void install(Editor editor, Path vsix, boolean windows) throws IOException {
