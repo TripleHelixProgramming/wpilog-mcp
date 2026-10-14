@@ -287,7 +287,7 @@ public final class ContextProviders implements AutoCloseable {
       String state = connected ? value.state() : "offline", reason = connected ? value.reason() : "NT4 is disconnected";
       if (connected && tail.host != null && tail.host.connection() == null) { state = tail.host.state().state(); reason = tail.host.state().reason(); }
       snapshots.add(new ProviderStatus("tail/" + (tail.host == null ? "robot" : tail.host.address()) + "/" + tail.config.role(),
-          state, reason, value.state().equals("polling") ? periodUs / 1_000_000.0 : 0.25,
+          state, reason, value.state().equals("polling") ? periodUs / 1_000_000.0 : TailCommand.followIntervalSec(tail.config.role()),
           value.roundTripMs(), null, buffer.linesPerSecond(loop.nowUs()), buffer.dropped(), 0, tail.records, tail.bytes, 0));
     }
     photons.forEach(p -> snapshots.add(p.status()));

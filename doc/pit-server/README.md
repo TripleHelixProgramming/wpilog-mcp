@@ -1,12 +1,12 @@
 # Experimental pit server documentation
 
-> **Experimental:** the pit server has not had real-world testing. These documents are
+> **Experimental:** the pit server has limited controlled-shop evidence. These documents are
 > retained for development and controlled shop evaluation, not as a recommendation for team use.
 > Automated tests and simulation do not establish reliability on a real robot.
 
 The main documentation focuses on analyzing recorded WPILOG and REV files and organizing
 local stores. The material here describes the optional recording and remote integrations
-already in the code. It is preserved for maintainers preparing the first real-world tests;
+already in the code. It is preserved for maintainers preparing further controlled-shop tests;
 no feature has been enabled or disabled by moving these documents.
 
 | Document | Contents |

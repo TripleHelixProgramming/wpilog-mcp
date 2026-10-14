@@ -1,6 +1,6 @@
 # Pit server: Ideas
 
-> **Experimental:** the pit server has not had real-world testing. These documents are
+> **Experimental:** the pit server has limited controlled-shop evidence. These documents are
 > retained for development and controlled shop evaluation, not as a recommendation for team use.
 > Automated tests and simulation do not establish reliability on a real robot.
 
@@ -126,3 +126,14 @@ Round 12 adds the assistant's relative `last_seconds` scope and discoverable
 `pit://session/current` resource; the open flag distinguishes a current capture from its
 recorded siblings. Replay/verification cost now follows DEVELOPMENT's policy: Java owns clock
 placement, native owns transport fidelity, and only release preparation runs the whole corpus.
+
+## Shop utility follow-up
+
+The first dev4 shop run identified BusyBox 1.27.2 only for `tail`. Its source accepts the
+integer `-s 1` interval now used, `tail -c +N`, `stat -c`, `head -c` (with the relevant build
+features), `df -Pk`, discovery's sed/tr/grep options, and plain dmesg. That dmesg version
+does not implement `-w`; follow retains the capability probe and file-poll fallback.
+The new per-utility robot-facts evidence must establish which other executables are BusyBox
+applets and their enabled options on the actual image. The synthetic image replaces only
+tail until that evidence exists. Check symlink appends, rotation and observed receipt delay
+on the next run. A source audit and scripted SSH tests do not execute the NI image.

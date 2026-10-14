@@ -30,6 +30,35 @@ import org.triplehelix.wpilogmcp.ssh.SharedSsh;
 
 class ContextProviderStateTest {
   @TempDir Path temp;
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"program_console", "kernel", "journal"})
+  void publishedTailPeriodIsTheCommandsActualPollingInterval(String role) throws Exception {
+    var manager = LogManager.getInstance(); var saved = manager.getAllowedDirectories(); manager.addAllowedDirectory(temp);
+    var release = new java.util.concurrent.CountDownLatch(1);
+    try (var rio = new FakeRoboRio(temp.resolve("remote"), "TAIL-PERIOD", "")) {
+      var loop = new ManualScheduler(); var worker = new ManualScheduler(); var connections = new ManualScheduler();
+      var auth = new PullConfig.Ssh("lvuser", "", null, false, rio.port());
+      var tail = new ProviderConfig.Tail(null, auth, "/console", role);
+      rio.script(TailCommand.open(tail.path(), tail.role()), out -> {
+        out.write((TailCommand.FOLLOW + "\n").getBytes(StandardCharsets.UTF_8)); out.flush(); release.await();
+      });
+      var address = RobotAddress.uri("127.0.0.1", 5810, "tail-period"); var wall = Clock.systemUTC();
+      var config = new CaptureConfig(List.of(address), temp, .01, CapturePolicy.ALL, 0, 1 << 20,
+          new PullConfig(false, PullConfig.DISABLED.directories(), 5_000_000, 1_000_000, auth), 0,
+          new ProviderConfig(true, new ProviderConfig.Stats(false, 2_000_000, 100_000), List.of(tail)));
+      var live = new LiveCapture(temp, loop);
+      try (var writer = new CaptureWriter(wall, loop, CapturePolicy.ALL, (host, start) -> temp.resolve("capture.wpilog"))) {
+        var pool = new SharedSsh(host -> CompletableFuture.completedFuture(null), JschConnection::connect, host -> connections);
+        var providers = new ContextProviders(config, writer, live, loop, manager.stores().store(temp), wall, pool, worker);
+        try {
+          providers.connected("127.0.0.1"); connections.drain(); providers.start();
+          TailProviderTest.await(() -> { loop.drain(); return !live.providers().isEmpty() && live.providers().get(0).state().equals("following"); });
+          assertEquals(role.equals("program_console") ? 1.0 : 0.0, live.providers().get(0).periodSec());
+        } finally { release.countDown(); var closed = providers.closeAsync(); connections.advance(250_000); assertTrue(closed.isDone()); }
+      }
+    } finally { release.countDown(); manager.release(temp); manager.clearAllowedDirectories(); saved.forEach(manager::addAllowedDirectory); }
+  }
+
   @Test void unsupportedStatsStandDownAcrossAResumeAndRetryOnlyForANewSession() throws Exception {
     var manager = LogManager.getInstance(); var saved = manager.getAllowedDirectories(); manager.addAllowedDirectory(temp);
     try (var rio = new FakeRoboRio(temp.resolve("remote"), "STATS-STATE", "")) {

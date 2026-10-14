@@ -61,6 +61,16 @@ public final class RobotFactsReport {
     // not an SSH refusal; keep actual permission/deadline errors classified above.
     if (o.probe().id().startsWith("which:") && r.exitStatus() == 1 && r.stdout().isBlank() && r.stderr().isBlank())
       return new Conclusion("absent", "No executable path returned");
+    if (o.probe().id().startsWith("utility:")) {
+      if (r.exitStatus() == 127) return new Conclusion("absent", "The selected utility is unavailable; see command evidence below");
+      String text = r.stdout() + "\n" + r.stderr();
+      var busybox = java.util.regex.Pattern.compile("BusyBox v([0-9]+(?:\\.[0-9]+)+(?:[^\\s]*)?)").matcher(text);
+      if (busybox.find()) return new Conclusion("found", "BusyBox applet; version " + busybox.group(1)
+          + "; the executable's help identifies it even when --version is unsupported");
+      var other = text.lines().filter(line -> line.contains("(GNU ") || line.contains(" from util-linux ")).findFirst();
+      if (other.isPresent()) return new Conclusion("found", "Not a BusyBox applet: " + other.get().strip());
+      return new Conclusion("unknown", "The executable did not identify its implementation/version; see help and version output below");
+    }
     if (r.exitStatus() != 0) {
       boolean absent = r.exitStatus() == 127 || (r.exitStatus() == 3 && List.of("program", "jre-modules").contains(o.probe().id())) || error.contains("no nonempty");
       return new Conclusion(absent ? "absent" : "refused", "Exit status " + r.exitStatus() + "; see command evidence below");

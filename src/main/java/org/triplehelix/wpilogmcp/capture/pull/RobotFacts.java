@@ -44,6 +44,9 @@ public final class RobotFacts {
       add(probes, "list:" + directory, "ls -la " + directory);
     for (String tool : List.of("journalctl", "dmesg", "df", "tail", "sha256sum")) add(probes, "which:" + tool, "which " + tool);
     add(probes, "journal-version", "journalctl --version"); add(probes, "tail-version", "tail --version");
+    // Ask the selected executable itself: a global busybox version says nothing about PATH.
+    for (String tool : List.of("tail", "stat", "head", "dmesg", "df", "sed", "tr", "grep", "sha256sum", "cat", "ls", "date", "getconf"))
+      add(probes, "utility:" + tool, "command -v " + tool + "; " + tool + " --help 2>&1; " + tool + " --version 2>&1");
     add(probes, "boot-id", "cat /proc/sys/kernel/random/boot_id");
     add(probes, "journal-boot", "journalctl -b --no-pager -n 3 -o short-unix");
     // -b alone only proves current-boot selection. Ask separately about the UUID form.

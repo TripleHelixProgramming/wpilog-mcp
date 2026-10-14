@@ -1,6 +1,6 @@
 # Pit server: Standalone
 
-> **Experimental:** the pit server has not had real-world testing. These documents are
+> **Experimental:** the pit server has limited controlled-shop evidence. These documents are
 > retained for development and controlled shop evaluation, not as a recommendation for team use.
 > Automated tests and simulation do not establish reliability on a real robot.
 
@@ -210,8 +210,11 @@ constants stay cached until SSH reconnects. Steady samples read fixed `/proc` fi
 builtins and run one `df` for all selected filesystems. Exec replies are bounded to 64 KiB and
 30 seconds, and a sample wait never occupies the NT4 loop.
 
-**Followed files: what you see.** Each tail runs `tail -n 0 -F -s 0.25` and records one string
-record per line, stamped at **receipt** time. The `kernel` and `journal` roles use `dmesg -w` and
+**Followed files: what you see.** Each tail runs `tail -n 0 -F -s 1` and records one string
+record per line, stamped at **receipt** time. BusyBox accepts the integer one-second polling
+interval; a line can arrive up to one interval after it was written, plus transport and scheduling
+delay. GNU tail uses inotify where available and this interval when it falls back to polling.
+The native kernel/journal streams report a zero polling period because they deliver events. The `kernel` and `journal` roles use `dmesg -w` and
 `journalctl -f` where the image supports them; otherwise they poll the configured file by inode
 and byte offset at the current stats period. Lines received before a session starts keep their
 receipt time, mapped through the next session's measured offset and clamped at zero, with
@@ -554,7 +557,10 @@ nonzero; a sparse image collected successfully still exits zero.
 - `uname`, and the candidate NI metadata: `/etc/os-release`, `/etc/natinst/share/ni-rt.ini` and
   `/etc/natinst/share/ni-imaging-info.ini`.
 - The six log, home and USB directory listings.
-- `which` for journalctl, dmesg, df, tail and sha256sum, and the utilities' versions.
+- `which` for journalctl, dmesg, df, tail and sha256sum. Separate help/version probes identify
+  the actual selected tail, stat, head, dmesg, df, sed, tr, grep, sha256sum, cat, ls, date and
+  getconf executables: a BusyBox banner identifies that applet and its version, a GNU or
+  util-linux banner identifies the alternative, and unrecognized output stays unknown.
 - A current-boot journal query and one with an explicit boot UUID.
 - Three kernel lines and whether they carry `[seconds]` stamps.
 - `df -Pk /`.

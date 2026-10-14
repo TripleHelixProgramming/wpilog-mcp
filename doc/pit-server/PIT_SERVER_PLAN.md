@@ -1,6 +1,6 @@
 # The Pit Server: Live Capture, Gateway, and the Long-Term Record
 
-> **Experimental:** the pit server has not had real-world testing. These documents are
+> **Experimental:** the pit server has limited controlled-shop evidence. These documents are
 > retained for development and controlled shop evaluation, not as a recommendation for team use.
 > Automated tests and simulation do not establish reliability on a real robot.
 
@@ -863,7 +863,7 @@ Milestone 1 decisions:
 - Whether the roboRIO's JRE, which WPILib builds with `jlink` from a chosen set of modules, carries `jdk.management.agent` (needed for JMX remote) and `jdk.jfr` with `jdk.management.jfr` (needed for the Flight Recorder stream). The first thing to check on a real roboRIO; if either is absent, the provider does what the present modules allow, and the question of adding them goes to WPILib.
 - The JMX port. The field's allowed port ranges do not bind the pit server, which does not run there, but a team that leaves the flags in its deployed code carries them to competition. The guide proposes a port in the team-usable range (5800 to 5810), so nothing changes between the shop and the field, and says the listener is harmless there.
 - Measure the enabled-by-default system-stats period and budget on roboRIO 1 and 2 at the shop; the provisional defaults are 2 s and 100 ms.
-- The default follow (§8.4) is the NI program console path chosen below; kernel/journal are configured explicitly. Verify behavior on the installed image. Also whether the image's `tail` is busybox's, whose `-F` and sleep interval options differ, and whether `dmesg -w` and `journalctl -f` exist on it.
+- The default follow (§8.4) uses the NI program console path. The first shop run identified BusyBox 1.27.2 tail: fractional `-s 0.25` immediately exited, so follow now uses the shared integer interval `-s 1`. The synthetic image selects BusyBox tail. Per-utility robot-facts probes identify the other executables individually; kernel/journal follow remains capability-gated. Confirm append/rotation and receipt delay on each installed image.
 - The roboRIO's system log set (§10): whether the image's logger writes `/var/log/messages` or a systemd journal, what NI keeps under `/var/local/natinst/log/` and which file holds the program's console output. Also where the JVM's fatal error files land, and how far the kernel's clock runs ahead of the FPGA's. Each is verified on a roboRIO 1 and a roboRIO 2 and written into the defaults with the image version they were checked against.
 - Verify access to the recorded HAL serial and comments sources over SSH on real roboRIO 1 and 2; the paths are decided above, their image/account permissions remain unverified.
 - Whether to ask WPILib to have DataLogManager log the serial number, team number, and comments at startup, as AdvantageKit does, so no team has to add the line.
@@ -1163,7 +1163,7 @@ lists what remains open; the entries below record what was settled, and the evid
     base.
   - Whole-robot CPU seconds are not a claim of CPU spent on the provider.
     `capture_stats.kernel_clock` keeps the uptime/FPGA pairing.
-- Tails use `-n 0 -F -s 0.25`; kernel/journal prefer native follow, otherwise poll the
+- Tails use `-n 0 -F -s 1`; receipt can trail the write by up to this one-second interval. Kernel/journal prefer native follow, otherwise poll the
   configured path by inode and byte offset at the stats period.
   - A source miss stands down until a new session; SSH loss resumes automatically, with
     possible missed lines explicitly left to later system-log pulling.

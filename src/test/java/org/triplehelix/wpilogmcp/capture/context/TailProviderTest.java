@@ -26,6 +26,20 @@ import org.triplehelix.wpilogmcp.ssh.SshConnection;
 
 class TailProviderTest {
   @TempDir Path temp;
+  @Test void followIntervalPassesAnIntegerOnlyTailParser() {
+    String command = TailCommand.open("/console", "program_console");
+    var interval = java.util.regex.Pattern.compile(" -s ([^ ]+) ").matcher(command);
+    assertTrue(interval.find(), "The selected polling interval is explicit");
+    assertTrue(interval.group(1).matches("[0-9]+"), "BusyBox tail -s accepts an unsigned integer: " + interval.group(1));
+    assertEquals(1, Integer.parseUnsignedInt(interval.group(1)), "At most one second of polling delay");
+  }
+
+  @Test void syntheticRioUsesBusyBoxTailInsteadOfCoreutilsTail() throws Exception {
+    String docker = java.nio.file.Files.readString(Path.of("harness/rio/Dockerfile"));
+    assertTrue(docker.contains("busybox-static"), "The synthetic image needs the observed utility family");
+    assertTrue(docker.contains("ln -sf /bin/busybox /usr/local/bin/tail"), "PATH must select BusyBox tail");
+  }
+
   @Test void burstsAreCappedAndReportedWhenQuietAndPreSessionHistoryIsBounded() {
     var buffer = new TailBuffer();
     for (int n = 0; n < 275; n++) buffer.line("line-" + n, 123_000, true);
@@ -70,7 +84,7 @@ class TailProviderTest {
     var settings = new ProviderConfig.Tail(null, PullConfig.DISABLED.ssh(), "/home/lvuser/console", "program_console");
     try (var rio = new FakeRoboRio(temp, "TAIL-FIXTURE", "")) {
       String command = TailCommand.open(settings.path(), settings.role());
-      assertTrue(command.contains("tail -n 0 -F -s 0.25"));
+      assertTrue(command.contains("tail -n 0 -F -s 1"));
       var console = rio.logs().resolve("console.txt"); java.nio.file.Files.writeString(console, "");
       rio.script(command, out -> {
         long offset = java.nio.file.Files.size(console);

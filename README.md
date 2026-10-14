@@ -108,7 +108,7 @@ the path, entries and window to VS Code chat, with a clipboard fallback. See the
 
 The shared server can record NetworkTables into ordinary WPILOG files, applying exclusion and
 thinning policies while the existing log tools read the open recording. Recording remains
-experimental and has not had real-world testing; the [configuration and limits](doc/pit-server/STANDALONE.md#pit-server)
+experimental and has limited controlled-shop evidence; the [configuration and limits](doc/pit-server/STANDALONE.md#pit-server)
 are retained for controlled evaluation.
 
 The live tools, `list_sessions`, `get_latest_values` and `wait_for_change`, are registered on

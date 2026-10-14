@@ -5,8 +5,9 @@ RUN jlink --add-modules java.base,java.desktop,java.logging,java.management,java
     --strip-debug --no-header-files --no-man-pages --output /runtime
 
 FROM public.ecr.aws/ubuntu/ubuntu:22.04
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-server coreutils procps util-linux libstdc++6 zlib1g libfreetype6 \
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server coreutils busybox-static procps util-linux libstdc++6 zlib1g libfreetype6 \
     && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /bin/busybox /usr/local/bin/tail \
     && rm -f /etc/ssh/ssh_host_* \
     && useradd --create-home --shell /bin/bash lvuser && passwd -d lvuser \
     && mkdir -p /run/sshd /home/lvuser/logs /var/local/natinst/log \

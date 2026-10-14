@@ -53,6 +53,27 @@ class RobotFactsTest {
     }
   }
 
+  @Test void everyProviderUtilityHasItsOwnImplementationAndVersionEvidence() {
+    for (String tool : List.of("tail", "stat", "head", "dmesg", "df", "sed", "tr", "grep", "sha256sum", "cat", "ls", "date", "getconf")) {
+      var utility = RobotFacts.commands().stream().filter(p -> p.id().equals("utility:" + tool)).findFirst().orElse(null);
+      assertNotNull(utility, "Missing per-utility probe for " + tool);
+      assertEquals("command -v " + tool + "; " + tool + " --help 2>&1; " + tool + " --version 2>&1", utility.command());
+    }
+  }
+
+  @Test void busyBoxHelpIdentifiesTheAppletEvenWhenVersionIsRefused() {
+    var observation = new RobotFacts.Observation(new RobotFacts.Probe("utility:tail", "read-only", 0),
+        new JschConnection.Reply(1, "/usr/bin/tail\nBusyBox v1.27.2 (synthetic build) multi-call binary.\nUsage: tail [OPTIONS] [FILE]...\n",
+            "tail: unrecognized option '--version'", false, false, 1));
+    var report = new RobotFacts.Report("synthetic", 22, "lvuser", "none", "public", CLOCK.instant(), List.of(observation));
+    var result = RobotFactsReport.conclusions(report).get("utility:tail");
+    assertEquals("found", result.state());
+    assertTrue(result.reason().contains("BusyBox applet"));
+    assertTrue(result.reason().contains("1.27.2"));
+    var missing = new RobotFacts.Observation(observation.probe(), new JschConnection.Reply(127, "", "tail: not found", false, false, 1));
+    assertEquals("absent", RobotFactsReport.conclusions(new RobotFacts.Report("synthetic", 22, "lvuser", "none", "public", CLOCK.instant(), List.of(missing))).get("utility:tail").state());
+  }
+
   @Test void rio2LikeAndSparseImagesProduceDatedEvidenceAndHonestConclusionsOverRealSsh() throws Exception {
     for (boolean sparse : List.of(false, true)) {
       try (var rio = new FakeRoboRio(temp.resolve("rio-" + sparse), "SYNTHETIC", "")) {
@@ -98,6 +119,8 @@ class RobotFactsTest {
     for (String file : List.of("/etc/os-release", "/etc/natinst/share/ni-rt.ini", "/etc/natinst/share/ni-imaging-info.ini")) ordinary.add("cat " + file);
     for (String dir : List.of("/var/local/natinst/log", "/var/log", "/home/lvuser", "/home/lvuser/logs", "/u/logs", "/U/logs")) ordinary.add("ls -la " + dir);
     for (String tool : List.of("journalctl", "dmesg", "df", "tail", "sha256sum")) ordinary.add("which " + tool);
+    for (String tool : List.of("tail", "stat", "head", "dmesg", "df", "sed", "tr", "grep", "sha256sum", "cat", "ls", "date", "getconf"))
+      ordinary.add("command -v " + tool + "; " + tool + " --help 2>&1; " + tool + " --version 2>&1");
     for (var p : RobotFacts.commands()) {
       assertTrue(RobotFacts.allowed(p.command()));
       if (!List.of("program", "jre-modules").contains(p.id())) assertTrue(ordinary.remove(p.command()), p.id() + " left the read-only allowlist");

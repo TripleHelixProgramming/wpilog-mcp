@@ -9,7 +9,13 @@ import org.triplehelix.wpilogmcp.ssh.SshConnection;
 /** The first stdout line is our protocol; all following lines belong to the selected source. */
 public final class TailCommand {
   private TailCommand() {}
+  /** BusyBox 1.27.2 parses -s as an unsigned integer; GNU accepts the same value. */
+  public static final int FOLLOW_INTERVAL_SEC = 1;
   public static final String FOLLOW = "WPILOG_TAIL_1:follow", POLL = "WPILOG_TAIL_1:poll", MISSING = "WPILOG_TAIL_1:missing";
+  /** Native event streams do not poll a file; zero denotes their push delivery. */
+  public static double followIntervalSec(String role) {
+    return role.equals("kernel") || role.equals("journal") ? 0 : FOLLOW_INTERVAL_SEC;
+  }
   public static String open(String path, String role) {
     String nativeCommand = switch (role) {
       case "kernel" -> "if command -v dmesg >/dev/null 2>&1 && dmesg --help 2>&1 | grep -q -- '-w'; then printf '" + FOLLOW + "\\n'; exec dmesg -w; fi; ";
@@ -17,7 +23,7 @@ public final class TailCommand {
       default -> "";
     };
     String fallback = role.equals("kernel") || role.equals("journal")
-        ? "printf '" + POLL + "\\n'" : "printf '" + FOLLOW + "\\n'; exec tail -n 0 -F -s 0.25 -- " + SshConnection.quote(path);
+        ? "printf '" + POLL + "\\n'" : "printf '" + FOLLOW + "\\n'; exec tail -n 0 -F -s " + FOLLOW_INTERVAL_SEC + " -- " + SshConnection.quote(path);
     return "export LC_ALL=C; " + nativeCommand + "if [ ! -r " + SshConnection.quote(path)
         + " ]; then printf '" + MISSING + "\\n'; else " + fallback + "; fi";
   }

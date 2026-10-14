@@ -1,6 +1,6 @@
 # Pit server: Tools
 
-> **Experimental:** the pit server has not had real-world testing. These documents are
+> **Experimental:** the pit server has limited controlled-shop evidence. These documents are
 > retained for development and controlled shop evaluation, not as a recommendation for team use.
 > Automated tests and simulation do not establish reliability on a real robot.
 
