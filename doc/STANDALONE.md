@@ -868,6 +868,11 @@ Native-read 409 refusals carry it too: a catalog still changing after two scans 
 open-capture growth is accepted during catalog refresh. Permanent history/source refusals carry
 `retryable: false` and require their stated remedy, rather than repeated polling.
 Writer identity persists through finalization, and bounded turns share pages among selected signals.
+Callers may explicitly negotiate `frontier_scope: "queries"` to keep metadata for queried entries
+and their required struct schemas within 1 MiB pages, while retaining every recording member's
+identity and the full internal history proof. Omission keeps complete descriptors. The create
+reply acknowledges the scope; an older server ignoring the option has not negotiated it.
+This does not reduce the Source Overview's separate 4 MiB inventory or enlarge either limit.
 These are custom-reader
 routes; the optional visualization editor still provides the recorded workflow.
 A standalone library excludes open captures it cannot freeze and names the recording-server route

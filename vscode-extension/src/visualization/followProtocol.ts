@@ -10,9 +10,11 @@ export interface FollowSource {
 }
 export interface FollowWindow { readonly start_us: string; readonly end_us: string; readonly end_inclusive: boolean }
 export interface FollowSelection { readonly entry: string; readonly field?: string }
-export interface FollowLease { readonly id: string; readonly server_epoch: string; readonly cursor: string }
+export type FollowFrontierScope = "all" | "queries";
+export interface FollowLease { readonly id: string; readonly server_epoch: string; readonly cursor: string; readonly frontier_scope?: FollowFrontierScope }
 export interface FollowFrontier {
   readonly recording_id: string; readonly catalog_revision: string; readonly finalized: boolean;
+  readonly frontier_scope?: FollowFrontierScope;
   readonly members: readonly { readonly member_id: string; readonly snapshot: { readonly [key: string]: Json } }[];
 }
 export interface FollowSample {
@@ -34,6 +36,11 @@ export class FollowError extends Error {
   constructor(readonly code: string, message: string, readonly status = 0, readonly retryable = false) { super(message); }
 }
 export function protocol(message: string): never { throw new FollowError("INVALID_RESPONSE", message); }
+export function readFrontierScope(value: unknown): FollowFrontierScope {
+  if (value === undefined || value === "all") return "all";
+  if (value === "queries") return "queries";
+  return protocol("Invalid follow frontier scope");
+}
 export function object(value: unknown): Record<string, any> {
   if (!value || typeof value !== "object" || Array.isArray(value)) protocol("Expected a follow object");
   return value as Record<string, any>;
@@ -110,13 +117,23 @@ export function page(value: unknown, lease: FollowLease, cursor: string, selecti
   if (v.ended && !v.frontier_complete) protocol("Incomplete terminal page");
   const frontier = v.frontier === undefined ? previous?.frontier : object(v.frontier);
   if (!frontier || (v.frontier === undefined && previous?.prefix !== v.prefix_id)) protocol("Missing follow frontier");
+  const scope = readFrontierScope(frontier.frontier_scope);
+  if (scope !== (lease.frontier_scope ?? "all")) protocol("Follow frontier scope changed");
   text(frontier.recording_id); decimal(frontier.catalog_revision, true); bool(frontier.finalized);
   if (previous && previous.frontier.recording_id !== frontier.recording_id) protocol("Follow recording identity changed");
   if (v.ended && !frontier.finalized) protocol("Terminal live frontier");
   const members = array(frontier.members), ids = new Set<string>();
+  const selectedEntries = new Set([...selections].map(key => JSON.parse(key)[0] as string));
   if (members.length < 1 || members.length > 64) protocol("Invalid follow member count");
   for (const m of members) { text(m.member_id); if (ids.has(m.member_id)) protocol("Duplicate follow member");
-    ids.add(m.member_id); decimal(m.generation, true); object(m.snapshot); object(m.snapshot.entries); object(m.snapshot.sample_counts); }
+    ids.add(m.member_id); decimal(m.generation, true); object(m.snapshot); object(m.snapshot.entries); object(m.snapshot.sample_counts);
+    if (scope === "queries") {
+      const entries = Object.keys(m.snapshot.entries), counts = Object.keys(m.snapshot.sample_counts);
+      if (entries.some(name => !selectedEntries.has(name)) || counts.length !== entries.length
+          || counts.some(name => !Object.hasOwn(m.snapshot.entries, name))) protocol("Unrequested follow metadata");
+      counts.forEach(name => decimal(m.snapshot.sample_counts[name], true));
+    }
+  }
   let visited = 0;
   for (const b of array(v.batches)) {
     if (!ids.has(b.member_id) || !selections.has(selectionKey(b))) protocol("Unrequested follow selection");

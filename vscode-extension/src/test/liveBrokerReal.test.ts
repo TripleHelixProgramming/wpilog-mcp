@@ -38,6 +38,54 @@ async function realFixture(t: import("node:test").TestContext, cleanup: () => Pr
     session_id: "22222222-2222-4222-8222-222222222222", anchor_member: { original_name: "capture.wpilog", recording_started_at: "2026-01-01T00:00:00Z" } };
   return { port, command, source };
 }
+test("queried one-MiB broker follows a large two-member recording through growth and finalization", { skip: !classpath, timeout: 60000 }, async t => {
+  let broker: LiveBroker | undefined;
+  const { port, command, source } = await realFixture(t, () => broker?.dispose());
+  const info = await command({ op: "topics", count: 10000 });
+  const client = new FollowClient(`http://127.0.0.1:${port}/mcp`, undefined, 1 << 20, "queries");
+  const pages: FollowDelivery[] = [], peer: FollowDelivery[] = [], states: FollowState[] = [], peerStates: FollowState[] = [];
+  broker = new LiveBroker(client, { retryBaseMs: 10, retryMaxMs: 50 });
+  const subscribe = (id: string, output: FollowDelivery[], status: FollowState[]) => broker!.subscribe(source, [], [{ entry: "NT:/x" }, { entry: "NT:/late" }], {
+    identity: { viewId: id, generation: 1, revision: 1, queryKey: "x-late" }, current: () => true, state: s => status.push(s), page: p => {
+      assert.equal(p.frontier.frontier_scope, "queries"); assert.ok(Buffer.byteLength(JSON.stringify(p.page)) <= 1 << 20);
+      assert.equal(p.frontier.members.length, 2);
+      for (const m of p.frontier.members) {
+        const entries = m.snapshot.entries as Record<string, unknown>;
+        assert.ok(Object.keys(entries).every(name => ["NT:/x", "NT:/late"].includes(name)));
+        assert.deepEqual(m.snapshot.schemas, []);
+      }
+      output.push(p);
+    }
+  });
+  const values = (p: FollowDelivery[]) => p.flatMap(p => p.page.batches.filter(b => b.member_id === "capture.wpilog" && b.entry === "NT:/x").flatMap(b => b.batch.samples));
+  const sa = subscribe("a", pages, states);
+  await until(() => values(pages).length === 1 || states.some(s => s.kind === "error"), "large recording bootstrap");
+  assert.deepEqual(states.filter(s => s.kind === "error"), []);
+  assert.deepEqual(pages.flatMap(p => p.page.batches.filter(b => b.member_id === "rollover.wpilog").flatMap(b => b.batch.samples)).map(s => [s.ordinal, s.timestamp_us, s.value]), [[0, "-10", { type: "i64", value: "-7" }]]);
+  const sb = subscribe("b", peer, peerStates); await until(() => values(peer).length === 1, "independent selected peer");
+  assert.equal(broker.resources.reservedBytes, 4 << 20);
+  await command({ op: "append", first: 1, count: 100 });
+  await until(() => values(pages).length === 101 && values(peer).length === 101, "selected deltas");
+  await command({ op: "metadata" });
+  await until(() => pages.some(p => JSON.stringify(p.frontier).includes('"NT:/late"')) && peer.some(p => JSON.stringify(p.frontier).includes('"NT:/late"')), "selected late declaration");
+  const final = await command({ op: "finalize" });
+  await until(() => states.some(s => s.kind === "ended") && peerStates.some(s => s.kind === "ended"), "selected terminal pages");
+  for (const seen of [pages, peer]) {
+    assert.ok(seen.every(p => p.reset === 1));
+    assert.deepEqual(seen.flatMap(p => p.page.batches.filter(b => b.member_id === "rollover.wpilog").flatMap(b => b.batch.samples))
+      .map(s => [s.ordinal, s.timestamp_us, s.value]), [[0, "-10", { type: "i64", value: "-7" }]]);
+    for (const [n, sample] of values(seen).entries()) {
+      assert.equal(sample.ordinal, n); assert.equal(sample.timestamp_us, n % 2 ? "50" : "100");
+      assert.deepEqual(sample.value, { type: "i64", value: String(9007199254740993n + BigInt(n)) });
+    }
+    const members = seen.at(-1)!.frontier.members as readonly any[];
+    assert.equal(members.find(m => m.member_id === "capture.wpilog").content_sha256, final.hash);
+    assert.equal(members.find(m => m.member_id === "rollover.wpilog").content_sha256, info.rollover_hash);
+  }
+  assert.deepEqual([...states, ...peerStates].filter(s => s.kind === "error"), []);
+  sa.dispose(); sb.dispose(); await broker.dispose(); assert.equal(broker.resources.reservedBytes, 0);
+  t.diagnostic(`Queried follow: 10000 topics/member, 2 members, 1 MiB pages, ${pages.length + peer.length} pages, 204 exact samples across uninterrupted independent peers`);
+});
 test("shared broker follows the real capture/server through bootstrap, append, restart and finalization", { skip: !classpath, timeout: 60000 }, async t => {
   let broker: LiveBroker | undefined;
   const { port, command, source } = await realFixture(t, () => broker?.dispose());

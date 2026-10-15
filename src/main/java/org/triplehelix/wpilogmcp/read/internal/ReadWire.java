@@ -28,13 +28,20 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Base64;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.log.FileSnapshot;
 import org.triplehelix.wpilogmcp.log.struct.EnumValue;
 import org.triplehelix.wpilogmcp.log.struct.UnsignedEnumValue;
+import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import java.math.BigInteger;
 import org.triplehelix.wpilogmcp.read.ReadException;
 import org.triplehelix.wpilogmcp.read.ReadProblem;
@@ -189,25 +196,48 @@ public final class ReadWire {
 
   /** A descriptor is the complete schema and boundary; it does not trigger value decoding. */
   public static JsonObject descriptor(String id, ReadSnapshot snapshot) {
+    return descriptor(id, snapshot, snapshot.entries(), snapshot.schemas().allStructs(), false);
+  }
+
+  /** An explicitly negotiated follow may project metadata before allocation/encoding. Keep the
+   * native schema owner's transitive dependencies and diagnostics, without sending unrelated
+   * topics or bundled schemas. The recording's internal identity/history proof stays complete. */
+  public static JsonObject descriptorForEntries(String id, ReadSnapshot snapshot, Set<String> selected) {
+    var entries = new LinkedHashMap<String, EntryInfo>(); var roots = new TreeSet<String>();
+    for (String name : new TreeSet<>(selected)) {
+      var entry = snapshot.entries().get(name); if (entry == null) continue;
+      entries.put(name, entry);
+      String schema = StructSchemas.structName(entry.type());
+      if (schema == null) schema = StructSchemas.schemaEntryStruct(name, entry.type());
+      if (schema != null) roots.add(schema);
+    }
+    return descriptor(id, snapshot, entries, roots, true);
+  }
+
+  private static JsonObject descriptor(String id, ReadSnapshot snapshot, Map<String, EntryInfo> entries,
+      Collection<String> roots, boolean dependencies) {
     var budget = new Budget(MAX_FRAME_BYTES); budget.charge(512); budget.text(snapshot.path().toString());
-    for (var entry : snapshot.entries().values()) {
+    for (var entry : entries.values()) {
       budget.charge(256); budget.text(entry.name()); budget.text(entry.type()); budget.text(entry.metadata());
     }
-    var schemas = new ArrayList<org.triplehelix.wpilogmcp.log.struct.StructSchemas.StructInfo>();
-    for (var name : snapshot.schemas().allStructs()) {
-      var schema = snapshot.schemas().info(name).orElseThrow();
+    var schemas = new ArrayList<StructSchemas.StructInfo>();
+    var pending = new ArrayDeque<>(roots); var visited = new HashSet<String>();
+    while (!pending.isEmpty()) {
+      String name = pending.removeFirst(); if (!visited.add(name)) continue;
+      var schema = snapshot.schemas().info(name).orElse(null); if (schema == null) continue;
       budget.charge(256); budget.text(schema.name()); budget.text(schema.schema()); budget.text(schema.schemaEntry()); budget.text(schema.error());
       for (var field : schema.fields()) {
         budget.charge(256); budget.text(field.name()); budget.text(field.type()); budget.text(field.structType());
         for (var constant : field.enumValues().keySet()) { budget.charge(64); budget.text(constant); }
+        if (dependencies && field.structType() != null) pending.addLast(field.structType());
       }
       schemas.add(schema);
     }
     var out = new JsonObject(); out.addProperty("api_version", VERSION); out.addProperty("id", id);
     out.addProperty("path", snapshot.path().toString()); out.addProperty("live", snapshot.live());
     out.add("boundary", boundary(snapshot.boundary()));
-    out.add("entries", JSON.toJsonTree(snapshot.entries()));
-    var counts = new JsonObject(); snapshot.entries().keySet().forEach(e -> counts.addProperty(e, Long.toString(snapshot.sampleCount(e))));
+    out.add("entries", JSON.toJsonTree(entries));
+    var counts = new JsonObject(); entries.keySet().forEach(e -> counts.addProperty(e, Long.toString(snapshot.sampleCount(e))));
     out.add("sample_counts", counts); out.addProperty("index_bytes", Long.toString(snapshot.indexBytes()));
     out.addProperty("truncated", snapshot.truncated()); out.addProperty("damaged", snapshot.damaged());
     out.addProperty("truncation_message", snapshot.truncationMessage());

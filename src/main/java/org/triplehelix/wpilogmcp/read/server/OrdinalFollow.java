@@ -15,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -43,6 +44,12 @@ import org.triplehelix.wpilogmcp.read.internal.ReadWire;
 public final class OrdinalFollow implements AutoCloseable {
   public static final int MAX_RECORDS = 4096, MAX_PAGE_BYTES = 4 << 20;
   private static final int TURN_RECORDS = 256;
+
+  /** Projection is opt-in: existing clients still receive the complete descriptor. */
+  public enum FrontierScope {
+    ALL, QUERIES;
+    public String wire() { return name().toLowerCase(java.util.Locale.ROOT); }
+  }
 
   /** Identity/generation come from the source owner, never a filename or inferred clock. */
   public record Member(String id, long generation, ReadSnapshot snapshot, String contentSha256, String writerIdentity) {
@@ -157,6 +164,8 @@ public final class OrdinalFollow implements AutoCloseable {
   private final String epoch, id = UUID.randomUUID().toString(), initial = UUID.randomUUID().toString();
   private final Budget budget;
   private final int pageRecords, pageBytes;
+  private final FrontierScope frontierScope;
+  private final Set<String> selectedEntries;
   private final AtomicBoolean busy = new AtomicBoolean(), closed = new AtomicBoolean();
   private Prefix prefix;
   private FrontierProof proof;
@@ -172,8 +181,14 @@ public final class OrdinalFollow implements AutoCloseable {
   }
   public OrdinalFollow(String epoch, Source source, List<ReadQuery> queries, Budget budget,
       int pageRecords, int pageBytes) throws IOException {
+    this(epoch, source, queries, budget, pageRecords, pageBytes, FrontierScope.ALL);
+  }
+  public OrdinalFollow(String epoch, Source source, List<ReadQuery> queries, Budget budget,
+      int pageRecords, int pageBytes, FrontierScope frontierScope) throws IOException {
     requireId(epoch); this.epoch = epoch; this.source = Objects.requireNonNull(source);
     this.queries = List.copyOf(queries); this.budget = Objects.requireNonNull(budget);
+    this.frontierScope = Objects.requireNonNull(frontierScope);
+    this.selectedEntries = queries.stream().map(ReadQuery::entry).collect(java.util.stream.Collectors.toUnmodifiableSet());
     if (queries.isEmpty() || queries.size() > 256 || pageRecords < 1 || pageRecords > MAX_RECORDS
         || pageBytes < 1024 || pageBytes > MAX_PAGE_BYTES)
       throw new IllegalArgumentException("Follow limits: 1..256 entries, 1..4096 records, 1024..4194304 bytes");
@@ -382,13 +397,16 @@ public final class OrdinalFollow implements AutoCloseable {
       if (proof != null) validateSuccessor(candidate);
       var out = new JsonObject(); out.addProperty("recording_id", candidate.recordingId());
       out.addProperty("catalog_revision", Long.toString(candidate.catalogRevision())); out.addProperty("finalized", candidate.finalized());
+      if (frontierScope == FrontierScope.QUERIES) out.addProperty("frontier_scope", frontierScope.wire());
       var members = new JsonArray(); int metadataBytes = 0;
       String candidateId = UUID.randomUUID().toString();
       for (var member : candidate.members()) {
         var item = new JsonObject(); item.addProperty("member_id", member.id()); item.addProperty("generation", Long.toString(member.generation()));
         item.addProperty("content_sha256", member.contentSha256());
         item.addProperty("writer_identity", member.writerIdentity());
-        item.add("snapshot", ReadWire.descriptor(member.id(), member.snapshot()));
+        item.add("snapshot", frontierScope == FrontierScope.QUERIES
+            ? ReadWire.descriptorForEntries(member.id(), member.snapshot(), selectedEntries)
+            : ReadWire.descriptor(member.id(), member.snapshot()));
         metadataBytes = Math.addExact(metadataBytes, ReadWire.bytes(item, pageBytes).length);
         if (metadataBytes > pageBytes) throw metadataLimit(null);
         members.add(item);

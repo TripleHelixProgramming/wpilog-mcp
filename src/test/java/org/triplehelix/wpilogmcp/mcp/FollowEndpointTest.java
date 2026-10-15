@@ -85,6 +85,86 @@ class FollowEndpointTest {
   String nextPath(JsonObject lease) { return "/read/v1/follows/" + lease.get("id").getAsString() + "/next"; }
   String nextBody(String cursor, int wait) { return "{\"cursor\":\"" + cursor + "\",\"wait_ms\":" + wait + "}"; }
 
+  @ParameterizedTest @ValueSource(ints = {5000, 10000})
+  void queriedFrontierBootstrapsLargeTwoMemberRecordingsAtOneMiB(int topics) throws Exception {
+    var rollover = file.resolveSibling("rollover.wpilog"); var queries = new JsonArray();
+    try (var out = new org.triplehelix.wpilogmcp.fixtures.WpilogWriter(rollover, "")) {
+      out.start("NT:/x", "int64", "", 0);
+      for (int n = 0; n < topics - 1; n++) {
+        String name = "/subsystem/inputs/synthetic/signal-" + String.format(java.util.Locale.ROOT, "%05d", n);
+        var properties = new JsonObject(); properties.addProperty("unit", "synthetic");
+        var signal = new Announce(name, n + 2, "int", null, properties); writer.announce(signal);
+        int id = out.start("NT:" + name, "int64", "{\"unit\":\"synthetic\"}", 0);
+        if (n < 32) {
+          writer.value(signal, new ValueFrame(n + 2, 2_000_000 + n, 2, 100L + n), 0);
+          out.append(id, 1_000_000 + n, org.triplehelix.wpilogmcp.fixtures.WpilogWriter.encodeInt64(200L + n));
+          var query = new JsonObject(); query.addProperty("entry", "NT:" + name); query.addProperty("order", "file"); queries.add(query);
+        }
+      }
+    }
+    addRollover(rollover);
+    var body = JsonParser.parseString(creation()).getAsJsonObject(); body.add("queries", queries); body.addProperty("max_page_bytes", 1 << 20);
+    json(call("POST", "/read/v1/follows", body.toString()), 413);
+    body.addProperty("frontier_scope", "queries");
+    var lease = json(call("POST", "/read/v1/follows", body.toString()), 201);
+    assertEquals("queries", lease.get("frontier_scope").getAsString());
+    var response = call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0));
+    assertTrue(response.body().getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 1 << 20);
+    var page = json(response, 200); var frontier = page.getAsJsonObject("frontier");
+    assertEquals("queries", frontier.get("frontier_scope").getAsString());
+    assertEquals(2, frontier.getAsJsonArray("members").size());
+    for (var member : frontier.getAsJsonArray("members")) {
+      var snapshot = member.getAsJsonObject().getAsJsonObject("snapshot");
+      assertEquals(32, snapshot.getAsJsonObject("entries").size());
+      assertEquals(32, snapshot.getAsJsonObject("sample_counts").size());
+      assertEquals(0, snapshot.getAsJsonArray("schemas").size(), "Scalar selections need no bundled schemas");
+    }
+    int samples = 0;
+    for (var batch : page.getAsJsonArray("batches")) {
+      var b = batch.getAsJsonObject(); int n = Integer.parseInt(b.get("entry").getAsString().substring(b.get("entry").getAsString().length() - 5));
+      boolean rolled = b.get("member_id").getAsString().equals("rollover.wpilog");
+      assertTrue(b.getAsJsonObject("batch").getAsJsonArray("problems").isEmpty());
+      for (var value : b.getAsJsonObject("batch").getAsJsonArray("samples")) {
+        var sample = value.getAsJsonObject(); assertEquals(0, sample.get("ordinal").getAsInt());
+        assertEquals((rolled ? 1_000_000 : 2_000_000) + n, sample.get("timestamp_us").getAsLong());
+        assertEquals((rolled ? 200 : 100) + n, sample.getAsJsonObject("value").get("value").getAsLong()); samples++;
+      }
+    }
+    assertEquals(64, samples); assertTrue(page.get("frontier_complete").getAsBoolean());
+    assertEquals(response.body(), call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)).body());
+    System.out.println("Queried frontier: " + topics + " topics/member, 2 members, 32 selections, "
+        + response.body().getBytes(java.nio.charset.StandardCharsets.UTF_8).length + " bytes, 64 exact samples");
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+  }
+
+  void addRollover(Path path) throws Exception {
+    var metadata = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+    var closed = new LogFile(path.getFileName().toString(), org.triplehelix.wpilogmcp.store.LogStore.contentHash(path), Files.size(path), "wpilog",
+        new Provenance("captured", null, path.getFileName().toString(), WHEN, false), true, 0, 0, WHEN, WHEN, "pit_clock", false, null);
+    metadata.getAsJsonArray("files").add(StoreJson.JSON.toJsonTree(closed)); Files.writeString(manifest, metadata.toString()); logs.catalogPublished();
+  }
+
+  @ParameterizedTest @ValueSource(strings = {"null", "7", "true", "{}", "\"unknown\""})
+  void frontierScopeIsAnExplicitClosedVocabulary(String scope) throws Exception {
+    var body = JsonParser.parseString(creation()).getAsJsonObject(); body.add("frontier_scope", JsonParser.parseString(scope));
+    var refused = json(call("POST", "/read/v1/follows", body.toString()), 400);
+    assertEquals("INVALID_REQUEST", refused.get("code").getAsString());
+    assertTrue(refused.get("message").getAsString().contains("frontier_scope"));
+  }
+
+  @ParameterizedTest @ValueSource(ints = {2, 3})
+  void queriedFrontierDoesNotChargeUnselectedMetadataButKeepsSelectedMetadataBounded(int metadataMiB) throws Exception {
+    var properties = new JsonObject(); properties.addProperty("description", "x".repeat(metadataMiB << 20));
+    writer.announce(new Announce("/unselected", 2, "double", null, properties));
+    var body = JsonParser.parseString(creation()).getAsJsonObject(); body.addProperty("frontier_scope", "queries"); body.addProperty("max_page_bytes", 1 << 20);
+    var lease = json(call("POST", "/read/v1/follows", body.toString()), 201);
+    var page = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
+    assertEquals(Set.of("NT:/x"), page.getAsJsonObject("frontier").getAsJsonArray("members").get(0).getAsJsonObject().getAsJsonObject("snapshot").getAsJsonObject("entries").keySet());
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+    body.getAsJsonArray("queries").get(0).getAsJsonObject().addProperty("entry", "NT:/unselected");
+    assertFalse(json(call("POST", "/read/v1/follows", body.toString()), 413).get("retryable").getAsBoolean());
+  }
+
   @Test void sourceInspectionOverHttpAndMcpSuppliesTheSameAnchorToAOneMiBFollow() throws Exception {
     var connected = call("POST", "/mcp", """
         {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26",

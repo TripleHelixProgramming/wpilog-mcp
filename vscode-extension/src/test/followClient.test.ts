@@ -10,6 +10,58 @@ async function server(t: any, handler: http.RequestListener) {
   const s = http.createServer(handler); await new Promise<void>(r => s.listen(0, "127.0.0.1", r));
   t.after(() => { s.closeAllConnections(); s.close(); }); return `http://127.0.0.1:${(s.address() as AddressInfo).port}/mcp`;
 }
+test("queried frontier is explicitly negotiated on create without increasing the page budget", async t => {
+  const source = { kind: "session" as const, origin_store_id: "store", session_id: "session", anchor_member: { original_name: "capture.wpilog", recording_started_at: "2026-01-01T00:00:00Z" } };
+  let body: any;
+  const endpoint = await server(t, (req, res) => {
+    let text = ""; req.on("data", b => text += b); req.on("end", () => {
+      body = JSON.parse(text); res.statusCode = 201;
+      res.end(JSON.stringify({ api_version: 1, id: "lease", server_epoch: "epoch", cursor: "c0", idle_timeout_sec: 60, max_wait_ms: 25000, source_ref: source, frontier_scope: "queries" }));
+    });
+  });
+  const client: FollowClient = new FollowClient(endpoint, undefined, 1 << 20, "queries");
+  const opened = await client.open(source, [{ entry: "x" }], [], new AbortController().signal);
+  assert.equal(body.frontier_scope, "queries"); assert.equal(body.max_page_bytes, 1 << 20);
+  assert.equal(opened.frontier_scope, "queries");
+});
+for (const scope of [undefined, "all", "wrong", null, true]) test(`queried frontier refuses an unnegotiated scope ${String(scope)} and retires the created lease`, async t => {
+  const source = { kind: "session" as const, origin_store_id: "store", session_id: "session", anchor_member: { original_name: "capture.wpilog", recording_started_at: "2026-01-01T00:00:00Z" } };
+  const deleted: string[] = [];
+  const endpoint = await server(t, (req, res) => {
+    req.resume(); req.on("end", () => {
+      if (req.method === "DELETE") { deleted.push(req.url!); res.statusCode = 204; res.end(); }
+      else { res.statusCode = 201; res.end(JSON.stringify({ api_version: 1, id: "lease", server_epoch: "epoch", cursor: "c0", idle_timeout_sec: 60, max_wait_ms: 25000, source_ref: source, frontier_scope: scope })); }
+    });
+  });
+  const client: FollowClient = new FollowClient(endpoint, undefined, 1 << 20, "queries");
+  await assert.rejects(client.open(source, [{ entry: "x" }], [], new AbortController().signal), (error: any) => error instanceof FollowError && !error.retryable && ["INVALID_RESPONSE", "UNSUPPORTED_FRONTIER_SCOPE"].includes(error.code));
+  assert.deepEqual(deleted, ["/read/v1/follows/lease"]);
+});
+test("queried wire refuses a missing scope or unrequested metadata while retaining an omitted frontier", () => {
+  const selected: FollowLease = Object.assign({}, lease, { frontier_scope: "queries" as const });
+  const v = valid(); v.frontier.frontier_scope = "queries";
+  v.frontier.members[0].snapshot.entries = { x: { name: "x", type: "int64" } };
+  v.frontier.members[0].snapshot.sample_counts = { x: "1" };
+  const checked = page(v, selected, "c0", new Set(['["x",null]']));
+  const without = { ...v, cursor: "c1", next_cursor: "c2" }; delete without.frontier;
+  assert.equal(page(without, selected, "c1", new Set(['["x",null]']), { prefix: "p", frontier: checked.frontier }).frontier, checked.frontier);
+  for (const kind of ["missing", "scope", "malformed", "null", "entry", "count", "missing count", "wrong count", "negative count"]) {
+    const bad = structuredClone(v);
+    if (kind === "missing") delete bad.frontier.frontier_scope;
+    if (kind === "scope") bad.frontier.frontier_scope = "all";
+    if (kind === "malformed") bad.frontier.frontier_scope = true;
+    if (kind === "null") bad.frontier.frontier_scope = null;
+    if (kind === "entry") {
+      bad.frontier.members[0].snapshot.entries.unrequested = {};
+      bad.frontier.members[0].snapshot.sample_counts.unrequested = "0";
+    }
+    if (kind === "count") bad.frontier.members[0].snapshot.sample_counts.unrequested = "0";
+    if (kind === "missing count") bad.frontier.members[0].snapshot.sample_counts = {};
+    if (kind === "wrong count") bad.frontier.members[0].snapshot.sample_counts = { unrequested: "1" };
+    if (kind === "negative count") bad.frontier.members[0].snapshot.sample_counts.x = "-1";
+    assert.throws(() => page(bad, selected, "c0", new Set(['["x",null]'])), FollowError, kind);
+  }
+});
 for (const kind of ["windows", "utf8", "cursor"]) test(`HTTP follow refuses oversized ${kind} before credentials or network`, async t => {
   const source = { kind: "session" as const, origin_store_id: "store", session_id: "session", anchor_member: { original_name: "capture.wpilog", recording_started_at: "2026-01-01T00:00:00Z" } };
   let requests = 0, credentials = 0;

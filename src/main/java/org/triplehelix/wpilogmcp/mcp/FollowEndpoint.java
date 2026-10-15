@@ -113,13 +113,24 @@ final class FollowEndpoint implements AutoCloseable {
     }
     int records = body.has("max_records") ? ReadWire.integer(body, "max_records") : OrdinalFollow.MAX_RECORDS;
     int bytes = body.has("max_page_bytes") ? ReadWire.integer(body, "max_page_bytes") : OrdinalFollow.MAX_PAGE_BYTES;
+    var scope = OrdinalFollow.FrontierScope.ALL;
+    if (body.has("frontier_scope")) {
+      var value = body.get("frontier_scope");
+      if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString())
+        throw new IllegalArgumentException("frontier_scope must be all or queries");
+      scope = switch (value.getAsString()) {
+        case "all" -> OrdinalFollow.FrontierScope.ALL;
+        case "queries" -> OrdinalFollow.FrontierScope.QUERIES;
+        default -> throw new IllegalArgumentException("frontier_scope must be all or queries");
+      };
+    }
     synchronized (leases) {
       if (leases.size() + opening >= capacity) throw new Refusal(429, "RESOURCE_LIMIT", "Close another follow before opening a new one");
       opening++;
     }
     OrdinalFollow engine = null; String id = null; boolean published = false;
     try {
-      engine = new OrdinalFollow(epoch, sources.open(reference), queries, budget, records, bytes);
+      engine = new OrdinalFollow(epoch, sources.open(reference), queries, budget, records, bytes, scope);
       id = engine.id();
       synchronized (leases) {
         if (closed) throw new Refusal(503, "CLOSED", "Follow admission closed while opening");
@@ -129,6 +140,7 @@ final class FollowEndpoint implements AutoCloseable {
       response.addProperty("id", id); response.addProperty("server_epoch", epoch); response.addProperty("cursor", engine.initialCursor());
       response.addProperty("idle_timeout_sec", idleNanos / 1_000_000_000.0);
       response.addProperty("max_wait_ms", 25000); response.add("source_ref", ref);
+      response.addProperty("frontier_scope", scope.wire());
       try { ReadEndpoint.send(exchange, 201, response); }
       catch (IOException failure) { synchronized (leases) { leases.remove(id); } published = false; throw failure; }
     } finally {

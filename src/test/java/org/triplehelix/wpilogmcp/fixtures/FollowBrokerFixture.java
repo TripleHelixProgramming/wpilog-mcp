@@ -86,6 +86,26 @@ public final class FollowBrokerFixture {
           writer.value(arrays, new ValueFrame(5, n, 17, values), 0);
         }
       }
+      case "topics" -> {
+        int count = request.get("count").getAsInt();
+        if (count < 2 || count > 10000) throw new IllegalArgumentException("Synthetic topic count outside fixture bound");
+        var rollover = file.resolveSibling("rollover.wpilog");
+        try (var out = new WpilogWriter(rollover, "")) {
+          int xId = out.start("NT:/x", "int64", "", 0); out.append(xId, -10, WpilogWriter.encodeInt64(-7));
+          out.start("NT:/y", "double", "", 0);
+          for (int n = 0; n < count - 2; n++) {
+            String name = "/inputs/synthetic/subsystem/signal-" + String.format(java.util.Locale.ROOT, "%05d", n);
+            var properties = new JsonObject(); properties.addProperty("unit", "synthetic");
+            writer.announce(new Announce(name, n + 20, "double", null, properties));
+            out.start("NT:" + name, "double", "{\"unit\":\"synthetic\"}", 0);
+          }
+        }
+        String hash = LogStore.contentHash(rollover); var session = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+        var member = new LogFile("rollover.wpilog", hash, Files.size(rollover), "wpilog",
+            new Provenance("captured", null, "rollover.wpilog", WHEN, false), true, 0, 0, WHEN, WHEN, "pit_clock", false, null);
+        session.getAsJsonArray("files").add(StoreJson.JSON.toJsonTree(member)); Files.writeString(manifest, session.toString()); logs.catalogPublished();
+        result.addProperty("rollover_hash", hash); result.addProperty("topics_per_member", count);
+      }
       case "metadata" -> { writer.announce(new Announce("/late", 3, "int", null, new JsonObject())); }
       case "gap" -> {
         var raw = new Announce("/raw", 4, "raw", null, new JsonObject()); writer.announce(raw);
@@ -98,7 +118,8 @@ public final class FollowBrokerFixture {
         String hash = LogStore.contentHash(file);
         var closed = new LogFile("capture.wpilog", hash, Files.size(file), "wpilog", before.openCapture().provenance(),
             true, 0, 0, WHEN, WHEN, "pit_clock", false, null);
-        Files.writeString(manifest, StoreJson.JSON.toJson(new Session(SESSION, WHEN, WHEN, "pit_clock", null, null, null, null, List.of(closed))));
+        var members = new ArrayList<>(before.files()); members.add(closed);
+        Files.writeString(manifest, StoreJson.JSON.toJson(new Session(SESSION, WHEN, WHEN, "pit_clock", null, null, null, null, members)));
         logs.catalogPublished(); result.addProperty("hash", hash);
       }
       default -> throw new IllegalArgumentException("Unknown fixture command");

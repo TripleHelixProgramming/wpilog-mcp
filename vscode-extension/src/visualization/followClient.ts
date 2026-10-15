@@ -2,7 +2,7 @@ import * as http from "node:http";
 import * as https from "node:https";
 import { TextDecoder } from "node:util";
 import { HttpHeaders, noHeaders } from "../pitCredential";
-import { FOLLOW_PAGE_BYTES, FollowError, FollowLease, FollowSelection, FollowSource, FollowWindow, lease, object, protocol } from "./followProtocol";
+import { FOLLOW_PAGE_BYTES, FollowError, FollowFrontierScope, FollowLease, FollowSelection, FollowSource, FollowWindow, lease, object, protocol, readFrontierScope } from "./followProtocol";
 
 export { FOLLOW_PAGE_BYTES } from "./followProtocol";
 export const FOLLOW_REQUEST_BYTES = 64 << 10;
@@ -11,9 +11,9 @@ function requestSize(bytes: number): void {
 }
 /** Admission and HTTP use the same UTF-8 encoding, including the windows repeated per query.
  * Stop at the first overflowing query instead of constructing the entire oversized union. */
-export function encodeFollowOpen(source: FollowSource, selections: readonly FollowSelection[], windows: readonly FollowWindow[], pageBytes: number): Buffer {
+export function encodeFollowOpen(source: FollowSource, selections: readonly FollowSelection[], windows: readonly FollowWindow[], pageBytes: number, frontierScope: FollowFrontierScope = "all"): Buffer {
   const head = Buffer.from(`{"source_ref":${JSON.stringify(source)},"queries":[`);
-  const tail = Buffer.from(`],"max_records":4096,"max_page_bytes":${pageBytes}}`);
+  const tail = Buffer.from(`],"max_records":4096,"max_page_bytes":${pageBytes}${frontierScope === "queries" ? ',"frontier_scope":"queries"' : ""}}`);
   const parts = [head]; let size = head.length + tail.length; requestSize(size);
   for (const selection of selections) {
     const part = Buffer.from((parts.length > 1 ? "," : "") + JSON.stringify({ ...selection, order: "file", windows }));
@@ -26,6 +26,7 @@ function encodeRequest(body: unknown): Buffer {
 }
 export interface FollowTransport {
   readonly pageBytes: number;
+  readonly frontierScope?: FollowFrontierScope;
   open(source: FollowSource, selections: readonly FollowSelection[], windows: readonly FollowWindow[], signal: AbortSignal): Promise<FollowLease>;
   next(lease: FollowLease, cursor: string, signal: AbortSignal): Promise<unknown | undefined>;
   close(lease: FollowLease): Promise<void>;
@@ -44,13 +45,26 @@ function credentials(headers: Promise<Record<string, string>>, signal: AbortSign
 /** One origin-bound adapter, borrowing the caller's credential provider. Redirects are refused. */
 export class FollowClient implements FollowTransport {
   private readonly base: URL;
-  constructor(endpoint: string, private readonly headersFor: HttpHeaders = noHeaders, readonly pageBytes = FOLLOW_PAGE_BYTES) {
+  constructor(endpoint: string, private readonly headersFor: HttpHeaders = noHeaders, readonly pageBytes = FOLLOW_PAGE_BYTES,
+    readonly frontierScope: FollowFrontierScope = "all") {
     this.base = new URL(endpoint);
     if (!["http:", "https:"].includes(this.base.protocol) || this.base.username || this.base.password || this.base.search || this.base.hash) throw new Error("Expected an HTTP server endpoint without credentials or query");
     if (!Number.isInteger(pageBytes) || pageBytes < 1024 || pageBytes > FOLLOW_PAGE_BYTES) throw new Error("Invalid follow page budget");
+    readFrontierScope(frontierScope);
   }
   async open(source: FollowSource, selections: readonly FollowSelection[], windows: readonly FollowWindow[], signal: AbortSignal): Promise<FollowLease> {
-    return lease(await this.request("POST", "", encodeFollowOpen(source, selections, windows, this.pageBytes), signal, 201), source);
+    const response = await this.request("POST", "", encodeFollowOpen(source, selections, windows, this.pageBytes, this.frontierScope), signal, 201);
+    // Validate lease identity before using its ID for cleanup. An older server can ignore an
+    // unknown option; a missing/malformed echo must not silently admit the larger frontier.
+    const created = lease(response, source);
+    try {
+      const scope = readFrontierScope(object(response).frontier_scope);
+      if (scope !== this.frontierScope) throw new FollowError("UNSUPPORTED_FRONTIER_SCOPE", "Server did not negotiate the requested frontier scope; update the server before opening this view");
+      return Object.freeze({ ...created, frontier_scope: scope });
+    } catch (error) {
+      try { await this.close(created); } catch { /* Bounded cleanup; server idle expiry remains the fallback. */ }
+      throw error;
+    }
   }
   async next(lease: FollowLease, cursor: string, signal: AbortSignal): Promise<unknown | undefined> {
     return this.request("POST", `/${encodeURIComponent(lease.id)}/next`, encodeRequest({ cursor, wait_ms: 25000 }), signal, 200);

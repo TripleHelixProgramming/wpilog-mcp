@@ -82,12 +82,12 @@ export class LiveBroker {
     } };
   }
   private admit(key: string, source: FollowSource, windows: readonly FollowWindow[], consumer: Consumer, reason: string): Job {
-    encodeFollowOpen(source, consumer.selections, windows, this.transport.pageBytes);
+    encodeFollowOpen(source, consumer.selections, windows, this.transport.pageBytes, this.transport.frontierScope);
     let job = this.pending.get(key);
     if (job) {
       const union = this.union([...job.consumers, consumer]);
       if (union.length > 256) job = undefined;
-      else try { encodeFollowOpen(job.source, union, job.windows, this.transport.pageBytes); }
+      else try { encodeFollowOpen(job.source, union, job.windows, this.transport.pageBytes, this.transport.frontierScope); }
       catch (error) {
         if (!(error instanceof FollowError) || error.code !== "RESOURCE_LIMIT") throw error;
         job = undefined;

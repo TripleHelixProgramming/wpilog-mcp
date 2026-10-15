@@ -566,6 +566,19 @@ does not establish them. Its state is deliberately distinguished by `live_source
 and the still-false `live` capability. Repeated inspections are new prefix admissions and must
 not become a per-frame polling substitute for the broker.
 
+Review 10 accepts the inspection checkpoint, committed as `ffc1f63`. Its topic-count probe
+showed that full descriptors can exceed a 1 MiB frontier at only a few thousand topics, before
+any sample is sent. The owner retained 1 MiB panel pages and chose explicit queried-entry
+metadata. The follow-up projects only the wire descriptors and required schemas; complete
+recording history proof, strict catalog reuse and byte reservations remain. Legacy follows keep
+full metadata. The gate now covers 5,000 and 10,000 topics per member across two members.
+
+Full overview inspection is still capped at 4 MiB and can refuse large inventories even when
+queried follows fit. Design bounded inventory listing before large-recording panel integration;
+do not silently truncate discovery or raise caps as a substitute. Finalized-inspection hash
+cost and season-sized scans remain performance measurements. Improve disabled control contrast
+during panel accessibility work; the current controls are functionally disabled.
+
 Five minor review follow-ups remain:
 
 - Replace the resolver enum exception for an unknown role with a public vocabulary hint.

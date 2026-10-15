@@ -50,6 +50,110 @@ class OrdinalFollowTest {
   private static final ReadQuery X = new ReadQuery("/x", List.of(), ReadQuery.Order.FILE, 4096, 4 << 20);
   private static OrdinalFollow.Budget budget() { return new OrdinalFollow.Budget(64L << 20); }
 
+  @ParameterizedTest @ValueSource(strings = {"struct:Outer", "struct:Outer[]", "structarray:Outer"})
+  void queriedMetadataKeepsOnlySelectedSchemasAndTheirTransitiveDependencies(String type) throws Exception {
+    try (var file = new Recording(temp.resolve("selected-schemas.wpilog"))) {
+      for (var schema : Map.of("Outer", "Inner child; double extra;", "Inner", "double x;", "Unused", "double unrelated;").entrySet()) {
+        String name = "/.schema/struct:" + schema.getKey(); file.entry(name, "structschema", ""); file.text(name, schema.getValue());
+      }
+      file.entry("/pose", type, "{}"); file.entry("/rotation", "struct:Rotation2d", "");
+      file.entry("/other", "int64", ""); file.number("/other", 123, 99, false);
+      var info = file.entries.get("/pose"); byte[] bytes = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN).putDouble(3).putDouble(7).array();
+      var written = file.output.append(info.id(), 456, bytes); file.live.append(info, new ValueFrame(info.id(), 456, 5, bytes), written); file.live.expire();
+      String prefix = StructSchemas.isArrayType(type) ? "[0]." : "";
+      var pose = new ReadQuery("/pose", List.of(), ReadQuery.Order.FILE, 4096, 1 << 20);
+      var queries = List.of(pose.project(prefix + "child.x"), pose.project(prefix + "extra"), new ReadQuery("/rotation", List.of(), ReadQuery.Order.FILE, 4096, 1 << 20));
+      try (var follow = new OrdinalFollow(EPOCH, () -> file.prefix(1), queries, budget(), 4096, 1 << 20, OrdinalFollow.FrontierScope.QUERIES)) {
+        var result = page(follow, follow.initialCursor()); var snapshot = member(result, 0).getAsJsonObject("snapshot");
+        assertEquals(java.util.Set.of("/pose", "/rotation"), snapshot.getAsJsonObject("entries").keySet());
+        assertEquals(snapshot.getAsJsonObject("entries").keySet(), snapshot.getAsJsonObject("sample_counts").keySet());
+        var schemas = new HashMap<String, JsonObject>(); snapshot.getAsJsonArray("schemas").forEach(s -> schemas.put(s.getAsJsonObject().get("name").getAsString(), s.getAsJsonObject()));
+        assertEquals(java.util.Set.of("Outer", "Inner", "Rotation2d"), schemas.keySet());
+        assertEquals("LOGGED", schemas.get("Inner").get("source").getAsString());
+        assertEquals("WPILIB", schemas.get("Rotation2d").get("source").getAsString());
+        assertEquals("/.schema/struct:Inner", schemas.get("Inner").get("schema_entry").getAsString());
+        assertEquals("Inner child; double extra;", schemas.get("Outer").get("schema").getAsString());
+        var batches = result.getAsJsonArray("batches"); assertEquals(2, batches.size());
+        for (var item : batches) {
+          var batch = item.getAsJsonObject(); var sample = batch.getAsJsonObject("batch").getAsJsonArray("samples").get(0).getAsJsonObject();
+          assertEquals(0, sample.get("ordinal").getAsInt()); assertEquals("456", sample.get("timestamp_us").getAsString());
+          assertEquals(batch.get("field").getAsString().endsWith("child.x") ? "4008000000000000" : "401c000000000000", sample.getAsJsonObject("value").get("value").getAsString());
+        }
+      }
+    }
+  }
+
+  @Test void queriedSchemaEntriesRetainTheirDependenciesOnce() throws Exception {
+    try (var file = new Recording(temp.resolve("selected-schema-entries.wpilog"))) {
+      String outer = "/.schema/struct:Outer", inner = "/.schema/struct:Inner";
+      file.entry(outer, "structschema", ""); file.text(outer, "Inner first; Inner second;");
+      file.entry(inner, "structschema", ""); file.text(inner, "double x;");
+      file.entry("/unused", "struct:Pose2d", "");
+      var queries = List.of(new ReadQuery(outer, List.of(), ReadQuery.Order.FILE, 4096, 1 << 20),
+          new ReadQuery(inner, List.of(), ReadQuery.Order.FILE, 4096, 1 << 20));
+      try (var follow = new OrdinalFollow(EPOCH, () -> file.prefix(1), queries, budget(), 4096, 1 << 20, OrdinalFollow.FrontierScope.QUERIES)) {
+        var snapshot = member(page(follow, follow.initialCursor()), 0).getAsJsonObject("snapshot");
+        assertEquals(java.util.Set.of(outer, inner), snapshot.getAsJsonObject("entries").keySet());
+        var schemas = snapshot.getAsJsonArray("schemas"); assertEquals(2, schemas.size());
+        assertEquals(java.util.Set.of("Outer", "Inner"), java.util.stream.StreamSupport.stream(schemas.spliterator(), false)
+            .map(s -> s.getAsJsonObject().get("name").getAsString()).collect(java.util.stream.Collectors.toSet()));
+      }
+    }
+  }
+
+  @Test void queriedMetadataPublishesLateSelectionsAndSchemasWithoutBecomingACompleteInventory() throws Exception {
+    try (var file = new Recording(temp.resolve("selected-late.wpilog"))) {
+      file.entry("/x", "int64", ""); file.number("/x", 10, 1, false);
+      var late = new ReadQuery("/late", List.of(), ReadQuery.Order.FILE, 4096, 1 << 20);
+      try (var follow = new OrdinalFollow(EPOCH, () -> file.prefix(1), List.of(X, late), budget(), 4096, 1 << 20, OrdinalFollow.FrontierScope.QUERIES)) {
+        var first = page(follow, follow.initialCursor()); assertEquals(java.util.Set.of("/x"), member(first, 0).getAsJsonObject("snapshot").getAsJsonObject("entries").keySet());
+        file.entry("/.schema/struct:Later", "structschema", ""); file.text("/.schema/struct:Later", "double x;");
+        file.entry("/late", "struct:Later", "new"); file.entry("/unselected-late", "double", "");
+        var next = page(follow, cursor(first)); var snapshot = member(next, 0).getAsJsonObject("snapshot");
+        assertEquals(java.util.Set.of("/x", "/late"), snapshot.getAsJsonObject("entries").keySet());
+        assertEquals(0, snapshot.getAsJsonObject("sample_counts").get("/late").getAsInt());
+        assertEquals(1, snapshot.getAsJsonArray("schemas").size());
+        assertEquals("Later", snapshot.getAsJsonArray("schemas").get(0).getAsJsonObject().get("name").getAsString());
+        assertEquals(next, page(follow, cursor(first)), "New metadata page is retained byte-for-byte until acknowledgement");
+      }
+    }
+  }
+
+  @Test void queriedMetadataKeepsInvalidSchemaDiagnosticsWithoutAddingUnrelatedSchemas() throws Exception {
+    try (var file = new Recording(temp.resolve("selected-invalid.wpilog"))) {
+      file.entry("/.schema/struct:Broken", "structschema", ""); file.text("/.schema/struct:Broken", "Missing child;");
+      file.entry("/broken", "struct:Broken", "");
+      try (var follow = new OrdinalFollow(EPOCH, () -> file.prefix(1), List.of(new ReadQuery("/broken", List.of(), ReadQuery.Order.FILE, 4096, 1 << 20)), budget(), 4096, 1 << 20, OrdinalFollow.FrontierScope.QUERIES)) {
+        var schemas = member(page(follow, follow.initialCursor()), 0).getAsJsonObject("snapshot").getAsJsonArray("schemas");
+        assertEquals(1, schemas.size()); var schema = schemas.get(0).getAsJsonObject();
+        assertEquals("Broken", schema.get("name").getAsString()); assertFalse(schema.get("valid").getAsBoolean());
+        assertTrue(schema.get("error").getAsString().contains("Missing"));
+      }
+    }
+  }
+
+  @Test void queriedMetadataStillProvesUnselectedEntryHistoryOnEveryPrefix() throws Exception {
+    try (var file = new Recording(temp.resolve("selected-proof.wpilog"))) {
+      file.entry("/x", "int64", ""); file.number("/x", 10, 1, false);
+      file.entry("/hidden", "int64", ""); file.number("/hidden", 20, 2, false);
+      var opens = new AtomicInteger(); var closes = new AtomicInteger();
+      try (var follow = new OrdinalFollow(EPOCH, () -> {
+        boolean shrink = opens.getAndIncrement() > 0; var member = file.member("member", 1);
+        var snapshot = new TrackingSnapshot(member.snapshot(), closes) {
+          @Override public long sampleCount(String entry) { return shrink && entry.equals("/hidden") ? 0 : super.sampleCount(entry); }
+        };
+        return new OrdinalFollow.Prefix(RECORDING, 1, false, List.of(new OrdinalFollow.Member("member", 1, snapshot, null, file.writerIdentity)));
+      }, List.of(X), budget(), 4096, 1 << 20, OrdinalFollow.FrontierScope.QUERIES)) {
+        var first = page(follow, follow.initialCursor());
+        assertFalse(member(first, 0).getAsJsonObject("snapshot").getAsJsonObject("entries").has("/hidden"));
+        var refused = assertThrows(ReadException.class, () -> follow.next(cursor(first)));
+        assertEquals(ReadProblem.Code.FILE_CHANGED, refused.code()); assertFalse(refused.retryable());
+        assertTrue(refused.getMessage().contains("retained history shrank"));
+        assertEquals(2, closes.get(), "The acknowledged prefix and the rejected successor both release their snapshots");
+      }
+    }
+  }
+
   @Test void twoFieldsOfOneEntryHaveIndependentProgressAndUseTheNativeProjector() throws Exception {
     try (var file = new Recording(temp.resolve("fields.wpilog"))) {
       file.entry("/x", "double[]", "");

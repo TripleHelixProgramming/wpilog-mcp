@@ -379,6 +379,34 @@ Each batch identifies its `member_id`, `entry`, nullable `field`, `next_ordinal`
 Its completion flag concerns that projection/member; `frontier_complete` concerns the whole page
 plan. A late declaration can publish a new frontier without samples.
 
+By default, the frontier includes every entry and every known struct schema in each member.
+That metadata must fit one page, even if the queries select only a few signals. Optional
+`frontier_scope: "queries"` on create projects the descriptor to the queried entry names and
+their counts, plus the selected struct schemas and transitive dependencies supplied by the
+native schema owner. Multiple field projections of one entry share one metadata declaration.
+Missing selected entries are absent until declared; a later prefix reports them. Schema source,
+text, validity and diagnostics are preserved; unrelated logged/bundled schemas are omitted.
+Schema metadata does not add schema-entry samples or queries. All member identities, boundaries,
+writer identities, final hashes and recording-level diagnostics remain present, and internal
+history checks still cover every entry, including those omitted from the wire.
+
+Create accepts only `all` (the default) or `queries` and echoes `frontier_scope` in its 201
+response. Queried frontiers also carry `frontier_scope: "queries"`; an absent field denotes
+legacy full metadata. A client requesting projection must check the create echo before polling
+and each subsequent frontier before use. The extension adapter retires a created lease after a
+missing, malformed or conflicting scope acknowledgement, with bounded cleanup and an explicit
+error. An old server may ignore the request field, so the request alone is not negotiation.
+The adapter retains 4 MiB/full-metadata defaults for existing callers; panel integration will
+explicitly choose 1 MiB/queries. Scope bytes count toward the 64 KiB request cap before broker
+admission. Response, depth and traversal limits remain unchanged.
+
+Projection runs before descriptor allocation/encoding budgets, so unselected metadata does not
+consume that wire budget. Selected metadata and dependencies must still fit the negotiated
+page; oversized metadata returns non-retryable `RESOURCE_LIMIT`. This is not a paginated full
+signal inventory and does not change the overview's separate 4 MiB cap, the native index/member
+limits or catalog scan costs. A larger page budget applies to the entire immutable lease, not
+only its initial page. The broker reserves twice that size per active job.
+
 Bootstrap fixes its prefix before creation returns and applies query windows to history. Later
 pages consume new physical ordinals even when their timestamps equal or precede old timestamps
 or lie outside the bootstrap window. Queries require `order: "file"`, initial ordinal zero and no

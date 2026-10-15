@@ -45,6 +45,31 @@ function consumer(id: string) {
 function fixture(t: any, options = {}) { const transport = new Fake(), broker = new LiveBroker(transport, { retryBaseMs: 1, retryMaxMs: 2, random: () => 0, ...options });
   t.after(() => broker.dispose()); return { transport, broker }; }
 
+function fullLegacyRequest(): FollowSelection[] {
+  const selections = Array.from({ length: 16 }, (_, n) => ({ entry: String(n).padStart(3, "0") + "x".repeat(3997) }));
+  const body = () => ({ source_ref: source, queries: selections.map(s => ({ ...s, order: "file", windows: [] })), max_records: 4096, max_page_bytes: 4096 });
+  let remaining = 65536 - Buffer.byteLength(JSON.stringify(body())); assert.ok(remaining > 0 && remaining < 16 * 96);
+  for (let n = 0; remaining > 0; remaining--, n++) selections[n % selections.length].entry += "x";
+  assert.equal(Buffer.byteLength(JSON.stringify(body())), 65536);
+  assert.ok(Buffer.byteLength(JSON.stringify({ ...body(), frontier_scope: "queries" })) > 65536);
+  return selections;
+}
+test("queried scope overhead is charged before admitting a subscription", t => {
+  const { transport, broker } = fixture(t); Object.assign(transport, { frontierScope: "queries" });
+  assert.throws(() => broker.subscribe(source, [], fullLegacyRequest(), consumer("a").value), FollowError);
+  assert.deepEqual(broker.resources, { jobs: 0, consumers: 0, reservedBytes: 0 }); assert.equal(transport.opens.length, 0);
+});
+test("queried scope overhead splits a pending union without interrupting either consumer", async t => {
+  const { transport, broker } = fixture(t); Object.assign(transport, { frontierScope: "queries" });
+  transport.handle = async (_l, _c, s) => transport.wait(s);
+  const selections = fullLegacyRequest();
+  broker.subscribe(source, [], selections.slice(0, 8), consumer("a").value);
+  broker.subscribe(source, [], selections.slice(8), consumer("b").value);
+  await until(() => transport.polls.length > 0);
+  assert.equal(transport.opens.length, 2); assert.equal(transport.closes.length, 0);
+  assert.deepEqual(transport.opens.flatMap(o => o.selections), selections);
+});
+
 test("oversized repeated windows refuse synchronously without reserving or opening a job", t => {
   const { transport, broker } = fixture(t);
   const windows = Array.from({ length: 1000 }, () => ({ start_us: "1000000000000000000", end_us: "1000000000000000001", end_inclusive: false }));

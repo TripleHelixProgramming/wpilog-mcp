@@ -456,21 +456,28 @@ native Linux/Windows execution or the declared performance workloads.
 
 ### Visualization follow broker checkpoint
 
-The live-source integration prerequisite is covered by `LiveSourceInspectionTest` and
-`FollowEndpointTest.sourceInspectionOverHttpAndMcpSuppliesTheSameAnchorToAOneMiBFollow`.
-They drive real writer-owned prefixes through inspection, including empty/finalized clocks,
-late entries, backward timestamps, rollover conflicts, aliases, writer/hash/grant refusals,
-known-hash recovery and the aggregate metadata cap. The HTTP/MCP result opens a 1 MiB native
-follow and preserves exact ordinals. `recordedRendering.test.ts` executes the shipped overview
-script and checks that recording inspection does not offer unfinished live controls. These are
-source-admission checks; they do not establish the live-panel, display-budget or performance gates.
-Evidence is under `/private/tmp/wpilog-visualization-stage3-panels/`.
+Source-admission tests drive real writer-owned prefixes through inspection, including
+empty/finalized clocks, late entries, backward timestamps, rollover conflicts, aliases,
+writer/hash/grant refusals, known-hash recovery and the aggregate metadata cap. The HTTP/MCP
+result opens a 1 MiB native follow and preserves exact ordinals. Shipped-overview checks prove
+that recording inspection does not offer unfinished live controls. These establish source
+admission, not the live-panel, display-budget or performance gates. The
+[checkpoint record](VISUALIZATION_PLAN.md#stage-3-recording-source-inspection-checkpoint-2026-10-15)
+links the local validation evidence.
+
+The queried-frontier regressions run 5,000- and 10,000-topic recordings with two members,
+32 selected signals and 1 MiB pages. They check exact values/ordinals, legacy full metadata,
+explicit negotiation and refusal, transitive schema dependencies, late selections, and full
+history proof for unselected entries. Client checks include retirement after failed negotiation,
+strict page scope, and request-byte admission before a subscription changes its peers. A
+real-server broker workflow covers a 10,000-topic two-member recording through growth and
+finalization; this is a bounded correctness workload, not the sustained performance gate.
 
 Run `./gradlew followBrokerTest` after installing the extension dependencies. It compiles the
 extension and test classes, then runs `liveBrokerReal.test.ts` against a child JVM containing the
 real `CaptureWriter`, index and `HttpTransport`. `-PnodeExecutable=/path/to/node` uses the same
 lookup as `compileExtension`. The task supplies the JDK and test classpath; ordinary `npm test`
-explicitly skips the two integration cases when that classpath is absent. CI runs the task on both
+explicitly skips the integration cases when that classpath is absent. CI runs the task on both
 Linux and Windows when extension/broker dependencies change. No editor, robot or user store is used.
 
 The driver checks exact tagged values, signed zero, physical ordinals and duplicate/backward

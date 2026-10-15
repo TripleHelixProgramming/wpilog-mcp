@@ -6,9 +6,10 @@ first gate and review refinements as `719f163`. The accepted Stage 3 server inte
 is committed as `182cb00`. Its four pre-broker contract refinements and the small-page deferral
 follow-up are committed as `6a0524f`; the shared broker and array fix as `9be98dc`, and the
 accepted bounded-refusal/client-cap follow-up as `b57eaf6`. Immutable opened jobs are committed
-as `14eff73`, and the accepted catalog-retry fix and review-9 disposition as `0f1cd3e`. The current
-checkpoint begins live-panel integration with shared recording-source inspection; the renderer
-remains recorded-only, with evidence and remaining work below. Close cancellation
+as `14eff73`, and the accepted catalog-retry fix and review-9 disposition as `0f1cd3e`. Shared
+recording-source inspection is accepted by review 10 and committed as `ffc1f63`. The current
+follow-up retains 1 MiB panel pages with explicitly negotiated metadata for queried entries;
+the renderer remains recorded-only, with evidence and remaining work below. Close cancellation
 remains unverified on the manual dialog, Linux/Windows native runs are outstanding, and Save As
 uses the specified refusal fallback. No publication or version change is part of this work.
 
@@ -786,6 +787,16 @@ Update the owning Explorer, read-API, operations, architecture, development, and
 
 Use declared workloads: large recorded logs around 1 GiB with thousands of entries, and a one-hour live run publishing 2,000 topics with 32 selected signals at 50 Hz, four visible views across two sources, and six plots per view.
 
+Also gate admission and prefix refresh on recordings with 5,000 and 10,000 topics **per member**,
+with two rollover members and 32 selected signals. Declare name/metadata lengths, schema shape,
+sample counts and whether names overlap across members. Check the first frontier, subsequent
+metadata-only prefixes, schema changes, backward-timestamp appends, finalization and exact replay
+at 1 MiB. Measure frontier/page bytes and allocations separately from full inspection bytes.
+Include large unselected metadata and nested selected schema dependencies; an oversized selected
+declaration must still refuse explicitly. Full inspection above its 4 MiB cap remains an
+explained refusal, not an empty signal list. A bounded inventory-listing design remains required
+before claiming the complete panel workflow supports these sources.
+
 Proposed targets—not measured results—are:
 
 - Publication-to-display p95 below 500 ms locally and one second on a controlled LAN.
@@ -1335,3 +1346,51 @@ clock behavior. The aggregate decoded-memory setting and hidden-view expiry, con
 routing, all panel types and the declared resource/season-sized performance gates remain open.
 Native Linux/Windows execution, the manual Close-cancellation check and the Save As fallback
 remain disclosed limitations. No new checkpoint commit or publication is implied.
+
+
+### Stage 3 review 10: selected frontier metadata (2026-10-15)
+
+Review 10 accepts recording-source inspection, now committed unchanged in `ffc1f63`.
+Its check of `0f1cd3e` distinguishes the 16 blobs identical to the round-9 evidence from the
+plan and ideas document, which additionally contain the review-9 disposition; no code differs.
+The independent inspection probe passed 36 checks, including concurrent inspection, clock
+states, exact HTTP/MCP inventory parity, follow admission and release. These are reviewer
+observations, separate from this implementation round's evidence.
+
+The review measured complete frontier metadata at about 909 KB for 4,000 topics, 1.13 MB for
+5,000, and 2.26 MB for 10,000 in one synthetic member. Its names/properties were 41 characters
+and 34 bytes; the figures are workload-specific, not fixed supported-topic counts. Every new
+prefix must carry that metadata within one page. Raising the page limit applies to the entire
+lease: at 4 MiB, the broker reserves 8 MiB per job and admits at most eight under its 64 MiB
+encoded budget. This would also leave a finite all-topic ceiling.
+
+The owner chose **keep 1 MiB pages and add queried-entry metadata**. The follow-up adds an
+explicit `frontier_scope: "queries"` option, acknowledged by create and each new frontier.
+Omission retains the full-descriptor contract for existing callers. The projection includes
+selected entry declarations/counts and their transitive struct schema dependencies, preserving
+schema provenance and diagnostics. It keeps every recording member and its identity/boundary,
+writer/final-hash proof and diagnostics. Internal history checks still cover unselected entries.
+New selected declarations and schema changes arrive with a new prefix; unselected declarations
+are not a discovery stream. The scope is immutable with the lease's query union.
+
+The adapter verifies negotiation before polling, closes an incompatible created lease within
+its existing bounded cleanup, and refuses changed/malformed scope or unrequested entry metadata.
+The request-size admission uses the same scoped encoding as HTTP, before mutating subscriptions.
+No automatic page expansion, metadata truncation, history-cache change or weakened catalog
+reuse is introduced. Selected metadata that exceeds its own page cap still refuses explicitly.
+
+The performance gate now includes 5,000 and 10,000 topics per member across two members.
+The separate 4 MiB inspection inventory limit still applies: the review saw about 3.98 MB at
+10,000 topics in one member and refusal at 12,000. Queried follow metadata does not fix an
+oversized overview. Design bounded inventory listing for discovery before claiming complete
+large-recording panel support. Preserve the existing explained refusal until then; do not raise
+that cap or turn inspection into per-frame polling. Repeated finalized inspections still verify
+full hashes, and season-sized catalog scans remain an unmeasured gate.
+
+The architecture/development prose now describes ownership and validation without the new
+class/method names; the development guide links here for evidence. The disabled-button visual
+treatment is deferred to panel accessibility work; the accepted DOM/native behavior is unchanged.
+No change was requested to the pre-existing withdrawn-grant classification. Native Linux/Windows,
+manual Close cancellation, Save As and remaining Stage 3 panel/resource gates remain open.
+Evidence for this follow-up is recorded in
+`/private/tmp/wpilog-visualization-stage3-selected-frontier/validation.md`.
