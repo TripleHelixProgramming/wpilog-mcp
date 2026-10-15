@@ -2,6 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
+import { LiveBroker, FollowDelivery, FollowState } from "../visualization/liveBroker";
 import { FollowClient, FOLLOW_PAGE_BYTES } from "../visualization/followClient";
 import { FollowError, FollowLease, freezeJson, page } from "../visualization/followProtocol";
 const lease: FollowLease = { id: "lease", server_epoch: "epoch", cursor: "c0" };
@@ -59,6 +60,11 @@ for (const [status, body, code, retryable] of [
   [413, '{"code":"RESOURCE_LIMIT","message":"pressure","retryable":true}', "RESOURCE_LIMIT", true],
   [413, '{"code":"RESOURCE_LIMIT","message":"fixed","retryable":false}', "RESOURCE_LIMIT", false],
   [413, '{"code":"RESOURCE_LIMIT","message":"old server"}', "INVALID_RESPONSE", false],
+  [409, '{"code":"FILE_CHANGED","message":"arbitrary text","retryable":true}', "FILE_CHANGED", true],
+  [409, '{"code":"HISTORY_UNAVAILABLE","message":"permanent","retryable":false}', "HISTORY_UNAVAILABLE", false],
+  [409, '{"code":"HISTORY_UNAVAILABLE","message":"retry the read"}', "HISTORY_UNAVAILABLE", false],
+  [409, '{"code":"FILE_CHANGED","message":"bad flag","retryable":"true"}', "INVALID_RESPONSE", false],
+  [409, '{"code":"FILE_CHANGED","message":"bad flag","retryable":null}', "INVALID_RESPONSE", false],
   [429, 'busy proxy', "BUSY", true], [503, 'unavailable proxy', "BUSY", true],
   [401, 'Authentication required', "ACCESS_DENIED", false],
   [403, 'Forbidden', "ACCESS_DENIED", false],
@@ -165,4 +171,42 @@ test("HTTP creation preserves the anchored query and cleanup uses DELETE", async
 test("wire refuses frontier continuation under a different prefix", () => {
   const v = valid(); delete v.frontier;
   assert.throws(() => page(v, lease, "c0", new Set(['["x",null]']), { prefix: "old-prefix", frontier: valid().frontier }), /Missing follow frontier/);
+});
+
+for (const refusalAt of ["create", "next"]) test(`real HTTP broker resumes a retryable catalog refusal on ${refusalAt}`, { timeout: 5000 }, async t => {
+  const source = { kind: "session" as const, origin_store_id: "store", session_id: "session",
+    anchor_member: { original_name: "capture.wpilog", recording_started_at: "2026-01-01T00:00:00Z" } };
+  let creates = 0, deletes = 0, refused = false;
+  const cursors: string[] = [], deliveries: FollowDelivery[] = [], states: FollowState[] = [];
+  const endpoint = await server(t, (req, res) => {
+    let body = ""; req.on("data", c => body += c); req.on("end", () => {
+      if (req.method === "DELETE") { deletes++; res.statusCode = 204; res.end(); return; }
+      const creating = req.url === "/read/v1/follows";
+      if (creating) creates++; else cursors.push(JSON.parse(body).cursor);
+      if (!refused && (refusalAt === "create" ? creating : cursors.length === 2)) {
+        refused = true; res.statusCode = 409;
+        res.end(JSON.stringify({ code: "FILE_CHANGED", message: "arbitrary catalog text", retryable: true })); return;
+      }
+      if (creating) { res.statusCode = 201;
+        res.end(JSON.stringify({ api_version: 1, ...lease, idle_timeout_sec: 60, max_wait_ms: 25000, source_ref: source })); return; }
+      if (deliveries.length >= 2) return; // A real pending response, cancelled by dispose.
+      const v = valid(), n = deliveries.length;
+      v.cursor = `c${n}`; v.next_cursor = `c${n + 1}`; v.bootstrap = n === 0; v.prefix_id = `p${n}`;
+      v.batches[0].next_ordinal = n + 1; v.batches[0].batch.problems[0].ordinal = n;
+      res.end(JSON.stringify(v));
+    });
+  });
+  const broker = new LiveBroker(new FollowClient(endpoint, undefined, 1 << 20), { retryBaseMs: 1, retryMaxMs: 2, random: () => 0 });
+  try {
+    broker.subscribe(source, [], [{ entry: "x" }], { identity: { viewId: "a", generation: 1, revision: 1, queryKey: "x" },
+      current: () => true, state: s => states.push(s), page: p => { deliveries.push(p); } });
+    for (let n = 0; n < 500 && deliveries.length < 2 && !states.some(s => s.kind === "error"); n++) await new Promise(r => setTimeout(r, 5));
+    assert.equal(deliveries.length, 2, JSON.stringify(states));
+    assert.equal(creates, refusalAt === "create" ? 2 : 1); assert.equal(deletes, 0);
+    assert.deepEqual(cursors.slice(0, refusalAt === "create" ? 2 : 3), refusalAt === "create" ? ["c0", "c1"] : ["c0", "c1", "c1"]);
+    assert.deepEqual(deliveries.map(p => p.reset), [1, 1]);
+    assert.deepEqual(deliveries.map(p => p.page.batches[0].batch.problems[0].ordinal), [0, 1]);
+    assert.equal(states.filter(s => s.kind === "retrying").length, 1); assert.equal(states.at(-1)?.kind, "following");
+  } finally { await broker.dispose(); }
+  assert.equal(deletes, 1);
 });

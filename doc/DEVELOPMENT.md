@@ -420,7 +420,7 @@ expansion gaps, a frontier sent once per prefix, metadata-only pages, full-envel
 `SampleCursorsTest` pins the explicit size policy and its default refusal; `SessionReadTest`
 checks that the policy survives the real HTTP/session adapter. Plants cover these boundaries.
 The server integration adds `FollowEndpointTest`, `FollowLeaseTest`, `SessionAliasesTest`, and
-catalog/sync/mirror/recovery cases. Run `./gradlew test --tests '*Follow*Test' --tests '*SessionAliasesTest' --tests '*StoreReadCatalogTest' --tests '*StoreSyncTest' --tests '*MirrorSyncTest' --tests '*CaptureRecoveryTest'`.
+catalog/sync/mirror/recovery cases. Run `./gradlew test --tests '*Follow*Test' --tests '*SessionAliasesTest' --tests '*StoreReadCatalog*Test' --tests '*StoreSyncTest' --tests '*MirrorSyncTest' --tests '*CaptureRecoveryTest'`.
 The real HTTP test drives a writer-owned capture through bootstrap/retry, backward appends,
 metadata-only publication, finalization and live writer replacement. Its malformed-body regression
 checks create, next and snapshot routes for a short 400 `INVALID_REQUEST`, including invalid UTF-8,
@@ -428,6 +428,14 @@ duplicate fields and truncated JSON, while preserving exact retained-page retrie
 idle expiry, cancellation and retained bytes; an acknowledged frontier releases its native prefix
 before waiting. Store tests prove alias preservation, anchored membership, mirror copying and the
 safe outcome after older writers drop aliases. A syntax-tree guard checks every session copy.
+`StoreReadCatalogRefreshTest` mutates real files at the inventory/validation boundary: open growth,
+strict cache invalidation, manifest churn, bounded two-scan retry, payload shrink/rewrite/replacement,
+closed-file growth and member disappearance. `FollowEndpointTest` polls during 4 ms and 20 ms
+appends and checks every synthetic timestamp, ordinal and value. `FollowLeaseTest` and
+`ReadEndpointTest` check typed transient/permanent 409 responses and same-cursor resumption;
+`followClient.test.ts` drives the real HTTP adapter and broker through create/next refusals, and
+`liveBroker.test.ts` checks uninterrupted peers. Plants restore the old scan/refusal behavior and
+weaken each boundary; evidence is under `/private/tmp/wpilog-visualization-stage3-catalog-retry/`.
 The pre-broker contract tests cover multi-page final drains, exact terminal retries and repeated
 410 acknowledgements, terminal data release/expiry, typed structural/transient 413 refusals,
 and resumption after a budget refusal that already acknowledged the prior page. Fairness cases

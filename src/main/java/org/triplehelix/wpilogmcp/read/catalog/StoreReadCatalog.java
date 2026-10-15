@@ -61,17 +61,22 @@ public final class StoreReadCatalog implements AutoCloseable {
   private volatile boolean closed;
   private record Cached(Snapshot snapshot, Map<Path, FileSnapshot> stamps,
       Map<Path, StoreFile> members, Instant expires) {
-    boolean current() throws IOException {
+    boolean current() throws IOException { return current(java.util.Set.of()); }
+    boolean current(java.util.Set<Path> growing) throws IOException {
       if (!Instant.now().isBefore(expires)) return false;
       for (var item : stamps.entrySet()) {
         var now = FileSnapshot.of(item.getKey());
-        if (item.getValue() == null ? now != null : !item.getValue().sameAs(now)) return false;
+        var before = item.getValue();
+        if (before == null ? now != null : !before.sameAs(now)
+            && !(growing.contains(item.getKey()) && now != null && now.grewFrom(before))) return false;
       }
       return true;
     }
   }
   private volatile Cached cached;
   private final AtomicReference<CompletableFuture<Cached>> refreshing = new AtomicReference<>();
+  @FunctionalInterface interface ScanObserver { void completed() throws IOException; }
+  private final ScanObserver afterScan;
 
   public StoreReadCatalog(List<Path> roots) throws IOException { this(ReadOptions.defaults(roots)); }
   /** Canonical admission roots, used by a transport to retain one catalog while its leases agree. */
@@ -83,6 +88,11 @@ public final class StoreReadCatalog implements AutoCloseable {
    * prefixes. A null access creates an owned local reader; it excludes manifested open captures.
    * The budget counts indexed address bytes, not mapped file bytes or decoded value caches. */
   public StoreReadCatalog(ReadOptions options, LogAccess access, long sessionIndexBytes) throws IOException {
+    this(options, access, sessionIndexBytes, () -> {});
+  }
+  /** Deterministic boundary for testing filesystem changes between inventory and validation. */
+  StoreReadCatalog(ReadOptions options, LogAccess access, long sessionIndexBytes, ScanObserver afterScan) throws IOException {
+    this.afterScan = afterScan;
     if (sessionIndexBytes < 0) throw new IllegalArgumentException("Session index budget must be nonnegative");
     this.sessionIndexLimit = sessionIndexBytes;
     this.ownsLogs = access == null;
@@ -119,35 +129,50 @@ public final class StoreReadCatalog implements AutoCloseable {
       }
     }
     try {
-      var stamps = new HashMap<Path, FileSnapshot>();
-      StoreCatalog.PathObserver observer = path -> {
-        // Directory mtimes find new manifests, including an initially absent folder. File
-        // identity, mtime and size find replacements and growth without reading old payloads.
-        for (var at = path.toAbsolutePath().normalize(); at != null; at = at.getParent()) {
-          Path dependency = at;
-          if (roots.stream().noneMatch(dependency::startsWith)) break;
-          if (!stamps.containsKey(at)) stamps.put(at, FileSnapshot.of(at));
-        }
-      };
-      for (var root : roots) observer.inspect(root.resolve("store.json"));
-      var snapshot = readFresh(observer);
-      var members = new HashMap<Path, StoreFile>();
-      var expires = Instant.MAX;
-      for (var store : snapshot.stores()) {
-        for (var file : store.allFiles()) {
-          members.put(file.path().toRealPath(), new StoreFile(store.header().id(), store.root(), file));
-        }
-        for (var move : store.moved()) {
-          var until = Instant.parse(move.movedAt()).plus(StoreCatalog.MOVE_NOTICE_LIFETIME);
-          if (until.isBefore(expires)) expires = until;
-        }
+      for (int attempt = 0; attempt < 2; attempt++) {
+        var result = scan();
+        if (result != null) { requireOpen(); cached = result; work.complete(result); return result; }
       }
-      var result = new Cached(snapshot, java.util.Collections.unmodifiableMap(stamps), Map.copyOf(members), expires);
-      if (!result.current()) throw new ReadException(ReadProblem.Code.FILE_CHANGED,
-          "Store changed while reading its catalog; retry the read");
-      requireOpen(); cached = result; work.complete(result); return result;
+      throw new ReadException(ReadProblem.Code.FILE_CHANGED,
+          "Store changed while reading its catalog; retry the read", true);
     } catch (Throwable failure) { work.completeExceptionally(failure); throw failure; }
     finally { refreshing.compareAndSet(work, null); }
+  }
+
+  /** A moving inventory is retried by its single refresh owner, never on the recording loop.
+   * Open payload growth does not change membership. It is allowed only at scan validation;
+   * cache reuse stays strict so a later read refreshes size facts and still detects truncation.
+   * This stamp is not a proof of unchanged log history: the managed prefix/follow owns that. */
+  private Cached scan() throws IOException {
+    var stamps = new HashMap<Path, FileSnapshot>();
+    StoreCatalog.PathObserver observer = path -> {
+      // Directory mtimes find new manifests, including an initially absent folder. File
+      // identity, mtime and size find replacements and growth without reading old payloads.
+      for (var at = path.toAbsolutePath().normalize(); at != null; at = at.getParent()) {
+        Path dependency = at;
+        if (roots.stream().noneMatch(dependency::startsWith)) break;
+        if (!stamps.containsKey(at)) stamps.put(at, FileSnapshot.of(at));
+      }
+    };
+    for (var root : roots) observer.inspect(root.resolve("store.json"));
+    var snapshot = readFresh(observer);
+    afterScan.completed();
+    var members = new HashMap<Path, StoreFile>();
+    var growing = new java.util.HashSet<Path>();
+    var expires = Instant.MAX;
+    for (var store : snapshot.stores()) {
+      for (var file : store.allFiles()) {
+        try { members.put(file.path().toRealPath(), new StoreFile(store.header().id(), store.root(), file)); }
+        catch (java.nio.file.NoSuchFileException moved) { return null; }
+      }
+      for (var file : store.openCaptures()) growing.add(file.path().toAbsolutePath().normalize());
+      for (var move : store.moved()) {
+        var until = Instant.parse(move.movedAt()).plus(StoreCatalog.MOVE_NOTICE_LIFETIME);
+        if (until.isBefore(expires)) expires = until;
+      }
+    }
+    var result = new Cached(snapshot, java.util.Collections.unmodifiableMap(stamps), Map.copyOf(members), expires);
+    return result.current(growing) ? result : null;
   }
 
   private Snapshot readFresh(StoreCatalog.PathObserver observer) throws IOException {

@@ -14,7 +14,7 @@ public final class ReadException extends IOException {
     this(code, message == null || message.isBlank() ? "Read failed without a message" : message, null, false);
   }
   public ReadException(ReadProblem.Code code, String message, Throwable cause) { this(code, message, cause, false); }
-  /** A temporary resource refusal preserves the caller's cursor; structural limits do not. */
+  /** A temporary refusal preserves the caller's cursor; changed history and structural limits do not. */
   public ReadException(ReadProblem.Code code, String message, boolean retryable) { this(code, message, null, retryable); }
   private ReadException(ReadProblem.Code code, String message, Throwable cause, boolean retryable) {
     super(message == null || message.isBlank() ? "Read failed: " + (cause == null ? "unknown cause" : cause.getClass().getSimpleName()) : message, cause);

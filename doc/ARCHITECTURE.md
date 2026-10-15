@@ -470,6 +470,13 @@ directory or payload changes identity, size or modification time. It checks thos
 without reading payloads; expiry of a moved-path notice also refreshes the listing. An external
 rewrite preserving all attributes remains outside this check, as for loaded logs. Concurrent
 refreshes share one future; filesystem work and waiting happen outside the ownership monitor.
+The refresh owner scans at most twice when dependencies move. Its post-scan validation accepts
+same-identity growth only for manifested open capture payloads; manifests, directories and closed
+payloads stay strict. Cache reuse remains strict for every dependency, including open payloads,
+so later growth refreshes observed sizes. Shrinkage, same-size modification and replacement cannot
+pass as growth. Two unstable scans return retryable `FILE_CHANGED`, not a history verdict; the
+managed reader and ordinal engine still own writer/ordinal/hash continuity. A missing member
+while building the canonical map also restarts the bounded scan rather than publishing it.
 The HTTP endpoint retains the catalog while its admitted root set agrees, retiring an old set
 after its final request. REV descriptions and queries share bounded immutable decodes there,
 with leases charging active reads and alignment kept per request. Native REV queries decode only
@@ -1020,8 +1027,8 @@ UTF-8 open-request encoder, capped at the server's 64 KiB including repeated que
 Admission sizes the individual request and any pending union before reserving or changing a
 job, so a refused join leaves its peers alone. Encoding stops at the first overflowing query;
 next-request bodies have the same cap, and oversized requests never consult credentials or
-reach the network. A remote refusal after refresh admission stops the requesting view without
-resetting its peers.
+reach the network. A permanent remote refusal after refresh admission stops the requesting view
+without resetting its peers; typed transient refusals back off on that job.
 Responses are byte-capped before JSON parsing; tagged
 integers, floating-point bits, timestamps, ordinals and diagnosed gaps remain in the server's native
 representation. `followProtocol` validates identity, selection, work bounds and metadata presence
@@ -1034,8 +1041,11 @@ before the next cursor acknowledges the page. A failed consumer, or one exceedin
 is detached with an explicit error; another consumer can continue. Consumers must release borrowed
 frames when their callback resolves and clear their own buffers on reset. Retries use the submitted
 cursor, with exponential jittered backoff (250 ms base, 10 s ceiling). A 204 is only a wait timeout;
-413 retries only when `retryable` is true. Closed/expired leases explicitly reset the same anchored
-source and windows. History and access refusals stop with their code. A terminal page is consumed,
+409 and 413 retry only when `retryable` is true. A still-moving catalog produces 409
+`FILE_CHANGED` with that flag, including on create; permanent changed-history failures keep
+`HISTORY_UNAVAILABLE` and `retryable: false`. Every native-read 409 carries the flag. Older
+servers' missing 409 flags mean false; malformed flags are protocol errors. Closed/expired leases
+explicitly reset the same anchored source and windows. History and access refusals stop with their code. A terminal page is consumed,
 then DELETEd without another poll. Cleanup has a two-second deadline; lost DELETEs fall back to the
 server's 60-second idle expiry. Cancellation also interrupts a stalled credential lookup.
 

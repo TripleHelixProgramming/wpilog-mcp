@@ -164,7 +164,7 @@ final class ReadEndpoint implements AutoCloseable {
         } finally { finished(lease); }
       } else throw new Refusal(404, "NOT_FOUND", "Unknown read route");
     } catch (Refusal failure) { sendFailure(exchange, failure.status, failure.code, failure.getMessage()); }
-    catch (ReadException failure) { sendFailure(exchange, status(failure.code()), failure.code().name(), failure.getMessage()); }
+    catch (ReadException failure) { sendFailure(exchange, status(failure.code()), failure.code().name(), failure.getMessage(), failure.retryable()); }
     catch (java.nio.file.AccessDeniedException | org.triplehelix.wpilogmcp.log.LogFileException failure) {
       sendFailure(exchange, 403, "ACCESS_DENIED", failure.getMessage());
     } catch (ReadWire.WireLimit failure) { sendFailure(exchange, 413, "RESOURCE_LIMIT", failure.getMessage()); }
@@ -402,7 +402,7 @@ final class ReadEndpoint implements AutoCloseable {
   static void sendFailure(HttpExchange exchange, int status, String code, String message, boolean retryable) throws IOException {
     if (exchange.getResponseCode() >= 0) { exchange.close(); return; }
     var body = new JsonObject(); body.addProperty("status", "error"); body.addProperty("code", code); body.addProperty("message", message);
-    if (status == 413) body.addProperty("retryable", retryable);
+    if (status == 409 || status == 413) body.addProperty("retryable", retryable);
     send(exchange, status, body);
   }
   private static ReadException explained(Exception failure) {

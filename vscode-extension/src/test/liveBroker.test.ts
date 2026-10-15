@@ -117,6 +117,24 @@ test("transient pressure and a lost response retry exactly the submitted cursor"
   assert.deepEqual(transport.polls.slice(0, 4).map(x => x.cursor), ["c0", "c0", "c1", "c1"]);
   assert.equal(transport.opens.length, 1); assert.equal(a.states.filter(x => x.kind === "retrying").length, 2);
 });
+test("transient catalog refusal retries the acknowledged cursor without resetting peers", async t => {
+  const { transport, broker } = fixture(t), a = consumer("a"), b = consumer("b");
+  transport.handle = async (l, c, s, n) => {
+    if (n === 0) return frame(l, c);
+    if (n === 1) throw new FollowError("FILE_CHANGED", "arbitrary text", 409, true);
+    if (n === 2) return frame(l, c, 1, { bootstrap: false, prefix: "p2" });
+    return transport.wait(s);
+  };
+  broker.subscribe(source, [], [{ entry: "x" }], a.value); broker.subscribe(source, [], [{ entry: "x" }], b.value);
+  await until(() => a.pages.length === 2 && b.pages.length === 2);
+  assert.deepEqual(transport.polls.slice(0, 3).map(p => p.cursor), ["c0", "c1", "c1"]);
+  assert.equal(transport.opens.length, 1); assert.deepEqual(transport.closes, []);
+  for (const c of [a, b]) {
+    assert.deepEqual(c.pages.map(p => p.reset), [1, 1]);
+    assert.deepEqual(c.pages.flatMap(p => p.page.batches.flatMap(b => b.batch.samples.map(s => s.ordinal))), [0, 1]);
+    assert.equal(c.states.at(-1)?.kind, "following"); assert.equal(c.states.filter(s => s.kind === "retrying").length, 1);
+  }
+});
 test("terminal page is consumed then deleted without an empty-page spin", async t => {
   const { transport, broker } = fixture(t), a = consumer("a"), hold = deferred();
   a.value.page = async p => { a.pages.push(p); await hold.promise; };

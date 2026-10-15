@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.mcp;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import com.google.gson.JsonParser;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
@@ -30,6 +31,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.triplehelix.wpilogmcp.data.ArrowSpecReader;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.read.LogAccess;
+import org.triplehelix.wpilogmcp.read.ReadException;
+import org.triplehelix.wpilogmcp.read.ReadProblem;
 import org.triplehelix.wpilogmcp.read.ReadQuery;
 import org.triplehelix.wpilogmcp.read.ReadSnapshot;
 import org.triplehelix.wpilogmcp.read.SampleCursor;
@@ -194,6 +197,17 @@ class ReadEndpointTest {
     var terminal = arrow.batches().get(arrow.batches().size() - 1).metadata();
     assertEquals("error", terminal.get("status"));
     assertTrue(terminal.get("message").contains("IOException"), terminal.toString());
+  }
+
+  @Test void catalogRefusalsPreserveTheTypedRetryDecision() throws Exception {
+    var retryable = new java.util.concurrent.atomic.AtomicBoolean(true);
+    start(2, new AtomicLong(), () -> { throw new ReadException(ReadProblem.Code.FILE_CHANGED, "catalog changed", retryable.get()); });
+    for (boolean expected : List.of(true, false)) {
+      retryable.set(expected); var response = request("GET", "/read/v1/catalog", null);
+      assertEquals(409, response.statusCode());
+      assertEquals("FILE_CHANGED", json(response).get("code").getAsString());
+      assertEquals(new JsonPrimitive(expected), json(response).get("retryable"));
+    }
   }
 
   @Test void requestsRetainTheirCatalogOwnerUntilConfiguredRootsChange() throws Exception {

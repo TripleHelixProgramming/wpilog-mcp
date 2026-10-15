@@ -91,8 +91,8 @@ export class FollowClient implements FollowTransport {
             try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, size))); } catch { protocol("Invalid follow JSON"); }
             if (status !== expected) {
               const error = object(value);
-              if (typeof error.code !== "string" || typeof error.message !== "string" || (status === 413 && typeof error.retryable !== "boolean")) protocol("Invalid follow refusal");
-              throw new FollowError(error.code, error.message, status, status === 413 && error.retryable === true);
+              if (typeof error.code !== "string" || typeof error.message !== "string" || ((status === 413 || status === 409 && error.retryable !== undefined) && typeof error.retryable !== "boolean")) protocol("Invalid follow refusal");
+              throw new FollowError(error.code, error.message, status, (status === 409 || status === 413) && error.retryable === true);
             }
             finish(undefined, value);
           } catch (error) { finish(error as Error); }

@@ -541,6 +541,19 @@ into another admitted job. Failing-first, plant and validation evidence is in
 in `/private/tmp/wpilog-visualization-stage3-immutable-jobs/validation.md`. Native Linux/Windows execution
 remains outstanding; the new raw-socket tests run in the ordinary cross-platform Java suite.
 
+Review 8's continuous-append catalog race is addressed before panel wiring: post-scan open
+payload growth is accepted, other moving dependencies get one reread, and a still-unstable
+catalog returns a typed retryable 409. The HTTP broker backs off on the same lease/cursor without
+resetting peers. Permanent history refusals still stop. Evidence is in
+`/private/tmp/wpilog-visualization-stage3-catalog-retry/validation.md`; native platform and panel
+checks remain outstanding. The catalog still refreshes its inventory after later payload growth;
+this fix makes no catalog-scan throughput claim. Review 9 accepts the fix and makes season-sized
+inventory cost an explicit [performance-gate measurement](VISUALIZATION_PLAN.md#performance-gates-and-remaining-uncertainty).
+Measure scan frequency/duration, filesystem work and follow latency across store sizes and
+simultaneous/staggered leases. The five-second check is an idle fallback; changed-prefix
+admission can refresh sooner. Shared concurrent scans do not bound aggregate work under
+continued growth. Keep the strict cache and malformed-409 refusal contracts while measuring.
+
 Five minor review follow-ups remain:
 
 - Replace the resolver enum exception for an unknown role with a public vocabulary hint.

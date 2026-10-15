@@ -133,6 +133,13 @@ manifest, directory and payload dependencies agree. Directory changes discover n
 atomic replacements and growing files invalidate the view. Reads still validate the requested
 path. This avoids reparsing every session or resolving every payload path on each open. As with
 loaded logs, an external rewrite preserving all those attributes is outside this cheap check.
+During refresh, increasing size with the same file identity is accepted only for manifested open
+capture payloads. Manifests, directories and completed payloads still require matching stamps;
+shrinkage, replacement and same-size modification do not qualify. A moving inventory is scanned
+at most twice. If it remains unstable, the read refuses with `FILE_CHANGED` and `retryable: true`.
+This does not prove sample history: the managed reader and follow continuation retain their
+writer, ordinal and finalized-hash checks. Cache reuse still checks all stamps strictly, so later
+growth refreshes the observed size.
 
 Use `openWpilog(path)` for a manifested WPILOG. `openRev(companion, anchor)` uses only the companion's
 recorded association with that WPILOG and its recorded offset, drift and confidence. It does not
@@ -419,6 +426,16 @@ A stale/foreign cursor is `INVALID_REQUEST`; an expired, deleted or restarted le
 frontier, and surface unavailable history rather than silently retargeting. Malformed JSON bodies
 on creation or next return HTTP 400 `INVALID_REQUEST` with `Invalid read JSON`; they do not
 acknowledge a page or expose parser-library advice.
+
+Every native-read HTTP 409 includes a boolean `retryable`. For follows, `FILE_CHANGED` with
+`retryable: true` means a catalog refresh remained unstable after two scans. Back off and retry
+the same create request, or the same submitted next cursor on its existing lease; do not reset
+buffers or rebootstrap. A preceding page may already be acknowledged, but the failed page has
+not advanced the cursor. Ordinary open-capture appends do not cause this refusal.
+`HISTORY_UNAVAILABLE` (changed writer or unprovable continuity), `SOURCE_UNAVAILABLE` and other
+permanent 409 refusals have `retryable: false`; they need the stated remedy. Do not retry every
+409 or infer retryability from its message. The extension treats a missing 409 flag from an older
+server as false, and a present non-boolean flag as an invalid response.
 
 Each transport admits at most 32 follows and shares a 64 MiB encoded-page/serialization budget.
 Lease admission does not reserve a maximal page. Building a page temporarily reserves twice its

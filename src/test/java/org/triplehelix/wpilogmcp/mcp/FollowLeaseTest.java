@@ -24,7 +24,8 @@ import org.triplehelix.wpilogmcp.read.server.OrdinalFollow;
 class FollowLeaseTest {
   @TempDir Path temp;
   final AtomicLong clock = new AtomicLong();
-  final AtomicBoolean finalized = new AtomicBoolean();
+  final AtomicBoolean finalized = new AtomicBoolean(), changed = new AtomicBoolean();
+  final AtomicReference<ReadException> openingFailure = new AtomicReference<>();
   final AtomicInteger opened = new AtomicInteger(), released = new AtomicInteger(), waiting = new AtomicInteger();
   final HttpClient client = HttpClient.newHttpClient();
   HttpServer server; StreamingRequests streams; ReadEndpoint reads; FollowEndpoint follows; LogAccess access; URI base;
@@ -41,6 +42,7 @@ class FollowLeaseTest {
     access = LogAccess.local(ReadOptions.defaults(List.of(temp))); reads = new ReadEndpoint(access);
     follows = new FollowEndpoint(reads, reference -> new OrdinalFollow.Source() {
       public OrdinalFollow.Prefix open() throws java.io.IOException {
+        var refusal = openingFailure.getAndSet(null); if (refusal != null) throw refusal;
         opened.incrementAndGet(); var delegate = access.open(path);
         var snapshot = (ReadSnapshot) java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(), new Class<?>[]{ReadSnapshot.class}, (proxy, method, args) -> {
           if (method.getName().equals("close")) released.incrementAndGet();
@@ -50,6 +52,7 @@ class FollowLeaseTest {
         return new OrdinalFollow.Prefix("recording", 1, finalized.get(), List.of(new OrdinalFollow.Member("member", 0, snapshot)));
       }
       public boolean awaitChange(Duration wait, java.util.function.BooleanSupplier cancelled) throws java.io.IOException {
+        if (changed.getAndSet(false)) return true;
         waiting.incrementAndGet(); long end = System.nanoTime() + wait.toNanos();
         try {
           while (!cancelled.getAsBoolean() && System.nanoTime() < end) {
@@ -158,4 +161,29 @@ class FollowLeaseTest {
         CREATE.replace("\"queries\"", "\"max_page_bytes\":1024,\"queries\"")), 413);
     assertEquals(new JsonPrimitive(false), failure.get("retryable"));
   }
+  @Test void transientCatalogRefusalOnCreateHasATypedRetryAndDoesNotConsumeALease() throws Exception {
+    openingFailure.set(new ReadException(ReadProblem.Code.FILE_CHANGED, "catalog changed", true));
+    var failure = json(call("POST", FollowEndpoint.PATH, CREATE), 409);
+    assertEquals("FILE_CHANGED", failure.get("code").getAsString()); assertEquals(new JsonPrimitive(true), failure.get("retryable"));
+    assertEquals(0, follows.size()); create(); assertEquals(1, follows.size());
+  }
+  @Test void transientCatalogRefusalKeepsTheAcknowledgedCursorAndNeverRebootstraps() throws Exception {
+    var lease = create(); String cursor = bootstrap(lease);
+    openingFailure.set(new ReadException(ReadProblem.Code.FILE_CHANGED, "catalog changed", true)); changed.set(true);
+    var failure = json(call("POST", path(lease) + "/next", body(cursor, 0)), 409);
+    assertEquals("FILE_CHANGED", failure.get("code").getAsString()); assertEquals(new JsonPrimitive(true), failure.get("retryable"));
+    assertEquals(1, follows.size()); changed.set(true);
+    var response = call("POST", path(lease) + "/next", body(cursor, 0)); var delta = json(response, 200);
+    assertEquals(lease.get("id"), delta.get("follow_id")); assertFalse(delta.get("bootstrap").getAsBoolean());
+    assertTrue(delta.getAsJsonArray("batches").isEmpty(), "The first ordinal was already acknowledged");
+    assertEquals(response.body(), call("POST", path(lease) + "/next", body(cursor, 0)).body());
+    assertEquals(2, opened.get());
+  }
+  @Test void permanentHistoryChangesStayNonretryable() throws Exception {
+    var lease = create(); String cursor = bootstrap(lease);
+    openingFailure.set(new ReadException(ReadProblem.Code.FILE_CHANGED, "writer identity changed")); changed.set(true);
+    var failure = json(call("POST", path(lease) + "/next", body(cursor, 0)), 409);
+    assertEquals("HISTORY_UNAVAILABLE", failure.get("code").getAsString()); assertEquals(new JsonPrimitive(false), failure.get("retryable"));
+  }
+
 }

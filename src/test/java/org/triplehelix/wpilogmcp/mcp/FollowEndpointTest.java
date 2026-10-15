@@ -15,6 +15,8 @@ import java.util.*;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.triplehelix.wpilogmcp.capture.*;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
@@ -102,6 +104,45 @@ class FollowEndpointTest {
     assertEquals("CURSOR_EXPIRED", json(call("POST", path, nextBody(cursor, 0)), 410).get("code").getAsString());
     append(600_000, 43); // closing a consumer never stops acquisition
     try (var snapshot = logs.readAccess().open(file)) { assertEquals(3, snapshot.sampleCount("NT:/x")); }
+  }
+
+  @ParameterizedTest @ValueSource(ints = {4, 20}) @Timeout(60)
+  void continuousCaptureAppendsKeepTheSameHttpFollowAndExactOrdinals(int intervalMs) throws Exception {
+    var lease = create(); String cursor = lease.get("cursor").getAsString();
+    int records = 4000 / intervalMs;
+    var producer = java.util.concurrent.Executors.newSingleThreadExecutor();
+    var writing = producer.submit(() -> {
+      for (int n = 1; n <= records; n++) {
+        append(1_000_001L + n, 41L + n);
+        try { Thread.sleep(intervalMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+      }
+    });
+    int polls = 0, refused = 0, ordinal = 0; var refusals = new ArrayList<String>();
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(45);
+    try {
+      while (ordinal <= records && System.nanoTime() < deadline) {
+        var response = call("POST", nextPath(lease), nextBody(cursor, 100)); polls++;
+        if (response.statusCode() == 409) { refused++; refusals.add(response.body()); continue; }
+        if (response.statusCode() == 204) continue;
+        var page = json(response, 200); assertEquals(lease.get("id"), page.get("follow_id"));
+        for (var batch : page.getAsJsonArray("batches")) {
+          var data = batch.getAsJsonObject().getAsJsonObject("batch"); assertTrue(data.getAsJsonArray("problems").isEmpty());
+          for (var value : data.getAsJsonArray("samples")) {
+            var sample = value.getAsJsonObject(); assertEquals(ordinal, sample.get("ordinal").getAsInt());
+            assertEquals(Long.toString(1_000_001L + ordinal), sample.get("timestamp_us").getAsString());
+            assertEquals(Long.toString(41L + ordinal), sample.getAsJsonObject("value").get("value").getAsString()); ordinal++;
+          }
+        }
+        cursor = page.get("next_cursor").getAsString();
+      }
+      writing.get(5, TimeUnit.SECONDS);
+      System.out.printf("Continuous capture: interval_ms=%d polls=%d refusals=%d exact_records=%d%n", intervalMs, polls, refused, ordinal);
+      assertEquals(records + 1, ordinal, "All synthetic values arrive once on the original lease");
+      assertEquals(0, refused, refusals.toString());
+    } finally {
+      writing.cancel(true); producer.shutdownNow(); assertTrue(producer.awaitTermination(5, TimeUnit.SECONDS));
+      call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null);
+    }
   }
 
   @Test void cachedRetriesCannotOutliveConfiguredStoreAdmission() throws Exception {

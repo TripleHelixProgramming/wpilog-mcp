@@ -794,6 +794,17 @@ Proposed targets—not measured results—are:
 
 Instrument latency with correlated source/frontier IDs: capture-listener monotonic receive time, server frontier/delta publication time, extension receipt time, and webview post-animation-frame acknowledgement. Capture and browser clocks have different epochs. Report receive-to-publication and client-receipt-to-render durations within their own clock domains; end-to-end p95 additionally requires bounded-RTT offset calibration from server to host and host to webview, with uncertainty reported. Never directly subtract independent `performance.now()` and server timestamps. Render acknowledgement approximates paint scheduling, not physical display illumination. Keep instrumentation coalesced per frame/frontier, off the acquisition hot path where possible. See [listener receive time](../src/main/java/org/triplehelix/wpilogmcp/nt4/client/Nt4Client.java#L255) and [scheduler clock](../src/main/java/org/triplehelix/wpilogmcp/nt4/client/ClientScheduler.java#L25).
 
+Measure catalog work on a season-sized synthetic store during active recording, alongside a
+small-store baseline. Declare robot, session, manifest and payload counts, filesystem/storage,
+append cadence and active lease count; use the approved 1 MiB panel pages. Include simultaneous
+and staggered leases and a quiet followed source while another recording grows. Cache reuse is
+strict: payload growth invalidates the inventory. Concurrent refreshes share one scan, but
+staggered calls can scan again after further growth. The five-second external-change check is
+an idle fallback; changed-prefix admission can refresh sooner. Measure actual refresh count and
+p50/p95/max duration, filesystem operations, CPU/allocation, read-worker occupancy, and follow
+latency/recorder overhead as store size and lease count increase. Judge these against the existing
+live latency and acquisition targets; no season-sized catalog cost has been measured yet.
+
 Measure JVM index/mapping costs separately from visualization buffers. Record actual added VSIX bytes and license inventory.
 
 The material uncertainties are native custom-resource save/restore behavior, actual GridStack/CSP integration, authenticated remote-adapter behavior, and sustained performance on supported platforms. These are explicit pass/fail gates in the first stages; failed gates require design review, except for the explicitly specified native Save As refusal with a Save view… hint.
@@ -1216,6 +1227,8 @@ now committed as `b57eaf6`. Panel wiring has not started.
 
 ### Stage 3 immutable opened jobs (2026-10-15)
 
+Accepted by review 8 and committed as `14eff73`.
+
 Only pending opens coalesce. The job freezes its sorted entry/field union before publishing
 startup states or awaiting credentials/create. A later join, refresh or re-subscription after
 hiding gets an independent lease, with no reset or cursor change for existing peers. A valid
@@ -1224,7 +1237,8 @@ allows. Query supersets survive consumer departure and same-recording server rep
 
 Refresh admits its new binding before retiring the old one, so local byte/job refusal leaves the
 requesting view running as well as its peers. It needs spare job/byte capacity, even for a
-single-consumer job. A later remote refusal stops only the requesting view. It replaces a
+single-consumer job. A later permanent remote refusal stops only the requesting view; a typed
+transient refusal backs off without replacing the job. It replaces a
 consumer within the 256-consumer cap. Reset numbers are
 per subscription and remain monotonic across successive refreshes and server replacement.
 Pending and retiring jobs are identified independently, so cleanup of an old matching job
@@ -1243,3 +1257,36 @@ checks exact int64 values, timestamps and ordinals through joins, isolated refre
 release/reveal, wider windows, metadata, replacement while joining and finalization while joining.
 Native editor hide/reveal, remote credentials, aggregate recorded/live/webview buffers, the
 clock/display workflow and the full Stage 3 resource/performance gate remain outstanding.
+
+
+### Stage 3 review 8: transient catalog refusal (2026-10-15)
+
+The owner approved committing the immutable-job checkpoint, then fixing finding 1 before panels.
+The separate follow-up accepts same-identity growth of manifested open capture payloads at the
+post-scan catalog check, while cache reuse still invalidates on growth. Other moving dependencies
+get one reread; two unstable scans return `FILE_CHANGED` with `retryable: true`. The native-read
+409 response preserves that flag. The HTTP client retries only typed transient 409/413 refusals
+with the existing backoff and submitted cursor. Permanent writer/history/source refusals remain
+nonretryable; no message matching, automatic recording switch or buffer reset is added.
+
+Failing-first continuous-append polls reproduced the review defect at both 4 ms and 20 ms.
+Deterministic filesystem-boundary tests cover the scan rules, and HTTP/broker tests cover a
+refusal during create and after an acknowledged page. Evidence, plants and final verification
+are in `/private/tmp/wpilog-visualization-stage3-catalog-retry/validation.md`.
+
+Review notes 1–3 require no contract change: same-turn mounts may coalesce, a refresh needs spare
+capacity at the 32-job/lease cap, and the documented ownership remains current. Live panels still
+use the approved 1 MiB page size when wired. Panel visibility, display accounting, clocks and the
+full Stage 3 resource/performance gate remain outstanding. This fix adds no native editor or
+Linux/Windows execution claim.
+
+
+### Stage 3 review 9 disposition (2026-10-15)
+
+Review 9 accepts the catalog-refusal fix and finds no new defect. Its catalog-cost note is now
+part of the performance gate above: measure strict inventory refresh on a season-sized store,
+including lease sharing and staggered demand. No cache policy change is made in this follow-up.
+The client intentionally stops with `INVALID_RESPONSE` for a present non-boolean `retryable`
+flag on a 409; only boolean true permits retry, and a missing flag retains older-server behavior.
+That contract is already documented and regression-tested. Linux/Windows native execution,
+live panels and the season-sized measurements remain outstanding.

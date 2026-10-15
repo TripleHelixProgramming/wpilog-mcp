@@ -837,6 +837,10 @@ occupy their control capacity. See the [follow protocol](READ_API.md#following-a
 for retry cursors, final hashes, explicit history loss and cancellation. Pages carry `ended`;
 acknowledging the terminal page returns 410 `FOLLOW_ENDED` until closure or expiry. Follow 413
 refusals carry `retryable` so clients distinguish temporary byte pressure from structural limits.
+Native-read 409 refusals carry it too: a catalog still changing after two scans returns
+`FILE_CHANGED` with `retryable: true`. Retry the same request/cursor with backoff; ordinary
+open-capture growth is accepted during catalog refresh. Permanent history/source refusals carry
+`retryable: false` and require their stated remedy, rather than repeated polling.
 Writer identity persists through finalization, and bounded turns share pages among selected signals.
 These are custom-reader
 routes; the optional visualization editor still provides the recorded workflow.
