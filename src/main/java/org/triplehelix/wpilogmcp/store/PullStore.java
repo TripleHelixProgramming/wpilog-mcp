@@ -397,7 +397,7 @@ public final class PullStore implements FileTransfer.Local {
 
   private static Session copy(Session s, List<LogFile> files, List<IdentityConflict> conflicts) {
     return new Session(s.id(), s.startedAt(), s.endedAt(), s.startBasis(), s.event(), s.matchType(), s.matchNumber(), s.teamNumber(),
-        files, s.openCapture(), s.endReason(), s.deviceIdentity(), conflicts, s.conflicts(), s.captureStats(), s.systemLogs());
+        files, s.openCapture(), s.endReason(), s.deviceIdentity(), conflicts, s.conflicts(), s.captureStats(), s.systemLogs(), s.mergedSessionIds());
   }
   /** The caller reserved and drained this source outside the queue. Only its own session changes. */
   private String moveReserved(StoreFiles io, Path from, Path target, boolean retain) throws IOException {

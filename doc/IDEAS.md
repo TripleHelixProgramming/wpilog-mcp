@@ -495,10 +495,11 @@ is proven. Stage 3 has started with the internal ordinal-follow proof: fixed boo
 acknowledged exact-page retries, bounded pages, metadata/schema publication and explicit
 identity/history refusal. The first-gate review is settled in the engine: oversized values
 produce explicit ordinal gaps, frontiers travel once per prefix, and pages pack several entries
-under global limits. It has no production source adapter or route yet. Session merge
-aliases and anchored membership, follow leases/expiry, dedicated long polling, remote routing,
+under global limits. The server integration now provides session merge aliases and anchored
+membership, native follow routes, lease expiry, dedicated long polling, exact retry admission,
+final hashes and idle mapping release. Configured remote routing, the shared window broker,
 automatic panel updates, display/clock states, histogram/scatter and latency instrumentation
-remain to be integrated and validated. Continuous following, the decoded-buffer setting (64 MiB default), aggregate
+remain to be integrated and validated. The decoded-buffer setting (64 MiB default), aggregate
 recorded/live budgets, remote admission and large-log/live performance gates remain Stage 3.
 Explicit display requests, client selection and default-editor retirement remain Stage 4.
 The preview's field projection is numeric only; richer typed projections remain with the
@@ -513,7 +514,13 @@ notification owner, optional state failure still permits pings, and shutdown dra
 admitted tools before closing the workspace. If workspace startup fails, preview routes stay
 unavailable and this stream stays ping-only until restart; runtime workspace recovery remains
 deferred. The internal engine still opens a prefix after every completed non-finalized frontier;
-the production source/publication waiter must avoid repeated disk scans during idle polls.
+the production source/publication waiter now avoids repeated disk scans during unchanged idle polls.
+The server integration review's pre-broker work is specified in the visualization plan: explicit
+terminal-page/acknowledgement semantics, a machine-readable transient byte-budget refusal,
+writer-incarnation proof through finalization, and bounded round-robin entry scheduling. Today's
+finalized follow requires client DELETE and can return immediate empty pages; lease admission does
+not reserve encoded bytes; live identity is not yet persisted in finalized metadata; page order is
+member/query order. The malformed-body classification is fixed separately in the shared body reader.
 Five minor review follow-ups remain:
 
 - Replace the resolver enum exception for an unknown role with a public vocabulary hint.

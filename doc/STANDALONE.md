@@ -822,6 +822,14 @@ microseconds and preserve native values; snapshots expose schema provenance and 
 Queries can project struct fields, reduce numeric values to min/max buckets, request several
 entries or combine session files with recorded clock proof; REV queries decode the named signal.
 Session reads reuse the server's indexes and live recording prefixes; reopen to see new samples.
+`/read/v1/follows` adds acknowledged ordinal pages for one provenance-anchored recording,
+including its rollover files. Session merge aliases survive store writes, peer synchronization
+and mirror copies; an alias cannot widen a follow to another recording in the merged session.
+Follows retain at most 32 leases, expire after 60 idle seconds, and wait up to 25 seconds on
+16 separate workers. Creation and closure use ordinary read workers so waiting followers cannot
+occupy their control capacity. See the [follow protocol](READ_API.md#following-a-server-recording)
+for retry cursors, final hashes, explicit history loss and cancellation. These are custom-reader
+routes; the optional visualization editor still provides the recorded workflow.
 A standalone library excludes open captures it cannot freeze and names the recording-server route
 as the remedy. Session indexes share a bounded catalog allowance as described in the API guide.
 A terminal status proves stream completion. These additive routes follow the same Origin and path

@@ -405,7 +405,7 @@ its picker, destination alias, and replacement-tab gates are established. Stage 
 
 ### Visualization ordinal-follow proof
 
-The first Stage 3 gate is internal, before HTTP and editor integration. Run
+The first Stage 3 gate proves the engine independently of HTTP and editor integration. Run
 `./gradlew cleanTest test --tests '*OrdinalFollowTest' --tests '*SampleCursorsTest' --tests '*SessionReadTest' --tests '*LiveReadEngineTest' --tests '*ManagedLogAccessTest' --tests '*VisualizationSseLifecycleTest'`.
 `OrdinalFollowTest` compares real writer-owned prefixes against `IndependentLog`, the separate
 WPILOG-format reader. It checks physical offsets, ordinals, timestamps, values and malformed
@@ -419,8 +419,17 @@ expansion gaps, a frontier sent once per prefix, metadata-only pages, full-envel
 64 entry/member batches in one page, byte-boundary deferral and globally bounded work.
 `SampleCursorsTest` pins the explicit size policy and its default refusal; `SessionReadTest`
 checks that the policy survives the real HTTP/session adapter. Plants cover these boundaries.
-This suite does not establish real session-alias admission, follow routes, long polling,
-idle expiry, remote authentication, an editor live workflow or performance budgets.
+The server integration adds `FollowEndpointTest`, `FollowLeaseTest`, `SessionAliasesTest`, and
+catalog/sync/mirror/recovery cases. Run `./gradlew test --tests '*Follow*Test' --tests '*SessionAliasesTest' --tests '*StoreReadCatalogTest' --tests '*StoreSyncTest' --tests '*MirrorSyncTest' --tests '*CaptureRecoveryTest'`.
+The real HTTP test drives a writer-owned capture through bootstrap/retry, backward appends,
+metadata-only publication, finalization and live writer replacement. Its malformed-body regression
+checks create, next and snapshot routes for a short 400 `INVALID_REQUEST`, including invalid UTF-8,
+duplicate fields and truncated JSON, while preserving exact retained-page retries. Lease tests bound saturation,
+idle expiry, cancellation and retained bytes; an acknowledged frontier releases its native prefix
+before waiting. Store tests prove alias preservation, anchored membership, mirror copying and the
+safe outcome after older writers drop aliases. A syntax-tree guard checks every session copy.
+These suites do not establish authenticated remote visualization, an editor live workflow,
+native Linux/Windows execution or the declared performance workloads.
 
 ### Visualization recorded preview
 

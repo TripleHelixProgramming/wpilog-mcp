@@ -73,6 +73,21 @@ class MirrorSyncTest {
   }
   Path copy(Path source) { return mirror.root().resolve(origin.root().relativize(source)); }
 
+  @Test void mirrorCopiesMergeAliasesThroughOpenAndClosedSessionManifests() throws Exception {
+    for (boolean open : List.of(false, true)) {
+      var file = session(open ? "growing-alias" : "closed-alias", "2026-01-19", "RIO", null, open, 2, open ? 7 : 8);
+      var manifest = file.resolveSibling("session.json");
+      var json = com.google.gson.JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+      json.add("merged_session_ids", StoreJson.JSON.toJsonTree(List.of(open ? "old-growing" : "old-closed")));
+      origin.capture(io -> { io.write(manifest, json); return null; });
+    }
+    sync();
+    for (var session : catalog(mirror).sessions()) {
+      assertEquals(List.of(session.session().openCapture() == null ? "old-closed" : "old-growing"), session.session().mergedSessionIds());
+    }
+    assertEquals(2, catalog(mirror).sessions().size());
+  }
+
   @Test void copiesInScopeSessionsWithExactManifestsAndNoStrayAdoption() throws Exception {
     var file = session("recent", "2026-01-19", "RIO", null, false, 100, 1);
     session("old", "2025-12-01", "RIO", null, false, 100, 2);

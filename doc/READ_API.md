@@ -220,6 +220,9 @@ they cannot import, move, assign, change alignment or otherwise mutate a store. 
 | `DELETE /read/v1/snapshots/<id>` | Release the snapshot; admitted reads may finish |
 | `POST /read/v1/rev/describe` | Discover a companion's signals and recorded alignment |
 | `POST /read/v1/rev/query` | Stream one REV signal on its explicitly selected clock |
+| `POST /read/v1/follows` | Create a retained follow of one captured recording |
+| `POST /read/v1/follows/<id>/next` | Acknowledge a page and read the next page, or wait for publication |
+| `DELETE /read/v1/follows/<id>` | Retire the follow and cancel its wait; acquisition continues |
 
 The descriptor includes `api_version`, `id`, `path`, `live`, `boundary`, `entries`, `schemas`,
 `sample_counts`, `index_bytes`, `truncated`, `damaged`, `truncation_message` and
@@ -329,10 +332,103 @@ cancellation, remote completion, manifest and external-JAR tests cover cases a s
 cannot prove. Passing those checks establishes the tested scope; it cannot prove every possible
 input and interleaving equivalent.
 
+## Following a server recording
+
+The native HTTP follow is available to custom readers. The optional visualization editor still
+uses its recorded workflow. No Java/Python follow-client adapter or authenticated configured
+remote visualization adapter is supplied yet. A follow reads one captured recording, including
+rollover members, through the recording server or a configured store containing its final files.
+An open mirror cannot supply the originating writer's immutable index.
+
+Create with a durable `source_ref` and 1–256 distinct `(entry, field)` queries:
+
+```json
+{"source_ref":{"kind":"session","origin_store_id":"11111111-1111-4111-8111-111111111111","session_id":"22222222-2222-4222-8222-222222222222","anchor_member":{"original_name":"capture.wpilog","recording_started_at":"2026-01-01T00:00:00Z"}},"queries":[{"entry":"NT:/voltage","order":"file"}]}
+```
+
+Use actual IDs and original capture provenance from `/read/v1/catalog`; those UUIDs are examples.
+The anchor must identify exactly one member. Membership uses captured provenance, original
+recording start, and first collecting store, not robot names or calendar overlap. Session manifests
+carry `merged_session_ids`; old IDs select the anchor's recording rather than all merged files.
+Copies, sync/merge receipts and mirrors retain aliases. An older writer may drop them. Optional
+`finalized_members: [{"content_sha256":"..."}]` on the reference can recover only those proven
+members; missing evidence returns `SOURCE_UNAVAILABLE` or `HISTORY_UNAVAILABLE`. It never selects
+the robot's current session. Multiple configured stores claiming the same origin require choosing
+one serving location rather than guessing between them.
+
+A 201 response gives `id`, `server_epoch`, `cursor`, `source_ref`, `idle_timeout_sec: 60.0`,
+`max_wait_ms: 25000` and `api_version`. POST `{"cursor":"...","wait_ms":25000}` to
+`/read/v1/follows/<id>/next`. The page has `server_epoch`, `follow_id`, `cursor`, `next_cursor`,
+`prefix_id`, `bootstrap`, `frontier_complete` and `batches`. A `frontier` appears once per prefix:
+`recording_id`, `catalog_revision`, `finalized`, and `members`, each with `member_id`, `generation`,
+nullable `content_sha256` and the native snapshot descriptor. The catalog revision is monotonic
+within the follow, not a persistent store revision. Retain the frontier until the next one arrives.
+Each batch identifies its `member_id`, `entry`, nullable `field`, `next_ordinal`, and native `batch`.
+Its completion flag concerns that projection/member; `frontier_complete` concerns the whole page
+plan. A late declaration can publish a new frontier without samples.
+
+Bootstrap fixes its prefix before creation returns and applies query windows to history. Later
+pages consume new physical ordinals even when their timestamps equal or precede old timestamps
+or lie outside the bootstrap window. Queries require `order: "file"`, initial ordinal zero and no
+reduction. Projection uses the shared native decoder. `max_records` and `max_page_bytes` optionally
+lower the defaults of 4,096 visited records and 4 MiB per page. Malformed/oversized records carry
+explicit ordinal problems and advance as diagnosed gaps; they are not samples. A metadata-only
+page can precede the samples when the full frontier occupies its space. Wire preflight reserves
+six bytes per UTF-16 code unit in a string plus fixed framing, so a string can become a gap at
+roughly one sixth of the page budget, even when its recorded payload is smaller than that budget.
+Other framing can lower this threshold; it is a conservative bound, not an exact JSON size test.
+Members are served in lexicographic original-filename order (`capture-10` before `capture-2`),
+then queries in request order. A busy earlier entry can delay later entries across several pages
+of the same prefix; this checkpoint does not round-robin between them.
+
+Use `next_cursor` only after consuming the entire page. Retrying the preceding `cursor` returns
+the exact same bytes; acknowledgement retires them. A 204 means no publication before the wait
+deadline: keep the submitted cursor and wait again. An acknowledged frontier releases its native
+prefix before waiting; unchanged polls do not reopen it. Finalization supplies member hashes,
+drains the last ordinals, and never attaches the follow to another recording. Once its finalized
+frontier is complete, DELETE the lease. There is no per-page terminal flag in this checkpoint:
+further polls return empty pages immediately, ignoring `wait_ms`. Clients must remember
+`frontier.finalized` and stop when its `frontier_complete` page has been consumed. A terminal
+envelope/acknowledgement contract is planned before the visualization broker.
+
+Reduced counts and changed known final hashes refuse continuity. Writer replacement is detected
+while the member is still live; a replacement that also finalized between polls is not yet
+proved against the previous live writer identity. The final hash verifies the finalized file,
+not its continuity with previously delivered live bytes; closing this transition gap is planned.
+A stale/foreign cursor is `INVALID_REQUEST`; an expired, deleted or restarted lease is HTTP 410
+`CURSOR_EXPIRED`. An already admitted wait cancelled by DELETE or shutdown ends with HTTP 410
+`CLOSED`. Rebootstrap the same source explicitly after losing a cursor or the retained client
+frontier, and surface unavailable history rather than silently retargeting. Malformed JSON bodies
+on creation or next return HTTP 400 `INVALID_REQUEST` with `Invalid read JSON`; they do not
+acknowledge a page or expose parser-library advice.
+
+Each transport admits at most 32 follows and shares a 64 MiB encoded-page/serialization budget.
+Lease admission does not reserve a maximal page. Building a page temporarily reserves twice its
+page limit (8 MiB at the default), and retained unacknowledged pages also consume the shared
+budget, so a next call can return HTTP 413 `RESOURCE_LIMIT` even below the lease cap. A refusal
+that says to finish or close another read and retry this cursor is transient: release other
+retained pages, back off, then retry the same submitted cursor without rebootstrap. The preceding
+page may already be acknowledged, but no part of the unsuccessful next page is acknowledged.
+Other 413 refusals, such as metadata that cannot fit a page, need the stated limit/query remedy;
+blind retries cannot fix those. The broker will receive a machine-readable distinction before
+its implementation, rather than classifying errors by message text.
+Native indexes are owned by the shared reader; follow admission also caps the sum of member index
+bytes at 128 MiB and the recording at 64 members. Only one next call per lease may run. Sixteen
+dedicated workers bound long polls; saturation returns 503 `BUSY`, and creation/DELETE have
+separate ordinary-read capacity. Active requests postpone idle expiry until they finish.
+DELETE cancels a publication wait and retires admission; an admitted bounded decode releases on
+completion. Clients should DELETE on last-consumer cancellation. A disconnected socket with no
+I/O is detected at the next write, bounded by the 25-second wait; its abandoned lease then expires
+after 60 idle seconds. Shutdown cancels waits before draining HTTP. Same-Origin and current path
+admission apply even to cached retries. No follow operation writes a store or waits on the recorder
+loop. Capture publication checks use its immutable state token; other writers' filesystem changes
+are checked within five seconds while idle. These are resource bounds, not measured throughput or
+display-latency claims.
+
 ## Scope of this interface
 
 Projection, numeric reduction, multi-entry queries, proven session unions, selective REV decoding
-and local append-following are implemented. Exact and legacy time windows share the membership
+and local append-following and native HTTP recording follows are implemented. Exact and legacy time windows share the membership
 and binary-boundary primitives; legacy tools retain their established double-second policies.
 The interface does not infer signals, join entries by guessed timestamps, recalculate REV alignment
 or perform MCP analyses. Publishing the reader as a Maven artifact or adding a release asset is a

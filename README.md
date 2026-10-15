@@ -131,7 +131,7 @@ are separate from ordinary local analysis.
 The [shared read API](doc/READ_API.md) reads WPILOG files and store manifests from Java without
 starting a server, or through a versioned HTTP endpoint in Arrow and lossless typed JSON.
 Snapshots, projected or reduced queries, multi-entry reads, proven session unions, local append
-following and selective REV access let other applications use the same data access as the MCP tools. A standalone reader JAR and Java/Python examples are
+following, acknowledged HTTP recording follows and selective REV access let other applications use the same data access as the MCP tools. A standalone reader JAR and Java/Python examples are
 built from this repository.
 
 ## Tools

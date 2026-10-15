@@ -85,6 +85,7 @@ public class HttpTransport {
   private ScheduledExecutorService bodyDeadlines;
   private StreamingRequests streaming;
   private StreamingRequests storeStreaming;
+  private StreamingRequests followStreaming;
   private Duration streamTimeout = Duration.ofSeconds(10);
   void streamTimeout(Duration timeout) { streamTimeout = timeout; }
   int activeStreams() { return streaming == null ? 0 : streaming.activeCount(); }
@@ -138,6 +139,9 @@ public class HttpTransport {
             org.triplehelix.wpilogmcp.read.catalog.StoreReadCatalog.DEFAULT_SESSION_INDEX_BYTES);
       });
   private volatile MetricsEndpoint metricsEndpoint = new MetricsEndpoint(null, null);
+  private final FollowEndpoint followEndpoint = new FollowEndpoint(readEndpoint, reference ->
+      new org.triplehelix.wpilogmcp.read.server.CatalogRecordingSource(
+          org.triplehelix.wpilogmcp.log.LogManager.getInstance(), readEndpoint::catalog, reference));
   private volatile java.util.function.Supplier<org.triplehelix.wpilogmcp.nt4.server.GatewayStatus> gatewayStatus =
       () -> org.triplehelix.wpilogmcp.nt4.server.GatewayStatus.DISABLED;
   public void setGatewayStatus(java.util.function.Supplier<org.triplehelix.wpilogmcp.nt4.server.GatewayStatus> status) {
@@ -257,9 +261,16 @@ public class HttpTransport {
     server.createContext("/stop", counted(this::handleStop));
     streaming = new StreamingRequests(16, streamTimeout);
     storeStreaming = new StreamingRequests(4, streamTimeout);
+    followStreaming = new StreamingRequests(16, streamTimeout);
     server.createContext(VisualizationEndpoint.PATH, streaming.handle(counted(this::handleVisualization)));
     server.createContext(DATA_PATH, streaming.handle(counted(this::handleData)));
     server.createContext(ReadEndpoint.PATH, streaming.handle(counted(this::handleRead)));
+    var nextFollow = followStreaming.handle(counted(this::handleFollow));
+    var controlFollow = streaming.handle(counted(this::handleFollow));
+    server.createContext(FollowEndpoint.PATH, exchange -> {
+      if (exchange.getRequestURI().getPath().endsWith("/next") && exchange.getRequestMethod().equals("POST")) nextFollow.handle(exchange);
+      else controlFollow.handle(exchange);
+    });
     server.createContext(StoreImportEndpoint.PATH, storeStreaming.handle(counted(this::handleImport)));
     server.createContext(StoreImportEndpoint.ASSIGN_PATH, storeStreaming.handle(counted(this::handleImport)));
     server.createContext("/store", storeStreaming.handle(counted(this::handleStore)));
@@ -360,6 +371,7 @@ public class HttpTransport {
       return;
     }
     mirrorEndpoint.close();
+    followEndpoint.close();
     readEndpoint.close();
     if (localIngestion != null) { localIngestion.close(); stores.clearLocalIngestion(localIngestion); }
     // 1. End the SSE streams. Their loops sleep between pings; the interrupt ends the loop,
@@ -400,6 +412,7 @@ public class HttpTransport {
     if (bodyDeadlines != null) bodyDeadlines.shutdownNow();
     if (streaming != null) streaming.close();
     if (storeStreaming != null) storeStreaming.close();
+    if (followStreaming != null) followStreaming.close();
     sessionManager.clear();
     stores.stopWatching();
     stores.awaitImports();
@@ -814,6 +827,14 @@ public class HttpTransport {
       sendError(exchange, 403, "Forbidden: invalid origin"); return;
     }
     readEndpoint.handle(exchange);
+  }
+
+  private void handleFollow(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) {
+      sendError(exchange, 403, "Forbidden: invalid origin"); return;
+    }
+    followEndpoint.handle(exchange);
   }
 
   /** The import write surface has exactly the same Origin gate as MCP and data reads. */

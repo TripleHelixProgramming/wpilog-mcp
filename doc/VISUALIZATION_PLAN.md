@@ -1,8 +1,9 @@
 # WPILog Explorer reusable visualization design
 
 Status: Stage 1 committed as `632b492`; accepted Stage 2a committed as `c6436d6` after owner
-authorization. Stage 2b is implemented locally and validated on macOS on 2026-10-14, with
-its evidence recorded separately below. It remains uncommitted for review before Stage 3. Close cancellation
+authorization. Accepted Stage 2b and its fixes are committed as `2fb2376`, and the Stage 3
+first gate and review refinements as `719f163`. The Stage 3 server integration checkpoint is
+implemented locally, with its evidence and remaining live workflow work recorded below. Close cancellation
 remains unverified on the manual dialog, Linux/Windows native runs are outstanding, and Save As
 uses the specified refusal fallback. No publication or version change is part of this work.
 
@@ -371,6 +372,43 @@ Start with the native limits of 4,096 visited records and 4 MiB per page, plus a
 Valid cursors support exact catch-up. After 60 seconds idle expiry or a server restart, explicitly rebootstrap the requested window from the **same** retained recording. If history is gone, report its available interval or `HISTORY_UNAVAILABLE`; do not claim lossless replay or attach to another session.
 
 Finalization drains final counts, resolves final locations/hashes, and changes source status to recorded while retaining the view and inspected interval. Session alias resolution preserves the anchored recording membership. New boots or unproved clock continuity require explicit selection of another source.
+
+The server integration review adds four **pre-broker requirements**. These are the next contract
+changes, not behavior implemented by the malformed-body fix:
+
+- **Terminal acknowledgement:** every page will carry `ended`, true only when that page completes
+  a finalized frontier. The terminal data page remains byte-identically retryable until
+  acknowledged. Its acknowledgement will release retained data and return HTTP 410 `FOLLOW_ENDED`,
+  instead of generating another empty page. A bounded lightweight lease retains that terminal
+  result until DELETE or idle expiry so a repeated terminal acknowledgement is unambiguous.
+  The broker consumes the terminal page, stops scheduling polls and DELETEs; it never infers
+  completion from an empty batch or a 204. Test a multi-page final drain, lost terminal response,
+  repeated acknowledgement and last-consumer cleanup without stopping acquisition.
+- **Byte-budget pressure:** keep the separate 32-lease and 64 MiB encoded-byte limits. Add an
+  explicit `retryable` field to 413 responses: true for shared encoded-budget pressure, false for
+  structural page/index admission limits. A transient refusal preserves the submitted cursor;
+  the preceding page may already be acknowledged. The broker backs off with jitter, releases
+  unneeded consumers and retries that cursor rather than rebootstrapping. It must not classify
+  errors from message text. Test concurrent maximal pages, byte release and exact continuation.
+- **Live-to-finalized proof:** persist the member's writer-incarnation identity in open and
+  finalized capture metadata and retain it in the follow proof. Manifest copying, recovery,
+  moves and mirrors must preserve it. Compare it before continuing over finalized bytes; a
+  finalized hash alone does not prove the prior live prefix. Legacy metadata with no such proof
+  requires explicit rebootstrap at this transition, while an initially finalized source can
+  bootstrap from its verified hash. Test replacement plus finalization between polls with the
+  same provenance, entry IDs/types/counts, and test genuine finalization and recovery separately.
+  Identity publication stays off the acquisition hot path beyond its existing metadata handoff.
+- **Page fairness:** the engine will rotate across `(member, entry, field)` selections, allowing
+  at most 256 visited records per turn under the existing page work/byte limits. Retry pages keep
+  the same order; only acknowledgement commits the next scheduling position. This places one
+  scheduling owner above native cursors instead of making each client reorder queries. Test a
+  chatty first entry with sparse later entries, tiny page budgets, deferred records, malformed
+  gaps and a retried page. Lexicographic member names remain identities, not chronological order.
+
+The current route's terminal behavior, transient-budget diagnostic, transition proof limitation
+and query-order scheduling remain documented in [READ_API.md](READ_API.md#following-a-server-recording)
+until these requirements are implemented and planted. None is claimed as part of the accepted
+server checkpoint, and none moves the remaining live workflow out of Stage 3.
 
 Define the live last-N-seconds interval in the recorded source's robot/server clock domain, using the shared NT4 time estimate as the right edge and reporting `clock_basis`. Capture currently requires time synchronization before declarations and writes sample timestamps unchanged. Without a usable estimate, show Waiting for Time Sync and hold a previously valid edge with `clock_basis:"held_robot_edge"`. If no valid edge exists, use the latest published sample timestamp with `clock_basis:"last_sample"`; if neither exists, show the waiting state without fabricating a range. Do not mix receive timestamps into the sample axis. Receipt time remains appropriate for freshness and latency. A receive-time plotting mode would require a separate explicit projection and is deferred. See [capture clock admission](../src/main/java/org/triplehelix/wpilogmcp/capture/CaptureWriter.java#L407) and [sample timestamp preservation](../src/main/java/org/triplehelix/wpilogmcp/capture/CaptureWriter.java#L619).
 
@@ -1000,13 +1038,47 @@ policy and the session adapter. The expanded proof includes 64 entry/member batc
 All 27 refinement plants are caught and restored; the metadata-page fixture was strengthened
 after its first plant survived because even the incorrect gap would not fit that page.
 Evidence and remaining validation limits are in
-`/private/tmp/wpilog-visualization-stage3-review/validation.md`. The earlier review's independent
-probe is evidence for the original first gate; it has not been rerun for this revised page format.
+`/private/tmp/wpilog-visualization-stage3-review/validation.md`. The subsequent independent
+[server integration review](VISUALIZATION_STAGE3_REVIEW_2.md) reran its engine proof against the
+revised page format: 41 checks and 980 values bit-exact, in 22 pages. This is reviewer evidence,
+not an additional implementer run.
 
-This is the first gate, not acceptance of the full Stage 3 live workflow. There is no follow HTTP
-route, production session-alias/membership adapter, lease expiry/long polling, configured remote
-adapter or client broker yet. Automatic panel updates, follow/inspect/pause and robot-clock
-states, histogram/scatter, aggregate decoded-window budgets and latency/performance validation
-remain within Stage 3. Five minor Stage 2b review follow-ups remain in
-[IDEAS.md](IDEAS.md#94-reusable-visualization-documents). No Stage 3 commit, version change or
-publication accompanies this gate.
+The maintainer authorized the first-gate commit and continued implementation. `719f163` contains
+the 21 validated first-gate/refinement files; it was not pushed. This is not acceptance of the
+full Stage 3 live workflow.
+
+### Stage 3 server integration checkpoint
+
+Native HTTP follows now use the engine through one catalog/provenance adapter. Session merge
+aliases survive manifest reconstruction, synchronization receipts and mirror copies. Alias lookup
+selects the original captured recording, not every file in the merged calendar group; ambiguous
+anchors refuse. Known final hashes can recover those exact members if an older writer dropped
+an alias. Recovery retains the original capture provenance. Creation/next/DELETE routes have
+bounded leases, a separate long-poll executor, 60-second idle expiry, explicit unavailable/expired
+responses and same-Origin/path admission. Retry bytes do not bypass revoked access. Acknowledged
+frontiers release native prefixes before waiting and retain immutable identity/type/count proof.
+Publication checks retain only writer identity and revision, with no follower callbacks on its
+loop or retained index. Final hashes are rechecked against the admitted file boundary; while a
+member is live, writer identity rejects replacement even at unchanged sample counts. That live
+identity is not yet persisted through finalization; the pre-broker proof requirement above closes
+the theoretical replacement-plus-finalization gap.
+Distinct projections of one entry have separate ordinal progress and use the native projector.
+
+Failing-first regressions, plants and fresh build results belong in
+`/private/tmp/wpilog-visualization-stage3-live/validation.md`. The source/lease integration is a
+server checkpoint; configured remote visualization adapters, the shared window broker, automatic
+panel updates, follow/inspect/pause and robot-clock states, histogram/scatter, aggregate decoded
+budgets and latency/performance validation remain within Stage 3. The recorded preview and its
+capabilities remain truthful about that scope. Five minor Stage 2b review follow-ups remain in
+[IDEAS.md](IDEAS.md#94-reusable-visualization-documents). No new version or publication is part
+of this checkpoint.
+
+The independent server review reproduced the checkpoint's full build, extension suite and all
+35 plants. Its real-transport client passed 54 of 56 checks; the two failures were the same
+malformed-body classification on create and next. The focused correction classifies JSON parse
+failures in the shared HTTP body reader as 400 `INVALID_REQUEST` with a short diagnostic, before
+any source action. The regression also covers the snapshot route and preserves exact pending-page
+retries after refused bodies. Failing-first, plant and current verification evidence is in
+`/private/tmp/wpilog-visualization-stage3-live-review/validation.md`. The four design notes are
+settled as the pre-broker requirements above; the route guide separately describes today's
+behavior, including 410 `CLOSED`, numeric idle expiry, string wire expansion and member ordering.

@@ -98,7 +98,8 @@ public final class LiveLog implements LogData, AutoCloseable {
     }
   }
   private record State(Map<String, Series> entries, Map<String, EntryInfo> infos, long sequence, double min, double max,
-      int jumps, long firstJump, boolean open) {}
+      int jumps, long firstJump, boolean open, long revision) {}
+  private record Publication(String writerId, long revision) {}
   private static final class Mapping {
     final ScopedLogReader reader;
     final long size;
@@ -120,9 +121,10 @@ public final class LiveLog implements LogData, AutoCloseable {
   }
 
   private volatile Path path;
+  private final String captureIdentity = java.util.UUID.randomUUID().toString();
   private final long hotWindowUs;
   private final java.util.function.Supplier<Double> robotNowUs;
-  private volatile State state = new State(Map.of(), Map.of(), 0, 0, 0, 0, -1, true);
+  private volatile State state = new State(Map.of(), Map.of(), 0, 0, 0, 0, -1, true, 0);
   private final PriorityQueue<Record> hot = new PriorityQueue<>(Comparator.comparingLong(r -> r.timestampUs));
   private final AtomicReference<Mapping> mapping = new AtomicReference<>();
   private final AtomicLong mappedReads = new AtomicLong();
@@ -131,6 +133,11 @@ public final class LiveLog implements LogData, AutoCloseable {
   private final AtomicBoolean retired = new AtomicBoolean();
   private final Object lifetime = new Object();
   private long coldBefore = Long.MIN_VALUE;
+
+  /** A small immutable token cannot retain the index after a follower releases its prefix.
+   * Followers allocate and compare it off the writer loop; publication only advances the
+   * revision in the state replacement the writer already performs. */
+  public Object publication() { return new Publication(captureIdentity, state.revision()); }
 
   public LiveLog(Path path, long hotWindowUs) { this(path, hotWindowUs, () -> null); }
 
@@ -146,7 +153,7 @@ public final class LiveLog implements LogData, AutoCloseable {
     if (before.entries().containsKey(info.name())) return;
     var entries = new LinkedHashMap<>(before.entries()); entries.put(info.name(), new Series(info));
     var infos = new LinkedHashMap<>(before.infos()); infos.put(info.name(), info);
-    state = new State(Collections.unmodifiableMap(entries), Collections.unmodifiableMap(infos), before.sequence(), before.min(), before.max(), before.jumps(), before.firstJump(), true);
+    state = new State(Collections.unmodifiableMap(entries), Collections.unmodifiableMap(infos), before.sequence(), before.min(), before.max(), before.jumps(), before.firstJump(), true, before.revision() + 1);
   }
 
   /** Publish metadata with the index boundary so an already acquired view keeps its facts. */
@@ -157,7 +164,7 @@ public final class LiveLog implements LogData, AutoCloseable {
     var infos = new LinkedHashMap<>(before.infos());
     infos.put(info.name(), new EntryInfo(original.id(), original.name(), original.type(), info.metadata()));
     state = new State(before.entries(), Collections.unmodifiableMap(infos), before.sequence(),
-        before.min(), before.max(), before.jumps(), before.firstJump(), before.open());
+        before.min(), before.max(), before.jumps(), before.firstJump(), before.open(), before.revision() + 1);
   }
 
   /** Called only after WpilogOutput has written the entire record. */
@@ -167,7 +174,7 @@ public final class LiveLog implements LogData, AutoCloseable {
     double time = frame.timestampUs() / 1_000_000.0;
     if (before.sequence() > 0 && time > before.max() + LogScan.MAX_FORWARD_JUMP_SEC) {
       state = new State(before.entries(), before.infos(), before.sequence(), before.min(), before.max(), before.jumps() + 1,
-          before.firstJump() < 0 ? written.offset() : before.firstJump(), true);
+          before.firstJump() < 0 ? written.offset() : before.firstJump(), true, before.revision() + 1);
       return;
     }
     long sequence = before.sequence() + 1;
@@ -178,7 +185,7 @@ public final class LiveLog implements LogData, AutoCloseable {
     double min = sequence == 1 ? time : Math.min(before.min(), time);
     double max = sequence == 1 ? time : Math.max(before.max(), time);
     // Readers can only see complete record slots after this volatile publication.
-    state = new State(before.entries(), before.infos(), sequence, min, max, before.jumps(), before.firstJump(), true);
+    state = new State(before.entries(), before.infos(), sequence, min, max, before.jumps(), before.firstJump(), true, before.revision() + 1);
     advance(Math.round(max * 1_000_000));
   }
 
@@ -205,7 +212,7 @@ public final class LiveLog implements LogData, AutoCloseable {
 
   public void finish() {
     synchronized (lifetime) {
-      var s = state; state = new State(s.entries(), s.infos(), s.sequence(), s.min(), s.max(), s.jumps(), s.firstJump(), false);
+      var s = state; state = new State(s.entries(), s.infos(), s.sequence(), s.min(), s.max(), s.jumps(), s.firstJump(), false, s.revision() + 1);
     }
   }
   public void resume() throws IOException {
@@ -213,7 +220,7 @@ public final class LiveLog implements LogData, AutoCloseable {
     var next = new Mapping(path); mappings.incrementAndGet(); Mapping old;
     synchronized (lifetime) {
       old = mapping.getAndSet(next);
-      var s = state; state = new State(s.entries(), s.infos(), s.sequence(), s.min(), s.max(), s.jumps(), s.firstJump(), true);
+      var s = state; state = new State(s.entries(), s.infos(), s.sequence(), s.min(), s.max(), s.jumps(), s.firstJump(), true, s.revision() + 1);
       retired.set(false);
     }
     if (old != null) old.release();
@@ -273,6 +280,8 @@ public final class LiveLog implements LogData, AutoCloseable {
     private record ReadIdentity(LiveLog owner, long sequence) {}
     /** Equal only for views of this writer's same immutable publication prefix. */
     public Object readIdentity() { return new ReadIdentity(LiveLog.this, seen.sequence()); }
+    /** An index replacement cannot impersonate a retained writer merely by reusing its path. */
+    public String captureIdentity() { return captureIdentity; }
 
     private View(State seen, String seenPath, LogFileAccess.Lease claim) {
       this.seen = seen; this.seenPath = seenPath; this.claim = claim;

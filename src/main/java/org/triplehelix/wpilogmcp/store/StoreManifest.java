@@ -59,11 +59,22 @@ public final class StoreManifest {
   public record Session(String id, String startedAt, String endedAt, String startBasis,
       String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
       OpenCapture openCapture, String endReason, DeviceIdentity deviceIdentity, List<IdentityConflict> identityConflicts,
-      List<Conflict> conflicts, org.triplehelix.wpilogmcp.capture.CaptureStats captureStats, SystemLogState systemLogs) {
+      List<Conflict> conflicts, org.triplehelix.wpilogmcp.capture.CaptureStats captureStats, SystemLogState systemLogs,
+      List<String> mergedSessionIds) {
     public Session {
       identityConflicts = identityConflicts == null ? List.of() : List.copyOf(identityConflicts);
       conflicts = conflicts == null ? List.of() : List.copyOf(conflicts);
       systemLogs = systemLogs == null ? SystemLogState.EMPTY : systemLogs;
+      mergedSessionIds = mergedSessionIds == null ? List.of() : mergedSessionIds.stream()
+          .filter(alias -> !alias.equals(id)).distinct().toList();
+    }
+    public boolean names(String sessionId) { return id.equals(sessionId) || mergedSessionIds.contains(sessionId); }
+    public Session(String id, String startedAt, String endedAt, String startBasis,
+        String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
+        OpenCapture openCapture, String endReason, DeviceIdentity deviceIdentity, List<IdentityConflict> identityConflicts,
+        List<Conflict> conflicts, org.triplehelix.wpilogmcp.capture.CaptureStats captureStats, SystemLogState systemLogs) {
+      this(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber, files,
+          openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, systemLogs, List.of());
     }
     public Session(String id, String startedAt, String endedAt, String startBasis,
         String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
@@ -74,7 +85,7 @@ public final class StoreManifest {
     }
     public Session withSystemLogs(SystemLogState value) {
       return new Session(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber, files,
-          openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, value);
+          openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, value, mergedSessionIds);
     }
     public Session(String id, String startedAt, String endedAt, String startBasis,
         String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
@@ -91,7 +102,7 @@ public final class StoreManifest {
     }
     public Session withFiles(List<LogFile> value) {
       return new Session(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber,
-          value, openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, systemLogs);
+          value, openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, systemLogs, mergedSessionIds);
     }
     public Session(String id, String startedAt, String endedAt, String startBasis,
         String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,

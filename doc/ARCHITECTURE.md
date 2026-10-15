@@ -905,8 +905,8 @@ encoded-response cap and no host response cache. Each renderer retains only its 
 series and values across presentation edits. The configurable aggregate decoded budget and shared
 live broker remain Stage 3; this preview makes no one-hour live or 1 GiB performance claim.
 
-The first Stage 3 gate adds `read/server/OrdinalFollow`, an internal continuation engine over
-the existing `ReadSnapshot` and `SampleCursors`. It is not an HTTP route or a live view yet.
+The first Stage 3 gate adds `read/server/OrdinalFollow`, a continuation engine over
+the existing `ReadSnapshot` and `SampleCursors`, now exposed through native HTTP follow leases.
 The source adapter supplies independently owned, immutable member prefixes of one proven
 recording; it retains responsibility for catalog admission, session aliases and membership.
 The engine fixes bootstrap P0 before the first request. It reads the requested historical
@@ -942,8 +942,40 @@ Closing admission does not wait on a decoder or writer: an admitted bounded batc
 prefix on completion. No source acquisition, decoding or socket work belongs on the recorder
 loop. Replaced members, shrinking history and changed recording identities require explicit
 rebootstrap; finalization drains its fixed final counts and never opens a later recording.
-Production source adapters, lease expiry, long polling, remote routing and editor integration
-remain the subsequent Stage 3 work, not guarantees supplied by this internal proof.
+`CaptureRecording` owns the original provenance/first-collector rule used by both session unions
+and `StoreReadCatalog.recording`. Session aliases survive every store reconstruction, merge receipt
+and mirror copy; an ambiguous anchor or lost alias without known final hashes refuses. Recovery
+preserves the original open-capture provenance even after a merged session's calendar expands.
+`CatalogRecordingSource` admits only these members, verifies final hashes at each changed file
+boundary and rechecks that boundary after snapshot admission. While a member is live it rejects
+a new writer identity masquerading behind the same provenance and counts. The live identity is
+not yet carried into finalized metadata: a replacement that also finalized between polls is an
+unproved transition, even when the final hash matches. Persisting that proof is pre-broker work.
+
+`FollowEndpoint` owns 32 temporary leases, 60-second idle expiry and a shared 64 MiB encoded budget.
+Its transport gives next calls 16 dedicated workers, independent of creation and DELETE. Waits
+last at most 25 seconds; one next per lease may run. An acknowledged frontier releases mappings
+and retains only identity/type/count proof before waiting, so idle follows do not reserve files
+against store moves. Follower workers compare small immutable `LiveLog` tokens containing only
+writer identity and revision; a token cannot retain the released index. Publication increments
+the revision in the writer's existing state replacement. The recording loop has no follower
+callbacks, waits, decoding or network work. Store publication
+adds one atomic token increment after a durable write. Waiters inspect tokens at most 25 ms apart
+and recheck external file/catalog changes within five seconds; an unchanged check never opens a
+native prefix. Admission/grants are checked again even for an encoded retry. Active requests keep
+their lease alive; DELETE and shutdown cancel waits, and disconnected idle sockets are reclaimed
+after the bounded wait and idle expiry. Final member hashes travel with frontier metadata.
+The lease count does not reserve encoded bytes: a page build reserves twice its page limit and
+retained retries share the same budget. Transient exhaustion returns 413 and permits retrying the
+same cursor after other pages release their bytes. Request-body JSON parsing is classified at
+the shared read endpoint before source work; malformed bodies return 400 with a short diagnostic.
+The current finalized frontier requires the client to DELETE after draining: further calls
+return empty pages immediately. Explicit terminal acknowledgement, a machine-readable transient
+budget refusal, persistent live-to-finalized identity and fair page scheduling are specified in
+the plan before the client broker; they are not implemented by this checkpoint.
+These checks establish the server integration boundary. Configured remote visualization routing,
+the shared window broker, live editor/clock states, and measured display/resource workloads remain
+Stage 3 work. The native routes do not make the recorded editor live.
 
 
 ## Known Limits

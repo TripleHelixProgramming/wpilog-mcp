@@ -57,11 +57,11 @@ final class ReadEndpoint implements AutoCloseable {
     boolean retired;
     CatalogUse(StoreReadCatalog value) { this.value = value; }
   }
-  final class CatalogLease implements AutoCloseable {
+  final class CatalogLease implements org.triplehelix.wpilogmcp.read.server.CatalogRecordingSource.Lease {
     private final CatalogUse use;
     private boolean released;
     CatalogLease(CatalogUse use) { this.use = use; }
-    StoreReadCatalog value() { return use == null ? null : use.value; }
+    public StoreReadCatalog value() { return use == null ? null : use.value; }
     @Override public void close() throws IOException {
       if (use == null) return;
       boolean release;
@@ -204,7 +204,7 @@ final class ReadEndpoint implements AutoCloseable {
         String storeId = ReadWire.text(request, "store_id"), session = ReadWire.text(request, "session_id"), file = ReadWire.text(request, "file_path");
         var candidates = new ArrayList<StoreReadCatalog.StoreFile>();
         for (var store : catalog.snapshot().stores()) if (store.header().id().equals(storeId))
-          for (var item : store.allFiles()) if (item.session() != null && item.session().id().equals(session) && item.file().path().equals(file))
+          for (var item : store.allFiles()) if (item.session() != null && item.session().names(session) && item.file().path().equals(file))
             candidates.add(new StoreReadCatalog.StoreFile(storeId, store.root(), item));
         if (candidates.size() != 1) throw new Refusal(404, "NOT_FOUND", "Store/session/file identity does not name one manifested file");
         facts = candidates.get(0); path = facts.facts().path();
@@ -375,12 +375,13 @@ final class ReadEndpoint implements AutoCloseable {
     }
   }
 
-  private JsonObject body(HttpExchange exchange) throws IOException {
+  JsonObject body(HttpExchange exchange) throws IOException {
     var timeout = timer.schedule(exchange::close, 10, TimeUnit.SECONDS);
     try (var input = exchange.getRequestBody()) {
       byte[] bytes = input.readNBytes(MAX_REQUEST_BYTES + 1);
       if (bytes.length > MAX_REQUEST_BYTES) throw new Refusal(413, "RESOURCE_LIMIT", "Read request exceeds " + MAX_REQUEST_BYTES + " bytes");
-      return ReadWire.parse(bytes);
+      try { return ReadWire.parse(bytes); }
+      catch (IOException invalid) { throw new IllegalArgumentException("Invalid read JSON", invalid); }
     } finally { timeout.cancel(false); }
   }
   private static void requireMethod(String actual, String expected) throws Refusal {
@@ -389,13 +390,13 @@ final class ReadEndpoint implements AutoCloseable {
   private static void line(OutputStream out, JsonObject object) throws IOException {
     out.write(ReadWire.bytes(object, ReadWire.MAX_FRAME_BYTES)); out.write('\n'); out.flush();
   }
-  private static void send(HttpExchange exchange, int status, Object body) throws IOException {
+  static void send(HttpExchange exchange, int status, Object body) throws IOException {
     byte[] bytes = ReadWire.bytes(body, ReadWire.MAX_FRAME_BYTES);
     exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
     exchange.getResponseHeaders().set("Cache-Control", "no-store"); exchange.sendResponseHeaders(status, bytes.length);
     try (var out = exchange.getResponseBody()) { out.write(bytes); }
   }
-  private static void sendFailure(HttpExchange exchange, int status, String code, String message) throws IOException {
+  static void sendFailure(HttpExchange exchange, int status, String code, String message) throws IOException {
     if (exchange.getResponseCode() >= 0) { exchange.close(); return; }
     var body = new JsonObject(); body.addProperty("status", "error"); body.addProperty("code", code); body.addProperty("message", message); send(exchange, status, body);
   }
@@ -403,7 +404,7 @@ final class ReadEndpoint implements AutoCloseable {
     if (failure instanceof ReadWire.WireLimit) return new ReadException(ReadProblem.Code.RESOURCE_LIMIT, failure.getMessage(), failure);
     return failure instanceof ReadException read ? read : new ReadException(ReadProblem.Code.MALFORMED_RECORD, failure.getMessage(), failure);
   }
-  private static int status(ReadProblem.Code code) {
+  static int status(ReadProblem.Code code) {
     return switch (code) { case ACCESS_DENIED -> 403; case FILE_CHANGED -> 409; case CLOSED -> 410; case BUSY -> 503; case RESOURCE_LIMIT -> 413; default -> 400; };
   }
   private static final class Refusal extends IOException {

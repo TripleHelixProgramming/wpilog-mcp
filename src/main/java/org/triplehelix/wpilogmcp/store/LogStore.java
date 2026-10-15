@@ -396,6 +396,7 @@ public final class LogStore implements AutoCloseable {
   private final java.util.Set<Observer> observers = java.util.concurrent.ConcurrentHashMap.newKeySet();
   public AutoCloseable observe(Observer observer) { observers.add(observer); return () -> observers.remove(observer); }
   private void published(Path path, Object value) {
+    logManager.catalogPublished();
     for (var observer : observers) {
       try { observer.manifest(path, value); }
       catch (RuntimeException e) { org.slf4j.LoggerFactory.getLogger(LogStore.class).warn("Session status update failed", e); }
@@ -1160,7 +1161,7 @@ public final class LogStore implements AutoCloseable {
             if (input.end() != null && input.end().isAfter(end)) end = input.end();
           }
           session = new Session(session.id(), start.toString(), end.toString(), basis,
-              session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats(), session.systemLogs());
+              session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats(), session.systemLogs(), session.mergedSessionIds());
           io.write(manifest, session);
         }
       } catch (IOException | RuntimeException e) {

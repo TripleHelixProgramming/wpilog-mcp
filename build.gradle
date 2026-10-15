@@ -320,7 +320,7 @@ def readerOwners = [
     'log/LogFileAccess', 'log/FileSnapshot', 'log/LogFileException', 'log/TimestampedValue',
     'log/RobotCandidates', 'log/LogData', 'log/subsystems/EntryDecoder', 'log/subsystems/BinaryReader',
     'log/subsystems/SecurityValidator', 'config/ClientLeases',
-    'store/StoreCatalog', 'store/StoreManifest', 'store/StoreFiles', 'store/FileNameEncoding',
+    'store/StoreCatalog', 'store/StoreManifest', 'store/StoreFiles', 'store/FileNameEncoding', 'store/CaptureRecording',
     'store/SystemLogState', 'store/SystemLogFiles', 'store/SystemLogIndex',
     'store/StoreTransferInventory', 'capture/CaptureLease', 'capture/CaptureStats',
     'capture/TopicCost', 'capture/context/DeviceIdentity', 'capture/context/ProviderStatus',

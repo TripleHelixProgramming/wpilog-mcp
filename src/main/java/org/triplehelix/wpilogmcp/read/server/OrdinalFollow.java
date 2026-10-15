@@ -35,8 +35,8 @@ import org.triplehelix.wpilogmcp.read.internal.ReadWire;
  * advance past unseen records. Historical windows apply to bootstrap; subsequent deltas include
  * every newly published ordinal, including late records outside that historical window.
  *
- * <p>This engine is not yet exposed as an HTTP route. Lease expiry, publication waiters, source
- * admission and the client broker are separate Stage 3 integration gates. No caller may invoke
+ * <p>The native follow route owns lease expiry and wait admission; the source owns catalog and
+ * permission proof. The client broker is a separate Stage 3 integration gate. No caller may invoke
  * prefix acquisition or decoding on the recorder loop. One next call owns a bounded batch; close
  * retires admission immediately and releases its prefix when that admitted batch finishes.
  */
@@ -44,10 +44,12 @@ public final class OrdinalFollow implements AutoCloseable {
   public static final int MAX_RECORDS = 4096, MAX_PAGE_BYTES = 4 << 20;
 
   /** Identity/generation come from the source owner, never a filename or inferred clock. */
-  public record Member(String id, long generation, ReadSnapshot snapshot) {
+  public record Member(String id, long generation, ReadSnapshot snapshot, String contentSha256) {
+    public Member(String id, long generation, ReadSnapshot snapshot) { this(id, generation, snapshot, null); }
     public Member {
       requireId(id); if (generation < 0) throw new IllegalArgumentException("Negative member generation");
       Objects.requireNonNull(snapshot);
+      if (contentSha256 != null && !contentSha256.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("Invalid final member hash");
     }
   }
 
@@ -68,7 +70,14 @@ public final class OrdinalFollow implements AutoCloseable {
       if (failure != null) throw failure;
     }
   }
-  @FunctionalInterface public interface Source { Prefix open() throws IOException; }
+  @FunctionalInterface public interface Source {
+    Prefix open() throws IOException;
+    /** Retained bytes do not grant access after a directory or connection is revoked. */
+    default void authorize() throws IOException {}
+    /** Called only after a frontier is acknowledged, outside all loops and monitors. False
+     * means a bounded idle timeout, not permission to reopen the same prefix speculatively. */
+    default boolean awaitChange(java.time.Duration wait, java.util.function.BooleanSupplier cancelled) throws IOException { return true; }
+  }
 
   /** Shared across follows, including pages still being written after their cache was retired.
    * Reserve two maximum frames during serialization, then retain only the final encoded size.
@@ -120,8 +129,23 @@ public final class OrdinalFollow implements AutoCloseable {
     @Override public void close() { if (closed.compareAndSet(false, true)) buffer.release(); }
   }
 
-  private record Key(String member, String entry) {}
+  private record Selection(String entry, String field) {}
+  private record Key(String member, String entry, String field) {}
   private record Pending(String input, String output, Buffer buffer, Map<Key, Integer> progress, boolean complete) {}
+  private record EntryProof(int id, String type, long count) {}
+  private record MemberProof(long generation, String hash, Map<String, EntryProof> entries) {}
+  private record FrontierProof(String recording, long revision, boolean finalized, Map<String, MemberProof> members) {
+    static FrontierProof of(Prefix prefix) {
+      var members = new LinkedHashMap<String, MemberProof>();
+      for (var member : prefix.members()) {
+        var entries = new LinkedHashMap<String, EntryProof>();
+        for (var entry : member.snapshot().entries().values()) entries.put(entry.name(),
+            new EntryProof(entry.id(), entry.type(), member.snapshot().sampleCount(entry.name())));
+        members.put(member.id(), new MemberProof(member.generation(), member.contentSha256(), Map.copyOf(entries)));
+      }
+      return new FrontierProof(prefix.recordingId(), prefix.catalogRevision(), prefix.finalized(), Map.copyOf(members));
+    }
+  }
   private final Source source;
   private final List<ReadQuery> queries;
   private final String epoch, id = UUID.randomUUID().toString(), initial = UUID.randomUUID().toString();
@@ -129,6 +153,7 @@ public final class OrdinalFollow implements AutoCloseable {
   private final int pageRecords, pageBytes;
   private final AtomicBoolean busy = new AtomicBoolean(), closed = new AtomicBoolean();
   private Prefix prefix;
+  private FrontierProof proof;
   private JsonObject description;
   private String prefixId, cursor = initial;
   private Map<Key, Integer> progress = Map.of();
@@ -145,31 +170,45 @@ public final class OrdinalFollow implements AutoCloseable {
     if (queries.isEmpty() || queries.size() > 256 || pageRecords < 1 || pageRecords > MAX_RECORDS
         || pageBytes < 1024 || pageBytes > MAX_PAGE_BYTES)
       throw new IllegalArgumentException("Follow limits: 1..256 entries, 1..4096 records, 1024..4194304 bytes");
-    var names = new HashSet<String>();
-    for (var query : queries) if (!names.add(query.entry()) || query.firstOrdinal() != 0
+    var names = new HashSet<Selection>();
+    for (var query : queries) if (!names.add(new Selection(query.entry(), query.field())) || query.firstOrdinal() != 0
         || query.order() != ReadQuery.Order.FILE || query.reduction() != null)
-      throw new IllegalArgumentException("Follow queries need distinct entries, file order, and no initial ordinal or reduction");
+      throw new IllegalArgumentException("Follow queries need distinct entry/field pairs, file order, and no initial ordinal or reduction");
     this.pageRecords = pageRecords; this.pageBytes = pageBytes;
     replacePrefix(); // Fix P0 before a caller can request or lose the first history page.
   }
 
   public String initialCursor() { return initial; }
+  public String id() { return id; }
 
   /** Reusing input reproduces identical bytes. Supplying next_cursor commits the preceding
    * page, then starts another bounded page. Unknown/old/foreign cursors never restart silently. */
   public Page next(String acknowledgement) throws IOException {
+    return next(acknowledgement, java.time.Duration.ZERO).orElseThrow();
+  }
+
+  /** A timeout acknowledges the preceding page but returns no new cursor. Retrying that same
+   * acknowledgement waits again; an unacknowledged page is always returned without waiting. */
+  public java.util.Optional<Page> next(String acknowledgement, java.time.Duration wait) throws IOException {
+    if (wait.isNegative() || wait.compareTo(java.time.Duration.ofSeconds(25)) > 0)
+      throw new IllegalArgumentException("Follow wait must be between zero and 25 seconds");
     if (!busy.compareAndSet(false, true)) throw new ReadException(ReadProblem.Code.BUSY, "Another follow page is being prepared");
     try {
       checkOpen();
-      if (pending != null && pending.input().equals(acknowledgement)) return new Page(pending.buffer());
+      source.authorize();
+      if (pending != null && pending.input().equals(acknowledgement)) return java.util.Optional.of(new Page(pending.buffer()));
       if (pending != null && pending.output().equals(acknowledgement)) {
         progress = pending.progress(); complete = pending.complete(); cursor = pending.output(); described = true;
         pending.buffer().release(); pending = null;
+        if (complete) { var retired = prefix; prefix = null; if (retired != null) retired.close(); }
       }
       if (!cursor.equals(acknowledgement)) throw new ReadException(ReadProblem.Code.INVALID_REQUEST,
           "Follow cursor is stale or belongs to another lease/epoch; rebootstrap the same recording explicitly");
       if (complete) {
-        if (!prefix.finalized()) replacePrefix();
+        if (!proof.finalized()) {
+          if (!source.awaitChange(wait, closed::get)) { checkOpen(); return java.util.Optional.empty(); }
+          checkOpen(); replacePrefix();
+        }
         bootstrap = false; complete = false;
       }
       long reservation = 2L * pageBytes;
@@ -181,13 +220,13 @@ public final class OrdinalFollow implements AutoCloseable {
         response.add("batches", batches);
         int remaining = pageBytes - ReadWire.bytes(response, pageBytes).length;
         int work = 0;
-        outer: for (var member : prefix.members()) for (var query : queries) {
-          var key = new Key(member.id(), query.entry());
+        outer: for (var member : prefix == null ? List.<Member>of() : prefix.members()) for (var query : queries) {
+          var key = new Key(member.id(), query.entry(), query.field());
           int ordinal = next.getOrDefault(key, 0);
           long count = member.snapshot().sampleCount(query.entry());
           if (ordinal == count) continue;
           if (work == pageRecords) break outer;
-          var frame = new EntryPage(member.id(), query.entry());
+          var frame = new EntryPage(member.id(), query);
           int overhead = frame.overhead();
           int recordBytes = singleRecordBytes(prefixId, overhead);
           // Read one physical record at a time, on one cursor per entry/page. This keeps
@@ -221,7 +260,7 @@ public final class OrdinalFollow implements AutoCloseable {
         byte[] encoded = ReadWire.bytes(response, pageBytes); checkOpen();
         budget.release(reservation - encoded.length); reservation = 0;
         pending = new Pending(cursor, nextCursor, new Buffer(encoded, budget), Map.copyOf(next), finished);
-        return new Page(pending.buffer());
+        return java.util.Optional.of(new Page(pending.buffer()));
       } catch (ReadWire.WireLimit failure) {
         throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT,
             "Follow metadata or frame exceeds the page budget; no ordinals acknowledged", failure);
@@ -253,8 +292,8 @@ public final class OrdinalFollow implements AutoCloseable {
     final JsonArray samples = new JsonArray(), problems = new JsonArray();
     int records;
     long payload;
-    EntryPage(String member, String entry) {
-      json.addProperty("member_id", member); json.addProperty("entry", entry);
+    EntryPage(String member, ReadQuery query) {
+      json.addProperty("member_id", member); json.addProperty("entry", query.entry()); json.addProperty("field", query.field());
       json.addProperty("next_ordinal", Integer.MAX_VALUE); json.add("batch", body);
       body.addProperty("kind", "batch"); body.add("samples", samples); body.add("problems", problems);
       body.addProperty("records_visited", Integer.MAX_VALUE); body.addProperty("payload_bytes", Long.toString(Long.MAX_VALUE));
@@ -296,8 +335,8 @@ public final class OrdinalFollow implements AutoCloseable {
   }
 
   private boolean atFrontier(Map<Key, Integer> next) {
-    for (var member : prefix.members()) for (var query : queries)
-      if (next.getOrDefault(new Key(member.id(), query.entry()), 0) < member.snapshot().sampleCount(query.entry())) return false;
+    for (var member : prefix == null ? List.<Member>of() : prefix.members()) for (var query : queries)
+      if (next.getOrDefault(new Key(member.id(), query.entry(), query.field()), 0) < member.snapshot().sampleCount(query.entry())) return false;
     return true;
   }
 
@@ -305,13 +344,14 @@ public final class OrdinalFollow implements AutoCloseable {
     Prefix candidate = Objects.requireNonNull(source.open());
     try {
       checkOpen();
-      if (prefix != null) validateSuccessor(candidate);
+      if (proof != null) validateSuccessor(candidate);
       var out = new JsonObject(); out.addProperty("recording_id", candidate.recordingId());
       out.addProperty("catalog_revision", Long.toString(candidate.catalogRevision())); out.addProperty("finalized", candidate.finalized());
       var members = new JsonArray(); int metadataBytes = 0;
       String candidateId = UUID.randomUUID().toString();
       for (var member : candidate.members()) {
         var item = new JsonObject(); item.addProperty("member_id", member.id()); item.addProperty("generation", Long.toString(member.generation()));
+        item.addProperty("content_sha256", member.contentSha256());
         item.add("snapshot", ReadWire.descriptor(member.id(), member.snapshot()));
         metadataBytes = Math.addExact(metadataBytes, ReadWire.bytes(item, pageBytes).length);
         if (metadataBytes > pageBytes) throw metadataLimit(null);
@@ -319,14 +359,16 @@ public final class OrdinalFollow implements AutoCloseable {
         // A prefix may consume a whole metadata-only page, but the next page must be able
         // to carry a diagnosed gap even for its longest selected entry/member names.
         for (var query : queries) if (member.snapshot().entries().containsKey(query.entry())) {
-          int bytes = singleRecordBytes(candidateId, new EntryPage(member.id(), query.entry()).overhead());
+          int bytes = singleRecordBytes(candidateId, new EntryPage(member.id(), query).overhead());
           if (bytes < 1) throw metadataLimit(null);
           ReadWire.bytes(gap(query.entry(), Integer.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE), bytes);
         }
       }
       out.add("members", members);
       ReadWire.bytes(envelope(candidateId, initial, out, false), pageBytes);
+      var candidateProof = FrontierProof.of(candidate);
       var old = prefix; prefix = candidate; candidate = null;
+      proof = candidateProof;
       description = out; prefixId = candidateId; described = false;
       if (old != null) old.close();
     } catch (ReadWire.WireLimit failure) { throw metadataLimit(failure);
@@ -342,17 +384,18 @@ public final class OrdinalFollow implements AutoCloseable {
   }
 
   private void validateSuccessor(Prefix candidate) throws ReadException {
-    if (!prefix.recordingId().equals(candidate.recordingId()) || candidate.catalogRevision() < prefix.catalogRevision())
+    if (!proof.recording().equals(candidate.recordingId()) || candidate.catalogRevision() < proof.revision())
       throw changed("Recording identity or catalog revision changed");
     var members = new LinkedHashMap<String, Member>(); candidate.members().forEach(m -> members.put(m.id(), m));
-    for (var old : prefix.members()) {
-      var next = members.get(old.id());
+    for (var old : proof.members().entrySet()) {
+      var next = members.get(old.getKey());
       if (next == null) throw changed("Retained recording member is no longer available");
-      if (old.generation() != next.generation()) throw changed("Recording member was replaced");
-      for (var entry : old.snapshot().entries().values()) {
-        var after = next.snapshot().entries().get(entry.name());
-        if (after == null || entry.id() != after.id() || !entry.type().equals(after.type())
-            || next.snapshot().sampleCount(entry.name()) < old.snapshot().sampleCount(entry.name()))
+      if (old.getValue().generation() != next.generation()) throw changed("Recording member was replaced");
+      if (old.getValue().hash() != null && !old.getValue().hash().equals(next.contentSha256())) throw changed("Finalized recording member hash changed");
+      for (var entry : old.getValue().entries().entrySet()) {
+        var after = next.snapshot().entries().get(entry.getKey());
+        if (after == null || entry.getValue().id() != after.id() || !entry.getValue().type().equals(after.type())
+            || next.snapshot().sampleCount(entry.getKey()) < entry.getValue().count())
           throw changed("Recording entry was replaced or its retained history shrank");
       }
     }
@@ -371,7 +414,7 @@ public final class OrdinalFollow implements AutoCloseable {
     if (!busy.compareAndSet(false, true)) return;
     try {
       if (pending != null) { pending.buffer().release(); pending = null; }
-      var old = prefix; prefix = null; description = null;
+      var old = prefix; prefix = null; description = null; proof = null;
       if (old != null) old.close();
     } finally { busy.set(false); }
   }

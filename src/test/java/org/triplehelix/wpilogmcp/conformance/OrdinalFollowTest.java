@@ -50,6 +50,52 @@ class OrdinalFollowTest {
   private static final ReadQuery X = new ReadQuery("/x", List.of(), ReadQuery.Order.FILE, 4096, 4 << 20);
   private static OrdinalFollow.Budget budget() { return new OrdinalFollow.Budget(64L << 20); }
 
+  @Test void twoFieldsOfOneEntryHaveIndependentProgressAndUseTheNativeProjector() throws Exception {
+    try (var file = new Recording(temp.resolve("fields.wpilog"))) {
+      file.entry("/x", "double[]", "");
+      var entry = file.entries.get("/x");
+      var written = file.output.append(entry.id(), 100, ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN).putDouble(3).putDouble(7).array());
+      file.live.append(entry, new ValueFrame(entry.id(), 100, 17, List.of(3.0, 7.0)), written);
+      var queries = List.of(X.project("[0]"), X.project("[1]"));
+      try (var follow = new OrdinalFollow(EPOCH, () -> file.prefix(1), queries, budget(), 1, 128 << 10)) {
+        var a = page(follow, follow.initialCursor()); var b = page(follow, cursor(a));
+        assertFalse(a.get("frontier_complete").getAsBoolean()); assertTrue(b.get("frontier_complete").getAsBoolean());
+        for (int i = 0; i < 2; i++) {
+          var frame = List.of(a, b).get(i).getAsJsonArray("batches").get(0).getAsJsonObject();
+          assertEquals("[" + i + "]", frame.get("field").getAsString());
+          var sample = frame.getAsJsonObject("batch").getAsJsonArray("samples").get(0).getAsJsonObject();
+          assertEquals(0, sample.get("ordinal").getAsInt());
+          assertEquals(i == 0 ? 3.0 : 7.0, ReadWire.value(sample.getAsJsonObject("value")));
+        }
+      }
+    }
+  }
+
+  @Test void anAcknowledgedFrontierReleasesItsNativePrefixBeforeAnIdleWait() throws Exception {
+    try (var file = new Recording(temp.resolve("idle-release.wpilog"))) {
+      file.entry("/x", "int64", ""); file.number("/x", 1, 7, false);
+      var closes = new AtomicInteger(); var opens = new AtomicInteger(); var waits = new AtomicInteger();
+      var source = new OrdinalFollow.Source() {
+        public OrdinalFollow.Prefix open() throws IOException {
+          opens.incrementAndGet();
+          return new OrdinalFollow.Prefix(RECORDING, opens.get(), false, List.of(new OrdinalFollow.Member("member", 1,
+              new TrackingSnapshot(file.member("member", 1).snapshot(), closes))));
+        }
+        public boolean awaitChange(java.time.Duration wait, java.util.function.BooleanSupplier cancelled) {
+          waits.incrementAndGet(); assertEquals(opens.get(), closes.get(), "No native mapping is held during a publication wait"); return false;
+        }
+      };
+      try (var follow = new OrdinalFollow(EPOCH, source, List.of(X), budget())) {
+        var first = page(follow, follow.initialCursor());
+        assertTrue(follow.next(cursor(first), java.time.Duration.ofMillis(1)).isEmpty());
+        assertTrue(follow.next(cursor(first), java.time.Duration.ofMillis(1)).isEmpty());
+        assertEquals(1, opens.get()); assertEquals(2, waits.get());
+        assertThrows(ReadException.class, () -> follow.next("foreign", java.time.Duration.ZERO));
+      }
+      assertEquals(1, closes.get(), "Close after an idle acknowledgement must not dispose a prefix twice");
+    }
+  }
+
   @Test void byteBoundariesDeferFittingRecordsAndChargeLookaheadAsWork() throws Exception {
     try (var file = new Recording(temp.resolve("byte-boundary.wpilog"))) {
       file.entry("/x", "string", "");

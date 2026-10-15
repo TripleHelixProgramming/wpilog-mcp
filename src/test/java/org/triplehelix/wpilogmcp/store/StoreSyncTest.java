@@ -78,6 +78,9 @@ class StoreSyncTest {
     if (reverse) { sync(b, httpA); sync(a, httpB); } else { sync(a, httpB); sync(b, httpA); }
     for (var store : List.of(a, b)) {
       var got = catalog(store); assertEquals(1, got.sessions().size()); assertEquals(canonical, got.sessions().get(0).session().id());
+      assertEquals(StoreJson.JSON.toJsonTree(List.of(canonical.equals(firstId) ? secondId : firstId)),
+          StoreJson.JSON.toJsonTree(got.sessions().get(0).session()).getAsJsonObject().get("merged_session_ids"),
+          "Convergence must retain the losing id for an already saved source reference");
       assertEquals(2, got.files().size()); assertEquals(2, got.sessions().get(0).session().files().size());
       assertEquals(List.of(), got.unmanaged());
     }

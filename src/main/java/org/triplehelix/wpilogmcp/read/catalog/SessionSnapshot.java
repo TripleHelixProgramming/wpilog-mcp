@@ -111,15 +111,7 @@ public final class SessionSnapshot implements ReadSnapshot {
     return file.file().provenance() != null && file.file().provenance().captured();
   }
   private static boolean sameRecording(StoreCatalog.StoredFile a, StoreCatalog.StoredFile b, String collectingStore) {
-    if (!captured(a) || !captured(b)) return false;
-    var left = a.file().provenance(); var right = b.file().provenance();
-    // CaptureStore records the writer's original startedAt on every rollover; it survives
-    // moves and peer copies. Peer copies also retain their first collecting store. A shared
-    // session id or robot/calendar overlap alone is deliberately insufficient evidence.
-    if (left.importedAt() == null || left.importedAt().isBlank() || !left.importedAt().equals(right.importedAt())) return false;
-    String first = left.copiedFrom().isEmpty() ? collectingStore : left.copiedFrom().get(0).storeId();
-    String second = right.copiedFrom().isEmpty() ? collectingStore : right.copiedFrom().get(0).storeId();
-    return java.util.Objects.equals(first, second);
+    return org.triplehelix.wpilogmcp.store.CaptureRecording.same(a.file().provenance(), b.file().provenance(), collectingStore);
   }
   private SessionSnapshot(StoreReadCatalog owner, Path manifest, List<Part> parts, List<ExcludedSource> excluded, Overlap overlap) throws IOException {
     this.owner = owner; this.manifest = manifest; this.parts = List.copyOf(parts); this.excluded = List.copyOf(excluded);

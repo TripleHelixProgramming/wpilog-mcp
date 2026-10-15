@@ -75,6 +75,22 @@ class CaptureRecoveryTest {
   }
 
   @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void recoveryKeepsMergeAliasesAndTheOriginalRecordingProvenance(boolean readable) throws Exception {
+    var root = directory.resolve("merged"); var file = plant(root, readable, false);
+    var original = manifest(file).openCapture().provenance();
+    var json = StoreJson.JSON.toJsonTree(manifest(file)).getAsJsonObject();
+    json.addProperty("started_at", WALL.instant().minusSeconds(60).toString());
+    json.add("merged_session_ids", StoreJson.JSON.toJsonTree(List.of("previous-id")));
+    Files.writeString(file.resolveSibling("session.json"), json.toString());
+    startup(root);
+    var recovered = manifest(file);
+    assertEquals(json.get("merged_session_ids"), StoreJson.JSON.toJsonTree(recovered).getAsJsonObject().get("merged_session_ids"));
+    assertEquals(original, readable ? recovered.files().get(0).provenance() : recovered.openCapture().provenance(),
+        "A widened session calendar must not replace the original capture start or collector");
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
   @org.junit.jupiter.params.provider.ValueSource(strings = {"{not json", "{\"id\":\"broken\"}"})
   void damagedSessionInventoryIsLoggedAndSkippedBeforeCaptureStarts(String damaged) throws Exception {
     var root = directory.resolve("store"); var bad = plant(root, true, false); var good = plant(root, true, false);

@@ -124,6 +124,16 @@ public class LogManager {
    */
   private final ConcurrentHashMap<String, Loaded> loaded = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, LiveLog> captures = new ConcurrentHashMap<>();
+  private final java.util.concurrent.atomic.AtomicLong catalogPublication = new java.util.concurrent.atomic.AtomicLong();
+  /** A durable store write wakes read-side publication probes without joining its queue. */
+  public void catalogPublished() { catalogPublication.incrementAndGet(); }
+  public long catalogPublication() { return catalogPublication.get(); }
+  /** No filesystem work, locking or callbacks on the recorder loop. Null means no current
+   * writer at this exact admitted path; followers then recheck the durable catalog. */
+  public Object capturePublication(Path path) {
+    var capture = captures.get(path.toAbsolutePath().normalize().toString());
+    return capture == null ? null : capture.publication();
+  }
 
   /** Active captures are pinned outside the evictable cache; their writer owns their index. */
   public void beginCapture(LiveLog log) throws IOException {

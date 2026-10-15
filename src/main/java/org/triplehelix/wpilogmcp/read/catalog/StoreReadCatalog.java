@@ -43,6 +43,10 @@ public final class StoreReadCatalog implements AutoCloseable {
   }
   public record SharedSystemLogs(String storeId, String robotId, Path index, SystemLogIndex inventory) {}
   public record StoreFile(String storeId, Path root, StoreCatalog.StoredFile facts) {}
+  public record Recording(RecordingReference reference, org.triplehelix.wpilogmcp.store.CaptureRecording identity,
+      List<StoreFile> members, boolean finalized) {
+    public Recording { members = List.copyOf(members); }
+  }
   private final List<Path> roots;
   private final SecurityValidator security = new SecurityValidator();
   private final LogAccess logs;
@@ -215,6 +219,48 @@ public final class StoreReadCatalog implements AutoCloseable {
     throw new IOException("SOURCE_UNAVAILABLE: no configured store contains the recorded content");
   }
 
+  /** A session or alias only nominates candidates. One provenance anchor proves the recording;
+   * measured alignment and a shared calendar never widen its rollover membership. */
+  public Recording recording(RecordingReference reference) throws IOException {
+    var store = snapshot().stores().stream().filter(s -> originId(s).equals(reference.originStoreId())).toList();
+    if (store.size() != 1) throw new IOException("SOURCE_UNAVAILABLE: select one configured origin store or mirror for this recording");
+    var selected = store.get(0);
+    var sessions = selected.sessions().stream().filter(s -> s.session().names(reference.sessionId())).toList();
+    if (sessions.size() > 1) throw new IOException("SOURCE_UNAVAILABLE: ambiguous session alias");
+    List<StoreCatalog.StoredFile> files;
+    if (sessions.isEmpty()) {
+      if (reference.finalizedHashes().isEmpty()) throw new IOException("SOURCE_UNAVAILABLE: session identity or merge alias is no longer retained");
+      files = selected.allFiles().stream().filter(f -> reference.finalizedHashes().contains(f.file().sha256())).toList();
+      if (!files.stream().map(f -> f.file().sha256()).collect(java.util.stream.Collectors.toSet()).containsAll(reference.finalizedHashes()))
+        throw new IOException("HISTORY_UNAVAILABLE: a known finalized recording member is no longer retained");
+    } else {
+      var manifest = sessions.get(0).path().resolve("session.json");
+      files = selected.allFiles().stream().filter(f -> f.manifestPath().equals(manifest)).toList();
+    }
+    String origin = originId(selected);
+    var anchors = files.stream().filter(f -> "wpilog".equals(f.file().kind()))
+        .filter(f -> org.triplehelix.wpilogmcp.store.CaptureRecording.of(f.file().provenance(), origin).isPresent())
+        .filter(f -> reference.originalName().equals(f.file().provenance().originalName())
+            && reference.recordingStartedAt().equals(f.file().provenance().importedAt())).toList();
+    if (anchors.size() != 1) throw new IOException("SOURCE_UNAVAILABLE: recording anchor is missing or ambiguous");
+    var anchor = anchors.get(0);
+    var identity = org.triplehelix.wpilogmcp.store.CaptureRecording.of(anchor.file().provenance(), origin).orElseThrow();
+    var members = files.stream().filter(f -> "wpilog".equals(f.file().kind()))
+        .filter(f -> org.triplehelix.wpilogmcp.store.CaptureRecording.same(f.file().provenance(), anchor.file().provenance(), origin))
+        .sorted(java.util.Comparator.comparing(f -> f.file().provenance().originalName()))
+        .map(f -> new StoreFile(selected.header().id(), selected.root(), f)).toList();
+    if (members.stream().map(f -> f.facts().file().provenance().originalName()).distinct().count() != members.size())
+      throw new IOException("SOURCE_UNAVAILABLE: duplicate original member names in this recording");
+    if (!members.stream().map(f -> f.facts().file().sha256()).collect(java.util.stream.Collectors.toSet()).containsAll(reference.finalizedHashes()))
+      throw new IOException("HISTORY_UNAVAILABLE: finalized member evidence no longer belongs to the anchored recording");
+    for (var member : members) security.validate(member.facts().path());
+    return new Recording(reference, identity, members, members.stream().noneMatch(f -> open(f.facts())));
+  }
+  public static boolean open(StoreCatalog.StoredFile file) {
+    return file.session() != null && file.session().openCapture() != null
+        && file.session().openCapture().path().equals(file.file().path());
+  }
+
   /** The native reader owns one mapped prefix; the catalog does not open another mapping. */
   public ReadSnapshot openWpilog(Path path) throws IOException {
     var member = requireMember(path);
@@ -228,11 +274,22 @@ public final class StoreReadCatalog implements AutoCloseable {
     java.util.Objects.requireNonNull(overlap);
     var store = snapshot().stores().stream().filter(s -> s.header().id().equals(storeId)).findFirst()
         .orElseThrow(() -> new IOException("Unknown store " + storeId));
-    var files = store.allFiles().stream().filter(f -> f.session() != null && f.session().id().equals(sessionId)).toList();
+    var matches = store.sessions().stream().filter(s -> s.session().names(sessionId)).toList();
+    if (matches.size() != 1) throw new IOException("The session id must name one canonical session or merge alias");
+    var selected = matches.get(0);
+    var files = store.allFiles().stream().filter(f -> f.manifestPath().equals(selected.path().resolve("session.json"))).toList();
     String collectingStore = store.header().mirror() && store.header().origin() != null
         ? store.header().origin().storeId() : storeId;
     var anchors = files.stream().filter(f -> f.file().kind().equals("wpilog") && f.file().path().equals(anchorPath)).toList();
     if (anchors.size() != 1) throw new IOException("The store/session/anchor must name one manifested WPILOG");
+    // The old id must not broaden to another recording merely because a merge placed it
+    // beside this one. Ordinary canonical session unions still honor recorded alignment.
+    if (!selected.session().id().equals(sessionId)) {
+      var anchor = anchors.get(0);
+      files = files.stream().filter(f -> org.triplehelix.wpilogmcp.store.CaptureRecording.same(
+          f.file().provenance(), anchor.file().provenance(), collectingStore)).toList();
+      if (files.isEmpty()) throw new IOException("The merge alias has no proven captured recording at the requested anchor");
+    }
     // A cold scan runs outside every monitor, but only one may allocate an as-yet uncharged
     // index per catalog. Reject concurrent admissions rather than queueing HTTP workers.
     if (!openingSession.compareAndSet(false, true))

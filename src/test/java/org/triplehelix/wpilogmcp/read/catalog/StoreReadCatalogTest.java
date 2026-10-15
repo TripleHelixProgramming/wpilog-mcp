@@ -27,6 +27,32 @@ class StoreReadCatalogTest {
   @TempDir Path temp;
   private static final String WHEN = "2026-01-01T00:00:00Z";
 
+  @Test void aMergedIdResolvesOnlyTheAnchorsRecordingAndLostAliasesRefuse() throws Exception {
+    var fixture = fixture("alias", false);
+    var captured = new Provenance("captured", null, "capture.wpilog", WHEN, false);
+    var original = file(fixture.anchor(), "wpilog", captured, null);
+    var other = fixture.session().resolve("other.wpilog");
+    try (var writer = new WpilogWriter(other, "")) {
+      int id = writer.start("counter", "int64", "{}", 0);
+      writer.append(id, 1_000_001, WpilogWriter.encodeInt64(999));
+    }
+    var anotherBoot = file(other, "wpilog", new Provenance("captured", null, "other.wpilog",
+        "2026-01-01T00:00:01Z", false), new Matching("by_correlation", original.sha256(), 0, 1, 0, 0, "data"));
+    var manifest = StoreJson.JSON.toJsonTree(fixture.manifest().withFiles(List.of(original, anotherBoot))).getAsJsonObject();
+    manifest.add("merged_session_ids", StoreJson.JSON.toJsonTree(List.of("old-id")));
+    write(fixture.session().resolve("session.json"), manifest);
+    try (var catalog = new StoreReadCatalog(List.of(fixture.root()))) {
+      try (var read = catalog.openSession("store-alias", "old-id", "capture.wpilog", SessionSnapshot.Overlap.KEEP_ALL);
+           var cursor = read.read(ReadQuery.all("counter"))) {
+        assertEquals(List.of(42L), cursor.next().samples().stream().map(s -> s.value()).toList(),
+            "Even measured alignment cannot broaden an old recording reference after a merge");
+        assertEquals(1, read.sources().size());
+      }
+      manifest.remove("merged_session_ids"); write(fixture.session().resolve("session.json"), manifest);
+      assertThrows(IOException.class, () -> catalog.openSession("store-alias", "old-id", "capture.wpilog", SessionSnapshot.Overlap.KEEP_ALL));
+    }
+  }
+
   @Test void recordedViewResolvesExactOriginAndContentAcrossServingLocations() throws Exception {
     var fixture = fixture("view-mirror", true);
     try (var catalog = new StoreReadCatalog(List.of(fixture.root()))) {
@@ -35,6 +61,57 @@ class StoreReadCatalogTest {
       assertEquals(fixture.anchor(), resolved.facts().path());
       assertThrows(IOException.class, () -> catalog.resolveContent("store-view-mirror", fixture.anchorFile().sha256()), "serving store identity is not the origin");
       assertThrows(IOException.class, () -> catalog.resolveContent("origin-id", "0".repeat(64)), "similar names cannot substitute other content");
+    }
+  }
+
+  @Test void durableRecordingReferencesUseProvenanceAndCanRecoverOnlyKnownHashes() throws Exception {
+    var fixture = fixture("durable", false);
+    var first = file(fixture.anchor(), "wpilog", new Provenance("captured", null, "capture.wpilog", WHEN, false), null);
+    var later = fixture.session().resolve("capture-2.wpilog");
+    try (var writer = new WpilogWriter(later, "rollover")) {
+      int id = writer.start("counter", "int64", "{}", 0); writer.append(id, 3_000_000, WpilogWriter.encodeInt64(84));
+    }
+    var rollover = file(later, "wpilog", new Provenance("captured", null, "capture-2.wpilog", WHEN, false), null);
+    var peerPath = fixture.session().resolve("peer.wpilog"); Files.copy(later, peerPath);
+    var peer = file(peerPath, "wpilog", new Provenance("captured", null, "peer.wpilog", WHEN, false, null,
+        List.of(new PeerCopy("another-collector", "http://fixture.invalid", WHEN))), null);
+    var json = StoreJson.JSON.toJsonTree(fixture.manifest().withFiles(List.of(first, rollover, peer))).getAsJsonObject();
+    json.add("merged_session_ids", StoreJson.JSON.toJsonTree(List.of("old-id")));
+    write(fixture.session().resolve("session.json"), json);
+    var ref = new RecordingReference("store-durable", "old-id", "capture.wpilog", WHEN, List.of());
+    try (var catalog = new StoreReadCatalog(List.of(fixture.root()))) {
+      var recording = catalog.recording(ref);
+      assertTrue(recording.finalized());
+      assertEquals(java.util.Set.of(fixture.anchor(), later), recording.members().stream().map(f -> f.facts().path()).collect(java.util.stream.Collectors.toSet()));
+      assertEquals("store-durable", recording.identity().collectingStoreId());
+      var open = new OpenCapture(rollover.path(), rollover.provenance(), rollover.sizeBytes(), 3, 3);
+      json.add("open_capture", StoreJson.JSON.toJsonTree(open));
+      json.add("files", StoreJson.JSON.toJsonTree(List.of(first, peer)));
+      write(fixture.session().resolve("session.json"), json);
+      assertFalse(catalog.recording(ref).finalized(), "A rollover that is still open is part of this recording");
+      json.add("open_capture", com.google.gson.JsonNull.INSTANCE);
+      json.add("files", StoreJson.JSON.toJsonTree(List.of(first, rollover)));
+      json.remove("merged_session_ids"); write(fixture.session().resolve("session.json"), json);
+      assertTrue(assertThrows(IOException.class, () -> catalog.recording(ref)).getMessage().contains("SOURCE_UNAVAILABLE"));
+      var finalRef = new RecordingReference(ref.originStoreId(), ref.sessionId(), ref.originalName(), WHEN, List.of(first.sha256(), rollover.sha256()));
+      assertEquals(2, catalog.recording(finalRef).members().size());
+      assertEquals(1, catalog.recording(new RecordingReference(ref.originStoreId(), ref.sessionId(), ref.originalName(), WHEN,
+          List.of(first.sha256()))).members().size(), "Hash recovery cannot discover unproven additional members after alias loss");
+      var wrong = new RecordingReference(ref.originStoreId(), ref.sessionId(), ref.originalName(), WHEN, List.of(first.sha256(), "0".repeat(64)));
+      assertTrue(assertThrows(IOException.class, () -> catalog.recording(wrong)).getMessage().contains("HISTORY_UNAVAILABLE"));
+      assertThrows(IOException.class, () -> catalog.recording(new RecordingReference("unconfigured", ref.sessionId(), ref.originalName(), WHEN, List.of(first.sha256()))));
+    }
+  }
+
+  @Test void aDurableRecordingRefusesAmbiguousAnchorsEvenWithIdenticalBytes() throws Exception {
+    var fixture = fixture("ambiguous", false);
+    var provenance = new Provenance("captured", null, "capture.wpilog", WHEN, false);
+    var other = fixture.session().resolve("peer.wpilog"); Files.copy(fixture.anchor(), other);
+    write(fixture.session().resolve("session.json"), fixture.manifest().withFiles(List.of(
+        file(fixture.anchor(), "wpilog", provenance, null), file(other, "wpilog", provenance, null))));
+    try (var catalog = new StoreReadCatalog(List.of(fixture.root()))) {
+      assertTrue(assertThrows(IOException.class, () -> catalog.recording(new RecordingReference(
+          "store-ambiguous", "session-id", "capture.wpilog", WHEN, List.of()))).getMessage().contains("ambiguous"));
     }
   }
 

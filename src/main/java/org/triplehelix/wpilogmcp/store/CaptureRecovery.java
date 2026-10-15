@@ -59,12 +59,12 @@ final class CaptureRecovery {
         var files = new ArrayList<>(session.files());
         files.removeIf(f -> f.path().equals(open.path()));
         files.add(new LogFile(open.path(), hash, size, "wpilog",
-            new Provenance(Provenance.CAPTURED, null, file.getFileName().toString(), session.startedAt(), false),
+            open.provenance(),
             true, scan.minTimestamp(), scan.maxTimestamp(), session.startedAt(), ended,
             session.startBasis(), scan.truncated(), null));
         io.write(manifest, new Session(session.id(), session.startedAt(), ended, session.startBasis(),
             session.event(), session.matchType(), session.matchNumber(), session.teamNumber(),
-            java.util.List.copyOf(files), null, STOPPED, session.deviceIdentity(), session.identityConflicts(), session.conflicts(), null, session.systemLogs()));
+            java.util.List.copyOf(files), null, STOPPED, session.deviceIdentity(), session.identityConflicts(), session.conflicts(), null, session.systemLogs(), session.mergedSessionIds()));
         LoggerFactory.getLogger(CaptureRecovery.class).info("Recovered capture {}: {}", file, STOPPED);
       }
     } catch (IOException | RuntimeException e) {
@@ -72,7 +72,7 @@ final class CaptureRecovery {
       LoggerFactory.getLogger(CaptureRecovery.class).error("Capture {}: {}", manifest, reason);
       io.write(manifest, new Session(session.id(), session.startedAt(), session.endedAt(), session.startBasis(),
           session.event(), session.matchType(), session.matchNumber(), session.teamNumber(),
-          session.files(), open, reason, session.deviceIdentity(), session.identityConflicts(), session.conflicts(), null, session.systemLogs()));
+          session.files(), open, reason, session.deviceIdentity(), session.identityConflicts(), session.conflicts(), null, session.systemLogs(), session.mergedSessionIds()));
     }
   }
 }
