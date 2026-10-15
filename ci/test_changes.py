@@ -17,6 +17,16 @@ class ChangesTest(unittest.TestCase):
         self.assertTrue(flags(['src/main/java/org/triplehelix/wpilogmcp/mcp/ClientLeases.java'])['extension'])
         self.assertFalse(flags(['doc/TOOLS.md'])['extension'])
 
+    def test_follow_broker_owners_trigger_the_real_transport_check(self):
+        for path in ('build.gradle',
+                     'src/main/java/org/triplehelix/wpilogmcp/read/server/OrdinalFollow.java',
+                     'src/main/java/org/triplehelix/wpilogmcp/read/internal/ReadWire.java',
+                     'src/main/java/org/triplehelix/wpilogmcp/capture/CaptureWriter.java',
+                     'src/main/java/org/triplehelix/wpilogmcp/capture/CaptureIndex.java',
+                     'src/test/java/org/triplehelix/wpilogmcp/fixtures/FollowBrokerFixture.java'):
+            with self.subTest(path=path):
+                self.assertTrue(flags([path])['extension'], path)
+
     def test_daemon_and_installer_fixes_recheck_the_editors_without_replaying_capture(self):
         for path in ('src/main/java/org/triplehelix/wpilogmcp/Main.java',
                      'src/main/java/org/triplehelix/wpilogmcp/config/DaemonManager.java',

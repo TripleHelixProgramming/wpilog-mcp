@@ -99,6 +99,10 @@ jobs:
           npm ci
           npm test
 
+      - name: Check shared follow broker against the real server
+        if: needs.changes.outputs.extension == 'true'
+        run: ./gradlew followBrokerTest
+
       - name: Upload Arrow samples
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4

@@ -543,6 +543,18 @@ tasks.register('extensionSmokeFixture', JavaExec) {
     args file('build/extension-smoke/fixture/smoke.wpilog').absolutePath
 }
 
+// No editor or robot is needed: the Node broker drives a synthetic writer and the real HTTP routes.
+tasks.register('followBrokerTest', Exec) {
+    dependsOn 'testClasses', 'compileExtension'
+    workingDir file('vscode-extension')
+    doFirst {
+        environment 'WPILOG_FOLLOW_CLASSPATH', sourceSets.test.runtimeClasspath.asPath
+        environment 'WPILOG_FOLLOW_JAVA', new File(System.getProperty('java.home'),
+            System.getProperty('os.name').toLowerCase().startsWith('windows') ? 'bin/java.exe' : 'bin/java').absolutePath
+        commandLine extensionCompilerCommand()[0], '--test', 'out/test/liveBrokerReal.test.js'
+    }
+}
+
 // ==================== Build VS Code Extension ====================
 // Builds the shadow JAR, bundles it into the extension, compiles the extension,
 // and packages it as a VSIX. Does NOT install it.

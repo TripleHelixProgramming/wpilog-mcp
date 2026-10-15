@@ -82,7 +82,7 @@ Checks should cost what they prove:
 |---|---|
 | Each item while editing | Targeted `./gradlew test --tests '*RelevantTest'`; plant the bug and see that check fail. |
 | End of a round, after the last change | One `env -u LANG -u LC_ALL ./gradlew build`. CI supplies Windows; report without waiting for it to start. |
-| A file under `vscode-extension/` changed | `npm test` there. Run `npm ci` only when dependencies/lockfile changed or the install is absent. CI also runs Node/editor checks for changes to Main, `config/`, installers and `mcp/`, since its real-JAR tests exercise daemon ownership, installation and leases. |
+| A file under `vscode-extension/` changed | `npm test` there. Run `npm ci` only when dependencies/lockfile changed or the install is absent. CI also runs Node/editor checks for changes to Main, `config/`, installers and `mcp/`, since its real-JAR tests exercise daemon ownership, installation and leases. The broker fixture also runs for reader, capture writer/index, its Java fixture and build wiring changes. |
 | Capture, pull, NT4 or harness code changed | One `harness/run` after those changes; use `-PconformanceNative=none` if none of the native-triggering surfaces below changed. |
 | NT4 client, gateway, capture writer, replayer or harness changed | Native replay with `-PconformanceNative=sample`, in that same harness run; zero shift only. |
 | Writer output, replayer output or matching changed | Stratified Java real-log sample with `-PconformanceLogDir=/path/to/logs`. A harness pacing-only change does not trigger it. |
@@ -445,6 +445,27 @@ guard covers both telemetry and system-text copy constructors. These checks also
 `*CaptureStoreTest`; capture changes run the available shop harness with native replay selection.
 These suites do not establish authenticated remote visualization, an editor live workflow,
 native Linux/Windows execution or the declared performance workloads.
+
+### Visualization follow broker checkpoint
+
+Run `./gradlew followBrokerTest` after installing the extension dependencies. It compiles the
+extension and test classes, then runs `liveBrokerReal.test.ts` against a child JVM containing the
+real `CaptureWriter`, index and `HttpTransport`. `-PnodeExecutable=/path/to/node` uses the same
+lookup as `compileExtension`. The task supplies the JDK and test classpath; ordinary `npm test`
+explicitly skips this one integration case when that classpath is absent. CI runs the task on both
+Linux and Windows when extension/broker dependencies change. No editor, robot or user store is used.
+
+The driver checks exact tagged values, signed zero, physical ordinals and duplicate/backward
+timestamps; appends during a blocked bootstrap, byte-identical lost-response replay, metadata-only
+publication, an oversized raw-record gap, server restart and a final hash/drain. It also follows
+4,096 records of 19-element double arrays at the default 4 MiB page size, independently checking
+all 77,824 floating-point bit patterns. That full server page exceeds the unreleased broker's old
+262,144-node ceiling. The protocol regression admits the same-sized synthetic page and checks
+the byte-derived traversal bound, negotiated-budget propagation and the separate depth limit. Pure Node broker
+checks cover union/refcounts, consumer deadlines, generation rejection, terminal/expiry states,
+byte admission and exact retry cursors. HTTP tests cover cancellation (including credential lookup),
+response limits, proxy authentication/refusals and origin confinement. This checkpoint does not
+exercise a live editor or establish the combined decoded display budget or performance gate.
 
 ### Visualization recorded preview
 

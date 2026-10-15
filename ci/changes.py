@@ -25,8 +25,12 @@ def flags(files):
     workflow = '.github/workflows/ci.yml' in files
     selected = dict(
         extension=any(p.startswith(('vscode-extension/', 'src/main/java/org/triplehelix/wpilogmcp/mcp/',
+            'src/main/java/org/triplehelix/wpilogmcp/read/',
             'src/main/java/org/triplehelix/wpilogmcp/config/', 'src/main/resources/install/'))
             or p in ('src/main/java/org/triplehelix/wpilogmcp/Main.java', 'install.sh', 'install.ps1',
+                'build.gradle', 'src/main/java/org/triplehelix/wpilogmcp/capture/CaptureWriter.java',
+                'src/main/java/org/triplehelix/wpilogmcp/capture/CaptureIndex.java',
+                'src/test/java/org/triplehelix/wpilogmcp/fixtures/FollowBrokerFixture.java',
                 'ci/changes.py', 'ci/test_changes.py') for p in files),
         harness=any(p.startswith(('harness/', 'src/main/java/org/triplehelix/wpilogmcp/capture/',
             'src/main/java/org/triplehelix/wpilogmcp/nt4/', 'src/main/java/org/triplehelix/wpilogmcp/sync/',

@@ -497,7 +497,7 @@ identity/history refusal. The first-gate review is settled in the engine: oversi
 produce explicit ordinal gaps, frontiers travel once per prefix, and pages pack several entries
 under global limits. The server integration now provides session merge aliases and anchored
 membership, native follow routes, lease expiry, dedicated long polling, exact retry admission,
-final hashes and idle mapping release. Configured remote routing, the shared window broker,
+final hashes and idle mapping release. The shared broker core now has real-server coverage; configured remote routing and
 automatic panel updates, display/clock states, histogram/scatter and latency instrumentation
 remain to be integrated and validated. The decoded-buffer setting (64 MiB default), aggregate
 recorded/live budgets, remote admission and large-log/live performance gates remain Stage 3.
@@ -515,17 +515,28 @@ admitted tools before closing the workspace. If workspace startup fails, preview
 unavailable and this stream stays ping-only until restart; runtime workspace recovery remains
 deferred. The internal engine still opens a prefix after every completed non-finalized frontier;
 the production source/publication waiter now avoids repeated disk scans during unchanged idle polls.
-The server integration review's four pre-broker contracts have passed review and remain uncommitted:
+The server integration review's four pre-broker contracts and small-page refinement are committed in `6a0524f`:
 terminal pages and retained 410 acknowledgements, typed retryable byte-budget refusals, persisted
 writer-incarnation proof through finalization, and acknowledged round-robin entry/field turns.
 The small-page follow-up keeps packing after a byte deferral and gives the first deferred
 selection the next page's first turn; the broker need not avoid small pages to prevent that
 selection losing its space on every request.
-Lease admission still does not reserve encoded bytes, so the future broker must back off on
-`retryable: true`, release unnecessary consumers and retry the submitted cursor. It must stop
-polling and DELETE after consuming an `ended` page. Legacy missing writer proof at finalization
+Lease admission still does not reserve encoded bytes. The broker now backs off on
+`retryable: true` and retries the submitted cursor; it stops polling and DELETEs after consuming
+an `ended` page. It has no history cache: a joining consumer resets its peers' stream and reboots
+the same source/window, while removing one retains the query superset until the next reset.
+Evaluate a bounded shared history cache only with the display-budget/performance gate. Legacy missing writer proof at finalization
 requires explicit rebootstrap. The body reader now classifies both malformed JSON and oversized
-requests before source work. Shared broker and end-to-end live UI validation remain outstanding.
+requests before source work. The broker core checkpoint is implemented; live UI wiring, the decoded-buffer setting and
+aggregate recorded/live/webview accounting remain outstanding, explicitly within Stage 3.
+
+The broker array-limit fix's validation exposed a separate unresolved transport failure:
+`FollowEndpointTest.oversizedFollowBodiesAreStructuralRefusalsAndLeaveTheRetryPageIntact`
+lost the HTTP response with `Broken pipe` in both the full Java suite and an isolated endpoint-suite
+rerun. The Java route and test were unchanged. Investigate oversized-request response delivery;
+do not count the successful array regression as a green full build. Evidence is in
+`/private/tmp/wpilog-visualization-stage3-broker-array-limit/validation.md`.
+
 Five minor review follow-ups remain:
 
 - Replace the resolver enum exception for an unknown role with a public vocabulary hint.

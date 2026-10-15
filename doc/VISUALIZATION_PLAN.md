@@ -3,9 +3,9 @@
 Status: Stage 1 committed as `632b492`; accepted Stage 2a committed as `c6436d6` after owner
 authorization. Accepted Stage 2b and its fixes are committed as `2fb2376`, and the Stage 3
 first gate and review refinements as `719f163`. The accepted Stage 3 server integration checkpoint
-is committed as `182cb00`. Its four pre-broker contract refinements have passed review and remain
-uncommitted. The small-page deferral follow-up is implemented locally for review, with evidence
-and remaining live workflow work recorded below. Close cancellation
+is committed as `182cb00`. Its four pre-broker contract refinements and the small-page deferral
+follow-up are committed as `6a0524f`. The next checkpoint is the shared extension follow broker,
+before live panel integration, with scope and evidence recorded below. Close cancellation
 remains unverified on the manual dialog, Linux/Windows native runs are outstanding, and Save As
 uses the specified refusal fallback. No publication or version change is part of this work.
 
@@ -376,8 +376,8 @@ Valid cursors support exact catch-up. After 60 seconds idle expiry or a server r
 Finalization drains final counts, resolves final locations/hashes, and changes source status to recorded while retaining the view and inspected interval. Session alias resolution preserves the anchored recording membership. New boots or unproved clock continuity require explicit selection of another source.
 
 The server integration review added four **pre-broker requirements**. The owner authorized this
-follow-up; the server portions below are now implemented locally. Broker behavior remains the
-next integration work, separate from these native-route contracts:
+follow-up; the server portions below are committed as `6a0524f`. The shared broker checkpoint
+below implements the client portions; live editor integration remains separate:
 
 - **Terminal acknowledgement:** every page carries `ended`, true only when that page completes
   a finalized frontier. The terminal data page remains byte-identically retryable until
@@ -426,9 +426,9 @@ Display behavior:
 - Source health distinguishes acquisition, transport heartbeat, publication age, and history availability.
 - Late records invalidate affected visible reductions; update bounded data frames without rebuilding layouts or rereading the complete recording.
 
-Hidden views stop rendering and their data work. Release decoded buffers after 30 seconds hidden; reveal reboots the requested interval. Apply one configurable aggregate decoded-data budget per VS Code window to recorded and live sources, counting broker caches and per-webview copies. The `wpilog-mcp.visualization.decodedBufferMiB` setting defaults to **64 MiB** and accepts integers from 16 to 1024 MiB. Raising it permits longer exact recorded series at greater memory cost; lowering it requests reductions sooner. Capabilities report the default and range, plus each attached window's effective `decoded_buffer_budget_bytes`; never report a caller-supplied value as the server's own allocation. Stage 3 implements and validates this setting with the broker. Request server reduction or bounded paging before admission would exceed that budget; do not load millions of recorded samples per series. Publish the budget and table/page limits through capabilities. Bound encoded-response caches separately to 64 MiB in the new visualization broker rather than retaining the old 256 MiB default alongside unlimited decoded copies.
+Hidden views stop rendering and their data work. Release decoded buffers after 30 seconds hidden; reveal reboots the requested interval. Apply one configurable aggregate decoded-data budget per VS Code window to recorded and live sources, counting any decoded broker caches and per-webview copies. The `wpilog-mcp.visualization.decodedBufferMiB` setting defaults to **64 MiB** and accepts integers from 16 to 1024 MiB. Raising it permits longer exact recorded series at greater memory cost; lowering it requests reductions sooner. Capabilities report the default and range, plus each attached window's effective `decoded_buffer_budget_bytes`; never report a caller-supplied value as the server's own allocation. Stage 3 implements and validates this setting with the broker. Request server reduction or bounded paging before admission would exceed that budget; do not load millions of recorded samples per series. Publish the budget and table/page limits through capabilities. Bound encoded acquisition separately to 64 MiB in the new visualization broker. The current core reserves two page limits per active job and retains no history cache. Any later encoded history cache must share that budget with in-flight responses and retained frontiers; a cache is not an additional 64 MiB allowance. Review 5 leaves the sharing behavior for the live workflow gate as an explicit product decision, described below.
 
-Add an `AbortSignal`/owned HTTP request handle to data and follow requests. Closing/hiding a view or replacing its query destroys that request only when its last consumer detaches, and closes its follow lease. Server cancellation closes admitted cursors, removes follow waiters, and releases snapshots on disconnect, lease closure, or deadline. Disconnection is detected at response writes and cursor batch boundaries, so cancellation is bounded and cooperative, not instantaneous. The current DataClient has timeout destruction but no public cancellation signal; this is new integration work. Last-view closure never stops acquisition. Every response also carries view generation, configuration revision, and query identity as a final stale-response guard. See [data request lifecycle](../vscode-extension/src/dataClient.ts#L134) and [read cursor cleanup](../src/main/java/org/triplehelix/wpilogmcp/mcp/ReadEndpoint.java#L240).
+Add an `AbortSignal`/owned HTTP request handle to data and follow requests. Closing/hiding a view or replacing its query destroys that request only when its last consumer detaches, and closes its follow lease. Server cancellation closes admitted cursors, removes follow waiters, and releases snapshots on disconnect, lease closure, or deadline. Disconnection is detected at response writes and cursor batch boundaries, so cancellation is bounded and cooperative, not instantaneous. The recorded DataClient already supports cancellation; the native follow adapter now supplies the same owned lifecycle. Last-view closure never stops acquisition. Every response also carries view generation, configuration revision, and query identity as a final stale-response guard. See [data request lifecycle](../vscode-extension/src/dataClient.ts#L134) and [read cursor cleanup](../src/main/java/org/triplehelix/wpilogmcp/mcp/ReadEndpoint.java#L240).
 
 ### Restoration and unavailable dependencies
 
@@ -1133,3 +1133,76 @@ bounded lookahead and every value, timestamp and ordinal through completion. Fai
 tests, plants and final verification are recorded under
 `/private/tmp/wpilog-visualization-stage3-deferral/validation.md`. The broker remains the next
 Stage 3 checkpoint; this follow-up changes no extension behavior.
+
+
+### Stage 3 shared broker checkpoint (2026-10-15)
+
+The next checkpoint is the extension acquisition core, before live panel wiring. `LiveBroker`
+is window/server scoped and unions entry/field demands for identical anchored sources and bootstrap
+windows. Different historical windows retain separate follows. A joining consumer triggers an
+explicit shared reset because the core stores no history cache. Existing view configurations and
+interactive state are independent; consumers clear only their data generation. Departing consumers
+leave the current query superset until the next reset; last departure aborts and DELETEs.
+
+One immutable page is borrowed by all interested consumers. The broker acknowledges only after
+they finish; a failure or five-second deadline removes that consumer with a reason. It carries
+view/generation/revision/query guards, retains frontier metadata between pages and preserves native
+tagged values and ordinal problems. A 204 does not end a stream; a terminal page does. Network and
+typed budget retries keep the submitted cursor. Expiry or an orderly server shutdown reports a
+reset and bootstraps the same recording/window. History/access/structural refusals stop explicitly.
+
+The adapter caps each response before parsing, refuses redirects, borrows the origin-scoped
+credential provider and cancels both sockets and pending credential reads. Admission caps 32 jobs,
+256 consumers and 256 union selections per job. A 64 MiB reservation covers two page limits per
+active job, with 4 MiB default pages. Traversal counts nodes, including primitives, up to the
+negotiated page byte budget, with a separate 96-level depth limit; there is no history cache.
+This is not a claim that the window's decoded display memory is already bounded. The setting,
+capabilities reporting, recorded/live/webview accounting and hidden-view expiry will be integrated
+with live panels in the next checkpoint, still within Stage 3. No preview behavior changes here.
+
+Validation is recorded in `/private/tmp/wpilog-visualization-stage3-broker/validation.md`.
+`followBrokerTest` drives the TypeScript core against an actual writer/index/HTTP server using
+synthetic data. Ordinary Node checks cover protocol, refcounts, retries, stale delivery and resource
+admission. The CI task runs on both platforms; this machine supplies only macOS evidence. Remote
+editor routing, live clock/display semantics, histogram/scatter, latency instrumentation and full
+Stage 3 workload gates remain outstanding. No commit or publication of this checkpoint is implied.
+
+Review finding 1 exposed an incompatible traversal bound in the unreleased broker: a full page
+of 19-element arrays fits the server's byte limit but exceeds the client's fixed 262,144-node
+ceiling. The bound now follows the negotiated page byte budget, since each JSON node needs at
+least one encoded byte. Both a 4,096-record synthetic page and a real capture/server page failed
+first with `INVALID_RESPONSE`; the fixed broker consumes all 77,824 array elements unchanged.
+The depth and HTTP byte limits remain enforced. Fix-round evidence and plants are recorded in
+`/private/tmp/wpilog-visualization-stage3-broker-array-limit/validation.md`. This fixes finding 1
+only; the review's shared-reset/history-cache design decision remains for the live integration.
+The full Java build is not green in this fix round: an unchanged oversized-request endpoint test
+lost its HTTP response in both the full suite and an isolated rerun. That separate failure is
+recorded in [IDEAS.md](IDEAS.md); the array regression and real-server broker workflow pass.
+
+### Stage 3 review 5: sharing behavior decision (2026-10-15)
+
+Finding 1 is fixed as recorded above. Finding 2 distinguishes the current acquisition-core
+checkpoint from the behavior still to choose for live panels. Today, joining an active job or
+refreshing a subscription resets every consumer of the same anchored source and windows. Reveal
+would have that effect too when it re-subscribes. The core retains no bootstrap history; its
+64 MiB encoded limit is a reservation, not a cache. The earlier resource paragraph now agrees.
+
+The recommendation awaiting the owner's choice is that opening, refreshing or revealing one view
+leave other views' displayed samples, history interval and follow progress uninterrupted. If chosen,
+bootstrap work and any history retained to support that behavior must fit the existing window
+budget and server lease limits; an admission failure must affect the requesting view only. The
+concrete design must cover both an already-carried selection and a newly requested entry or field,
+plus a window larger than any bounded cache. A private bootstrap or cache hit alone is not a proof
+of seamless handoff: the gate must check ordinal gaps and duplicates, metadata, finalization,
+consumer cancellation and replacement of the server while joining.
+
+Keeping shared resets for the initial live preview is the other product choice. If selected, the
+live UI and gate must explicitly describe and exercise clearing/refilling peers on join, refresh
+and reveal. No choice is inferred from the core's implementation, and no behavioral change is made
+by this plan correction. The panel page size remains to be settled with the resource measurements;
+4 MiB is the tested core default and 64 KiB remains covered by the continuation fixture.
+
+The review's six notes require no immediate changes. Linux/Windows CI execution, native live-panel
+behavior, real proxy credentials, the real-webview deadline and performance measurements remain
+unverified as the review states. The separate oversized-request HTTP failure discovered during
+the array fix remains open and prevents claiming a green full Java build.

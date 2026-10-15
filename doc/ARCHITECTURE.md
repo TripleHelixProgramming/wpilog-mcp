@@ -903,7 +903,7 @@ Bundled GridStack owns layout presentation; server configuration remains authori
 preview requests at most 4,096 plot points and 32 series per view, sequentially, with a 1 MiB
 encoded-response cap and no host response cache. Each renderer retains only its current query's
 series and values across presentation edits. The configurable aggregate decoded budget and shared
-live broker remain Stage 3; this preview makes no one-hour live or 1 GiB performance claim.
+live display integration remain Stage 3; this preview makes no one-hour live or 1 GiB performance claim.
 
 The first Stage 3 gate adds `read/server/OrdinalFollow`, a continuation engine over
 the existing `ReadSnapshot` and `SampleCursors`, now exposed through native HTTP follow leases.
@@ -984,9 +984,45 @@ remains retryable until acknowledged. Acknowledgement releases prefixes, proofs 
 the bounded lease retains only the terminal cursor outcome and admission context until DELETE
 or expiry. Repeating that cursor returns 410 `FOLLOW_ENDED`, without opening a prefix or waiting.
 The client stops polling and DELETEs after consuming the terminal page.
-These checks establish the server integration boundary. Configured remote visualization routing,
-the shared window broker, live editor/clock states, and measured display/resource workloads remain
-Stage 3 work. The native routes do not make the recorded editor live.
+The extension's `visualization/LiveBroker` is the next tested boundary. A window supplies one
+broker per server/credential context. Within it, an anchored SourceRef and identical historical
+windows own one follow; entry/field requirements are unioned and identical selections deduplicated.
+Different bootstrap windows remain separate jobs: the broker never invents a time projection.
+Joining an active job or explicitly refreshing resets every consumer's data generation and
+rebootstraps that same source. This trades a history cache for a bounded stream; opening another
+view can reread its peers' bootstrap window, without changing their independent view configuration.
+Removing a consumer keeps the existing query superset until the next reset, avoiding a restart
+for remaining consumers. Removing the last aborts next and DELETEs the lease.
+
+`FollowClient` borrows the existing origin-scoped credential provider. It never follows redirects
+or accepts credentials embedded in URLs. Responses are byte-capped before JSON parsing; tagged
+integers, floating-point bits, timestamps, ordinals and diagnosed gaps remain in the server's native
+representation. `followProtocol` validates identity, selection, work bounds and metadata presence
+before any delivery, then freezes the shared frame. A page carries each consumer's captured view
+UUID, generation, configuration revision and query identity. A stale consumer receives no callback.
+No client decoder, timestamp deduplication, statistical reduction or robot connection is added.
+
+There is at most one request and one borrowed page per job. All current consumers must finish
+before the next cursor acknowledges the page. A failed consumer, or one exceeding five seconds,
+is detached with an explicit error; another consumer can continue. Consumers must release borrowed
+frames when their callback resolves and clear their own buffers on reset. Retries use the submitted
+cursor, with exponential jittered backoff (250 ms base, 10 s ceiling). A 204 is only a wait timeout;
+413 retries only when `retryable` is true. Closed/expired leases explicitly reset the same anchored
+source and windows. History and access refusals stop with their code. A terminal page is consumed,
+then DELETEd without another poll. Cleanup has a two-second deadline; lost DELETEs fall back to the
+server's 60-second idle expiry. Cancellation also interrupts a stalled credential lookup.
+
+Admission limits each broker to 32 source/window jobs and 256 consumers, with at most 256 unioned
+entry/field selections per job. Its 64 MiB encoded reservation covers two page limits per active
+job (default 4 MiB per page: at most eight active jobs); finished jobs release the reservation.
+There is no encoded history cache or per-consumer frame copy. Parsed frames limit traversal to
+the negotiated page byte budget in nodes, counting primitives, and 96 levels of nesting. Every JSON
+node requires at least one encoded byte, so the traversal bound admits every byte-bounded page
+within that depth, including full pages of tagged arrays. These are acquisition bounds, **not** an aggregate JavaScript heap or display
+budget. Configured remote visualization routing, live editor/clock states, the decoded-buffer
+setting and accounting for recorded buffers/webview copies, and measured display/resource workloads
+remain Stage 3 work. The broker is exercised through the real server fixture and is not yet wired
+into the recorded editor.
 
 
 ## Known Limits
