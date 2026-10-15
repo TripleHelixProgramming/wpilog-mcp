@@ -706,6 +706,10 @@ view UUID and revision. They contain no samples/configurations. Only negotiated 
 watching that view or owning its attachment receive them. GET `/mcp` carries SSE `id:` values;
 reconnect with `Last-Event-ID`. A ring holds at most 256 events or 1 MiB per session. Expired
 replay or an epoch mismatch returns `resync_required`, so clients reread/reattach current views.
+If optional visualization state cannot initialize, ordinary SSE heartbeats remain available;
+preview routes remain unavailable and the stream stays ping-only until the server is restarted.
+Streams use the already-open notification owner; shutdown drains streams and admitted calls
+before closing that workspace.
 Explorer reinitializes and re-registers its grants after session replacement, with bounded
 reconnection backoff. `connect` reconnects a dropped stream with replay IDs; an expired session
 still needs the bridge's existing new-initialize/restart remedy. Direct stdio serializes control

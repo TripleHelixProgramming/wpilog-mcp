@@ -65,6 +65,13 @@ entry's time-order index uses a bounded shared workspace; use file order when th
 would exceed the configured budget. `validate(entry)` explicitly scans every record of that
 entry; narrow native queries report only failures among the records they select.
 
+`withRecordLimit(bytes, ReadQuery.LimitAction.PROBLEM)` explicitly lowers the per-record payload
+ceiling and returns `RESOURCE_LIMIT` problems at physical offsets instead of failing the cursor.
+Oversized records count as visited and their header sizes count toward payload bytes, without
+decoding their values. They are explicit gaps, not samples. `ERROR` retains the normal refusal;
+omitting the policy keeps the snapshot's limit and normal refusal. A query cannot raise the
+snapshot's cap. Projection, reduction, HTTP and session reads preserve the policy.
+
 Always close cursors, snapshots and the access object, preferably with try-with-resources.
 Closing a snapshot prevents new cursors but lets admitted cursors finish before its mappings are
 released. Closing a cursor cancels it. Use each cursor from one reader thread. A changed closed file fails with `FILE_CHANGED`; discard
@@ -234,7 +241,9 @@ A query body is explicit about its units:
 ```
 
 Optional query fields are `field` (the projection path), `reduction: {"max_points": N}` and
-`first_ordinal` (a per-file entry ordinal, useful for append-only reading). For several entries,
+`first_ordinal` (a per-file entry ordinal, useful for append-only reading). Optional
+`record_limit: {"max_bytes": N, "on_limit": "problem"}` selects the explicit gap policy above;
+`N` is a positive integer and `on_limit` is `problem` or `error`. For several entries,
 send `{"queries":[queryA,queryB],"format":"ndjson"}`. Each NDJSON batch then names `query_index`,
 `entry` and `entry_complete`; `complete` means the final query is complete. Multi-query Arrow is
 `multipart/mixed`, one independent IPC stream per query with an `X-Query-Index` header. Every part

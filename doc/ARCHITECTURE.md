@@ -855,6 +855,10 @@ rings (256 events/1 MiB). It never performs socket I/O on the state queue. SSE w
 direct-stdio daemon perform delivery, with serialized stdio writes; epoch/sequence replay
 requests resynchronization when history is gone. Explorer's control channel is independent of
 sample HTTP requests, and its ordered document controller applies incoming revisions with CAS.
+An SSE worker borrows the endpoint's existing notification owner; it never invokes the lazy
+workspace factory. If optional visualization initialization failed, ordinary SSE pings continue.
+HTTP shutdown ends the stream workers and drains admitted calls before closing that owner, so
+a stream or tool cannot recreate a workspace during the normal shutdown drain.
 Hidden views receive definitions without data work; a changed query or reveal cancels/replaces
 owned reads. Explicit cross-client display and continuous telemetry remain later stages.
 
@@ -900,6 +904,46 @@ preview requests at most 4,096 plot points and 32 series per view, sequentially,
 encoded-response cap and no host response cache. Each renderer retains only its current query's
 series and values across presentation edits. The configurable aggregate decoded budget and shared
 live broker remain Stage 3; this preview makes no one-hour live or 1 GiB performance claim.
+
+The first Stage 3 gate adds `read/server/OrdinalFollow`, an internal continuation engine over
+the existing `ReadSnapshot` and `SampleCursors`. It is not an HTTP route or a live view yet.
+The source adapter supplies independently owned, immutable member prefixes of one proven
+recording; it retains responsibility for catalog admission, session aliases and membership.
+The engine fixes bootstrap P0 before the first request. It reads the requested historical
+windows, then consumes physical ordinals after P0, including late samples outside those windows.
+The first page of each prefix carries all member/entry counts and metadata/schema descriptions;
+later pages name that `prefix_id` without repeating the description. Retries retain the original
+bytes, including metadata until that page is acknowledged. Admission bounds the whole metadata
+envelope, and permits a metadata-only first page when values need the next page's space.
+Clients must retain the frontier; lost client state requires explicit rebootstrap.
+
+Pages pack batches across entries and members, visiting at most 4,096 records across the entire
+query, with a 4 MiB encoded ceiling; entry completion is distinct from frontier completion.
+The engine uses one native cursor per entry/page and bounded one-record reads to assign problem
+ordinals and decide fit. A record fitting a fresh data page but not the current page is deferred
+without progress; its lookahead counts as work. Fixed frame overhead and each record's encoded
+wrapper are charged conservatively before merging, then the final encoding enforces the ceiling.
+A record above the payload cap or conservative wire expansion budget becomes a `RESOURCE_LIMIT`
+problem carrying its ordinal, physical offset and payload size. This explicit data gap advances
+only on acknowledgement; it is not a delivered sample. The shared native reader owns header-only
+size admission through `ReadQuery.recordLimit`; ordinary queries still fail on oversized records,
+and opting into problems cannot raise a snapshot's cap. Session queries preserve that policy.
+Cold native decode failures become diagnostics at their physical offsets, while legacy
+materialization keeps its prior exception policy.
+
+An opaque cursor is scoped to a lease/epoch and its retained member generations, catalog
+revision and per-entry progress. The engine keeps one exact encoded retry page and commits its
+progress only when the next request acknowledges that page's terminal cursor. Callers must
+finish parsing the whole response before using that cursor. Response handles independently
+retain read-only bytes, so retiring a follow cannot release another admitted response's budget.
+A shared encoded-byte budget charges pending responses and serialization reservations; this
+is separate from native index/decoder memory and the planned client decoded-data budget.
+Closing admission does not wait on a decoder or writer: an admitted bounded batch releases its
+prefix on completion. No source acquisition, decoding or socket work belongs on the recorder
+loop. Replaced members, shrinking history and changed recording identities require explicit
+rebootstrap; finalization drains its fixed final counts and never opens a later recording.
+Production source adapters, lease expiry, long polling, remote routing and editor integration
+remain the subsequent Stage 3 work, not guarantees supplied by this internal proof.
 
 
 ## Known Limits

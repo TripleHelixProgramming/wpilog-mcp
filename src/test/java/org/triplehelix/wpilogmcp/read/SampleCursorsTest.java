@@ -20,10 +20,66 @@ import org.triplehelix.wpilogmcp.log.DecodeProblem;
 import org.triplehelix.wpilogmcp.log.LazyParsedLog;
 import org.triplehelix.wpilogmcp.log.LogBytes;
 import org.triplehelix.wpilogmcp.log.LogReader;
+import org.triplehelix.wpilogmcp.read.internal.ReadWire;
 
 /** Independent record functions pin selection; source guards prevent a second decoding loop. */
 class SampleCursorsTest {
   @TempDir Path temporary;
+
+  private static ReadQuery limited(int bytes, String action) throws IOException {
+    return ReadWire.query(ReadWire.parse(("{\"entry\":\"/x\",\"order\":\"file\",\"record_limit\":{\"max_bytes\":"
+        + bytes + ",\"on_limit\":\"" + action + "\"}}").getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+  }
+
+  @Test void explicitOversizeProblemsVisitHeadersWithoutDecodingAndContinue() throws Exception {
+    Series source = new Series(1, 2, 3) {
+      @Override public long payloadBytes(int index) { return index == 1 ? 1000 : 8; }
+    };
+    try (var cursor = SampleCursors.open(source, limited(16, "problem"), null, 2000)) {
+      var result = cursor.next();
+      assertEquals(List.of(0, 2), result.samples().stream().map(Sample::ordinal).toList());
+      assertEquals(List.of(0, 2), source.decoded);
+      assertEquals(3, result.recordsVisited()); assertEquals(1016, result.payloadBytes()); assertTrue(result.complete());
+      assertEquals(ReadProblem.Code.RESOURCE_LIMIT, result.problems().get(0).code());
+      assertEquals(28, result.problems().get(0).recordOffset());
+      assertTrue(result.problems().get(0).message().contains("1000"));
+    }
+  }
+
+  @Test void aQueryCannotRaiseTheSnapshotsRecordCap() throws Exception {
+    var source = new Series(1);
+    try (var cursor = SampleCursors.open(source, limited(100, "problem"), null, 7)) {
+      var result = cursor.next();
+      assertEquals(1, result.recordsVisited()); assertTrue(result.samples().isEmpty());
+      assertEquals(ReadProblem.Code.RESOURCE_LIMIT, result.problems().get(0).code());
+      assertTrue(source.decoded.isEmpty());
+    }
+  }
+
+  @Test void anExplicitErrorLimitStillRefusesBeforeDecode() throws Exception {
+    var source = new Series(1);
+    try (var cursor = SampleCursors.open(source, limited(7, "error"), null, 100)) {
+      assertEquals(ReadProblem.Code.RESOURCE_LIMIT, assertThrows(ReadException.class, cursor::next).code());
+      assertTrue(source.decoded.isEmpty());
+    }
+  }
+
+  @Test void recordLimitSurvivesWireRoundTripsAndQueryBuilders() throws Exception {
+    var query = limited(123, "problem");
+    for (var copy : List.of(query, query.fromOrdinal(2), query.project("x"))) {
+      var limit = ReadWire.query(copy).getAsJsonObject("record_limit");
+      assertNotNull(limit); assertEquals(123, limit.get("max_bytes").getAsInt());
+      assertEquals("problem", limit.get("on_limit").getAsString());
+      assertEquals(copy, ReadWire.query(ReadWire.query(copy)));
+    }
+    var time = ReadWire.query(query); time.addProperty("order", "time");
+    assertNotNull(ReadWire.query(ReadWire.query(time).reduce(2)).get("record_limit"));
+  }
+
+  @Test void invalidRecordLimitsAreRejectedBeforeReading() {
+    assertThrows(IllegalArgumentException.class, () -> limited(0, "problem"));
+    assertThrows(IllegalArgumentException.class, () -> limited(8, "ignore"));
+  }
 
   @Test void onlySelectedRecordsDecodeAcrossDisjointWindowsAndDuplicateTimestamps() throws Exception {
     var source = new Series(-10, 5, 5, 2, 12);

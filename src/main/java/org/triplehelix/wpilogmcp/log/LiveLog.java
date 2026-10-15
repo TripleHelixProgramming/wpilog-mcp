@@ -367,6 +367,7 @@ public final class LiveLog implements LogData, AutoCloseable {
           }
         }
         @Override public String problemMessage(int index, Exception failure) {
+          if (failure instanceof RecordedDecodeFailure) return failure.getMessage();
           // The live path has always counted only schema failures. An invalid hot value or
           // retired mapping remains an exception, rather than silently becoming missing data.
           if (failure instanceof StructDecodeException) return failure.getMessage();
@@ -388,6 +389,11 @@ public final class LiveLog implements LogData, AutoCloseable {
   private Object value(Record record, String type, StructSchemas schemas) {
     return value(record, type, schemas, false);
   }
+  /** Cold native reads report bad payload bytes at their ordinal. Wrapping only the decoder
+   * preserves failures in mapping lifetime and invalid internal hot values as real exceptions. */
+  private static final class RecordedDecodeFailure extends RuntimeException {
+    RecordedDecodeFailure(String message, RuntimeException cause) { super(message, cause); }
+  }
   private Object value(Record record, String type, StructSchemas schemas, boolean sourceValues) {
     var cached = record.hot;
     if (cached != null) return sourceValues ? EntryDecoder.decodeNetworkRecordedValue(cached, type, schemas)
@@ -399,8 +405,11 @@ public final class LiveLog implements LogData, AutoCloseable {
       try {
         mappedReads.incrementAndGet();
         var data = DataLogAccess.getRecord(held.reader.reader(), record.offset());
-        return sourceValues ? EntryDecoder.decodeRecordedValue(data, type, schemas)
-            : EntryDecoder.decodeValue(data, type, schemas);
+        if (!sourceValues) return EntryDecoder.decodeValue(data, type, schemas);
+        try { return EntryDecoder.decodeRecordedValue(data, type, schemas); }
+        catch (RuntimeException failure) {
+          throw new RecordedDecodeFailure(EntryDecoder.malformedMessage(data, type, failure), failure);
+        }
       } finally { held.release(); }
     }
   }

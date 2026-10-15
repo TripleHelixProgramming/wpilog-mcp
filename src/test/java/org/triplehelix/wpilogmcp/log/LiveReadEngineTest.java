@@ -20,6 +20,28 @@ import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 class LiveReadEngineTest {
   @TempDir Path temp;
 
+  @Test void nativeColdDecodeReportsMalformedPayloadAndKeepsTheFollowingOrdinal() throws Exception {
+    var path = temp.resolve("cold-malformed.wpilog"); var live = new LiveLog(path, 0);
+    try (var out = new WpilogOutput(path)) {
+      int id = out.start("/x", "int64", "", 0); var entry = new EntryInfo(id, "/x", "int64", ""); live.announce(entry);
+      append(out, live, entry, 10, 1);
+      var bad = out.append(id, 10, new byte[] {1}); live.append(entry, new ValueFrame(id, 10, 2, 2L), bad);
+      append(out, live, entry, 9, 3); live.expire();
+      assertEquals(0, live.hotRecordCount());
+      try (var view = live.retainView(); var cursor = org.triplehelix.wpilogmcp.read.SampleCursors.open(view.records("/x", true),
+          new org.triplehelix.wpilogmcp.read.ReadQuery("/x", List.of(), org.triplehelix.wpilogmcp.read.ReadQuery.Order.FILE, 4096, 4 << 20), null, 64 << 20)) {
+        var batch = cursor.next();
+        assertEquals(3, batch.recordsVisited()); assertTrue(batch.complete());
+        assertEquals(List.of(1L, 3L), batch.samples().stream().map(s -> s.value()).toList());
+        assertEquals(List.of(0, 2), batch.samples().stream().map(s -> s.ordinal()).toList());
+        assertEquals(1, batch.problems().size()); var problem = batch.problems().get(0);
+        assertEquals(org.triplehelix.wpilogmcp.read.ReadProblem.Code.MALFORMED_RECORD, problem.code());
+        assertEquals(bad.offset(), problem.recordOffset()); assertEquals("record of 1 bytes cannot be read as int64", problem.message());
+        assertThrows(java.util.InputMismatchException.class, () -> view.values().get("/x"), "Legacy materialization keeps its existing failure policy");
+      }
+    } finally { live.finish(); live.close(); }
+  }
+
   @Test void anInversionAfterThePublishedPrefixCannotChangeItsFirstReadOrMonotonicity() throws Exception {
     var path = temp.resolve("prefix.wpilog");
     var live = new LiveLog(path, 0);

@@ -481,17 +481,24 @@ identity or failed anchors load afresh.
 
 ### 9.4 Reusable visualization documents
 
-[VISUALIZATION_PLAN.md](VISUALIZATION_PLAN.md) stages the replacement. Stage 1 and accepted
-Stage 2a are committed locally. Stage 2b implements reusable templates, explicit compatibility,
+[VISUALIZATION_PLAN.md](VISUALIZATION_PLAN.md) stages the replacement. Stages 1, 2a and accepted
+2b are committed locally. Stage 2b implements reusable templates, explicit compatibility,
 JCS sharing, statistics/raw tables, named MCP operations and revision notifications. Review
 accepted the macOS gate subject to two focused fixes: deleted-view capacity and missing-template
-diagnostics, now addressed in the unreleased work. Its focused carry-overs are addressed: one catalog owner, the product native first-save
+diagnostics, both included in that commit. Its focused carry-overs are addressed: one catalog owner, the product native first-save
 path, request-counted hidden/revealed views, native overview Resume/Open new view, and unavailable
 older-fingerprint listings. Opening an overview across a server restart still requires reopening
 it to refresh an ephemeral source reference; no silent source retargeting is attempted.
 
 Native Save As still refuses with a Save view hint until its picker/destination/replacement gate
-is proven. Continuous following, the decoded-buffer setting (64 MiB default), aggregate
+is proven. Stage 3 has started with the internal ordinal-follow proof: fixed bootstrap prefixes,
+acknowledged exact-page retries, bounded pages, metadata/schema publication and explicit
+identity/history refusal. The first-gate review is settled in the engine: oversized values
+produce explicit ordinal gaps, frontiers travel once per prefix, and pages pack several entries
+under global limits. It has no production source adapter or route yet. Session merge
+aliases and anchored membership, follow leases/expiry, dedicated long polling, remote routing,
+automatic panel updates, display/clock states, histogram/scatter and latency instrumentation
+remain to be integrated and validated. Continuous following, the decoded-buffer setting (64 MiB default), aggregate
 recorded/live budgets, remote admission and large-log/live performance gates remain Stage 3.
 Explicit display requests, client selection and default-editor retirement remain Stage 4.
 The preview's field projection is numeric only; richer typed projections remain with the
@@ -501,10 +508,14 @@ rather than pruning acknowledged proof. Explicitly deleted working records have 
 six-hour retry window, count/byte caps and oldest-first eviction. Native Linux/Windows checks and the manual Close-cancellation click remain
 outstanding; Mac fixtures do not prove them. No performance claim is made.
 
-The Stage 2b review leaves six minor follow-ups outside the focused acceptance fixes:
+The Stage 3 prerequisite fixes the Stage 2b SSE shutdown finding: streams use the existing
+notification owner, optional state failure still permits pings, and shutdown drains streams and
+admitted tools before closing the workspace. If workspace startup fails, preview routes stay
+unavailable and this stream stays ping-only until restart; runtime workspace recovery remains
+deferred. The internal engine still opens a prefix after every completed non-finalized frontier;
+the production source/publication waiter must avoid repeated disk scans during idle polls.
+Five minor review follow-ups remain:
 
-- Before Stage 3, stop SSE delivery before disposing its workspace and prevent its loop from
-  lazily recreating a closed workspace; unavailable optional state should still allow pings.
 - Replace the resolver enum exception for an unknown role with a public vocabulary hint.
 - Stop asking for an import title that is discarded in favor of the envelope name.
 - Consolidate the bundled Driver Station definition into the planned single four-role table.

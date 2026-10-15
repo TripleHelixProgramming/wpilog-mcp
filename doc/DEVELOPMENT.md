@@ -403,6 +403,25 @@ configuration validation. The fixture backend is a synthetic lifecycle test doub
 production persistence service. Native Save As stays unavailable with a Save view… hint until
 its picker, destination alias, and replacement-tab gates are established. Stage 1 remains an isolated lifecycle regression; Stage 2a registers the optional product preview described below.
 
+### Visualization ordinal-follow proof
+
+The first Stage 3 gate is internal, before HTTP and editor integration. Run
+`./gradlew cleanTest test --tests '*OrdinalFollowTest' --tests '*SampleCursorsTest' --tests '*SessionReadTest' --tests '*LiveReadEngineTest' --tests '*ManagedLogAccessTest' --tests '*VisualizationSseLifecycleTest'`.
+`OrdinalFollowTest` compares real writer-owned prefixes against `IndependentLog`, the separate
+WPILOG-format reader. It checks physical offsets, ordinals, timestamps, values and malformed
+records across bootstrap, equal/backward timestamps, concurrent appends and retries. Other
+cases cover metadata/schema-only publications, late entries, caller-proven rollover members,
+finalization, identity/history refusals, byte budgets and close during an admitted batch while
+another reader and writer continue. Native cold-decode and SSE shutdown regressions have
+failing-first evidence; the new continuation contract is checked with planted regressions.
+The first-gate review refinements also have failing-first checks: native payload and wire
+expansion gaps, a frontier sent once per prefix, metadata-only pages, full-envelope admission,
+64 entry/member batches in one page, byte-boundary deferral and globally bounded work.
+`SampleCursorsTest` pins the explicit size policy and its default refusal; `SessionReadTest`
+checks that the policy survives the real HTTP/session adapter. Plants cover these boundaries.
+This suite does not establish real session-alias admission, follow routes, long polling,
+idle expiry, remote authentication, an editor live workflow or performance budgets.
+
 ### Visualization recorded preview
 
 Run `./gradlew shadowJar extensionSmokeFixture`, then `npm run test:recorded-visualization`

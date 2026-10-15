@@ -34,6 +34,7 @@ final class VisualizationEndpoint implements AutoCloseable {
     views = workspace.views; sources = workspace.sources;
   }
   void release(String session) { views.releaseClient(UUID.fromString(session)); workspace.notifications.release(session); }
+  ControlNotifications notifications() { return workspace.notifications; }
   @Override public void close() { workspace.close(); }
 
   void handle(HttpExchange exchange, Authority authority) throws IOException {

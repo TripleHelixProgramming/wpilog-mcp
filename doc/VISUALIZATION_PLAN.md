@@ -350,7 +350,23 @@ The continuation contract is:
 6. Progress includes visited, filtered, and undecodable records. Equal or backward timestamps never identify or deduplicate records.
 7. Metadata/schema changes publish their own revision even when no data sample arrives.
 
-Start with the native limits of 4,096 visited records and 4 MiB per page, plus a global in-flight byte budget. Do not create an unbounded telemetry queue for slow consumers.
+The first-gate review settles three contract refinements before the route is built:
+
+- A record that exceeds the follow's native payload or bounded wire representation emits a
+  `RESOURCE_LIMIT` problem with its physical ordinal, offset and payload size. The problem counts
+  as visited and advances only when its page is acknowledged. This is an explicit data gap, not
+  a delivered value or a claim of sample-lossless delivery. Other entries continue. Ordinary
+  native read requests retain their fail-on-limit policy unless explicitly opted into problems.
+- Send the complete frontier only on the first acknowledged page of each prefix. Subsequent
+  pages refer to `prefix_id`; retries reproduce the original page, including its metadata when
+  present. A metadata-only first page is allowed when a data batch needs the whole next page.
+  Validate the complete metadata envelope at admission so an admitted prefix can always be sent.
+  Clients retain that frontier until it completes; lost client state requires explicit rebootstrap.
+- Fill pages across entries and members under one global visited-record and encoded-byte bound.
+  A record that fits a fresh data page but not this page is deferred without ordinal advancement,
+  not reported as oversized. Entry completion and full-frontier completion remain distinct.
+
+Start with the native limits of 4,096 visited records and 4 MiB per page, plus a global in-flight byte budget. The work bound includes any lookahead needed to decide page fit. Do not create an unbounded telemetry queue for slow consumers.
 
 Valid cursors support exact catch-up. After 60 seconds idle expiry or a server restart, explicitly rebootstrap the requested window from the **same** retained recording. If history is gone, report its available interval or `HISTORY_UNAVAILABLE`; do not claim lossless replay or attach to another session.
 
@@ -935,13 +951,13 @@ notification reader sleeps, and malformed pinned references on admission/recover
 full build found missing integration classifications/documentation sections; those checks now
 pass and their plants fail. Earlier attempts, exact commands/times, screenshots, source hashes
 and scope limits are recorded in `/private/tmp/wpilog-visualization-stage2b/validation.md`.
-Stage 2b awaits review; no push, version change or Stage 3 work is included.
+That implementation went through the independent Stage 2b review and focused fixes below.
 
 ### Stage 2b focused review follow-up (2026-10-14)
 
 The independent review reproduced the macOS gate and 118 API/oracle checks, conditional on
 correcting deleted-view capacity; the missing-template diagnostic goes with that fix. Both are
-addressed in the unreleased tree. Deleted records no longer consume live document/byte quotas
+addressed in the accepted Stage 2b commit. Deleted records no longer consume live document/byte quotas
 or pin unused source locators. Their separate 256-record/8 MiB retry budget evicts oldest first
 and expires after six hours, including bounded recovery of legacy longer deadlines. Real live
 quota refusals identify what holds capacity. A removed store template now yields
@@ -952,6 +968,45 @@ Nineteen new regression cases failed against the reviewed code before passing; 1
 plants were caught and restored. Focused execution logs, fixture corrections, final test counts
 and hashes are in `/private/tmp/wpilog-visualization-stage2b-review/validation.md`. The independent
 review's full build, Node and native results remain separate evidence; this focused follow-up
-does not claim to rerun them. The six minor follow-ups, including SSE shutdown ordering before
-Stage 3, are recorded in [IDEAS.md](IDEAS.md#94-reusable-visualization-documents). No commit,
-push, version change or Stage 3 work is part of this follow-up.
+does not claim to rerun them. The maintainer authorized the commit and start of Stage 3;
+`2fb2376` commits the 61 reviewed files with unchanged evidence hashes. It was not pushed.
+
+### Stage 3 first-gate implementation
+
+Stage 3 begins with the internal `OrdinalFollow` engine above native `ReadSnapshot` cursors.
+Generated writer-owned prefixes are compared with the independent WPILOG reader, including
+physical ordinals/offsets, equal/backward timestamps across pages, appends during bootstrap,
+filtered/malformed records, interrupted exact-page retries, metadata/schema-only publications,
+late entries, caller-proven rollover members, finalization and explicit identity/history refusal.
+Response handles share a bounded encoded-byte owner; close during a read does not wait on the
+writer or stop another consumer. The proof found a cold native live-reader failure: malformed
+payload decoding threw instead of returning an ordinal diagnostic. Its regression failed on
+the old reader before the native-only correction; legacy materialization behavior is preserved.
+
+The SSE prerequisite from the review is also corrected with failing-first tests: optional
+workspace failure still permits pings, stream delivery borrows the existing owner, and shutdown
+drains streams and admitted calls before disposing it. Logs, mutation checks, source hashes,
+fixture corrections and verification scope are recorded in
+`/private/tmp/wpilog-visualization-stage3/validation.md`.
+
+The accepted first-gate review's three contract refinements are implemented before route work:
+oversized native payloads and conservative wire expansion produce explicit ordinal gaps;
+metadata is sent once per prefix, with whole-envelope admission and metadata-only paging;
+and pages pack multiple entries/members under global bounds. The shared native query adds an
+explicit size-problem policy, preserved by its builders, wire encoding and session adapter;
+ordinary queries retain their refusal. Regression tests failed against the prior engine/native
+policy and the session adapter. The expanded proof includes 64 entry/member batches in one page,
+32 entries under a three-record global cap, byte-boundary deferral, and metadata acknowledgement.
+All 27 refinement plants are caught and restored; the metadata-page fixture was strengthened
+after its first plant survived because even the incorrect gap would not fit that page.
+Evidence and remaining validation limits are in
+`/private/tmp/wpilog-visualization-stage3-review/validation.md`. The earlier review's independent
+probe is evidence for the original first gate; it has not been rerun for this revised page format.
+
+This is the first gate, not acceptance of the full Stage 3 live workflow. There is no follow HTTP
+route, production session-alias/membership adapter, lease expiry/long polling, configured remote
+adapter or client broker yet. Automatic panel updates, follow/inspect/pause and robot-clock
+states, histogram/scatter, aggregate decoded-window budgets and latency/performance validation
+remain within Stage 3. Five minor Stage 2b review follow-ups remain in
+[IDEAS.md](IDEAS.md#94-reusable-visualization-documents). No Stage 3 commit, version change or
+publication accompanies this gate.

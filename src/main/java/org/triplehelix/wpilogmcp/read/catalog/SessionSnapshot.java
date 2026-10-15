@@ -183,7 +183,7 @@ public final class SessionSnapshot implements ReadSnapshot {
         if (!query.windows().isEmpty() && windows.isEmpty()) continue;
         // Seek conservatively on the source clock, then test the exact transformed timestamp.
         // Outward rounding preserves edge samples without decoding every record in the entry.
-        var raw = new ReadQuery(query.entry(), windows, ReadQuery.Order.TIME, 64, 64 << 10, query.field(), null);
+        var raw = new ReadQuery(query.entry(), windows, ReadQuery.Order.TIME, 64, 64 << 10, query.field(), null, 0, query.recordLimit());
         children.add(new SessionCursor.Child(part.snapshot().read(raw), part.source()));
       }
       if (closed) throw new ReadException(ReadProblem.Code.CLOSED, "Session closed during admission");

@@ -72,7 +72,7 @@ public final class SampleCursors {
       this.field = FieldPath.parse(query.field());
       this.query = query;
       this.order = query.order() == ReadQuery.Order.FILE ? null : order;
-      this.maxRecordBytes = maxRecordBytes;
+      this.maxRecordBytes = query.recordLimit() == null ? maxRecordBytes : Math.min(maxRecordBytes, query.recordLimit().maxBytes());
       var selected = new ArrayList<Range>();
       if (query.windows().isEmpty() || query.order() == ReadQuery.Order.FILE) {
         selected.add(new Range(query.order() == ReadQuery.Order.FILE ? Math.min(query.firstOrdinal(), series.size()) : 0, series.size()));
@@ -150,9 +150,15 @@ public final class SampleCursors {
               }
               // Header-only admission avoids decoding or copying excluded or oversized values.
               payload = series.payloadBytes(ordinal);
-              if (payload > maxRecordBytes) throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT,
-                  "Record at byte " + offset + " of '" + query.entry() + "' has " + payload
-                      + " payload bytes, above maxRecordBytes=" + maxRecordBytes);
+              if (payload > maxRecordBytes) {
+                String message = "Record at byte " + offset + " of '" + query.entry() + "' has " + payload
+                    + " payload bytes, above maxRecordBytes=" + maxRecordBytes;
+                if (query.recordLimit() == null || query.recordLimit().onLimit() == ReadQuery.LimitAction.ERROR)
+                  throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT, message);
+                if (records > 0 && payload > query.batchBytes() - bytes) break batches;
+                selected = false;
+                sink.problem(new ReadProblem(ReadProblem.Code.RESOURCE_LIMIT, query.entry(), offset, message));
+              }
               if (records > 0 && payload > query.batchBytes() - bytes) break batches;
             } catch (RuntimeException failure) {
               selected = false;

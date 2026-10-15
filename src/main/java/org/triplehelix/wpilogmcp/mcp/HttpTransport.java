@@ -360,7 +360,6 @@ public class HttpTransport {
       return;
     }
     mirrorEndpoint.close();
-    if (visualization != null) toolRegistry.closeVisualizations();
     readEndpoint.close();
     if (localIngestion != null) { localIngestion.close(); stores.clearLocalIngestion(localIngestion); }
     // 1. End the SSE streams. Their loops sleep between pings; the interrupt ends the loop,
@@ -395,6 +394,9 @@ public class HttpTransport {
       scheduler.shutdownNow();
     }
     if (mcpExecutor != null) mcpExecutor.shutdownNow();
+    // No SSE iteration can construct a replacement owner. Keep the existing workspace alive
+    // until admitted HTTP/MCP operations drain and the stream sockets have been closed.
+    toolRegistry.closeVisualizations();
     if (bodyDeadlines != null) bodyDeadlines.shutdownNow();
     if (streaming != null) streaming.close();
     if (storeStreaming != null) storeStreaming.close();
@@ -675,14 +677,15 @@ public class HttpTransport {
           exchange.sendResponseHeaders(200, 0);
           try (OutputStream os = exchange.getResponseBody()) {
             String lastEvent = exchange.getRequestHeaders().getFirst("Last-Event-ID");
-            while (sessionManager.getSession(sessionId) != null) {
-              var control = toolRegistry.visualizations().notifications;
-              var events = control.after(sessionId, lastEvent, 1000);
+            var endpoint = visualization;
+            var control = endpoint == null ? null : endpoint.notifications();
+            while (!stopped.get() && sessionManager.getSession(sessionId) != null) {
+              var events = control == null ? java.util.List.<org.triplehelix.wpilogmcp.visualization.ControlNotifications.Event>of() : control.after(sessionId, lastEvent, 1000);
               for (var event : events) {
                 os.write(("id: " + event.id() + "\ndata: " + event.json() + "\n\n").getBytes(StandardCharsets.UTF_8)); lastEvent = event.id();
               }
               os.write(":ping\n\n".getBytes(StandardCharsets.UTF_8)); os.flush();
-              if (!control.negotiated(sessionId)) Thread.sleep(15_000);
+              if (control == null || !control.negotiated(sessionId)) Thread.sleep(15_000);
             }
           }
         } catch (IOException | InterruptedException e) {

@@ -10,7 +10,16 @@ import java.util.Objects;
 /** Exact recorded samples of one explicitly named entry. Empty windows means the whole entry.
  * Windows are disjoint and sorted, with an explicit right boundary; no hold, interpolation,
  * coercion or reduction happens implicitly. Projection and reduction are explicit opt-ins. */
-public record ReadQuery(String entry, List<Window> windows, Order order, int batchRecords, int batchBytes, String field, Reduction reduction, int firstOrdinal) {
+public record ReadQuery(String entry, List<Window> windows, Order order, int batchRecords, int batchBytes, String field, Reduction reduction, int firstOrdinal, RecordLimit recordLimit) {
+  /** An optional lower payload ceiling. PROBLEM explicitly permits a diagnosed gap; ERROR
+   * preserves ordinary reads' fail-on-limit behavior. Neither can raise the snapshot's cap. */
+  public record RecordLimit(int maxBytes, LimitAction onLimit) {
+    public RecordLimit {
+      if (maxBytes < 1) throw new IllegalArgumentException("Record max_bytes must be positive");
+      Objects.requireNonNull(onLimit);
+    }
+  }
+  public enum LimitAction { ERROR, PROBLEM }
   /** Explicit min/max/mean buckets, independently in each requested window. */
   public record Reduction(int maxPoints) {
     public Reduction {
@@ -23,9 +32,15 @@ public record ReadQuery(String entry, List<Window> windows, Order order, int bat
   public ReadQuery(String entry, List<Window> windows, Order order, int batchRecords, int batchBytes, String field, Reduction reduction) {
     this(entry, windows, order, batchRecords, batchBytes, field, reduction, 0);
   }
-  public ReadQuery fromOrdinal(int first) { return new ReadQuery(entry, windows, order, batchRecords, batchBytes, field, reduction, first); }
-  public ReadQuery project(String path) { return new ReadQuery(entry, windows, order, batchRecords, batchBytes, path, reduction, firstOrdinal); }
-  public ReadQuery reduce(int maxPoints) { return new ReadQuery(entry, windows, order, batchRecords, batchBytes, field, new Reduction(maxPoints), firstOrdinal); }
+  public ReadQuery(String entry, List<Window> windows, Order order, int batchRecords, int batchBytes, String field, Reduction reduction, int firstOrdinal) {
+    this(entry, windows, order, batchRecords, batchBytes, field, reduction, firstOrdinal, null);
+  }
+  public ReadQuery fromOrdinal(int first) { return new ReadQuery(entry, windows, order, batchRecords, batchBytes, field, reduction, first, recordLimit); }
+  public ReadQuery project(String path) { return new ReadQuery(entry, windows, order, batchRecords, batchBytes, path, reduction, firstOrdinal, recordLimit); }
+  public ReadQuery reduce(int maxPoints) { return new ReadQuery(entry, windows, order, batchRecords, batchBytes, field, new Reduction(maxPoints), firstOrdinal, recordLimit); }
+  public ReadQuery withRecordLimit(int bytes, LimitAction action) {
+    return new ReadQuery(entry, windows, order, batchRecords, batchBytes, field, reduction, firstOrdinal, new RecordLimit(bytes, action));
+  }
   public enum Order { TIME, FILE }
   public record Window(long startUs, long endUs, boolean endInclusive) {
     public Window {

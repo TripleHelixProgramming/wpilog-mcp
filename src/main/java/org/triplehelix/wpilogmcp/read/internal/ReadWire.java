@@ -243,7 +243,9 @@ public final class ReadWire {
         request.has("batch_bytes") ? integer(request, "batch_bytes") : 4 << 20,
         request.has("field") ? text(request, "field") : null,
         request.has("reduction") ? new ReadQuery.Reduction(integer(request.getAsJsonObject("reduction"), "max_points")) : null,
-        request.has("first_ordinal") ? integer(request, "first_ordinal") : 0);
+        request.has("first_ordinal") ? integer(request, "first_ordinal") : 0,
+        request.has("record_limit") ? new ReadQuery.RecordLimit(integer(request.getAsJsonObject("record_limit"), "max_bytes"),
+            ReadQuery.LimitAction.valueOf(text(request.getAsJsonObject("record_limit"), "on_limit").toUpperCase(java.util.Locale.ROOT))) : null);
   }
   public static int integer(JsonObject object, String name) {
     var value = object.get(name);
@@ -270,6 +272,10 @@ public final class ReadWire {
     if (query.firstOrdinal() != 0) out.addProperty("first_ordinal", query.firstOrdinal());
     if (query.field() != null) out.addProperty("field", query.field());
     if (query.reduction() != null) { var reduction = new JsonObject(); reduction.addProperty("max_points", query.reduction().maxPoints()); out.add("reduction", reduction); }
+    if (query.recordLimit() != null) {
+      var limit = new JsonObject(); limit.addProperty("max_bytes", query.recordLimit().maxBytes());
+      limit.addProperty("on_limit", query.recordLimit().onLimit().name().toLowerCase(java.util.Locale.ROOT)); out.add("record_limit", limit);
+    }
     return out;
   }
   public static JsonObject batch(SampleBatch batch) {

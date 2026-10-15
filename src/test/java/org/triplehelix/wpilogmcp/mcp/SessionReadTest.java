@@ -58,6 +58,12 @@ class SessionReadTest {
         try (var held = first.read(ReadQuery.all("NT:/x"))) {
           assertEquals(List.of(41L), held.next().samples().stream().map(s -> s.value()).toList());
         }
+        try (var limited = first.read(ReadQuery.all("NT:/x").withRecordLimit(7, ReadQuery.LimitAction.PROBLEM))) {
+          var batch = limited.next(); assertTrue(batch.samples().isEmpty(), "A session must preserve the query's record policy over HTTP");
+          assertEquals(1, batch.problems().size());
+          assertEquals(org.triplehelix.wpilogmcp.read.ReadProblem.Code.RESOURCE_LIMIT, batch.problems().get(0).code());
+          assertEquals(1, batch.recordsVisited()); assertEquals(8, batch.payloadBytes());
+        }
         try (var second = remote.openSession("store", "session", "capture.wpilog", org.triplehelix.wpilogmcp.read.catalog.SessionSnapshot.Overlap.KEEP_ALL);
              var current = second.read(ReadQuery.all("NT:/x"))) {
           assertEquals(List.of(41L, 42L), current.next().samples().stream().map(s -> s.value()).toList());
