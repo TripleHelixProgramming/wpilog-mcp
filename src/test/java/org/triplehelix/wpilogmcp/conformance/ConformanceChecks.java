@@ -244,6 +244,14 @@ public final class ConformanceChecks {
       if (!entry.getValue().isJsonObject()) return false;
       var l = entry.getValue().getAsJsonObject();
       var list = obj.get(entry.getKey());
+      if (list == null) {
+        // A tool may retain its shared HTTP page inside a named MCP envelope.
+        com.google.gson.JsonElement value = obj;
+        for (String part : entry.getKey().split("\\.")) {
+          value = value != null && value.isJsonObject() ? value.getAsJsonObject().get(part) : null;
+        }
+        list = value;
+      }
       if (list == null || !list.isJsonArray() || !l.has("total") || !l.has("returned")) {
         return false;
       }

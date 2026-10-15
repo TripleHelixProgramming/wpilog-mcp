@@ -17,6 +17,10 @@ public class McpSession {
   private final String id;
   private final Instant createdAt;
   private volatile Instant lastAccessedAt;
+  private volatile boolean active = true;
+
+  public boolean active() { return active; }
+  void removed() { active = false; }
 
   public McpSession() {
     this.id = UUID.randomUUID().toString();

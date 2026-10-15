@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
  * response from the timer instead can itself block flushing into that same full socket. */
 final class StreamingRequests implements AutoCloseable {
   private final ThreadPoolExecutor workers;
+  private final ThreadPoolExecutor refusals;
   private final java.util.concurrent.ScheduledExecutorService timer;
   private final java.util.Set<Transfer> active = ConcurrentHashMap.newKeySet();
   private final long timeoutNanos;
@@ -34,6 +35,9 @@ final class StreamingRequests implements AutoCloseable {
     workers = new ThreadPoolExecutor(0, maximum, 60, TimeUnit.SECONDS, new SynchronousQueue<>(), r -> {
       var thread = new Thread(r, "http-stream"); thread.setDaemon(true); return thread;
     });
+    refusals = new ThreadPoolExecutor(0, 2, 60, TimeUnit.SECONDS, new SynchronousQueue<>(), r -> {
+      var thread = new Thread(r, "http-refusal"); thread.setDaemon(true); return thread;
+    });
     timer = Executors.newSingleThreadScheduledExecutor(r -> {
       var thread = new Thread(r, "http-stream-progress"); thread.setDaemon(true); return thread;
     });
@@ -41,18 +45,29 @@ final class StreamingRequests implements AutoCloseable {
     timer.scheduleWithFixedDelay(() -> active.forEach(Transfer::expire), tick, tick, TimeUnit.MILLISECONDS);
   }
   int activeCount() { return active.size(); }
-  HttpHandler handle(HttpHandler handler) {
+  HttpHandler handle(HttpHandler handler) { return handle(handler, null); }
+  HttpHandler handle(HttpHandler handler, HttpHandler refusal) {
     return exchange -> {
       try { workers.execute(() -> run(exchange, handler)); }
       catch (RejectedExecutionException full) {
-        byte[] body = "{\"status\":\"error\",\"code\":\"BUSY\",\"message\":\"Streaming capacity is in use; retry after another transfer finishes\"}".getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
-        exchange.getResponseHeaders().set("Retry-After", "1");
-        exchange.sendResponseHeaders(503, body.length);
-        try (var out = exchange.getResponseBody()) { out.write(body); }
-        finally { exchange.close(); }
+        if (refusal != null) { refusal.handle(exchange); return; }
+        refuse(exchange);
       }
     };
+  }
+  /** Final refusals have their own bounded IO ownership. With no slot left, abort before
+   * response headers: closing a committed response can make the JDK drain an unread body. */
+  void refuse(HttpExchange exchange) {
+    try { refusals.execute(() -> run(exchange, StreamingRequests::busy)); }
+    catch (RejectedExecutionException full) { exchange.close(); }
+  }
+  private static void busy(HttpExchange exchange) throws IOException {
+    RequestBodies.read(exchange, 64 << 10);
+    byte[] body = "{\"status\":\"error\",\"code\":\"BUSY\",\"message\":\"Streaming capacity is in use; retry after another transfer finishes\"}".getBytes(StandardCharsets.UTF_8);
+    exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+    exchange.getResponseHeaders().set("Retry-After", "1");
+    exchange.sendResponseHeaders(503, body.length);
+    try (var out = exchange.getResponseBody()) { out.write(body); }
   }
   private void run(HttpExchange exchange, HttpHandler handler) {
     var transfer = new Transfer(Thread.currentThread()); active.add(transfer);
@@ -110,5 +125,5 @@ final class StreamingRequests implements AutoCloseable {
       }
     }
   }
-  @Override public void close() { timer.shutdownNow(); workers.shutdownNow(); }
+  @Override public void close() { workers.shutdownNow(); refusals.shutdownNow(); timer.shutdownNow(); }
 }

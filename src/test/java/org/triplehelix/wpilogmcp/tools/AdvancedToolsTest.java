@@ -62,8 +62,8 @@ class AdvancedToolsTest extends ToolTestBase {
     @Test
     @DisplayName("total tool count is correct")
     void totalToolCountIsCorrect() {
-      // The existing 51 tools plus 17 recorded visualization operations; live tools register separately.
-      assertEquals(68, tools.size());
+      // The existing 51 tools plus 20 visualization operations; live tools register separately.
+      assertEquals(71, tools.size());
     }
   }
 

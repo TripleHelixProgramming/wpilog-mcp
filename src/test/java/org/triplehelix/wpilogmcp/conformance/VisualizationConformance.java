@@ -21,7 +21,8 @@ final class VisualizationConformance {
   private final McpMessageHandler handler = new McpMessageHandler(registry);
   private static JsonObject args() { var v = new JsonObject(); v.addProperty("api_version", 1); return v; }
   private static JsonObject mutation() { var v = args(); v.addProperty("request_id", UUID.randomUUID().toString()); return v; }
-  private JsonObject call(String operation, JsonObject arguments, String resultKey) {
+  private JsonObject call(String operation, JsonObject arguments, String resultKey) { return call(operation, arguments, resultKey, "ok"); }
+  private JsonObject call(String operation, JsonObject arguments, String resultKey, String expectedStatus) {
     String name = "visualization_" + operation; var request = new JsonObject(); request.addProperty("jsonrpc", "2.0"); request.addProperty("id", 1); request.addProperty("method", "tools/call");
     var params = new JsonObject(); params.addProperty("name", name); params.add("arguments", arguments); request.add("params", params);
     var rpc = handler.handleMessage(request, null, CallerContext.Authority.STDIO_LOCAL).response();
@@ -29,15 +30,24 @@ final class VisualizationConformance {
     var tool = registry.getTool(name);
     calls.add(new ToolConformanceTest.Call(name, "isolated-workspace", "recorded-reuse", result,
         ConformanceChecks.check(result, null, ToolArguments.takesPath(tool), name, arguments)));
-    if (!result.get("status").getAsString().equals("ok")) throw new AssertionError(name + ": " + result);
+    if (!result.get("status").getAsString().equals(expectedStatus)) throw new AssertionError(name + ": " + result);
     return result.getAsJsonObject(resultKey);
   }
   static List<ToolConformanceTest.Call> exercise(Path root, Path fixture) throws Exception {
     var run = new VisualizationConformance(); run.registry.serverIdentity(ServerIdentity.open(root.resolve("state")));
     WpilogTools.registerAll(run.registry);
     try {
+      var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(root.resolve("recording-store"), 4);
       run.call("capabilities_get", args(), "capabilities");
       var inspect = args(); inspect.addProperty("path", fixture.toString()); var source = run.call("source_inspect", inspect, "source").getAsJsonObject("source_ref");
+      var paged = args(); paged.add("source_ref", recording.reference); paged.addProperty("inventory_mode", "paged");
+      var inventory = run.call("source_inspect", paged, "source").getAsJsonObject("inventory");
+      var listing = args(); listing.add("inventory_id", inventory.get("inventory_id"));
+      listing.addProperty("limit", 2); var page = run.call("source_entries_list", listing, "page"); listing.remove("limit");
+      var noMatch = listing.deepCopy(); noMatch.addProperty("query", "absent-name");
+      run.call("source_entries_list", noMatch, "page", "no_match");
+      var selected = listing.deepCopy(); var ids = new JsonArray(); ids.add(page.getAsJsonArray("entries").get(0).getAsJsonObject().get("row_id")); selected.add("row_ids", ids);
+      run.call("source_entries_get", selected, "details"); run.call("source_inventory_close", listing, "inventory");
       var catalog = run.call("template_list", args(), "catalog"); var bundled = catalog.getAsJsonArray("templates").get(0).getAsJsonObject().getAsJsonObject("template_ref");
       var ref = args(); ref.add("template_ref", bundled); run.call("template_get", ref, "definition");
       var check = ref.deepCopy(); check.add("source_ref", source); run.call("template_check", check, "compatibility");

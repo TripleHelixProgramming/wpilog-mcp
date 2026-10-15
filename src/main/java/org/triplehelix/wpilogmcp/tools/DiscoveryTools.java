@@ -413,6 +413,12 @@ public final class DiscoveryTools {
         List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
     tools.add(new ToolInfo("visualization_source_inspect", "visualization", "Inspect a recorded source by an admitted path or durable source_ref. Returns identity, entry types, schemas, sample counts and clock bounds.",
         List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_source_entries_list", "visualization", "Page a fixed recording inventory with exact matching totals and authenticated continuation.",
+        List.of("visualization", "recording", "inventory"), List.of("browse recording signals"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_entries_get", "visualization", "Read fresh selected declarations, counts and native schemas; stale inventory evidence requires refresh.",
+        List.of("visualization", "recording", "inventory"), List.of("browse recording signals"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_inventory_close", "visualization", "Release a session-owned inventory without returning its contents.",
+        List.of("visualization", "recording", "inventory"), List.of("browse recording signals"), false, List.of("visualization_source_inspect")));
     tools.add(new ToolInfo("visualization_template_list", "visualization", "Search immutable bundled and configured-store templates by query. Returns templates, unreadable records and listing_incomplete.",
         List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
     tools.add(new ToolInfo("visualization_template_get", "visualization", "Read an exact pinned template_ref; a changed revision refuses rather than silently substituting.",

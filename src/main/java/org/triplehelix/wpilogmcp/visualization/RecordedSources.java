@@ -149,13 +149,24 @@ public final class RecordedSources implements AutoCloseable {
       resolve(source); return snapshot;
     } catch (IOException | RuntimeException e) { snapshot.close(); throw e; }
   }
+  public record Admission(org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Prefix prefix,
+      CatalogRecordingSource.Access access) implements AutoCloseable {
+    @Override public void close() throws IOException { prefix.close(); }
+  }
+  public Admission admitRecording(JsonObject source) throws IOException {
+    var ref = VisualizationContracts.source(source);
+    if (!ref.get("kind").getAsString().equals("session")) throw new IllegalArgumentException("Paged inventory requires an anchored recording source_ref");
+    var recording = new CatalogRecordingSource(logs, this::catalog, VisualizationContracts.recordingReference(ref), verified);
+    var prefix = recording.open();
+    try { return new Admission(prefix, recording.access()); }
+    catch (RuntimeException failure) { prefix.close(); throw failure; }
+  }
   public JsonObject describe(JsonObject source) throws IOException {
     var ref = VisualizationContracts.source(source);
     if (ref.get("kind").getAsString().equals("session")) {
-      var recording = new CatalogRecordingSource(logs, this::catalog, VisualizationContracts.recordingReference(ref), verified);
-      try (var prefix = recording.open()) {
-        var out = RecordingInventory.describe(prefix);
-        recording.authorize(); return out;
+      try (var admission = admitRecording(ref)) {
+        var out = RecordingInventory.describe(admission.prefix());
+        admission.access().check(); return out;
       }
     }
     try (var snapshot = open(source)) {

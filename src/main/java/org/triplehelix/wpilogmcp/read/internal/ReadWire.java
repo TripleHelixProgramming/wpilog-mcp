@@ -203,6 +203,9 @@ public final class ReadWire {
    * native schema owner's transitive dependencies and diagnostics, without sending unrelated
    * topics or bundled schemas. The recording's internal identity/history proof stays complete. */
   public static JsonObject descriptorForEntries(String id, ReadSnapshot snapshot, Set<String> selected) {
+    return descriptorForEntries(id, snapshot, selected, MAX_FRAME_BYTES);
+  }
+  public static JsonObject descriptorForEntries(String id, ReadSnapshot snapshot, Set<String> selected, int maxBytes) {
     var entries = new LinkedHashMap<String, EntryInfo>(); var roots = new TreeSet<String>();
     for (String name : new TreeSet<>(selected)) {
       var entry = snapshot.entries().get(name); if (entry == null) continue;
@@ -211,12 +214,16 @@ public final class ReadWire {
       if (schema == null) schema = StructSchemas.schemaEntryStruct(name, entry.type());
       if (schema != null) roots.add(schema);
     }
-    return descriptor(id, snapshot, entries, roots, true);
+    return descriptor(id, snapshot, entries, roots, true, maxBytes);
   }
 
   private static JsonObject descriptor(String id, ReadSnapshot snapshot, Map<String, EntryInfo> entries,
       Collection<String> roots, boolean dependencies) {
-    var budget = new Budget(MAX_FRAME_BYTES); budget.charge(512); budget.text(snapshot.path().toString());
+    return descriptor(id, snapshot, entries, roots, dependencies, MAX_FRAME_BYTES);
+  }
+  private static JsonObject descriptor(String id, ReadSnapshot snapshot, Map<String, EntryInfo> entries,
+      Collection<String> roots, boolean dependencies, int maxBytes) {
+    var budget = new Budget(maxBytes); budget.charge(512); budget.text(snapshot.path().toString());
     for (var entry : entries.values()) {
       budget.charge(256); budget.text(entry.name()); budget.text(entry.type()); budget.text(entry.metadata());
     }
@@ -246,7 +253,7 @@ public final class ReadWire {
     if (!snapshot.excludedSources().isEmpty()) out.add("excluded_sources", JSON.toJsonTree(snapshot.excludedSources()));
     return out;
   }
-  private static JsonElement boundary(FileSnapshot file) {
+  public static JsonElement boundary(FileSnapshot file) {
     if (file == null) return JsonNull.INSTANCE;
     var out = new JsonObject(); out.addProperty("size_bytes", Long.toString(file.size()));
     out.addProperty("modified", file.modified().toString()); out.addProperty("created", file.created() == null ? null : file.created().toString());

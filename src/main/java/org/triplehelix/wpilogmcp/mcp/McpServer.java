@@ -87,9 +87,10 @@ public class McpServer {
 
       if (line.trim().isEmpty()) continue;
 
-      try {
+      try (var responses = org.triplehelix.wpilogmcp.visualization.InventoryResponses.open()) {
         var message = JsonParser.parseString(line).getAsJsonObject();
-        var result = handler.handleMessage(message, null, CallerContext.Authority.STDIO_LOCAL);
+        var result = handler.handleMessage(message, null, CallerContext.Authority.STDIO_LOCAL,
+            new InventoryRequests.Admission(line.getBytes(StandardCharsets.UTF_8).length, true));
 
         if (result.shouldShutdown()) {
           running = false;

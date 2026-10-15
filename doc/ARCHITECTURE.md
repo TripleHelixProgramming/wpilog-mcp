@@ -746,8 +746,12 @@ Game data is one file per season, bundled in the JAR. The current season's is lo
 In stdio mode the server handles one message at a time. HTTP dispatch uses four core threads
 and grows to 32 with direct handoff and no waiting queue. Data and native-read routes hand off
 to 16 streaming workers; store and import routes have four independent workers. Excess transfers
-receive JSON `BUSY` and 503 with a retry hint; stalled streams cannot
-occupy health or registration's dispatch workers. A progress watchdog interrupts the owning
+normally receive JSON `BUSY` and 503 with a retry hint. Each streaming pool has two final-refusal
+workers with direct handoff and the same I/O watchdog; MCP execution overload uses the ordinary
+pool's refusal workers. When refusal capacity is exhausted, the exchange is closed before
+response headers. This avoids the JDK's unread-body drain on dispatch workers; a client may
+receive a disconnect instead of JSON. Stalled streams and refusals cannot occupy health or
+registration's dispatch workers. A progress watchdog interrupts the owning
 SocketChannel worker after ten seconds without IO progress, including request uploads. Output
 progress is checked in at most 64 KiB units. The watchdog never flushes or closes an exchange
 itself, since closing a chunked stream can block behind the same peer. If all 32 dispatch
@@ -915,7 +919,7 @@ An open manifested capture is identified by
 origin, session and original provenance anchor; its member prefixes retain the follower's
 writer-identity, hash, same-recording, rename and grant checks. Inspection closes every prefix
 before returning. It neither installs a continuing lease nor resolves a recording to one path.
-The inventory retains each member's native descriptor and a name summary; conflicting
+The default full inventory retains each member's native descriptor and a name summary; conflicting
 types or metadata are reported without selecting a member. The summary is not a field/schema
 binding decision. Both retained member descriptors and the final inventory have a 4 MiB encoded
 cap; each descriptor also retains the native reader's allocation preflight. This is separate
@@ -938,9 +942,39 @@ admission retains current catalog and path/grant checks. Edits preserving all ob
 attributes remain outside this proof, as with the existing loaded-log boundary checks.
 Concurrent cold misses may duplicate hashing; no I/O holds the metadata lock or a cache
 computation lock, and a hash finishing after close cannot repopulate the memory. Followers use
-the same verification policy with memory owned by each lease. Inventory paging will reuse the
-workspace owner for open/details; it is still unimplemented. Repeated full inspection must not
+the same verification policy with memory owned by each lease. Paged inventory open/details reuse the
+workspace owner. Repeated full inspection must not
 become per-frame polling in place of the long-lived broker.
+
+Paged recording discovery has one workspace owner for HTTP and MCP. Opening copies compact
+name/type/member/count facts and metadata digest tokens from one admitted prefix, then releases
+the prefix before publishing an unguessable session-bound handle. Pages filter and order this
+fixed snapshot; cursors authenticate the epoch, inventory, filter, limit and position. No
+sample data, raw metadata, schema graph or mapping remains in the inventory. The summary uses
+the same clock-fact owner as full inspection. Fresh selected details use native schema closure
+and the follower's member-continuity policy, comparing old declaration tokens before returning
+current counts. New members or stale selected declarations require refresh, and compatibility
+is never deduced from a page or a conflict.
+
+Accounting includes builds and retired inventories still used by readers. Short metadata locks
+claim or reclaim slots; admission, grant I/O, native close and future completion happen outside
+them. A removed session marks its in-flight admission invalid without waiting for disk I/O.
+The two no-queue build workers reserve metadata before starting; a ten-second response deadline
+cancels publication but retains the reservation until a blocked read actually unwinds. Four
+separate HTTP/MCP inventory workers leave control requests available. Response reservations
+remain charged through serialization and socket writing, including MCP batches. Transport admission
+carries the original UTF-8 byte count into normal dispatch, so parsing cannot erase evidence of
+an oversized request. Refusal decisions follow session and basic request validation; notification
+suppression and mixed-batch controls retain their normal owner. Each inventory operation in a
+batch shares its whole exchange's 64 KiB input limit. Individual inventory replies remain bounded
+to 1 MiB; an inventory-containing batch counts all encoded replies and array framing against a
+separate 8 MiB ceiling. Overflow stops the remaining calls and reports a non-retryable refusal
+that warns earlier calls may have executed. Handles expire
+after 60 idle seconds or five absolute minutes; expiry and close bypass data request slots.
+Current grants are checked on every page and retry. Ordinary listing never reopens payloads;
+only a missing pathname triggers catalog alias resolution. Details reopen through native
+admission. The [standalone reference](STANDALONE.md#recorded-visualization-preview) owns the
+limits and refusal contract. The overview adapter and display-memory gate are still pending.
 
 Follow metadata can be explicitly limited to the queried entries. This projects the wire
 inventory before encoding, with only the selected struct schemas and their transitive
@@ -1138,7 +1172,8 @@ The autocorrelation estimator is biased toward zero for short windows, so the ef
 size can be slightly inflated; it is an approximation, not an exact independent-sample count.
 
 MCP HTTP bodies are limited to 4 MiB and ten seconds. A separate pool admits at most
-`min(32, max(4, processors * 2))` MCP requests with no waiting queue; overload answers 503.
+`min(32, max(4, processors * 2))` MCP requests with no waiting queue; overload uses the bounded
+503/disconnect refusal path described above.
 HTTP dispatch uses direct handoff to four-to-32 workers, without a waiting queue. Slow MCP
 bodies, tool calls and data/store streams do not occupy those workers; streaming admission has
 its own pools and progress deadlines as described above.

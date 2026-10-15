@@ -17,6 +17,9 @@ public final class VisualizationTools {
   public static void registerAll(ToolRegistry registry) {
     registry.registerTool(new CapabilitiesGet(registry));
     registry.registerTool(new SourceInspect(registry));
+    registry.registerTool(new SourceEntriesList(registry));
+    registry.registerTool(new SourceEntriesGet(registry));
+    registry.registerTool(new SourceInventoryClose(registry));
     registry.registerTool(new TemplateList(registry));
     registry.registerTool(new TemplateGet(registry));
     registry.registerTool(new TemplateCheck(registry));
@@ -46,7 +49,15 @@ public final class VisualizationTools {
         var workspace = registry.visualizations();
         var result = run(workspace, caller, arguments);
         if (result.has("view_id")) workspace.notifications.watch(SessionContext.current() == null ? "stdio" : SessionContext.current().getId(), result.get("view_id").getAsString());
-        var response = ResponseBuilder.success().addProperty("api_version", 1).addData(resultKey(), result);
+        var response = name().equals("visualization_source_entries_list") && result.get("total_matching").getAsInt() == 0
+            ? ResponseBuilder.noMatch("No inventory names match the filter").lookedFor(List.of("Authorized fixed inventory names and exact declared types"))
+                .hint("Change the filter or reopen from source_ref to refresh the inventory") : ResponseBuilder.success();
+        response.addProperty("api_version", 1).addData(resultKey(), result);
+        if (name().equals("visualization_source_entries_list")) {
+          var limits = new JsonObject(); var page = new JsonObject();
+          page.add("total", result.get("total_matching")); page.add("returned", result.get("returned")); page.add("limit", result.get("limit"));
+          limits.add("page.entries", page); response.addData("limits", limits);
+        }
         if (name().equals("visualization_source_inspect")) {
           var inputs = new JsonObject(); inputs.add("source_ref", result.get("source_ref")); response.addData("inputs", inputs);
         }
@@ -54,13 +65,19 @@ public final class VisualizationTools {
       } catch (Exception failure) {
         Throwable cause = failure;
         while (cause instanceof java.util.concurrent.ExecutionException && cause.getCause() != null) cause = cause.getCause();
+        if (cause instanceof InventoryFailure inventory) {
+          var response = ResponseBuilder.error(inventory.getMessage()).addProperty("api_version", 1).addProperty("code", inventory.code)
+              .addProperty("retryable", inventory.retryable);
+          if (inventory.retryable) response.addProperty("retry_after_ms", 1000);
+          return response.build();
+        }
         if (cause instanceof org.triplehelix.wpilogmcp.read.ReadException read) {
           var refusal = VisualizationReadFailure.of(read);
           return ResponseBuilder.error(refusal.message()).addProperty("api_version", 1).addProperty("code", refusal.code())
               .addProperty("retryable", refusal.retryable()).build();
         }
         String message = Objects.toString(cause.getMessage(), cause.getClass().getSimpleName());
-        String code = message.matches("^[A-Z_]+:.*") ? message.substring(0, message.indexOf(':')) : cause instanceof java.nio.file.AccessDeniedException ? "ACCESS_DENIED" : "INVALID_REQUEST";
+        String code = message.matches("^[A-Z_]+:.*") ? message.substring(0, message.indexOf(':')) : cause instanceof java.nio.file.AccessDeniedException || cause instanceof org.triplehelix.wpilogmcp.log.LogFileException ? "ACCESS_DENIED" : "INVALID_REQUEST";
         return ResponseBuilder.error(message).addProperty("api_version", 1).addProperty("code", code).build();
       }
     }
@@ -68,6 +85,7 @@ public final class VisualizationTools {
     static JsonObject project(JsonObject arguments, String... keys) {
       var result = new JsonObject(); for (var key : keys) if (arguments.has(key)) result.add(key, arguments.get(key).deepCopy()); return result;
     }
+    static JsonObject stringItem() { var item = new JsonObject(); item.addProperty("type", "string"); return item; }
     abstract String resultKey();
     abstract JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception;
     ToolRegistry.SchemaBuilder schema() { return new ToolRegistry.SchemaBuilder().addIntegerProperty("api_version", "Visualization API version, currently 1", true, null); }
@@ -89,17 +107,61 @@ public final class VisualizationTools {
   static final class SourceInspect extends Operation {
     SourceInspect(ToolRegistry registry) { super(registry); }
     @Override public String name() { return "visualization_source_inspect"; }
-    @Override public String description() { return "Inspect a recorded file or captured recording by an admitted path or durable source_ref. Returns identity, entry types, schemas, sample counts and clock bounds. A recording retains individual member inventories and conflicting declarations; its clock distinguishes the shared robot estimate from the last sample. Inspection does not enable live visualization panels. Result envelope: api_version, status, source. All operations require trusted local transport authority."; }
+    @Override public String description() { return "Inspect a recorded file or captured recording by an admitted path or durable source_ref. Returns identity, entry types, schemas, sample counts and clock bounds. A recording retains individual member inventories and conflicting declarations; its clock distinguishes the shared robot estimate from the last sample. Optional inventory_mode paged returns a session-owned fixed summary without entries or schemas; use the entry list/details operations and close it when finished. Expiry requires reopening from source_ref. Inspection does not enable live visualization panels. Result envelope: api_version, status, source. All operations require trusted local transport authority."; }
     @Override String resultKey() { return "source"; }
     @Override public JsonObject inputSchema() {
       return schema()
+          .addProperty("inventory_mode", "string", "full (default) or paged for bounded recording discovery", false)
           .addProperty("path", "string", "Allowed local WPILOG path; alternative to source_ref", false)
           .addProperty("source_ref", "object", "Durable recorded, unmanaged or anchored session source identity; never contains a local path", false)
           .build();
     }
     @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
-      var input = project(arguments, "api_version", "path", "source_ref");
+      var input = project(arguments, "api_version", "path", "source_ref", "inventory_mode");
       return workspace.inspect(caller, input);
+    }
+  }
+  static final class SourceEntriesList extends Operation {
+    SourceEntriesList(ToolRegistry registry) { super(registry); }
+    @Override public String name() { return "visualization_source_entries_list"; }
+    @Override public String description() { return "Page a fixed recording inventory opened with inventory_mode paged. Literal query uses Locale.ROOT case folding; types match exact declarations. Use cursor alone for a byte-identical retry or continuation. Unavailable rows have bounded previews, never binding names, and a separate unavailable filter. Expiry requires reopening from source_ref. Result envelope: api_version, status, page, limits; zero matches include looked_for and hint. Page facts include entries, returned, total_matching, total_entry_names, unavailable_entry_names, complete and next_cursor. All operations require trusted local transport authority and the opening session."; }
+    @Override String resultKey() { return "page"; }
+    @Override public JsonObject inputSchema() {
+      return schema().addProperty("inventory_id", "string", "Session-owned inventory handle", true)
+          .addProperty("cursor", "string", "Opaque continuation; omit all filter and limit arguments when present", false)
+          .addProperty("query", "string", "Literal name substring, at most 256 Unicode code points", false)
+          .addArrayProperty("types", "At most 16 exact declared types", stringItem(), false)
+          .addProperty("unavailable", "boolean", "List unavailable rows separately; no name/type filter", false)
+          .addIntegerProperty("limit", "Names per page, 1 to 256, default 256; bytes may shorten the page", false, null).build();
+    }
+    @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
+      var input = project(arguments, "api_version", "inventory_id", "cursor", "query", "types", "unavailable", "limit");
+      return workspace.inventories.list(RecordingInventories.Client.current(caller), input);
+    }
+  }
+  static final class SourceEntriesGet extends Operation {
+    SourceEntriesGet(ToolRegistry registry) { super(registry); }
+    @Override public String name() { return "visualization_source_entries_get"; }
+    @Override public String description() { return "Read fresh selected declarations, counts and native schema dependencies for 1 to 32 inventory row_ids. Returns details with detail_revision, members, descriptors, schema_problems and count_basis. Changed selected declarations or recording members refuse with INVENTORY_CHANGED; refresh the inventory and reselect. Count growth is allowed and labeled. No compatible binding is inferred from a conflict. Result envelope: api_version, status, details. All operations require trusted local transport authority and the opening session."; }
+    @Override String resultKey() { return "details"; }
+    @Override public JsonObject inputSchema() {
+      return schema().addProperty("inventory_id", "string", "Session-owned inventory handle", true)
+          .addArrayProperty("row_ids", "1 to 32 distinct opaque row IDs from this inventory; never persist in a view", stringItem(), true).build();
+    }
+    @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
+      var input = project(arguments, "api_version", "inventory_id", "row_ids");
+      return workspace.inventories.details(RecordingInventories.Client.current(caller), input);
+    }
+  }
+  static final class SourceInventoryClose extends Operation {
+    SourceInventoryClose(ToolRegistry registry) { super(registry); }
+    @Override public String name() { return "visualization_source_inventory_close"; }
+    @Override public String description() { return "Release a session-owned recording inventory. Idempotent within this server epoch, including after grant revocation or expiry; no contents are returned. Result envelope: api_version, status, inventory with inventory_id and closed. All operations require trusted local transport authority and the opening session."; }
+    @Override String resultKey() { return "inventory"; }
+    @Override public JsonObject inputSchema() { return schema().addProperty("inventory_id", "string", "Session-owned inventory handle", true).build(); }
+    @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
+      var input = project(arguments, "api_version", "inventory_id");
+      return workspace.inventories.release(RecordingInventories.Client.current(caller), input);
     }
   }
   static final class TemplateList extends Operation {

@@ -444,12 +444,9 @@ public final class OrdinalFollow implements AutoCloseable {
     for (var old : proof.members().entrySet()) {
       var next = members.get(old.getKey());
       if (next == null) throw changed("Retained recording member is no longer available");
-      if (old.getValue().generation() != next.generation()) throw changed("Recording member was replaced");
-      if (old.getValue().writerIdentity() != null && !old.getValue().writerIdentity().equals(next.writerIdentity())
-          || old.getValue().writerIdentity() == null && old.getValue().hash() == null
-              && (next.contentSha256() != null || !proof.finalized() && candidate.finalized()))
-        throw changed("Recording writer identity changed or its finalization proof is missing");
-      if (old.getValue().hash() != null && !old.getValue().hash().equals(next.contentSha256())) throw changed("Finalized recording member hash changed");
+      String changed = new RecordingMemberIdentity(old.getValue().generation(), old.getValue().hash(), old.getValue().writerIdentity())
+          .changed(next, proof.finalized(), candidate.finalized());
+      if (changed != null) throw changed(changed);
       for (var entry : old.getValue().entries().entrySet()) {
         var after = next.snapshot().entries().get(entry.getKey());
         if (after == null || entry.getValue().id() != after.id() || !entry.getValue().type().equals(after.type())

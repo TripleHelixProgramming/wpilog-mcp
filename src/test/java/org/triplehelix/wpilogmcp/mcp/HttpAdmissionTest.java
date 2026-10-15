@@ -129,6 +129,23 @@ class HttpAdmissionTest {
     } finally { transport.stop(); }
   }
 
+  @Test void saturatedMcpBodyRefusalsCannotDrainOnDispatchWorkers() throws Exception {
+    var transport = new HttpTransport(new ToolRegistry(), 0);
+    transport.requestLimits(1024, 2, Duration.ofSeconds(2)); transport.streamTimeout(Duration.ofSeconds(2)); transport.start();
+    var sockets = new ArrayList<Socket>();
+    try {
+      for (int i = 0; i < 36; i++) {
+        var socket = new Socket("127.0.0.1", transport.getPort()); sockets.add(socket);
+        socket.getOutputStream().write("POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1024\r\n\r\n{".getBytes(StandardCharsets.US_ASCII));
+      }
+      Thread.sleep(3000);
+      var health = assertDoesNotThrow(() -> HttpClient.newHttpClient().send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + transport.getPort() + "/health"))
+          .timeout(Duration.ofSeconds(2)).build(), HttpResponse.BodyHandlers.ofString()));
+      assertEquals(200, health.statusCode()); assertEquals(0, transport.readingBodies()); assertEquals(0, transport.activeStreams());
+      assertTrue(sockets.stream().noneMatch(Socket::isClosed));
+    } finally { for (var socket : sockets) socket.close(); transport.stop(); }
+  }
+
   @Test void fourStalledDataStreamsLeaveHealthAnswering(@TempDir Path directory) throws Exception {
     var path = directory.resolve("stream.wpilog");
     try (var writer = new WpilogWriter(path, "synthetic dispatch fixture")) {

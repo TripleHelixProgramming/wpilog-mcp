@@ -579,15 +579,20 @@ is still capped at 4 MiB and can refuse large inventories even when queried foll
 proposes compact pages from a detached fixed snapshot, separate fresh selected-entry details,
 shared HTTP/MCP ownership and bounded lifetime/allocation. Review 12 accepts it with explicit
 server/session quotas, the MCP list-result contract, session-bound unguessable handles, fresh
-type-change refusals and automatic visible expiry refresh. Paging is not implemented; prove
-it before panel wiring. The performance gate now also requires declaration bursts with
+type-change refusals and automatic visible expiry refresh. The shared paged server operations
+are now implemented. Review 13's transport blockers are corrected locally: final refusals have
+bounded I/O ownership, raw MCP input retains its byte count, and pressured calls keep normal
+session/JSON-RPC dispatch. The inventory-containing batch reply cap is now explicit. Recheck
+these corrections before committing the checkpoint and wiring the overview adapter. Its visible
+absolute-expiry refresh, retained selection, hidden-view release, bounded row window and stale
+reply guards still need both native-editor versions against the real server. The performance gate now also requires declaration bursts with
 32 open 1 MiB leases, including the existing 16-waiter saturation and shared client byte budget.
 These workloads have not run. Do not silently truncate discovery or raise caps as a substitute.
 Review 12's prerequisite now shares bounded successful hash verification across workspace
 source admissions; cold/evicted hashes and strict season-sized catalog scans still need
 performance measurements. The cache has 256 entries and ten-minute idle expiry, does not retain
-mappings or permissions, and may duplicate concurrent cold reads. Paged open/details must reuse
-that owner rather than add their own memory. Improve disabled control contrast
+mappings or permissions, and may duplicate concurrent cold reads. Paged open/details now reuse
+that owner. Improve disabled control contrast
 during panel accessibility work; the current controls are functionally disabled.
 
 Five minor review follow-ups remain:

@@ -318,7 +318,9 @@ HTTP requests retain the catalog and decoded REV owner while the configured root
 describing a companion then reading several signals does not parse it again. Neither endpoint
 recalculates alignment. Telemetry streaming has 16 workers separate from health/registration.
 Store transfer and import routes have another four workers, so readers cannot consume all upload
-capacity. Excess work returns JSON `BUSY` with HTTP 503 and `Retry-After: 1`. A resource limit
+capacity. Excess work normally returns JSON `BUSY` with HTTP 503 and `Retry-After: 1` through
+two bounded refusal workers per pool. If refusal capacity is also full, the exchange closes
+before response headers; no dispatch worker drains an unfinished body. A resource limit
 instead returns 413; it is not a suggestion to repeat the identical oversized request. The Java
 client recognizes a proxy's plain-text 503 or 429 as `BUSY` too. Ten seconds without progress on an IO operation ends the transfer
 and releases its read. Writes are split into at most 64 KiB progress units. A missing terminal
@@ -482,7 +484,8 @@ Other 413 refusals, such as metadata that cannot fit a page, need the stated lim
 blind retries cannot fix those. Clients must use `retryable`, not classify message text.
 Native indexes are owned by the shared reader; follow admission also caps the sum of member index
 bytes at 128 MiB and the recording at 64 members. Only one next call per lease may run. Sixteen
-dedicated workers bound long polls; saturation returns 503 `BUSY`, and creation/DELETE have
+dedicated workers bound long polls; saturation uses the bounded 503 `BUSY`/disconnect path
+above, and creation/DELETE have
 separate ordinary-read capacity. Active requests postpone idle expiry until they finish.
 DELETE cancels a publication wait and retires admission; an admitted bounded decode releases on
 completion. Clients should DELETE on last-consumer cancellation. A disconnected socket with no

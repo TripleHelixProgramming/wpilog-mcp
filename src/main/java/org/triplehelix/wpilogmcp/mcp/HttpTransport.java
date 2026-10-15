@@ -86,6 +86,7 @@ public class HttpTransport {
   private StreamingRequests streaming;
   private StreamingRequests storeStreaming;
   private StreamingRequests followStreaming;
+  private StreamingRequests inventoryStreaming;
   private Duration streamTimeout = Duration.ofSeconds(10);
   void streamTimeout(Duration timeout) { streamTimeout = timeout; }
   int activeStreams() { return streaming == null ? 0 : streaming.activeCount(); }
@@ -235,7 +236,8 @@ public class HttpTransport {
     new LocalIngestionEndpoint(sessionManager, () -> localIngestion).handle(exchange);
   }
 
-  private void handleVisualization(HttpExchange exchange) throws IOException {
+  private void handleVisualization(HttpExchange exchange) throws IOException { handleVisualization(exchange, true); }
+  private void handleVisualization(HttpExchange exchange, boolean inventoryAdmitted) throws IOException {
     var origin = exchange.getRequestHeaders().getFirst("Origin");
     var authority = CallerContext.http(server.getAddress().getAddress(), exchange.getRemoteAddress().getAddress(), origin == null || isAllowedOrigin(origin));
     if (authority == CallerContext.Authority.UNTRUSTED) {
@@ -244,7 +246,7 @@ public class HttpTransport {
     noteMcpActivity();
     var endpoint = visualization;
     if (endpoint == null) LocalIngestionEndpoint.error(exchange, 503, "WORKSPACE_UNAVAILABLE", visualizationFailure);
-    else endpoint.handle(exchange, authority);
+    else endpoint.handle(exchange, authority, inventoryAdmitted);
   }
 
   public void start() throws IOException {
@@ -262,7 +264,14 @@ public class HttpTransport {
     streaming = new StreamingRequests(16, streamTimeout);
     storeStreaming = new StreamingRequests(4, streamTimeout);
     followStreaming = new StreamingRequests(16, streamTimeout);
-    server.createContext(VisualizationEndpoint.PATH, streaming.handle(counted(this::handleVisualization)));
+    inventoryStreaming = new StreamingRequests(4, streamTimeout);
+    var inventoryRead = inventoryStreaming.handle(counted(this::handleVisualization),
+        streaming.handle(counted(e -> handleVisualization(e, false))));
+    var visualizationControl = streaming.handle(counted(this::handleVisualization));
+    server.createContext(VisualizationEndpoint.PATH, exchange -> {
+      if (InventoryRequests.httpRead(exchange.getRequestURI().getPath())) inventoryRead.handle(exchange);
+      else visualizationControl.handle(exchange);
+    });
     server.createContext(DATA_PATH, streaming.handle(counted(this::handleData)));
     server.createContext(ReadEndpoint.PATH, streaming.handle(counted(this::handleRead)));
     var nextFollow = followStreaming.handle(counted(this::handleFollow));
@@ -413,6 +422,7 @@ public class HttpTransport {
     if (streaming != null) streaming.close();
     if (storeStreaming != null) storeStreaming.close();
     if (followStreaming != null) followStreaming.close();
+    if (inventoryStreaming != null) inventoryStreaming.close();
     sessionManager.clear();
     stores.stopWatching();
     stores.awaitImports();
@@ -478,14 +488,14 @@ public class HttpTransport {
 
   private void handlePost(HttpExchange exchange) throws IOException {
     // Parse JSON-RPC from request body (single message or batch array)
-    JsonElement parsed;
+    JsonElement parsed; int rawBytes;
     var reading = new AtomicBoolean(true);
     var expiry = bodyDeadlines.schedule(() -> {
       if (reading.compareAndSet(true, false)) exchange.close();
     }, bodyTimeout.toMillis(), TimeUnit.MILLISECONDS);
     readingBodies.incrementAndGet();
     try {
-      var bytes = RequestBodies.read(exchange, maxRequestBytes);
+      var bytes = RequestBodies.read(exchange, maxRequestBytes); rawBytes = bytes.length;
       if (!reading.compareAndSet(true, false)) return;
       if (bytes.length > maxRequestBytes) {
         sendError(exchange, 413, "MCP request body exceeds " + maxRequestBytes + " bytes"); return;
@@ -502,17 +512,18 @@ public class HttpTransport {
       readingBodies.decrementAndGet();
     }
 
-    if (parsed.isJsonArray()) {
-      handleBatchPost(exchange, parsed.getAsJsonArray());
-    } else if (parsed.isJsonObject()) {
-      handleSinglePost(exchange, parsed.getAsJsonObject());
-    } else {
-      sendJsonResponse(exchange, 400,
-          JsonRpc.createErrorResponse(null, JsonRpc.INVALID_REQUEST, "Expected object or array"),
-          null);
+    if (InventoryRequests.reads(parsed)) {
+      inventoryStreaming.handle(counted(e -> dispatchMessage(e, parsed, new InventoryRequests.Admission(rawBytes, true))),
+          streaming.handle(counted(e -> dispatchMessage(e, parsed, new InventoryRequests.Admission(rawBytes, false))))).handle(exchange);
+    } else dispatchMessage(exchange, parsed, new InventoryRequests.Admission(rawBytes, true));
+  }
+  private void dispatchMessage(HttpExchange exchange, JsonElement parsed, InventoryRequests.Admission admission) throws IOException {
+    try (var responses = org.triplehelix.wpilogmcp.visualization.InventoryResponses.open()) {
+      if (parsed.isJsonArray()) handleBatchPost(exchange, parsed.getAsJsonArray(), admission);
+      else if (parsed.isJsonObject()) handleSinglePost(exchange, parsed.getAsJsonObject(), admission);
+      else sendJsonResponse(exchange, 400, JsonRpc.createErrorResponse(null, JsonRpc.INVALID_REQUEST, "Expected object or array"), null);
     }
   }
-
   /** Slow bodies and tool calls share a bounded admission pool; health never waits behind them. */
   private void submitPost(HttpExchange exchange) throws IOException {
     inFlightRequests.incrementAndGet();
@@ -527,7 +538,7 @@ public class HttpTransport {
       });
     } catch (java.util.concurrent.RejectedExecutionException e) {
       inFlightRequests.decrementAndGet();
-      sendError(exchange, 503, "MCP request capacity is busy; try again after an active request finishes");
+      streaming.refuse(exchange);
     }
   }
 
@@ -537,7 +548,7 @@ public class HttpTransport {
         origin == null || isAllowedOrigin(origin));
   }
 
-  private void handleSinglePost(HttpExchange exchange, JsonObject message) throws IOException {
+  private void handleSinglePost(HttpExchange exchange, JsonObject message, InventoryRequests.Admission admission) throws IOException {
     // Determine if this is an initialize request (no session required). A non-string method is
     // not a crash: the handler answers it with an invalid-request error.
     boolean isInitialize = "initialize".equals(McpMessageHandler.methodName(message));
@@ -558,7 +569,7 @@ public class HttpTransport {
     }
 
     // Handle the message
-    var result = handler.handleMessage(message, session, callerAuthority(exchange));
+    var result = handler.handleMessage(message, session, callerAuthority(exchange), admission);
 
     if (result.response() == null) {
       // Notification — no response body
@@ -571,7 +582,7 @@ public class HttpTransport {
     sendJsonResponse(exchange, 200, result.response(), result.newSessionId());
   }
 
-  private void handleBatchPost(HttpExchange exchange, JsonArray batch) throws IOException {
+  private void handleBatchPost(HttpExchange exchange, JsonArray batch, InventoryRequests.Admission admission) throws IOException {
     if (batch.isEmpty()) {
       sendJsonResponse(exchange, 400,
           JsonRpc.createErrorResponse(null, JsonRpc.INVALID_REQUEST, "Empty batch"), null);
@@ -608,23 +619,32 @@ public class HttpTransport {
 
     var responses = new JsonArray();
     String newSessionId = null;
-
+    boolean bounded = InventoryRequests.containsOperation(batch);
+    int responseBytes = 2; // JSON array brackets; each subsequent response also needs a comma.
     for (var element : batch) {
-      if (!element.isJsonObject()) {
-        responses.add(JsonRpc.createErrorResponse(null, JsonRpc.INVALID_REQUEST,
-            "Batch element must be an object"));
-        continue;
+      JsonObject reply;
+      if (!element.isJsonObject()) reply = JsonRpc.createErrorResponse(null, JsonRpc.INVALID_REQUEST, "Batch element must be an object");
+      else {
+        var result = handler.handleMessage(element.getAsJsonObject(), session, callerAuthority(exchange), admission);
+        if (result.newSessionId() != null) {
+          newSessionId = result.newSessionId(); session = sessionManager.getSession(newSessionId);
+        }
+        reply = result.response();
       }
-      var msg = element.getAsJsonObject();
-      var result = handler.handleMessage(msg, session, callerAuthority(exchange));
-      if (result.newSessionId() != null) {
-        newSessionId = result.newSessionId();
-        // Update session for subsequent messages in the batch
-        session = sessionManager.getSession(newSessionId);
+      if (reply == null) continue;
+      if (bounded) {
+        try {
+          int comma = responses.isEmpty() ? 0 : 1;
+          int remaining = org.triplehelix.wpilogmcp.visualization.RecordingInventories.MAX_MCP_BATCH_REPLY_BYTES - responseBytes - comma;
+          if (remaining < 1) throw new IOException("Batch reply is full");
+          responseBytes += comma + org.triplehelix.wpilogmcp.read.internal.ReadWire.bytes(reply, remaining).length;
+        } catch (IOException | org.triplehelix.wpilogmcp.read.internal.ReadWire.WireLimit limit) {
+          var failure = new org.triplehelix.wpilogmcp.visualization.InventoryFailure(413, "RESOURCE_LIMIT",
+              "Inventory-containing MCP batch reply exceeds 8 MiB; earlier calls may have executed. Inspect their state before sending smaller batches", false);
+          sendJsonResponse(exchange, 413, failure.json(), newSessionId); return;
+        }
       }
-      if (result.response() != null) {
-        responses.add(result.response());
-      }
+      responses.add(reply);
     }
 
     if (responses.isEmpty()) {
@@ -738,7 +758,7 @@ public class HttpTransport {
     exchange.close();
   }
 
-  private void sendJsonResponse(HttpExchange exchange, int status, JsonObject response,
+  private void sendJsonResponse(HttpExchange exchange, int status, JsonElement response,
       String sessionId) throws IOException {
     var json = gson.toJson(response);
     var bytes = json.getBytes(StandardCharsets.UTF_8);

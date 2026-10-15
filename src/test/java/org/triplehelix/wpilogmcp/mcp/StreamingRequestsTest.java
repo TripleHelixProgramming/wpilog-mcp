@@ -42,6 +42,29 @@ class StreamingRequestsTest {
     } finally { release.countDown(); transport.stop(); }
   }
 
+  @Test void finalRejectionsCannotDrainOnDispatchWorkersAfterBothPoolsFill() throws Exception {
+    var transport = new HttpTransport(new ToolRegistry(), 0); transport.streamTimeout(Duration.ofSeconds(2)); transport.start();
+    var sockets = new java.util.ArrayList<Socket>();
+    try {
+      var client = java.net.http.HttpClient.newHttpClient(); String base = "http://127.0.0.1:" + transport.getPort();
+      var initialized = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(base + "/mcp"))
+          .POST(java.net.http.HttpRequest.BodyPublishers.ofString("{\"id\":1,\"method\":\"initialize\"}")).build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+      String session = initialized.headers().firstValue("Mcp-Session-Id").orElseThrow();
+      // On the old path: four inventory workers, sixteen fallback workers, then all 32 dispatch workers.
+      for (int i = 0; i < 52; i++) {
+        var socket = new Socket("127.0.0.1", transport.getPort()); sockets.add(socket);
+        socket.getOutputStream().write(("POST /visualizations/v1/source/entries/list HTTP/1.1\r\nHost: localhost\r\nMcp-Session-Id: " + session
+            + "\r\nContent-Length: 1024\r\n\r\n{").getBytes(StandardCharsets.US_ASCII));
+      }
+      Thread.sleep(3000); // Deliberately exceed every configured streaming I/O deadline.
+      var health = assertDoesNotThrow(() -> client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(base + "/health"))
+          .timeout(Duration.ofSeconds(2)).build(), java.net.http.HttpResponse.BodyHandlers.ofString()));
+      assertEquals(200, health.statusCode());
+      assertEquals(0, transport.activeStreams());
+      assertTrue(sockets.stream().noneMatch(Socket::isClosed), "No client disconnected to rescue dispatch workers");
+    } finally { for (var socket : sockets) socket.close(); transport.stop(); }
+  }
+
   @Test void aWriteWithNoProgressReleasesItsWorkerWithoutThePeerDisconnecting() throws Exception {
     try (var streams = new StreamingRequests(1, Duration.ofMillis(200)); var socket = new Socket()) {
       var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

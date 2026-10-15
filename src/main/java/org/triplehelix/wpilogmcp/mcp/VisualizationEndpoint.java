@@ -33,31 +33,43 @@ final class VisualizationEndpoint implements AutoCloseable {
     this.sessions = sessions; this.identity = registry.serverIdentity(); workspace = registry.visualizations();
     views = workspace.views; sources = workspace.sources;
   }
-  void release(String session) { views.releaseClient(UUID.fromString(session)); workspace.notifications.release(session); }
+  void release(String session) { views.releaseClient(UUID.fromString(session)); workspace.notifications.release(session); workspace.inventories.releaseSession(session); }
   ControlNotifications notifications() { return workspace.notifications; }
   @Override public void close() { workspace.close(); }
 
   void handle(HttpExchange exchange, Authority authority) throws IOException {
-    try {
+    handle(exchange, authority, true);
+  }
+  void handle(HttpExchange exchange, Authority authority, boolean inventoryAdmitted) throws IOException {
+    try (var responseScope = InventoryResponses.open()) {
       authority.requireLocal();
       String session = exchange.getRequestHeaders().getFirst("Mcp-Session-Id");
       if (session == null) { error(exchange, 400, "MISSING_SESSION", "Missing Mcp-Session-Id header"); return; }
-      if (sessions.getSession(session) == null) { error(exchange, 404, "SESSION_EXPIRED", "Session expired; reconnect before resuming the view"); return; }
+      var owner = sessions.getSession(session);
+      if (owner == null) { error(exchange, 404, "SESSION_EXPIRED", "Session expired; reconnect before resuming the view"); return; }
       UUID client = UUID.fromString(session);
+      var inventoryClient = new RecordingInventories.Client(authority, session, owner::active);
       String route = exchange.getRequestURI().getPath().substring(PATH.length());
       boolean get = exchange.getRequestMethod().equals("GET");
       if (!get && !exchange.getRequestMethod().equals("POST")) { error(exchange, 405, "INVALID_REQUEST", "Use GET or POST"); return; }
       var body = new JsonObject();
       if (!get) {
-        var bytes = RequestBodies.read(exchange, VisualizationContracts.MAX_CONFIGURATION_BYTES);
+        boolean inventory = route.equals("/source/describe") || route.startsWith("/source/entries/") || route.equals("/source/inventory/close");
+        int maximum = inventory ? 64 << 10 : VisualizationContracts.MAX_CONFIGURATION_BYTES;
+        var bytes = RequestBodies.read(exchange, maximum);
+        if (inventory && bytes.length > maximum) throw new InventoryFailure(413, "RESOURCE_LIMIT", "Inventory request exceeds 64 KiB", false);
         body = VisualizationContracts.parse(new String(bytes, StandardCharsets.UTF_8));
       }
+      if (!get && !inventoryAdmitted && InventoryRequests.httpRead(exchange.getRequestURI().getPath())) throw InventoryRequests.busy();
       JsonObject result;
       if (route.equals("/capabilities") && get) {
         result = workspace.capabilities(); result.addProperty("client_id", session);
       } else if (route.equals("/stores") && get) result = workspace.stores();
       else if (route.equals("/source") && !get) result = sources.identify(authority, Path.of(text(body, "path")));
-      else if (route.equals("/source/describe") && !get) result = sources.describe(body.getAsJsonObject("source_ref"));
+      else if (route.equals("/source/describe") && !get) result = workspace.describe(inventoryClient, body.getAsJsonObject("source_ref"), body);
+      else if (route.equals("/source/entries/list") && !get) result = workspace.inventories.list(inventoryClient, body);
+      else if (route.equals("/source/entries/get") && !get) result = workspace.inventories.details(inventoryClient, body);
+      else if (route.equals("/source/inventory/close") && !get) result = workspace.inventories.release(inventoryClient, body);
       else if (route.equals("/source/resolve") && !get) {
         result = new JsonObject(); result.addProperty("path", sources.resolve(body.getAsJsonObject("source_ref")).toString());
       } else if (route.equals("/templates/list") && !get) result = workspace.templates(body);
@@ -97,6 +109,7 @@ final class VisualizationEndpoint implements AutoCloseable {
     } catch (Exception failure) {
       Throwable cause = failure;
       while (cause instanceof ExecutionException && cause.getCause() != null) cause = cause.getCause();
+      if (cause instanceof InventoryFailure inventory) { send(exchange, inventory.status, inventory.json()); return; }
       if (cause instanceof org.triplehelix.wpilogmcp.read.ReadException read) {
         var refusal = VisualizationReadFailure.of(read); var result = new JsonObject();
         result.addProperty("code", refusal.code()); result.addProperty("error", refusal.message()); result.addProperty("retryable", refusal.retryable());

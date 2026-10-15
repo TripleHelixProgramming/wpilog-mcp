@@ -466,6 +466,22 @@ count actual SHA-256 reads across two synthetic finalized rollover members, repe
 recorded-file admission and index eviction. They check path/size/time/identity/manifest changes,
 failed or unstable verification, quota eviction, idle expiry, concurrent cold/warm calls,
 nonblocking close and no late cache resurrection. Grant revocation still refuses cached proofs.
+Paged inventory tests enumerate generated 5,000-, 10,000- and 20,000-topic two-member
+recordings against independently generated names and counts. They exercise HTTP/MCP parity,
+cursor replay and tampering, session sharing/revocation, fresh details, schema dependencies,
+large metadata/unavailable rows, memory and response reservations, and expiry.
+Saturation checks block HTTP and MCP readers together, keep health/ping/close available, and
+check denied Origins, raw UTF-8 request boundaries (including whitespace and overwritten
+fields), normal/pressured session admission, mixed-batch ping/close/invalid-request behavior,
+notification suppression, and the aggregate batch reply cap. Real-socket floods fill both the
+data and refusal pools and exceed their I/O deadlines while clients stay connected; health
+must recover and request accounting must unwind. Direct stdio uses the raw line byte count too.
+Real writer fixtures interleave appends, declarations, renames, finalization and rollover with a fixed
+traversal. Blocked-admission tests retain reservations until cancellation unwinds and prove
+health, ping and close stay available under mixed HTTP/MCP pressure. These are server service
+checks; native overview paging and the season-sized declaration-burst performance gate remain
+separate work. Generated reference scenarios include the new tools; the published response
+reference is regenerated at release, not as a claim of new private-log replay evidence.
 The [checkpoint record](VISUALIZATION_PLAN.md#stage-3-recording-source-inspection-checkpoint-2026-10-15)
 links the local validation evidence.
 

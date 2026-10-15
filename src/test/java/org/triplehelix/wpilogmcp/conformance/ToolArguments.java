@@ -303,6 +303,8 @@ final class ToolArguments {
       switch (param) {
         case "api_version", "expected_revision" -> args.addProperty(param, 1);
         case "request_id", "view_id", "store_id" -> args.addProperty(param, "00000000-0000-4000-8000-000000000001");
+        case "inventory_id" -> args.addProperty(param, "00000000-0000-4000-8000-000000000001.00000000-0000-4000-8000-000000000002.expired");
+        case "row_ids" -> args.add(param, com.google.gson.JsonParser.parseString("[\"00000000-0000-4000-8000-000000000001\"]"));
         case "description" -> args.addProperty(param, "Conformance fixture");
         case "configuration_json" -> args.addProperty(param, org.triplehelix.wpilogmcp.visualization.VisualizationContracts.blank().toString());
         case "source_ref" -> args.add(param, com.google.gson.JsonParser.parseString("{\"kind\":\"unmanaged\",\"source_id\":\"00000000-0000-4000-8000-000000000001\"}"));

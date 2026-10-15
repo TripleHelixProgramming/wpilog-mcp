@@ -354,7 +354,10 @@ needed. The [extension guide](../vscode-extension/README.md#exploring-logs) has 
 For a currently recording, manifested WPILOG, the preview overview now shows a detached
 recording inventory and explicitly disables Blank layout and live template opening. Reopen the
 overview to inspect a newer prefix; use the existing Explorer for continuous display during
-this checkpoint. `visualization_source_inspect` returns the same anchored source and member
+this checkpoint. Local callers can separately opt into bounded recording discovery with
+`visualization_source_inspect` and `inventory_mode: "paged"`, then list/get/close the inventory
+through the [documented operations](TOOLS.md#visualization_source_entries_list). The overview
+UI still uses full inspection. In its default mode, `visualization_source_inspect` returns the same anchored source and member
 inventory, with clock evidence separate from sample timestamps. This is source admission for
 the upcoming live panels, not completion of the live visualization workflow.
 

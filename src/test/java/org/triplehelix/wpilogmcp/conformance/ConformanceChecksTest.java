@@ -15,6 +15,19 @@ import org.triplehelix.wpilogmcp.conformance.ConformanceChecks.Check;
 /** The rules the sweep applies, on hand-written results (review 6, section 6.2). */
 @DisplayName("ConformanceChecks")
 class ConformanceChecksTest {
+  @org.junit.jupiter.api.Test void nestedListLimitsStillCheckActualReturnedCounts() {
+    var result = com.google.gson.JsonParser.parseString("""
+        {"page":{"entries":[{"name":"a"},{"name":"b"}]},
+         "limits":{"page.entries":{"total":9,"returned":2,"limit":2}}}
+        """).getAsJsonObject();
+    assertTrue(ConformanceChecks.limitsConsistent(result));
+    result.getAsJsonObject("limits").getAsJsonObject("page.entries").addProperty("returned", 1);
+    assertFalse(ConformanceChecks.limitsConsistent(result));
+    result.getAsJsonObject("limits").getAsJsonObject("page.entries").addProperty("returned", 2);
+    result.getAsJsonObject("limits").getAsJsonObject("page.entries").addProperty("total", 1);
+    assertFalse(ConformanceChecks.limitsConsistent(result));
+    result.getAsJsonObject("page").remove("entries"); assertFalse(ConformanceChecks.limitsConsistent(result));
+  }
 
   static JsonObject json(String s) {
     return JsonParser.parseString(s).getAsJsonObject();

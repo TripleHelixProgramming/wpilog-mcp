@@ -2985,12 +2985,13 @@ Inspect a recorded file or captured recording by an admitted path or durable sou
 **Parameters:**
 
 - `api_version` (required, integer): `1`.
+- `inventory_mode` (optional, string): `full` (default) or `paged` for a recording source.
 - `path` (optional, string): Allowed local WPILOG file; alternative to source_ref.
 - `source_ref` (optional, object): Durable recorded, unmanaged or anchored session identity from source inspection.
 
 **Returns:** `api_version`, `status`, `source` on success; `code` and `error` on refusal.
 
-For an open manifested capture, `source.source_ref` is an anchored `session` reference accepted
+In full mode, for an open manifested capture, `source.source_ref` is an anchored `session` reference accepted
 by the native follow route. `source.inventory.members` retains each member's ID, final content
 hash when present, and native descriptor with entries, schemas and sample counts. The shared
 `entries` summary omits names with differing types or metadata and reports them in
@@ -3001,6 +3002,74 @@ empty finalized recording. A stateless inspection never holds or extrapolates a 
 Capabilities expose `live_source_inspection: true` and `max_recording_inventory_bytes: 4194304`;
 `live` remains false until the editor integration is complete. See the
 [standalone reference](STANDALONE.md#recorded-visualization-preview) for admission and staged limits.
+
+Paged mode returns a session-bound inventory ID, fixed member/clock summary and exact totals
+without a full entry or schema array. Check `recording_inventory_paging` in capabilities first.
+Use the following operations in the same transport session; close the inventory when finished.
+Expiry requires reopening from its anchored source reference. Paged inventory operations admit
+64 KiB of raw UTF-8 request bytes, including whitespace and overwritten fields. For HTTP MCP
+batches this is the entire exchange's size, applied to inventory operations; other controls
+still dispatch normally. Stdio counts the message line without its newline. A logical inventory
+reply fits 1 MiB, while an inventory-containing HTTP batch has a separate 8 MiB aggregate reply
+cap (`recording_inventory_limits.max_mcp_batch_reply_bytes`). Aggregate overflow stops the
+remaining calls with HTTP 413 and `retryable: false`; earlier calls may have executed, so inspect
+their state before sending smaller batches. See the standalone reference for refusal I/O and
+transport saturation. The overview UI still uses full mode.
+
+### `visualization_source_entries_list`
+
+Page a fixed recording inventory. Names use literal substring matching with `Locale.ROOT`
+case folding; types match exact declared strings. Order is exact UTF-16 name order.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `inventory_id` (required, string): Handle from a paged inspection in this session.
+- `cursor` (optional, string): Opaque continuation; omit query, types, unavailable and limit when supplied.
+- `query` (optional, string): Name substring, at most 256 Unicode code points.
+- `types` (optional, array): At most 16 exact declared types; a conflicting row matches any of its member types.
+- `unavailable` (optional, boolean): List oversized declarations separately, without a query or type filter.
+- `limit` (optional, integer): 1 to 256 names, default 256; the byte cap may shorten a page.
+
+**Returns:** `api_version`, `status`, `page`, `limits`. Page facts include `entries`, `returned`,
+`total_matching`, `total_entry_names`, `unavailable_entry_names`, `complete` and `next_cursor`.
+`limits.page.entries` records the true matching total, returned count and requested row ceiling.
+A zero-match result is `no_match` with `looked_for` and a refresh/filter hint. Unavailable rows
+carry a bounded `display_preview` and original UTF-16 lengths; the preview is not a binding name.
+Counts in rows are decimal strings. Conflicts retain per-member facts and have no aggregate count.
+Cursors replay exactly within their inventory; they do not authorize access. Refusals carry `code`
+and `error`, plus `retryable` and `retry_after_ms` when capacity is temporarily occupied.
+
+### `visualization_source_entries_get`
+
+Read fresh selected declarations and transitive native schemas. This rechecks source admission,
+writer identity and selected name/type/metadata evidence; it is not the old inventory boundary.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `inventory_id` (required, string): Handle from this session.
+- `row_ids` (required, array): 1 to 32 distinct opaque row IDs from this inventory; never save them in a view.
+
+**Returns:** `api_version`, `status`, `details` with `detail_revision`, current `members`,
+`descriptors`, `schema_problems`, `count_basis: "fresh_admission"` and
+`counts_grew_since_inventory`. Original `selected_rows` remain labeled inventory evidence;
+current counts are in the member descriptors. A selected declaration change or new member
+returns `INVENTORY_CHANGED`; refresh and reselect. Missing/invalid or conflicting schemas are
+explicit problems, not permission to infer a compatible binding. Oversized selections refuse
+without invalidating other rows. Expiry and source refusals use the same codes as listing.
+
+### `visualization_source_inventory_close`
+
+Release a session-owned inventory, including after access revocation. Repeated close in the same
+server epoch succeeds without returning contents; another session cannot close the handle.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `inventory_id` (required, string): Handle from this session.
+
+**Returns:** `api_version`, `status`, `inventory` containing `inventory_id` and `closed: true`.
 
 ### `visualization_template_list`
 
@@ -3271,7 +3340,7 @@ The server normalizes every tool result, however the tool built it, so these fie
 | `error` | For `error`: the message |
 | `inputs` | What a log-reading result was computed from. Tools that choose entries by role give `inputs.entries` (by role), `inputs.fields` (field paths, by role), and the time as `inputs.scope` (a named scope or windows) or `inputs.window` (`start_time`/`end_time`). Other tools give `inputs.log` and `inputs.entries_read` (the entries read, up to 10, with `entries_read_total` beyond that). An open capture adds `inputs.session_time_range` (`start_sec`, `end_sec`): the complete fixed prefix of that capture file available to the call, independent of its requested analysis scope. A rolled session has several files; each call and its range describe one file. `compare_matches` instead adds `inputs.session_time_ranges`, keyed by each live log's path. Later calls can see a longer prefix |
 | `skipped` | Sections not produced, each `{section, reason}` |
-| `limits` | For each list cut short by a limit: `{total, returned, limit}` |
+| `limits` | For each list cut short by a limit: `{total, returned, limit}`; a dotted key such as `"page.entries"` identifies a nested list |
 | `warnings` | Anything the caller should know that does not change the status |
 | `_metadata.non_finite_fields` | Fields whose value could not be computed (NaN or infinite). They are emitted as `null`, never as a bare `NaN` (which is not valid JSON), and named in a warning |
 | `_metadata.log_truncation` | Present on every result computed from a log that was not read to its end: what was not read, and the time range that was. Most robot logs end inside their last record, because the robot is switched off while logging; that alone raises no warning. A log that lost more (garbage or unreadable records at its end, records set aside for their timestamps) gets the same text as a warning too. `compare_matches` gives each log's as `comparisons[].log_truncation` |

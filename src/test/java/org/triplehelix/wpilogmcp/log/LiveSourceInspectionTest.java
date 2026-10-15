@@ -72,6 +72,100 @@ class LiveSourceInspectionTest {
     return workspace.inspect(Authority.STDIO_LOCAL, request);
   }
   JsonObject inventory() throws Exception { return workspace.sources.describe(ref()); }
+  final RecordingInventories.Client inventoryClient = new RecordingInventories.Client(Authority.STDIO_LOCAL, "stdio", () -> true);
+  JsonObject paged() throws Exception { return workspace.inventories.open(inventoryClient, ref()); }
+  static JsonObject inventoryId(JsonObject inventory) { var request = new JsonObject(); request.add("inventory_id", inventory.get("inventory_id")); return request; }
+  JsonObject inventoryPage(JsonObject inventory) throws Exception { return workspace.inventories.list(inventoryClient, inventoryId(inventory)); }
+  JsonObject selectedDetails(JsonObject inventory, JsonObject page) throws Exception {
+    var request = inventoryId(inventory); var ids = new JsonArray();
+    for (var entry : page.getAsJsonArray("entries")) if (entry.getAsJsonObject().get("name").getAsString().equals("NT:/x")) ids.add(entry.getAsJsonObject().get("row_id"));
+    request.add("row_ids", ids); return workspace.inventories.details(inventoryClient, request);
+  }
+
+  @Test void pagedTraversalStaysFrozenWhileFreshDetailsSeeAppendsAndRefreshSeesDeclarations() throws Exception {
+    append(10_000_000, 7); var fixed = paged(); var before = inventoryPage(fixed);
+    var late = new Announce("/late", 2, "double", null, new JsonObject()); writer.announce(late); append(9_000_000, 8); now.set(14_000_000.0);
+    assertEquals(before, inventoryPage(fixed), "A page reads detached facts, never the moving prefix");
+    var details = selectedDetails(fixed, before); assertTrue(details.get("counts_grew_since_inventory").getAsBoolean());
+    assertEquals("2", details.getAsJsonArray("descriptors").get(0).getAsJsonObject().getAsJsonObject("snapshot").getAsJsonObject("sample_counts").get("NT:/x").getAsString());
+    assertEquals(9.0, details.get("start_time_sec").getAsDouble()); assertEquals(14.0, details.getAsJsonObject("clock").get("robot_time_sec").getAsDouble());
+    assertEquals(12.0, fixed.getAsJsonObject("clock").get("robot_time_sec").getAsDouble());
+    var fresh = paged(); assertEquals(fixed.get("total_entry_names").getAsInt() + 1, fresh.get("total_entry_names").getAsInt());
+  }
+
+  @Test void pagedDetailsSurviveFinalizationOnlyWithTheSamePersistedWriter() throws Exception {
+    append(10_000_000, 7); var fixed = paged(); var page = inventoryPage(fixed); finalizeRecording(false);
+    var details = selectedDetails(fixed, page); assertTrue(details.get("finalized").getAsBoolean());
+    assertEquals(LogStore.contentHash(file), details.getAsJsonArray("members").get(0).getAsJsonObject().get("content_sha256").getAsString());
+    assertEquals(page, inventoryPage(fixed));
+    session.getAsJsonArray("files").get(0).getAsJsonObject().getAsJsonObject("provenance").remove("writer_identity"); writeManifest();
+    assertEquals("INVENTORY_CHANGED", assertThrows(InventoryFailure.class, () -> selectedDetails(fixed, page)).code);
+  }
+
+  @Test void changedSelectedTypeNeverAppearsUnderItsOldRowId() throws Exception {
+    append(10_000_000, 7); var fixed = paged(); var page = inventoryPage(fixed);
+    // Reannouncements in one writer intentionally keep the first declared type. Simulate
+    // a changed finalized member with the same claimed writer to exercise the detail proof.
+    String metadata = index.live().entries().get("NT:/x").metadata();
+    finalizeRecording(false);
+    try (var out = new WpilogWriter(file, "")) { int id = out.start("NT:/x", "double", metadata, 0); out.append(id, 10_000_000, WpilogWriter.encodeDouble(7)); }
+    var completed = session.getAsJsonArray("files").get(0).getAsJsonObject();
+    completed.addProperty("sha256", LogStore.contentHash(file)); completed.addProperty("size_bytes", Files.size(file)); writeManifest();
+    assertEquals("INVENTORY_CHANGED", assertThrows(InventoryFailure.class, () -> selectedDetails(fixed, page)).code);
+    assertEquals(page, inventoryPage(fixed));
+  }
+
+  @Test void detachedGrantTicketSurvivesARecordedAliasAndMemberRename() throws Exception {
+    append(10_000_000, 1); var fixed = paged(); var before = inventoryPage(fixed);
+    var moved = file.resolveSibling("renamed.wpilog"); Files.move(file, moved); logs.relocateCapture(index.live(), file, moved); file = moved;
+    session.addProperty("id", "33333333-3333-4333-8333-333333333333"); session.add("merged_session_ids", StoreJson.JSON.toJsonTree(List.of(SESSION)));
+    session.getAsJsonObject("open_capture").addProperty("path", "renamed.wpilog"); writeManifest();
+    assertEquals(before, inventoryPage(fixed));
+    assertEquals(file.toString(), selectedDetails(fixed, before).getAsJsonArray("descriptors").get(0).getAsJsonObject().getAsJsonObject("snapshot").get("path").getAsString());
+  }
+
+  @Test void aNewRolloverMemberRequiresAListingRefreshBeforeDetails() throws Exception {
+    append(10_000_000, 1); var fixed = paged(); var page = inventoryPage(fixed);
+    var extra = file.resolveSibling("earlier.wpilog");
+    try (var out = new WpilogWriter(extra, "")) { out.start("NT:/other", "double", "", 0); }
+    var completed = new LogFile("earlier.wpilog", LogStore.contentHash(extra), Files.size(extra), "wpilog",
+        new Provenance("captured", null, "earlier.wpilog", WHEN, false), true, 0, 0, WHEN, WHEN, "pit_clock", false, null);
+    session.getAsJsonArray("files").add(StoreJson.JSON.toJsonTree(completed)); writeManifest();
+    assertEquals(page, inventoryPage(fixed));
+    assertEquals("INVENTORY_CHANGED", assertThrows(InventoryFailure.class, () -> selectedDetails(fixed, page)).code);
+  }
+
+  @Test void changedSelectedMetadataAndShrunkenCountsRequireRefresh() throws Exception {
+    append(10_000_000, 1); var fixed = paged(); var page = inventoryPage(fixed);
+    var properties = new JsonObject(); properties.addProperty("unit", "updated");
+    writer.properties(new org.triplehelix.wpilogmcp.nt4.ControlMessage.Properties("/x", null, properties));
+    assertEquals("INVENTORY_CHANGED", assertThrows(InventoryFailure.class, () -> selectedDetails(fixed, page)).code);
+    workspace.inventories.release(inventoryClient, inventoryId(fixed));
+    var next = paged(); var nextPage = inventoryPage(next); String metadata = index.live().entries().get("NT:/x").metadata();
+    finalizeRecording(false);
+    try (var out = new WpilogWriter(file, "")) { out.start("NT:/x", "int64", metadata, 0); }
+    var completed = session.getAsJsonArray("files").get(0).getAsJsonObject();
+    completed.addProperty("sha256", LogStore.contentHash(file)); completed.addProperty("size_bytes", Files.size(file)); writeManifest();
+    assertEquals("INVENTORY_CHANGED", assertThrows(InventoryFailure.class, () -> selectedDetails(next, nextPage)).code);
+  }
+
+  @Test void inventoryAndNativeFollowHaveIndependentLifetimes() throws Exception {
+    append(10_000_000, 7);
+    var source = new org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Source() {
+      public org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Prefix open() throws java.io.IOException { return workspace.sources.admitRecording(ref()).prefix(); }
+    };
+    var query = new org.triplehelix.wpilogmcp.read.ReadQuery("NT:/x", List.of(), org.triplehelix.wpilogmcp.read.ReadQuery.Order.FILE, 4096, 1 << 20);
+    try (var follow = new org.triplehelix.wpilogmcp.read.server.OrdinalFollow("fixture-epoch", source, List.of(query),
+        new org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Budget(8 << 20), 4096, 1 << 20,
+        org.triplehelix.wpilogmcp.read.server.OrdinalFollow.FrontierScope.QUERIES)) {
+      var inventory = paged(); var page = inventoryPage(inventory);
+      try (var first = follow.next(follow.initialCursor())) {
+        workspace.inventories.release(inventoryClient, inventoryId(inventory));
+        try (var replay = follow.next(follow.initialCursor())) { assertEquals(first.payload(), replay.payload()); }
+      }
+      var remaining = paged(); follow.close(); assertEquals(page.get("total_matching"), inventoryPage(remaining).get("total_matching"));
+    }
+  }
   JsonObject member(JsonObject inventory, String name) {
     return inventory.getAsJsonArray("members").asList().stream().map(JsonElement::getAsJsonObject)
         .filter(m -> m.get("member_id").getAsString().equals(name)).findFirst().orElseThrow();

@@ -47,14 +47,36 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
     this.verified = verified;
   }
   public RecordingReference reference() { return reference; }
-  @Override public void authorize() throws IOException {
-    if (recording == null) return;
-    try (var lease = catalogs.acquire()) {
-      if (lease.value() == null || recording.members().stream().anyMatch(m -> !lease.value().roots().contains(m.root())))
-        throw new IOException("SOURCE_UNAVAILABLE: recording store is no longer configured");
-      for (var member : recording.members()) logs.validateSourcePath(member.facts().path());
-    }
+  @FunctionalInterface public interface Access { void check() throws IOException; }
+  /** Grant-only ticket: no prefix, descriptors, catalog snapshot or recording manifest retained. */
+  public Access access() {
+    if (recording == null) throw new IllegalStateException("Open the recording before detaching its access ticket");
+    record Location(Path root, Path path, String member) {}
+    var locations = new java.util.concurrent.atomic.AtomicReference<>(recording.members().stream()
+        .map(m -> new Location(m.root(), m.facts().path(), m.facts().file().provenance().originalName())).toList());
+    var catalogs = this.catalogs; var logs = this.logs; var reference = this.reference;
+    return () -> {
+      try (var lease = catalogs.acquire()) {
+        var retained = locations.get();
+        if (lease.value() == null || retained.stream().anyMatch(m -> !lease.value().roots().contains(m.root())))
+          throw new java.nio.file.AccessDeniedException("Recording store is no longer configured");
+        try { for (var member : retained) logs.validateSourcePath(member.path()); }
+        catch (java.nio.file.NoSuchFileException moved) {
+          // Only a missing old path needs a fresh metadata resolution. The catalog owns
+          // recording aliases; ordinary pages never reopen a prefix or hash file contents.
+          var current = lease.value().recording(reference); var updated = new ArrayList<Location>();
+          for (var before : retained) {
+            var member = current.members().stream().filter(m -> m.facts().file().provenance().originalName().equals(before.member())).findFirst()
+                .orElseThrow(() -> new java.nio.file.AccessDeniedException("Recording member is no longer available"));
+            updated.add(new Location(member.root(), logs.validateSourcePath(member.facts().path()), before.member()));
+          }
+          locations.set(List.copyOf(updated));
+        }
+      }
+    };
   }
+
+  @Override public void authorize() throws IOException { if (recording != null) access().check(); }
   @Override public OrdinalFollow.Prefix open() throws IOException {
     long version = logs.catalogPublication();
     try (var lease = catalogs.acquire()) {

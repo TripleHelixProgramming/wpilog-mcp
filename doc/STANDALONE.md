@@ -596,14 +596,18 @@ binary uploads keep their own streaming limits. A body ending before that discar
 the route's normal size refusal. At the bound or deadline, the exchange closes before response
 headers, so closing a response cannot start another blocking drain; the sender may lose the reply.
 At most 32 MCP requests run at once (fewer on small machines), with overload reported as HTTP
-503 rather than an unbounded wait. Data streams and native reads use 16 separate workers;
+503 when refusal capacity is available. Data streams and native reads use 16 separate workers;
 store transfers and imports have another four, so readers cannot exhaust upload capacity.
-Excess transfers receive JSON `BUSY` with HTTP 503 and a one-second retry hint. Ten seconds without IO progress ends a transfer, releasing
+Excess transfers normally receive JSON `BUSY` with HTTP 503 and a one-second retry hint. Each
+streaming pool has two final-refusal workers with the same I/O deadline and no waiting queue;
+MCP execution overload uses the ordinary pool's refusal workers. If those workers are also full,
+the exchange closes before response headers, without draining its unread body on a dispatch
+worker. The client can therefore receive a disconnect instead of a refusal. Ten seconds without IO progress ends a transfer, releasing
 its reads, so clients that stop reading cannot occupy health's dispatch workers indefinitely.
 Writes use progress units of at most 64 KiB. Health and registration use a dispatch pool growing
 from four to 32 workers without a waiting queue. If other handlers occupy all 32, the JDK still
 rejects the next exchange by closing its connection without an HTTP response. That reset differs
-from the explicit MCP and streaming admission refusals.
+from the bounded refusal-worker fallback above.
 
 For browser-based or multi-client access, start the `http` server from `servers.yaml`:
 ```bash
@@ -676,7 +680,7 @@ member renames, retained session aliases and finalization, using the native foll
 owner. `members` preserves each member's descriptor and final hash; `entries` summarizes only
 names with matching types and metadata, and `entry_conflicts` explains the omitted names.
 Member schemas remain separate and field bindings are not inferred from this summary.
-The inventory is capped at 4 MiB (`max_recording_inventory_bytes`); its native member admission
+The default full inventory is capped at 4 MiB (`max_recording_inventory_bytes`); its native member admission
 retains the follower's 64-member and 128 MiB index limits. It is a detached inspection, not a
 retained read lease or a guarantee that later requests see the same prefix.
 Repeated inspections and recorded-file admissions share up to 256 successful finalized-file
@@ -700,6 +704,79 @@ views and reading them through single-file data routes remain unavailable until 
 The overview labels this inspection-only state and points to the existing Explorer for live
 following. Reopen it for a fresh inventory. A finalized file opened afresh retains the recorded
 content-hash workflow; an already-held recording reference keeps its original identity.
+
+Paged recording discovery is also available to local HTTP/MCP callers; the overview UI has not
+switched to it yet. Capabilities publish `recording_inventory_paging: true` and
+`recording_inventory_limits`. POST `/source/describe` with `source_ref` and
+`inventory_mode: "paged"` returns a fixed summary, anchored source, member proofs, clock facts,
+exact totals, `inventory_id`, `server_epoch` and `expires_at`. Omitting the mode or choosing
+`full` keeps the existing reply; unknown modes refuse. Only anchored recording sources support
+paged mode. A client must check the capability and mode echo, and cap its paged reply at 1 MiB.
+
+POST `/source/entries/list` with `inventory_id` and optional `query`, `types`, `unavailable`,
+`limit`; subsequent pages use only `inventory_id` and `cursor`. Names use literal substring
+matching with `Locale.ROOT` folding and exact UTF-16 ordering; types match exact declarations.
+A conflicting row matches any of its member types. Pages carry `entries`, `returned`,
+`total_matching`, `total_entry_names`, `unavailable_entry_names`, `complete` and `next_cursor`.
+A cursor binds the epoch, inventory, filter, row ceiling and next position; retries return the
+same page. Unavailable declarations have a separate `unavailable: true` traversal with bounded
+previews and original lengths. Previews cannot be used as binding names. Large metadata alone
+does not hide a signal. Rows retain metadata comparison digests internally, never raw metadata.
+
+POST `/source/entries/get` with `inventory_id` and 1–32 distinct `row_ids` reopens admission and
+returns fresh member descriptors with selected entries and transitive schemas, `detail_revision`,
+`count_basis` and `counts_grew_since_inventory`. The returned `selected_rows` describe the old
+listing; current counts belong to the member descriptors. Declaration/type/metadata changes,
+new members or changed writer identity require refresh and reselection. Finalization continues
+only with matching writer proof, and fresh details include the verified final hash. Missing,
+invalid or conflicting schemas remain explicit; details do not decide binding compatibility.
+POST `/source/inventory/close` with `inventory_id` is idempotent and works after grant revocation.
+The MCP counterparts and their result envelopes are in the [tool reference](TOOLS.md#visualization_source_entries_list).
+
+Every handle and cursor belongs to the opening MCP session, including requests made through
+HTTP. Stdio uses its process session. Session removal, shutdown, 60 seconds of idle time or
+five minutes of absolute age release the inventory; successful reads renew only idle expiry.
+Listing retains a fixed prefix's compact facts and closes all native mappings before publishing
+the handle. Every read, including replay, rechecks current grants without reopening payloads.
+A missing old pathname may trigger catalog-only alias resolution; ordinary pages do not scan
+or hash the recording again. Details use fresh admission and the workspace's verified-hash memory.
+
+The server admits eight handles total and two per session, including builds; each inventory
+has 32 MiB of accounted metadata within a 64 MiB aggregate, and at most 200,000 member-entry
+occurrences. Each logical inventory reply is at most 1 MiB including the larger HTTP/MCP
+encoding. Pages contain at most 256 names. Requests admit at most 64 KiB of raw UTF-8 input,
+including whitespace and overwritten JSON fields. For MCP over HTTP this counts the entire
+exchange, including batch syntax, and applies to each inventory operation in that exchange;
+other batch members retain their normal dispatch. Stdio counts the raw message line without
+its newline. Filters allow a 256-code-point query and 16 exact types and must also fit their
+authenticated continuation inside the request cap.
+
+MCP HTTP batches containing inventory operations have a separate 8 MiB aggregate encoded
+reply cap, advertised as `recording_inventory_limits.max_mcp_batch_reply_bytes`. This includes
+all replies and JSON array framing, even results from other tools. Crossing it stops the
+remaining batch and returns HTTP 413 `RESOURCE_LIMIT`, `retryable: false`; earlier calls may
+already have executed. Inspect their state before submitting smaller batches. A batch is not
+a transaction. Single-operation clients keep the 1 MiB logical inventory reply limit.
+
+Four dedicated request workers and an 8 MiB response reservation pool bound open/list/detail
+work; reservations last through response writing. Close, health and session control do not use
+those four slots. Capacity refusals retain normal local-access/session admission, basic JSON
+and JSON-RPC validation, notification suppression and mixed-batch control dispatch. Only the
+affected inventory data operation gets a retryable capacity refusal. Refusal body reads and
+writes have the ordinary streaming I/O deadline; if final-refusal workers are also full, the
+exchange closes before response headers as described under HTTP Transport.
+Two build workers have no waiting queue, reserve 32 MiB before admission, and have a ten-second
+response deadline. A blocked OS read may outlive cancellation: its reservation remains until
+it unwinds, its prefix closes, and it cannot publish a handle. These are admission bounds, not
+measured heap or disk-latency guarantees.
+
+Refusals are 400 for invalid mode/filter/cursor, 403 for access denial, 410 `INVENTORY_EXPIRED`
+with a reopen-and-restart remedy, 409 `INVENTORY_CHANGED` with a refresh-and-reselect remedy,
+or 413 `RESOURCE_LIMIT`. Resource refusals include boolean `retryable`; temporary pressure
+also includes `retry_after_ms: 1000`. Existing native source refusals retain their codes. HTTP
+and MCP return the same page facts; MCP adds true-total `limits` and `no_match` with a hint when
+nothing matches. Old handles cannot survive a server restart. This service does not enable
+live template binding or panel rendering; those gates remain pending.
 
 Store templates use `visualizations/templates/<uuid>.json`. Each atomic metadata record includes
 the definition and retry/import receipts, under the existing store queue/lock. A file is bounded

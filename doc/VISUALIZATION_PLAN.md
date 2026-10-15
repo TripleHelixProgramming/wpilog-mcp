@@ -9,9 +9,10 @@ accepted bounded-refusal/client-cap follow-up as `b57eaf6`. Immutable opened job
 as `14eff73`, and the accepted catalog-retry fix and review-9 disposition as `0f1cd3e`. Shared
 recording-source inspection is accepted by review 10 and committed as `ffc1f63`. Queried-frontier
 metadata is accepted by review 11 and committed as `7a8b656`, retaining 1 MiB panel pages.
-Review 12 accepts the bounded inventory design with amendments. The current checkpoint builds
-its shared verified-hash prerequisite; inventory paging and the declaration-burst workloads
-remain proposed contracts and unrun gates. The renderer remains recorded-only. Close cancellation
+Review 12 accepts the bounded inventory design with amendments. Its shared verified-hash
+prerequisite is committed as `6d204a4`. The current checkpoint implements the shared paged
+inventory service; the overview adapter and declaration-burst performance workloads remain
+pending. The renderer remains recorded-only. Close cancellation
 remains unverified on the manual dialog, Linux/Windows native runs are outstanding, and Save As
 uses the specified refusal fallback. No publication or version change is part of this work.
 
@@ -444,7 +445,8 @@ Missing or updated templates do not invalidate pinned configuration snapshots. R
 
 ### Bounded recording inventories (proposed before panel wiring)
 
-**Design accepted with review-12 amendments; paging is not implemented.** Queried follow metadata solves delivery after
+**Design accepted with review-12 amendments; the shared server operations are implemented in
+this checkpoint. Overview paging and the performance workload remain pending.** Queried follow metadata solves delivery after
 selection; it does not solve discovery. The recording overview still requests every member's
 complete descriptor plus a combined name list in one 4 MiB reply. Review 11 confirmed that
 20,000 topics can now follow at 1 MiB but cannot be selected through that overview. Keep the
@@ -456,7 +458,8 @@ encodes all member descriptors before its summary; the [shared source service](.
 closes its admitted prefix after each description; the [recording admission owner](../src/main/java/org/triplehelix/wpilogmcp/read/server/CatalogRecordingSource.java)
 owns grants, member limits and finalized hash checks. The [overview controller](../vscode-extension/src/visualization/recordedPreview.ts)
 currently requests one full inventory. These are verified current facts; the operations and
-limits below are proposed replacements for that discovery path, not claims about today's API.
+limits below now govern the additive server API. The overview behavior remains the next
+implementation checkpoint.
 
 Choose a **short-lived, detached inventory snapshot**, with compact signal pages and separate
 selected-entry details. Stateless keyset paging over unique ordered names can avoid duplicates,
@@ -500,14 +503,14 @@ declarations may expose the exact summed count; conflicting declarations retain 
 facts and do not receive a fabricated aggregate. Counts are decimal strings, with checked sums.
 Each row has an opaque inventory-local ID. Do not persist that ID in a view or template.
 
-#### Proposed operations and payloads
+#### Server operations and payloads
 
 All new operations require the existing trusted-local authority; reading additionally requires
 current path/store admission. Inventory IDs use unguessable random values and bind to the
 opening transport session (the stdio process is its session); another local session cannot
 read, replay or close that handle. Session removal releases its inventories. Close remains
 available to the opening session after grant revocation and reveals no contents.
-These names are proposals, not registered tools or routes. HTTP paths below are relative to
+These tools and routes are registered. HTTP paths below are relative to
 `/visualizations/v1`; HTTP and MCP call the same workspace operations.
 
 | Operation | HTTP | MCP | Result |
@@ -554,7 +557,9 @@ types, counts and conflict status, not raw metadata, schema text or filesystem p
 unrepresentable name/type row becomes an explicit unavailable row with a bounded display
 preview, original lengths, row ID and reason; the preview is never usable as a binding name.
 Unavailable rows have their own paged `unavailable` filter and exact count in every page;
-ordinary name/type matching excludes them and says so. This avoids one huge declaration
+ordinary name/type matching excludes them and says so. A filter must fit its authenticated
+continuation within the 64 KiB request cap; otherwise admission explains how to shorten it.
+This avoids one huge declaration
 hiding other signals, without pretending its full text was searched. Large *metadata* alone
 does not make a name unavailable because the listing never retains that text.
 
@@ -580,20 +585,20 @@ inventory cursor authorizes access or substitutes for the follower's full histor
 follow jobs still use immutable queries, 1 MiB pages and queried-frontier negotiation. Snapshot
 handles, cursors and detail revisions are ephemeral and never enter saved source references.
 
-#### Proposed resource and lifecycle bounds
+#### Resource and lifecycle bounds
 
-These are initial admission limits to validate, not measured heap or latency claims. Publish
-them through capabilities and reject before allocation; any adjustment needs recorded evidence.
+These are enforced server admission limits, not measured heap or latency claims. Capabilities
+publish the server limits; the extension row remains pending. Adjustments need recorded evidence.
 
-| Resource | Proposed bound and outcome |
+| Resource | Bound and outcome |
 | --- | --- |
 | Inventory handles | 8 total per server workspace, at most 2 per opening transport session (including builds). A third from one session or a ninth overall refuses with retryable `RESOURCE_LIMIT`, without evicting another overview. Capabilities publish both limits. One window cannot consume all eight; this is a per-session share, not a per-user identity guarantee. |
 | Detached listing | 32 MiB accounted allocation per inventory, 64 MiB aggregate including builds; 200,000 member-entry occurrences per inventory. Exceeding a structural limit is non-retryable and explained. |
-| Page/details/summary | 1 MiB encoded per reply, including the transport envelope; at most 256 names per list page and 32 selected detail names. The shared owner sizes against the larger HTTP/MCP encoding so both adapters return the same data page within the cap. Requests at most 64 KiB, with name-filter text at most 256 Unicode code points and at most 16 exact types. |
-| Response work | At most 4 concurrent data-producing inventory requests (open/list/details), no waiting queue; reserve two reply limits per request in a separate 8 MiB server response pool. Close and expiry bypass these slots. Temporary saturation is retryable; bounded inventory workers cannot occupy the control workers. |
+| Page/details/summary | 1 MiB encoded per reply, including the transport envelope; at most 256 names per list page and 32 selected detail names. The shared owner sizes against the larger HTTP/MCP encoding so both adapters return the same data page within the cap. Requests at most 64 KiB of raw UTF-8 bytes, with name-filter text at most 256 Unicode code points and at most 16 exact types. MCP counts the entire HTTP exchange, including batch syntax and whitespace, for each inventory operation; stdio counts its message line without the newline. Inventory-containing MCP batches additionally cap the aggregate encoded reply, including array framing and other tools' replies, at 8 MiB. Overflow stops remaining calls and returns non-retryable HTTP 413 with a warning that earlier calls may have executed; inspect their state before resubmission. |
+| Response work | At most 4 concurrent data-producing inventory requests (open/list/details), no waiting queue; reserve two reply limits per request in a separate 8 MiB server response pool. Close and expiry bypass these slots. Temporary saturation is retryable; refusals preserve normal session/JSON-RPC validation, notification suppression and mixed-batch controls. Refusal I/O uses bounded streaming workers and the progress watchdog. Exhausting final-refusal capacity closes the exchange before headers, without an unread-body drain on control workers. |
 | Inventory construction | At most 2 read workers, no waiting build queue; reserve the per-inventory allowance before starting. A 10-second response deadline cancels publication and requests cooperative cancellation. |
 | Lifetime | 60 seconds idle, 5 minutes absolute; successful access renews only idle expiry. Close, idle/absolute expiry and shutdown reclaim state. Restart invalidates handles with the server epoch. |
-| Extension | At most two list pages retained per overview, one in-flight list/detail request per overview; share the existing 64 MiB window encoded allowance with follow jobs, reserving twice the reply cap before sending. Retained decoded rows in the host and webview both count toward the planned window decoded-data budget. |
+| Extension (pending) | At most two list pages retained per overview, one in-flight list/detail request per overview; share the existing 64 MiB window encoded allowance with follow jobs, reserving twice the reply cap before sending. Retained decoded rows in the host and webview both count toward the planned window decoded-data budget. |
 
 The server metadata and response pools are separate from native indexes and the follow pool;
 measure and report all of them, not just page bytes. Build reservations downgrade to the
@@ -1721,3 +1726,49 @@ new handle quota, MCP schema, automatic overview refresh or prefix-open metric i
 implemented here. Linux/Windows, native editor work and the 32-lease declaration-burst/season
 workloads remain unrun. Local evidence is recorded in
 `/private/tmp/wpilog-visualization-stage3-verified-hashes/validation.md`.
+
+
+### Stage 3 paged inventory service checkpoint (2026-10-15)
+
+The accepted verified-hash prerequisite is committed as `6d204a4`, with exactly its 12 reviewed
+paths. This checkpoint implements the shared server prerequisite before the overview adapter:
+explicit paged negotiation, detached name/type/count rows, fixed clock/member summaries,
+session-bound authenticated cursors, fresh selected details, typed refusals and bounded
+construction/lifetime. HTTP and MCP share the owner and reserve response bytes until transport
+writing finishes. Four dedicated request workers leave control traffic available; two builders
+retain reservations through cancellation until blocked admission actually unwinds.
+
+Verification and remaining gaps are recorded in
+`/private/tmp/wpilog-visualization-stage3-inventory-service/validation.md`. The current editor
+still uses full inspection, so its large-recording discovery ceiling remains until the next
+overview checkpoint. No live binding, panel rendering, automatic overview refresh or new editor
+behavior is claimed here. The declaration-burst workload, season-sized catalog cost comparison,
+native Linux/Windows runs and broader Stage 3 performance gate remain unrun. Source references,
+metadata limits and the full-history follower proof are unchanged by choosing paged discovery.
+
+
+### Stage 3 review 13 disposition (2026-10-15)
+
+Review 13 reproduced the inventory algorithms and full suites but found three transport blockers:
+final capacity responses could drain unread bodies indefinitely on dispatch workers; MCP checked
+normalized JSON instead of raw input; and capacity shortcuts bypassed sessions, notifications
+and mixed-batch controls. Those passing suites did not prove the refusal contract.
+
+The uncommitted follow-up adds real-socket failing-first regressions for both final streaming
+and MCP body-admission refusals. Two final-refusal workers per streaming pool own refusal I/O
+under the existing watchdog; exhaustion closes before headers. Raw UTF-8 input counts now reach
+normal MCP dispatch, including stdio. Session checks, basic JSON/JSON-RPC validation, notification
+suppression and ordinary batch controls retain their existing owners. A pressured inventory data
+operation alone receives a typed retryable refusal.
+
+The separate batch design concern is settled here: 1 MiB bounds each logical inventory reply;
+8 MiB bounds all replies and array framing in an inventory-containing MCP HTTP batch. Capabilities
+advertise the latter separately. The 64 KiB raw request bound applies to the entire exchange for
+inventory members, including whitespace and batch syntax. Batch overflow stops remaining calls
+and warns that earlier calls may have executed; a caller must inspect state before resubmitting.
+These are transport limits, not a claim of a measured physical heap bound.
+
+Failing-first, mutation and final-check evidence is recorded in
+`/private/tmp/wpilog-visualization-stage3-inventory-refusals/validation.md`. The checkpoint remains
+uncommitted for focused re-review. Overview integration, native editor paging/expiry behavior,
+live panels and the declaration-burst/season-sized performance gates remain pending.

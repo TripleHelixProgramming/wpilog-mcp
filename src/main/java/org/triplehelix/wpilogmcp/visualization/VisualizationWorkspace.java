@@ -21,14 +21,16 @@ public final class VisualizationWorkspace implements AutoCloseable {
   public final VisualizationService views;
   public final ControlNotifications notifications = new ControlNotifications();
   public final RecordedSources sources;
+  public final RecordingInventories inventories;
   private final ServerIdentity identity;
   private final LogManager logs;
   private final StoreDoor door;
   public VisualizationWorkspace(ServerIdentity identity, LogManager logs) throws IOException {
     this.identity = identity; this.logs = logs; door = new StoreDoor(logs::getAllowedDirectories);
     views = new VisualizationService(identity); views.onChanged(notifications::changed); sources = new RecordedSources(logs, views, door);
+    inventories = new RecordingInventories(sources);
   }
-  public void close() { views.close(); try { sources.close(); } catch (IOException e) { throw new java.io.UncheckedIOException(e); } }
+  public void close() { inventories.close(); views.close(); try { sources.close(); } catch (IOException e) { throw new java.io.UncheckedIOException(e); } }
   public JsonObject capabilities() {
     var result = identity.describe(); result.addProperty("stage", "reusable-recorded-preview");
     result.add("blank_configuration", VisualizationContracts.blank()); result.add("schema", VisualizationContracts.schema());
@@ -42,6 +44,7 @@ public final class VisualizationWorkspace implements AutoCloseable {
     result.addProperty("max_template_receipts", 64); result.addProperty("max_template_metadata_bytes", 1048576);
     result.addProperty("live", false); result.addProperty("live_source_inspection", true);
     result.addProperty("max_recording_inventory_bytes", RecordingInventory.MAX_BYTES);
+    result.addProperty("recording_inventory_paging", true); result.add("recording_inventory_limits", inventories.capabilities());
     result.addProperty("templates", true); result.add("roles", VisualizationBindings.roles());
     result.add("declared_types", JsonParser.parseString("[\"boolean\",\"int64\",\"float\",\"double\",\"string\",\"json\",\"raw\",\"boolean[]\",\"int64[]\",\"float[]\",\"double[]\",\"string[]\",\"struct:Name\",\"struct:Name[]\",\"structarray:Name\"]"));
     return result;
@@ -76,10 +79,18 @@ public final class VisualizationWorkspace implements AutoCloseable {
     return save(caller, null, id, views.get(id), args);
   }
   public JsonObject inspect(Authority caller, JsonObject request) throws Exception {
+    boolean paged = RecordingInventories.mode(request).equals("paged");
+    if (paged) RecordingInventories.checkRequest(request);
     if (request.has("path") == request.has("source_ref")) throw new IllegalArgumentException("Name exactly one path or source_ref");
     var out = request.has("path") ? sources.identify(caller, Path.of(text(request, "path"))) : new JsonObject();
     var source = request.has("source_ref") ? request.getAsJsonObject("source_ref") : out.getAsJsonObject("source_ref");
-    out.add("source_ref", source); out.add("inventory", sources.describe(source)); return out;
+    if (paged) out = new JsonObject();
+    out.add("source_ref", source); out.add("inventory", describe(RecordingInventories.Client.current(caller), source, request)); return out;
+  }
+  public JsonObject describe(RecordingInventories.Client client, JsonObject source, JsonObject request) throws Exception {
+    String mode = RecordingInventories.mode(request);
+    if (mode.equals("full")) return sources.describe(source);
+    RecordingInventories.checkRequest(request); return inventories.open(client, source);
   }
   public JsonObject create(Authority authority, JsonObject body) throws Exception {
     var source = body.getAsJsonObject("source_ref"); sources.resolve(source);

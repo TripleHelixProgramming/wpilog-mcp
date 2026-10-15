@@ -102,13 +102,18 @@ public class McpMessageHandler {
 
   /** Only transports supply authority; no session or null-session convention implies trust. */
   public HandlerResult handleMessage(JsonObject message, McpSession session, CallerContext.Authority authority) {
+    return handleMessage(message, session, authority, InventoryRequests.Admission.DIRECT);
+  }
+  HandlerResult handleMessage(JsonObject message, McpSession session, CallerContext.Authority authority, InventoryRequests.Admission admission) {
     CallerContext.set(authority);
     SessionContext.set(session);
-    try { return dispatchMessage(message, session); }
+    try {
+      return dispatchMessage(message, session, admission);
+    }
     finally { CallerContext.clear(); SessionContext.clear(); }
   }
 
-  private HandlerResult dispatchMessage(JsonObject message, McpSession session) {
+  private HandlerResult dispatchMessage(JsonObject message, McpSession session, InventoryRequests.Admission admission) {
     var id = message.get("id");
     var params = message.get("params");
     boolean isNotification = id == null || id.isJsonNull();
@@ -142,7 +147,7 @@ public class McpMessageHandler {
           yield HandlerResult.shutdown(JsonRpc.createResponse(id, new JsonObject()));
         }
         case "tools/list" -> handleToolsList(id);
-        case "tools/call" -> handleToolCall(id, params);
+        case "tools/call" -> handleToolCall(id, params, message, admission);
         case "ping" -> HandlerResult.of(JsonRpc.createResponse(id, new JsonObject()));
         case "prompts/list" -> {
           var res = new JsonObject();
@@ -266,7 +271,7 @@ public class McpMessageHandler {
     return HandlerResult.of(JsonRpc.createResponse(id, result));
   }
 
-  private HandlerResult handleToolCall(JsonElement id, JsonElement params) {
+  private HandlerResult handleToolCall(JsonElement id, JsonElement params, JsonObject message, InventoryRequests.Admission admission) {
     if (params == null || params.isJsonNull()) {
       return invalidParams(id, "Missing params");
     }
@@ -310,6 +315,14 @@ public class McpMessageHandler {
       return invalidParams(id, "arguments must be an object");
     }
 
+    // Shape validation and notification suppression belong to normal dispatch, even when
+    // transport admission refuses data work. A mixed batch's ping/close still executes.
+    var refusal = admission.refusal(message);
+    if (refusal != null) {
+      var body = org.triplehelix.wpilogmcp.tools.ResponseBuilder.error(refusal.getMessage()).addProperty("api_version", 1).build();
+      refusal.json().entrySet().forEach(entry -> body.add(entry.getKey(), entry.getValue()));
+      return HandlerResult.of(JsonRpc.createResponse(InventoryRequests.responseId(message), wrapToolResult(body, true)));
+    }
     logger.info("Executing tool '{}' with {} argument(s)", toolName, arguments.size());
     long startTime = System.currentTimeMillis();
     try {

@@ -28,9 +28,7 @@ final class RecordingInventory {
   private static JsonObject bounded(OrdinalFollow.Prefix prefix) throws IOException {
     var out = new JsonObject(); var members = new JsonArray();
     var entries = new TreeMap<String, JsonObject>(); var conflicts = new TreeMap<String, JsonObject>();
-    double start = Double.POSITIVE_INFINITY, end = Double.NEGATIVE_INFINITY;
-    Double robotTime = null; int estimates = 0, bytes = 0;
-    boolean truncated = false, damaged = false;
+    var facts = new Facts(prefix.finalized()); int bytes = 0;
     for (var member : prefix.members()) {
       var snapshot = member.snapshot();
       var descriptor = ReadWire.descriptor("", snapshot);
@@ -54,6 +52,36 @@ final class RecordingInventory {
         entry.addProperty("sample_count", Math.addExact(entry.get("sample_count").getAsLong(), snapshot.sampleCount(info.name())));
         entry.getAsJsonArray("member_ids").add(member.id());
       }
+      facts.accept(snapshot);
+    }
+    var list = new JsonArray(); entries.values().forEach(list::add); var problems = new JsonArray(); conflicts.values().forEach(problems::add);
+    out.addProperty("source_kind", "session"); out.addProperty("recording_id", prefix.recordingId()); out.addProperty("finalized", prefix.finalized());
+    out.add("members", members); out.add("entries", list); out.add("entry_conflicts", problems); out.add("clock", facts.clock());
+    facts.finish(out, prefix.recordingId());
+    encodedSize(out, MAX_BYTES); return out;
+  }
+  static JsonObject summary(OrdinalFollow.Prefix prefix) throws IOException {
+    var facts = new Facts(prefix.finalized()); var out = new JsonObject(); var members = new JsonArray();
+    for (var member : prefix.members()) {
+      facts.accept(member.snapshot());
+      var item = new JsonObject(); item.addProperty("member_id", member.id());
+      item.addProperty("generation", member.generation()); item.addProperty("writer_identity", member.writerIdentity());
+      item.addProperty("content_sha256", member.contentSha256()); item.add("boundary", ReadWire.boundary(member.snapshot().boundary()));
+      item.addProperty("live", member.snapshot().live()); item.addProperty("truncated", member.snapshot().truncated());
+      item.addProperty("damaged", member.snapshot().damaged()); item.addProperty("truncation_message", member.snapshot().truncationMessage());
+      members.add(item);
+    }
+    out.addProperty("source_kind", "session"); out.addProperty("recording_id", prefix.recordingId());
+    out.addProperty("finalized", prefix.finalized()); out.add("members", members); out.add("clock", facts.clock());
+    facts.finish(out, prefix.recordingId()); return out;
+  }
+  private static final class Facts {
+    final boolean finalized;
+    double start = Double.POSITIVE_INFINITY, end = Double.NEGATIVE_INFINITY;
+    Double robotTime; int estimates;
+    boolean truncated, damaged;
+    Facts(boolean finalized) { this.finalized = finalized; }
+    void accept(org.triplehelix.wpilogmcp.read.ReadSnapshot snapshot) throws IOException {
       truncated |= snapshot.truncated(); damaged |= snapshot.damaged();
       if (!(snapshot instanceof ManagedReadSnapshot managed)) throw new IOException("SOURCE_UNAVAILABLE: recording inspection needs the server's managed prefix");
       var log = managed.log();
@@ -61,25 +89,26 @@ final class RecordingInventory {
         if (Double.isFinite(log.minTimestamp())) start = Math.min(start, log.minTimestamp());
         if (Double.isFinite(log.maxTimestamp())) end = Math.max(end, log.maxTimestamp());
       }
-      if (!prefix.finalized() && log instanceof LiveLog.View live && live.robotTimeEstimateSec().isPresent()) {
+      if (!finalized && log instanceof LiveLog.View live && live.robotTimeEstimateSec().isPresent()) {
         robotTime = live.robotTimeEstimateSec().getAsDouble(); estimates++;
       }
     }
-    // Multiple simultaneous estimates cannot be selected by member order. A later display
-    // policy may hold a previously trusted edge; a stateless inspection reports absence.
-    if (estimates != 1) robotTime = null;
-    var clock = new JsonObject(); clock.addProperty("robot_time_sec", robotTime);
-    finite(clock, "last_sample_time_sec", end); clock.addProperty("waiting_for_time_sync", !prefix.finalized() && robotTime == null);
-    finite(clock, "right_edge_sec", robotTime == null ? end : robotTime);
-    clock.addProperty("basis", robotTime != null ? "robot_estimate" : Double.isFinite(end) ? "last_sample" : prefix.finalized() ? "unavailable" : "waiting_for_time_sync");
-    var list = new JsonArray(); entries.values().forEach(list::add); var problems = new JsonArray(); conflicts.values().forEach(problems::add);
-    out.addProperty("source_kind", "session"); out.addProperty("recording_id", prefix.recordingId()); out.addProperty("finalized", prefix.finalized());
-    out.add("members", members); out.add("entries", list); out.add("entry_conflicts", problems); out.add("clock", clock);
-    finite(out, "start_time_sec", start); finite(out, "end_time_sec", end); finite(out, "duration_sec", end - start);
-    out.addProperty("inventory_state", "available"); out.addProperty("label", "Recording " + prefix.recordingId());
-    out.addProperty("clock_basis", "Recorded robot timestamps in seconds; clock.basis names the available right-edge evidence");
-    out.addProperty("truncated", truncated); out.addProperty("damaged", damaged);
-    encodedSize(out, MAX_BYTES); return out;
+    JsonObject clock() {
+      // Multiple simultaneous estimates cannot be selected by member order. A later display
+      // policy may hold a previously trusted edge; a stateless inspection reports absence.
+      if (estimates != 1) robotTime = null;
+      var clock = new JsonObject(); clock.addProperty("robot_time_sec", robotTime);
+      finite(clock, "last_sample_time_sec", end); clock.addProperty("waiting_for_time_sync", !finalized && robotTime == null);
+      finite(clock, "right_edge_sec", robotTime == null ? end : robotTime);
+      clock.addProperty("basis", robotTime != null ? "robot_estimate" : Double.isFinite(end) ? "last_sample" : finalized ? "unavailable" : "waiting_for_time_sync");
+      return clock;
+    }
+    void finish(JsonObject out, String recordingId) {
+      finite(out, "start_time_sec", start); finite(out, "end_time_sec", end); finite(out, "duration_sec", end - start);
+      out.addProperty("inventory_state", "available"); out.addProperty("label", "Recording " + recordingId);
+      out.addProperty("clock_basis", "Recorded robot timestamps in seconds; clock.basis names the available right-edge evidence");
+      out.addProperty("truncated", truncated); out.addProperty("damaged", damaged);
+    }
   }
   private static void finite(JsonObject object, String key, double value) {
     if (Double.isFinite(value)) object.addProperty(key, value); else object.add(key, JsonNull.INSTANCE);

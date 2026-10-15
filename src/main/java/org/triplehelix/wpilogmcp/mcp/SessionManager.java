@@ -63,6 +63,7 @@ public class SessionManager {
     var removed = new McpSession[1];
     sessions.computeIfPresent(id, (key, session) -> {
       removed[0] = session;
+      session.removed();
       onRemoval.accept(key);
       return null;
     });
@@ -81,6 +82,7 @@ public class SessionManager {
     var count = new AtomicInteger();
     sessions.keySet().forEach(id -> sessions.computeIfPresent(id, (key, session) -> {
       if (session.getLastAccessedAt().isBefore(cutoff)) {
+        session.removed();
         onRemoval.accept(key);
         count.incrementAndGet();
         return null;
