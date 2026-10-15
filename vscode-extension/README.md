@@ -91,6 +91,12 @@ counts. The preview limits a view to 32 series, with no hidden-view data request
 cancellation of stale replies. Continuous live views and the aggregate decoded-buffer setting
 arrive in Stage 3.
 
+An open manifested recording now has an inspection-only overview with member count, declaration
+conflicts and explicit clock basis. Blank layout and template opening stay disabled there;
+use the existing Explorer for continuous display and reopen the overview for a fresh inventory.
+Recorded-file views keep the workflow above. This source-admission checkpoint does not yet wire
+the shared follow broker into visualization panels.
+
 Draft gestures are persisted on the local server, with a local recovery journal; drafts do not
 trigger native Save prompts. **Save view…** chooses a labeled writable store, or **Create store…**
 creates one through an empty import without enrolling any folders. It clears draft undo history;

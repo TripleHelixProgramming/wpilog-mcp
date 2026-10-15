@@ -909,6 +909,28 @@ then greatest file ordinal for equal timestamps, with true problem counts and bo
 Plots reuse the existing Arrow endpoint, decoder and uPlot; they never derive table statistics
 from buckets. No second log cache or acquisition client is introduced.
 
+Recording inspection now uses that workspace's catalog lease with `CatalogRecordingSource`,
+the same admission owner as ordinal follow. `VisualizationContracts.recordingReference` owns
+the wire-to-reference conversion for both paths. An open manifested capture is identified by
+origin, session and original provenance anchor; its member prefixes retain the follower's
+writer-identity, hash, same-recording, rename and grant checks. Inspection closes every prefix
+before returning. It neither installs a continuing lease nor resolves a recording to one path.
+`RecordingInventory` retains each member's native descriptor and a name summary; conflicting
+types or metadata are reported without selecting a member. The summary is not a field/schema
+binding decision. Both retained member descriptors and the final inventory have a 4 MiB encoded
+cap; each descriptor also retains the native reader's allocation preflight. This is separate
+from the later display-memory budget. Clock facts use the fixed `LiveLog.View`'s shared NT4
+estimate, or the indexed last sample if no finite estimate exists. No telemetry is decoded for
+counts or bounds, and no receipt/wall time enters the sample axis. A stateless inspection cannot
+hold a previous display edge; that policy still belongs to the upcoming live display controller.
+The Source Overview can inspect a recording, while live view creation, template binding and
+the single-file analysis routes remain unavailable. Capabilities distinguish inspection from
+the still-false `live` editor capability.
+`VisualizationReadFailure` shares the typed native-reader refusal mapping across HTTP and MCP,
+including temporary inventory changes versus permanent recording-history changes. Finalized
+members are hash-verified on each new inspection admission; this metadata operation must not
+become per-frame polling in place of the long-lived broker.
+
 Each working UUID owns its controller, panel, data generation and cancellation. Configuration
 revisions always reach the renderer, but the data key contains only source identity, requirements,
 series use and recorded range. Title, geometry, style and checkpoint edits preserve current buffers

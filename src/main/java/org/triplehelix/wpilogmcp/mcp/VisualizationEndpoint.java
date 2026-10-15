@@ -97,6 +97,11 @@ final class VisualizationEndpoint implements AutoCloseable {
     } catch (Exception failure) {
       Throwable cause = failure;
       while (cause instanceof ExecutionException && cause.getCause() != null) cause = cause.getCause();
+      if (cause instanceof org.triplehelix.wpilogmcp.read.ReadException read) {
+        var refusal = VisualizationReadFailure.of(read); var result = new JsonObject();
+        result.addProperty("code", refusal.code()); result.addProperty("error", refusal.message()); result.addProperty("retryable", refusal.retryable());
+        send(exchange, refusal.status(), result); return;
+      }
       String message = Objects.toString(cause.getMessage(), cause.getClass().getSimpleName());
       String code = message.matches("^[A-Z_]+:.*") ? message.substring(0, message.indexOf(':')) : "INVALID_REQUEST";
       int status = cause instanceof java.nio.file.AccessDeniedException || cause instanceof org.triplehelix.wpilogmcp.log.LogFileException ? 403
@@ -106,9 +111,12 @@ final class VisualizationEndpoint implements AutoCloseable {
     }
   }
   private static void send(HttpExchange exchange, JsonObject result) throws IOException {
+    send(exchange, 200, result);
+  }
+  private static void send(HttpExchange exchange, int status, JsonObject result) throws IOException {
     var bytes = ReadWire.bytes(result, 16 << 20);
     exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
-    exchange.sendResponseHeaders(200, bytes.length); try (var out = exchange.getResponseBody()) { out.write(bytes); }
+    exchange.sendResponseHeaders(status, bytes.length); try (var out = exchange.getResponseBody()) { out.write(bytes); }
   }
   private static void error(HttpExchange exchange, int status, String code, String message) throws IOException {
     LocalIngestionEndpoint.error(exchange, status, code, message);

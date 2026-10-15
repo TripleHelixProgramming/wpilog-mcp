@@ -351,6 +351,13 @@ needed. The [extension guide](../vscode-extension/README.md#exploring-logs) has 
     inspection before another edit. An attached Explorer receives the accepted revision without
     a popup. Live following and explicit display handoff remain later stages.
 
+For a currently recording, manifested WPILOG, the preview overview now shows a detached
+recording inventory and explicitly disables Blank layout and live template opening. Reopen the
+overview to inspect a newer prefix; use the existing Explorer for continuous display during
+this checkpoint. `visualization_source_inspect` returns the same anchored source and member
+inventory, with clock evidence separate from sample timestamps. This is source admission for
+the upcoming live panels, not completion of the live visualization workflow.
+
 ## Part II: Running the server
 
 ### 6. The shared server on a laptop

@@ -274,6 +274,7 @@ public final class LiveLog implements LogData, AutoCloseable {
     LiveLog source() { return LiveLog.this; }
     private final State seen;
     private final double scopeEnd;
+    private final double robotTimeEstimateSec;
     private final String seenPath;
     private final Map<String, EntryInfo> entries;
     private final ConcurrentHashMap<String, Integer> lengths = new ConcurrentHashMap<>();
@@ -288,9 +289,16 @@ public final class LiveLog implements LogData, AutoCloseable {
     /** An index replacement cannot impersonate a retained writer merely by reusing its path. */
     public String captureIdentity() { return captureIdentity; }
 
+    /** A fixed call observes the shared NT4 estimate once. Absence is distinct from the last
+     * sample: callers must not describe a sample timestamp as evidence of time synchronization. */
+    public java.util.OptionalDouble robotTimeEstimateSec() {
+      return Double.isFinite(robotTimeEstimateSec) ? java.util.OptionalDouble.of(robotTimeEstimateSec) : java.util.OptionalDouble.empty();
+    }
+
     private View(State seen, String seenPath, LogFileAccess.Lease claim) {
       this.seen = seen; this.seenPath = seenPath; this.claim = claim;
       Double now = seen.open() ? robotNowUs.get() : null;
+      robotTimeEstimateSec = now != null && Double.isFinite(now) ? now / 1_000_000.0 : Double.NaN;
       scopeEnd = now == null ? seen.max() : Math.max(seen.max(), now / 1_000_000.0);
       entries = seen.infos();
       schemas = StructSchemas.fromLog(entries, name -> {

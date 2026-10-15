@@ -19,15 +19,31 @@
     get("cursor").value = at === undefined ? "" : String(at); send("cursor", { at });
   }
   function facts(summary) {
-    source = summary; get("title").textContent = summary.label; get("source").textContent = "Recorded source · local preview";
-    const catalog = summary.catalog, rows = [["Source", summary.label], ["Identity", summary.source_ref.kind === "recorded" ? "Managed recorded content" : "Local file fingerprint"]];
+    source = summary; const recording = summary.source_ref.kind === "session";
+    get("title").textContent = summary.label; get("source").textContent = recording ? "Recording · inspection preview" : "Recorded source · local preview";
+    for (const id of ["blank", "template-open"]) if (get(id)) get(id).disabled = recording;
+    get("warning").textContent = recording ? "Live visualization panels are not available yet. Use the existing Explorer to follow this source." : "";
+    const catalog = summary.catalog, rows = [["Source", summary.label], ["Identity", recording ? "Anchored recording" : summary.source_ref.kind === "recorded" ? "Managed recorded content" : "Local file fingerprint"]];
     rows.push(["Robot", catalog?.robot?.name ?? catalog?.robot?.serial_number ?? "Unavailable: not recorded"]);
     rows.push(["Session", catalog?.session?.started_at ?? "Unavailable: no recorded session"]);
     rows.push(["Match", catalog?.session?.match_number == null ? "Unavailable: not recorded" : `${catalog.session.match_type ?? ""} ${catalog.session.match_number}`]);
     rows.push(["File size", `${summary.size_bytes} bytes`]);
     get("facts").replaceChildren(...rows.flatMap(([a, b]) => [el("dt", a), el("dd", String(b))]));
   }
-  function templateAction(type) { if (type === "importTemplate" || type === "saveTemplate" || selectedTemplate) send(type, { template_ref: selectedTemplate }); }
+  function templateAction(type) {
+    if (source?.source_ref.kind === "session" && ["templateCheck", "applyTemplate", "replaceTemplate"].includes(type)) {
+      get("template-status").textContent = "Live template binding is not available in this inspection preview."; return;
+    }
+    if (type === "importTemplate" || type === "saveTemplate" || selectedTemplate) send(type, { template_ref: selectedTemplate });
+  }
+  function recordingClock(clock) {
+    switch (clock.basis) {
+      case "robot_estimate": return "Robot clock estimate";
+      case "last_sample": return clock.waiting_for_time_sync ? "Last sample; waiting for time sync" : "Last recorded sample";
+      case "waiting_for_time_sync": return "Waiting for time sync";
+      default: return "No recorded samples";
+    }
+  }
   if (get("template-find")) get("template-find").onclick = () => send("templateSearch", { query: get("template-search").value });
   if (get("templates")) get("templates").onchange = () => {
     selectedTemplate = templates[Number(get("templates").value)]?.template_ref;
@@ -199,7 +215,15 @@
     if (message.type === "summary" && overview) { facts(message.summary); get("status").textContent = "Source details available; signal inventory loading…"; return; }
     if (message.type === "inventory") {
       inventory = message.inventory;
-      if (overview) { get("inventory").textContent = `${inventory.entries.length} signals · Duration ${inventory.duration_sec ?? "unavailable"} s · ${inventory.clock_basis}${inventory.truncated || inventory.damaged ? " · Incomplete or damaged file: " + (inventory.truncation_message ?? "see reader diagnostics") : " · Indexed to the recorded file boundary"}`; get("status").textContent = "Recorded source ready"; }
+      if (overview) {
+        const recording = inventory.source_kind === "session";
+        const clock = recording ? `Robot timestamps in seconds · ${recordingClock(inventory.clock)}` : inventory.clock_basis;
+        const members = recording ? ` · ${inventory.members.length} member(s) · ${inventory.entry_conflicts.length} conflicting declaration(s)` : "";
+        const state = inventory.truncated || inventory.damaged ? "Incomplete or damaged file: " + (inventory.truncation_message ?? "see reader diagnostics")
+          : recording ? "Snapshot of the recording; close and reopen this overview to update" : "Indexed to the recorded file boundary";
+        get("inventory").textContent = `${inventory.entries.length} signals · Duration ${inventory.duration_sec ?? "unavailable"} s · ${clock}${members} · ${state}`;
+        get("status").textContent = recording ? "Recording inspected · live panels pending" : "Recorded source ready";
+      }
       else { signals(); get("source").textContent = inventory.label; get("clock").textContent = inventory.clock_basis; }
       return;
     }

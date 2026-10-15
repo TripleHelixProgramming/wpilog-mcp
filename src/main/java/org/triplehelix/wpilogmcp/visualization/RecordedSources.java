@@ -14,6 +14,7 @@ import org.triplehelix.wpilogmcp.mcp.CallerContext.Authority;
 import org.triplehelix.wpilogmcp.read.*;
 import org.triplehelix.wpilogmcp.read.catalog.StoreReadCatalog;
 import org.triplehelix.wpilogmcp.read.internal.ReadWire;
+import org.triplehelix.wpilogmcp.read.server.CatalogRecordingSource;
 import org.triplehelix.wpilogmcp.store.*;
 
 /** Source admission does no value decoding. Locators stay local; catalog identities stay portable.
@@ -36,9 +37,9 @@ public final class RecordedSources implements AutoCloseable {
     final List<Path> roots; final StoreReadCatalog value; int users; boolean retired;
     Catalog(List<Path> roots, StoreReadCatalog value) { this.roots = roots; this.value = value; }
   }
-  private final class Lease implements AutoCloseable {
+  private final class Lease implements CatalogRecordingSource.Lease {
     final Catalog owner; Lease(Catalog owner) { this.owner = owner; }
-    StoreReadCatalog value() { return owner.value; }
+    public StoreReadCatalog value() { return owner.value; }
     public void close() throws IOException {
       boolean release;
       synchronized (catalogLock) { release = --owner.users == 0 && owner.retired; }
@@ -84,11 +85,22 @@ public final class RecordedSources implements AutoCloseable {
       if (StoreCatalog.containing(path).isPresent()) {
         if (catalog == null) throw new IOException("SOURCE_UNAVAILABLE: no configured store catalog");
         var file = catalog.resolve(path).orElseThrow(() -> new IOException("SOURCE_UNAVAILABLE: file is not manifested"));
-        if (file.facts().session() != null && file.facts().session().openCapture() != null
-            && file.facts().file().sha256() == null) throw new IOException("SOURCE_UNAVAILABLE: live visualization arrives in Stage 3");
         var store = catalog.snapshot().stores().stream().filter(s -> s.header().id().equals(file.storeId())).findFirst().orElseThrow();
-        ref.addProperty("kind", "recorded"); ref.addProperty("origin_store_id", StoreReadCatalog.originId(store));
-        ref.addProperty("content_sha256", file.facts().file().sha256());
+        String origin = StoreReadCatalog.originId(store);
+        if (StoreReadCatalog.open(file.facts())) {
+          var provenance = file.facts().file().provenance();
+          if (CaptureRecording.of(provenance, origin).isEmpty()) throw new IOException("SOURCE_UNAVAILABLE: open file has no captured recording provenance");
+          ref.addProperty("kind", "session"); ref.addProperty("origin_store_id", origin);
+          ref.addProperty("session_id", file.facts().session().id());
+          var anchor = new JsonObject(); anchor.addProperty("original_name", provenance.originalName()); anchor.addProperty("recording_started_at", provenance.importedAt());
+          ref.add("anchor_member", anchor);
+          // The catalog owns same-recording membership and alias rules; identity admission is
+          // not a guess from the session directory, a filename, or an NT connection address.
+          catalog.recording(VisualizationContracts.recordingReference(ref));
+        } else {
+          ref.addProperty("kind", "recorded"); ref.addProperty("origin_store_id", origin);
+          ref.addProperty("content_sha256", file.facts().file().sha256());
+        }
         result.add("catalog", StoreJson.JSON.toJsonTree(file.facts()));
       } else {
         var locator = new JsonObject(); locator.addProperty("path", path.toString()); locator.add("fingerprint", fingerprint(path));
@@ -123,7 +135,7 @@ public final class RecordedSources implements AutoCloseable {
         return path;
       }
     }
-    if (!ref.get("kind").getAsString().equals("unmanaged")) throw new IOException("SOURCE_UNAVAILABLE: live sources require Stage 3");
+    if (!ref.get("kind").getAsString().equals("unmanaged")) throw new IOException("SOURCE_UNAVAILABLE: a recording requires ordinal follow, not a single-file data route; live panel integration is pending");
     var locator = views.sourceLocator(UUID.fromString(ref.get("source_id").getAsString()));
     var path = logs.validateSourcePath(Path.of(locator.get("path").getAsString()));
     if (!locator.get("fingerprint").equals(fingerprint(path))) throw new IOException("SOURCE_UNAVAILABLE: the recorded file changed; open its new overview");
@@ -143,6 +155,14 @@ public final class RecordedSources implements AutoCloseable {
     } catch (IOException | RuntimeException e) { snapshot.close(); throw e; }
   }
   public JsonObject describe(JsonObject source) throws IOException {
+    var ref = VisualizationContracts.source(source);
+    if (ref.get("kind").getAsString().equals("session")) {
+      var recording = new CatalogRecordingSource(logs, this::catalog, VisualizationContracts.recordingReference(ref));
+      try (var prefix = recording.open()) {
+        var out = RecordingInventory.describe(prefix);
+        recording.authorize(); return out;
+      }
+    }
     try (var snapshot = open(source)) {
       var out = ReadWire.descriptor("", snapshot); var entries = new JsonArray();
       snapshot.entries().values().stream().sorted(Comparator.comparing(EntryInfo::name)).forEach(info -> {

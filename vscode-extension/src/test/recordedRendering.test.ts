@@ -59,7 +59,7 @@ test("series membership, selector, source and recorded range changes cancel only
 function renderer(overview = false) {
   class Element {
     children: Element[] = []; dataset: any = {}; value = ""; textContent = ""; selectedOptions: unknown[] = [];
-    clientWidth = 400; clientHeight = 240; className = "";
+    clientWidth = 400; clientHeight = 240; className = ""; disabled = false;
     append(...items: Element[]) { this.children.push(...items); }
     replaceChildren(...items: Element[]) { this.children = items; }
     setAttribute() {} addEventListener() {} querySelectorAll() { return []; }
@@ -114,6 +114,42 @@ test("overview shows unreadable shared records beside its readable saved views",
     unreadable: [{ store_id: "store", file: "bad.json", reason: "Unsupported schema version" }] } });
   assert.match(r.get("saved").text(), /Readable/);
   assert.match(r.get("unreadable").text(), /bad.json.*Unsupported schema version/);
+});
+
+test("a recording overview is explicitly inspection-only until live panels are wired", () => {
+  const r = renderer(true);
+  r.send({ type: "summary", summary: { source_ref: { kind: "session" }, label: "Synthetic recording", size_bytes: 12 } });
+  assert.equal(r.get("blank").disabled, true, "do not offer a view the server cannot create yet");
+  assert.equal(r.get("template-open").disabled, true);
+  r.send({ type: "inventory", inventory: { source_kind: "session", entries: [], members: [{ member_id: "one" }], entry_conflicts: [{ name: "/x" }], duration_sec: 2, clock: { basis: "last_sample", waiting_for_time_sync: true }, clock_basis: "Robot time" } });
+  assert.match(r.get("status").text(), /Recording inspected/);
+  assert.match(r.get("inventory").text(), /1 member.*1 conflicting/);
+  assert.match(r.get("inventory").text(), /Last sample; waiting for time sync/);
+  assert.doesNotMatch(r.get("inventory").text(), /last_sample|clock\.basis/);
+  for (const [basis, waiting, label] of [
+    ["robot_estimate", false, "Robot clock estimate"], ["last_sample", false, "Last recorded sample"],
+    ["waiting_for_time_sync", true, "Waiting for time sync"], ["unavailable", false, "No recorded samples"],
+  ] as const) {
+    r.send({ type: "inventory", inventory: { source_kind: "session", entries: [], members: [], entry_conflicts: [],
+      clock: { basis, waiting_for_time_sync: waiting }, clock_basis: "clock.basis is a protocol tag" } });
+    assert.ok(r.get("inventory").text().includes(label), basis);
+    assert.doesNotMatch(r.get("inventory").text(), /clock\.basis/);
+  }
+  assert.match(r.get("warning").text(), /existing Explorer/);
+  r.send({ type: "templates", catalog: { templates: [{ template_ref: { origin: "bundled", revision: 1, template_id: "fixture" }, template: { name: "Fixture" } }] } });
+  r.get("templates").value = "0"; (r.get("templates") as any).onchange();
+  assert.equal(r.messages.some(m => m.type === "templateCheck"), false);
+  assert.match(r.get("template-status").text(), /Live template binding is not available/);
+});
+
+test("recorded overview actions remain enabled after receiving recorded facts", () => {
+  const r = renderer(true);
+  r.send({ type: "summary", summary: { source_ref: { kind: "session" }, label: "Capture", size_bytes: 12 } });
+  r.send({ type: "summary", summary: { source_ref: { kind: "recorded" }, label: "File", size_bytes: 12 } });
+  assert.equal(r.get("blank").disabled, false); assert.equal(r.get("template-open").disabled, false);
+  r.send({ type: "inventory", inventory: { entries: [], duration_sec: 2, clock_basis: "Recorded clock" } });
+  assert.equal(r.get("status").text(), "Recorded source ready");
+  assert.equal(r.get("warning").text(), "");
 });
 
 

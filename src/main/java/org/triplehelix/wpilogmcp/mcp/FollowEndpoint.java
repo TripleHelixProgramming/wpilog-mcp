@@ -103,12 +103,7 @@ final class FollowEndpoint implements AutoCloseable {
   private void create(HttpExchange exchange, JsonObject body) throws IOException {
     if (!body.has("source_ref") || !body.get("source_ref").isJsonObject()) throw new IllegalArgumentException("source_ref must be an object");
     var ref = org.triplehelix.wpilogmcp.visualization.VisualizationContracts.source(body.getAsJsonObject("source_ref"));
-    if (!ReadWire.text(ref, "kind").equals("session")) throw new IllegalArgumentException("A follow requires a captured session source_ref");
-    var anchor = ref.getAsJsonObject("anchor_member");
-    var hashes = new ArrayList<String>();
-    if (ref.has("finalized_members")) for (var member : ref.getAsJsonArray("finalized_members")) hashes.add(ReadWire.text(member.getAsJsonObject(), "content_sha256"));
-    var reference = new RecordingReference(ReadWire.text(ref, "origin_store_id"), ReadWire.text(ref, "session_id"),
-        ReadWire.text(anchor, "original_name"), ReadWire.text(anchor, "recording_started_at"), hashes);
+    var reference = org.triplehelix.wpilogmcp.visualization.VisualizationContracts.recordingReference(ref);
     var queries = new ArrayList<ReadQuery>();
     if (!body.has("queries") || !body.get("queries").isJsonArray()) throw new IllegalArgumentException("queries must be an array");
     for (var query : body.getAsJsonArray("queries")) {

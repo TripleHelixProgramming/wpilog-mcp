@@ -1,0 +1,244 @@
+/*
+ * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
+ * SPDX-License-Identifier: MIT
+ */
+package org.triplehelix.wpilogmcp.log;
+
+import org.triplehelix.wpilogmcp.visualization.*;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import com.google.gson.*;
+import java.nio.file.*;
+import java.time.*;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.capture.*;
+import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
+import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.mcp.CallerContext.Authority;
+import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
+import org.triplehelix.wpilogmcp.nt4.ValueFrame;
+import org.triplehelix.wpilogmcp.nt4.client.*;
+import org.triplehelix.wpilogmcp.store.*;
+import org.triplehelix.wpilogmcp.store.StoreManifest.*;
+
+/** The fixture is a real writer-owned prefix and a synthetic manifested recording. Assertions
+ * use its declared counts/timestamps, not a second call to the inventory being tested. */
+class LiveSourceInspectionTest {
+  @TempDir Path temp;
+  static final String WHEN = "2026-01-01T00:00:00Z";
+  static final String STORE = "11111111-1111-4111-8111-111111111111";
+  static final String SESSION = "22222222-2222-4222-8222-222222222222";
+  final Announce topic = new Announce("/x", 1, "int", null, new JsonObject());
+  final AtomicReference<Double> now = new AtomicReference<>(12_000_000.0);
+  LogManager logs; VisualizationWorkspace workspace; CaptureWriter writer; CaptureIndex index;
+  Path file, manifest; JsonObject session;
+
+  @BeforeEach void start() throws Exception {
+    temp = temp.toRealPath(); logs = new LogManager(); logs.addAllowedDirectory(temp);
+    var robot = Files.createDirectories(temp.resolve("robots/fixture"));
+    var directory = Files.createDirectories(robot.resolve("sessions/2026-01-01/session"));
+    file = directory.resolve("capture.wpilog"); manifest = directory.resolve("session.json");
+    Files.writeString(temp.resolve("store.json"), StoreJson.JSON.toJson(new Header(1, WHEN, STORE, List.of())));
+    Files.writeString(robot.resolve("robot.json"), StoreJson.JSON.toJson(new Robot("fixture", "fixture", null, null, "logged")));
+    index = new CaptureIndex((address, start) -> file, logs, 0, now::get);
+    writer = new CaptureWriter(Clock.fixed(Instant.parse(WHEN), ZoneOffset.UTC), new ManualScheduler(), CapturePolicy.ALL, index);
+    writer.connected(RobotAddress.uri("127.0.0.1", 5810, "inspection-test"), "networktables.first.wpi.edu");
+    writer.timeSync(10_000_000, 0); writer.announce(topic);
+    var open = new OpenCapture("capture.wpilog", new Provenance("captured", null, "capture.wpilog", WHEN, false), Files.size(file), 0, 0);
+    session = StoreJson.JSON.toJsonTree(new Session(SESSION, WHEN, WHEN, "pit_clock", null, null, null, null, List.of(), open)).getAsJsonObject();
+    session.getAsJsonObject("open_capture").getAsJsonObject("provenance").addProperty("writer_identity", writer.session().writerIdentity());
+    writeManifest(); workspace = new VisualizationWorkspace(ServerIdentity.ephemeral(), logs);
+  }
+  @AfterEach void stop() throws Exception {
+    logs.addAllowedDirectory(temp);
+    if (writer != null) writer.close();
+    if (workspace != null) workspace.close();
+    logs.shutdown();
+  }
+  void writeManifest() throws Exception { Files.writeString(manifest, session.toString()); logs.catalogPublished(); }
+  void append(long time, long value) { writer.value(topic, new ValueFrame(1, time, 2, value), 0); }
+  JsonObject ref() {
+    return JsonParser.parseString("""
+        {"kind":"session","origin_store_id":"%s","session_id":"%s",
+         "anchor_member":{"original_name":"capture.wpilog","recording_started_at":"%s"}}
+        """.formatted(STORE, SESSION, WHEN)).getAsJsonObject();
+  }
+  JsonObject inspectPath() throws Exception {
+    var request = new JsonObject(); request.addProperty("path", file.toString());
+    return workspace.inspect(Authority.STDIO_LOCAL, request);
+  }
+  JsonObject inventory() throws Exception { return workspace.sources.describe(ref()); }
+  JsonObject member(JsonObject inventory, String name) {
+    return inventory.getAsJsonArray("members").asList().stream().map(JsonElement::getAsJsonObject)
+        .filter(m -> m.get("member_id").getAsString().equals(name)).findFirst().orElseThrow();
+  }
+
+  @Test void inspectionAdmitsTheAnchoredRecordingWithoutDecodingTelemetryOrFlatteningItToAPath() throws Exception {
+    append(10_000_000, 7); index.live().advance(11_000_000); index.live().expire();
+    assertEquals(0, index.live().hotRecordCount()); long reads = index.live().mappedReadCount();
+    var result = inspectPath(); assertEquals(ref(), result.get("source_ref"));
+    var inventory = result.getAsJsonObject("inventory");
+    assertEquals("session", inventory.get("source_kind").getAsString());
+    assertFalse(inventory.get("finalized").getAsBoolean());
+    assertEquals(1, inventory.getAsJsonArray("members").size());
+    assertEquals("1", member(inventory, "capture.wpilog").getAsJsonObject("snapshot").getAsJsonObject("sample_counts").get("NT:/x").getAsString());
+    assertEquals(10.0, inventory.get("start_time_sec").getAsDouble());
+    assertEquals(10.0, inventory.get("end_time_sec").getAsDouble());
+    assertEquals(12.0, inventory.getAsJsonObject("clock").get("robot_time_sec").getAsDouble());
+    assertEquals("robot_estimate", inventory.getAsJsonObject("clock").get("basis").getAsString());
+    assertEquals(reads, index.live().mappedReadCount(), "Inventory must not decode telemetry to find counts or clock bounds");
+    assertThrows(java.io.IOException.class, () -> workspace.sources.resolve(ref()), "A recording has no single path data route");
+    assertFalse(workspace.capabilities().get("live").getAsBoolean(), "Inspection alone is not the live panel gate");
+    assertTrue(workspace.capabilities().get("live_source_inspection").getAsBoolean());
+    assertEquals(4_194_304, workspace.capabilities().get("max_recording_inventory_bytes").getAsInt());
+  }
+
+  @Test void aFreshInspectionSeesLateMetadataAndBackwardSamplesButLeavesTheEarlierAnswerAlone() throws Exception {
+    append(10_000_000, 7); var before = inventory();
+    var late = new Announce("/late", 2, "double", null, new JsonObject()); writer.announce(late);
+    append(9_000_000, 8); now.set(14_000_000.0);
+    var after = inventory(); var snapshot = member(after, "capture.wpilog").getAsJsonObject("snapshot");
+    assertTrue(snapshot.getAsJsonObject("entries").has("NT:/late"));
+    assertEquals("2", snapshot.getAsJsonObject("sample_counts").get("NT:/x").getAsString());
+    for (var signal : after.getAsJsonArray("entries")) {
+      var entry = signal.getAsJsonObject();
+      assertEquals(entry.get("name").getAsString().equals("NT:/x") ? 2 : 0, entry.get("sample_count").getAsLong());
+    }
+    assertEquals(9.0, after.get("start_time_sec").getAsDouble()); assertEquals(10.0, after.get("end_time_sec").getAsDouble());
+    assertEquals(14.0, after.getAsJsonObject("clock").get("robot_time_sec").getAsDouble());
+    assertEquals("1", member(before, "capture.wpilog").getAsJsonObject("snapshot").getAsJsonObject("sample_counts").get("NT:/x").getAsString());
+    assertEquals(12.0, before.getAsJsonObject("clock").get("robot_time_sec").getAsDouble());
+    assertEquals(before.get("recording_id"), after.get("recording_id"));
+  }
+
+  @Test void missingOrInvalidTimeSyncIsExplicitAndNeverUsesReceiptOrWallClockTime() throws Exception {
+    now.set(null); var empty = inventory();
+    assertTrue(empty.get("start_time_sec").isJsonNull()); assertTrue(empty.get("end_time_sec").isJsonNull());
+    assertTrue(empty.getAsJsonObject("clock").get("right_edge_sec").isJsonNull());
+    assertEquals("waiting_for_time_sync", empty.getAsJsonObject("clock").get("basis").getAsString());
+    append(7_000_000, 1);
+    for (Double value : Arrays.asList(null, Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY)) {
+      now.set(value); var clock = inventory().getAsJsonObject("clock");
+      assertTrue(clock.get("robot_time_sec").isJsonNull()); assertEquals("last_sample", clock.get("basis").getAsString());
+      assertEquals(7.0, clock.get("right_edge_sec").getAsDouble()); assertTrue(clock.get("waiting_for_time_sync").getAsBoolean());
+    }
+  }
+
+  @Test void inspectionFollowsSessionMergeAliasesAndMemberRenames() throws Exception {
+    append(10_000_000, 1); var before = inventory();
+    var moved = file.resolveSibling("renamed.wpilog"); Files.move(file, moved); logs.relocateCapture(index.live(), file, moved); file = moved;
+    session.addProperty("id", "33333333-3333-4333-8333-333333333333");
+    session.add("merged_session_ids", StoreJson.JSON.toJsonTree(List.of(SESSION)));
+    session.getAsJsonObject("open_capture").addProperty("path", "renamed.wpilog"); writeManifest();
+    var after = inventory(); assertEquals(before.get("recording_id"), after.get("recording_id"));
+    assertEquals(file.toString(), member(after, "capture.wpilog").getAsJsonObject("snapshot").get("path").getAsString());
+  }
+
+  void finalizeRecording(boolean corruptHash) throws Exception {
+    writer.close(); writer = null;
+    var provenance = session.getAsJsonObject("open_capture").getAsJsonObject("provenance").deepCopy();
+    var completed = new LogFile(file.getFileName().toString(), corruptHash ? "0".repeat(64) : LogStore.contentHash(file), Files.size(file), "wpilog",
+        StoreJson.JSON.fromJson(provenance, Provenance.class), true, 10, 10, WHEN, WHEN, "pit_clock", false, null);
+    session.getAsJsonArray("files").add(StoreJson.JSON.toJsonTree(completed)); session.add("open_capture", JsonNull.INSTANCE); writeManifest();
+    logs.release(temp);
+  }
+  @Test void finalizedInspectionKeepsItsAnchorVerifiesContentAndUsesOnlyTheSampleClock() throws Exception {
+    append(10_000_000, 1); var before = inventory(); finalizeRecording(false);
+    var after = inventory(); assertTrue(after.get("finalized").getAsBoolean()); assertEquals(before.get("recording_id"), after.get("recording_id"));
+    assertEquals(LogStore.contentHash(file), member(after, "capture.wpilog").get("content_sha256").getAsString());
+    assertEquals("last_sample", after.getAsJsonObject("clock").get("basis").getAsString());
+    assertFalse(after.getAsJsonObject("clock").get("waiting_for_time_sync").getAsBoolean());
+    assertEquals(10.0, after.getAsJsonObject("clock").get("right_edge_sec").getAsDouble());
+    // Opening the finalized file afresh still chooses the existing recorded-file workflow.
+    assertEquals("recorded", inspectPath().getAsJsonObject("source_ref").get("kind").getAsString());
+  }
+
+  @Test void inspectionRetainsTheFollowersWriterHashAndGrantAdmission() throws Exception {
+    append(10_000_000, 1); inventory();
+    var provenance = session.getAsJsonObject("open_capture").getAsJsonObject("provenance");
+    String identity = provenance.get("writer_identity").getAsString(); provenance.addProperty("writer_identity", UUID.randomUUID().toString()); writeManifest();
+    assertTrue(assertThrows(java.io.IOException.class, this::inventory).getMessage().contains("another writer"));
+    provenance.addProperty("writer_identity", identity); writeManifest(); inventory();
+    logs.clearAllowedDirectories(); logs.addAllowedDirectory(Files.createDirectories(temp.resolve("elsewhere")));
+    assertThrows(java.io.IOException.class, this::inventory);
+    logs.addAllowedDirectory(temp); finalizeRecording(true);
+    assertTrue(assertThrows(java.io.IOException.class, this::inventory).getMessage().contains("manifested hash"));
+  }
+
+  @Test void aMergedSessionDoesNotBroadenTheRecordingAndEveryRolloverRetainsItsOwnInventory() throws Exception {
+    append(10_000_000, 1);
+    for (String name : List.of("rollover.wpilog", "other-recording.wpilog")) {
+      var extra = file.resolveSibling(name);
+      try (var out = new WpilogWriter(extra, "")) { int id = out.start("NT:/x", "double", index.live().entries().get("NT:/x").metadata(), 0); out.append(id, 5_000_000, WpilogWriter.encodeDouble(3)); }
+      var provenance = new Provenance("captured", null, name, name.startsWith("other") ? "2026-01-01T00:01:00Z" : WHEN, false);
+      var entry = new LogFile(name, LogStore.contentHash(extra), Files.size(extra), "wpilog", provenance, true, 5, 5, WHEN, WHEN, "pit_clock", false, null);
+      session.getAsJsonArray("files").add(StoreJson.JSON.toJsonTree(entry));
+    }
+    writeManifest(); var result = inventory(); assertEquals(2, result.getAsJsonArray("members").size());
+    assertEquals("double", member(result, "rollover.wpilog").getAsJsonObject("snapshot").getAsJsonObject("entries").getAsJsonObject("NT:/x").get("type").getAsString());
+    assertEquals("int64", member(result, "capture.wpilog").getAsJsonObject("snapshot").getAsJsonObject("entries").getAsJsonObject("NT:/x").get("type").getAsString());
+    assertEquals(5.0, result.get("start_time_sec").getAsDouble()); assertEquals(10.0, result.get("end_time_sec").getAsDouble());
+    assertEquals(0, result.getAsJsonArray("entries").size(), "Conflicting member types cannot become one selectable signal");
+    assertEquals("NT:/x", result.getAsJsonArray("entry_conflicts").get(0).getAsJsonObject().get("name").getAsString());
+  }
+
+  @Test void knownFinalHashesRecoverTheRecordingWhenItsOldSessionAliasIsGone() throws Exception {
+    append(10_000_000, 1); finalizeRecording(false);
+    var reference = ref(); var hashes = new JsonArray(); var member = new JsonObject(); member.addProperty("content_sha256", LogStore.contentHash(file)); hashes.add(member); reference.add("finalized_members", hashes);
+    session.addProperty("id", "33333333-3333-4333-8333-333333333333"); writeManifest();
+    var inventory = workspace.sources.describe(reference); assertTrue(inventory.get("finalized").getAsBoolean());
+    assertEquals(1, inventory.getAsJsonArray("members").size());
+    member.addProperty("content_sha256", "0".repeat(64));
+    assertTrue(assertThrows(java.io.IOException.class, () -> workspace.sources.describe(reference)).getMessage().contains("HISTORY_UNAVAILABLE"));
+  }
+
+  @Test void emptyFinalizedRecordingDoesNotPromiseFutureTimeSync() throws Exception {
+    finalizeRecording(false); var inventory = inventory();
+    assertTrue(inventory.get("start_time_sec").isJsonNull()); assertTrue(inventory.get("duration_sec").isJsonNull());
+    var clock = inventory.getAsJsonObject("clock"); assertEquals("unavailable", clock.get("basis").getAsString());
+    assertTrue(clock.get("right_edge_sec").isJsonNull()); assertFalse(clock.get("waiting_for_time_sync").getAsBoolean());
+  }
+
+  @Test void identicalDeclarationsAggregateCountsWhileMetadataConflictsRemainExplicit() throws Exception {
+    append(10_000_000, 1);
+    var extra = file.resolveSibling("rollover.wpilog");
+    String metadata = index.live().entries().get("NT:/x").metadata();
+    try (var out = new WpilogWriter(extra, "")) {
+      int id = out.start("NT:/x", "int64", metadata, 0); out.append(id, 5_000_000, WpilogWriter.encodeInt64(3));
+    }
+    var entry = new LogFile("rollover.wpilog", LogStore.contentHash(extra), Files.size(extra), "wpilog",
+        new Provenance("captured", null, "rollover.wpilog", WHEN, false), true, 5, 5, WHEN, WHEN, "pit_clock", false, null);
+    session.getAsJsonArray("files").add(StoreJson.JSON.toJsonTree(entry)); writeManifest();
+    var inventory = inventory(); var signal = inventory.getAsJsonArray("entries").get(0).getAsJsonObject();
+    assertEquals(2, signal.get("sample_count").getAsLong()); assertEquals(2, signal.getAsJsonArray("member_ids").size());
+    assertTrue(inventory.getAsJsonArray("entry_conflicts").isEmpty());
+    var update = new JsonObject(); update.addProperty("unit", "changed");
+    writer.properties(new org.triplehelix.wpilogmcp.nt4.ControlMessage.Properties("/x", null, update));
+    var conflict = inventory(); assertTrue(conflict.getAsJsonArray("entries").isEmpty()); assertEquals(1, conflict.getAsJsonArray("entry_conflicts").size());
+  }
+
+  @Test void aggregateMetadataRefusesAtItsCapAndReleasesAllMemberPrefixes() throws Exception {
+    for (int n = 2; n < 3002; n++) {
+      var properties = new JsonObject(); properties.addProperty("description", "m".repeat(750));
+      writer.announce(new Announce("/metadata/" + n, n, "double", null, properties));
+    }
+    var refusal = assertThrows(java.io.IOException.class, this::inventory);
+    assertTrue(refusal.getMessage().contains("RESOURCE_LIMIT"), refusal.toString());
+    assertTrue(refusal.getMessage().contains("4 MiB"), refusal.toString());
+    writer.close(); writer = null;
+    assertTrue(logs.release(file).released(), "Failed inventory cannot retain a native mapping");
+    Files.move(file, file.resolveSibling("released.wpilog"));
+  }
+
+  @Test void nativeDescriptorPreflightAlsoHasAnExplainedInventoryLimit() throws Exception {
+    var properties = new JsonObject(); properties.addProperty("description", "m".repeat(3 << 20));
+    writer.announce(new Announce("/oversize", 2, "double", null, properties));
+    var refusal = assertThrows(java.io.IOException.class, this::inventory);
+    assertTrue(refusal.getMessage().contains("RESOURCE_LIMIT"), refusal.toString());
+    assertTrue(refusal.getMessage().contains("4 MiB"), refusal.toString());
+  }
+}

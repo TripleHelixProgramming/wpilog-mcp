@@ -89,6 +89,17 @@ public final class VisualizationContracts {
     return source;
   }
 
+  /** The inspector and follower consume exactly the same durable recording reference. */
+  public static org.triplehelix.wpilogmcp.read.catalog.RecordingReference recordingReference(JsonObject input) {
+    var ref = source(input);
+    if (!ref.get("kind").getAsString().equals("session")) throw new IllegalArgumentException("A follow requires a captured session source_ref");
+    var anchor = ref.getAsJsonObject("anchor_member");
+    var hashes = new ArrayList<String>();
+    if (ref.has("finalized_members")) for (var member : ref.getAsJsonArray("finalized_members")) hashes.add(member.getAsJsonObject().get("content_sha256").getAsString());
+    return new org.triplehelix.wpilogmcp.read.catalog.RecordingReference(ref.get("origin_store_id").getAsString(), ref.get("session_id").getAsString(),
+        anchor.get("original_name").getAsString(), anchor.get("recording_started_at").getAsString(), hashes);
+  }
+
   public static JsonObject configuration(JsonObject input) {
     var config = parse(input.toString());
     check(config, SCHEMA.getAsJsonObject("$defs").getAsJsonObject("configuration"), "configuration");

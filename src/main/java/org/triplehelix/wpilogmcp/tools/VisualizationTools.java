@@ -54,6 +54,11 @@ public final class VisualizationTools {
       } catch (Exception failure) {
         Throwable cause = failure;
         while (cause instanceof java.util.concurrent.ExecutionException && cause.getCause() != null) cause = cause.getCause();
+        if (cause instanceof org.triplehelix.wpilogmcp.read.ReadException read) {
+          var refusal = VisualizationReadFailure.of(read);
+          return ResponseBuilder.error(refusal.message()).addProperty("api_version", 1).addProperty("code", refusal.code())
+              .addProperty("retryable", refusal.retryable()).build();
+        }
         String message = Objects.toString(cause.getMessage(), cause.getClass().getSimpleName());
         String code = message.matches("^[A-Z_]+:.*") ? message.substring(0, message.indexOf(':')) : cause instanceof java.nio.file.AccessDeniedException ? "ACCESS_DENIED" : "INVALID_REQUEST";
         return ResponseBuilder.error(message).addProperty("api_version", 1).addProperty("code", code).build();
@@ -84,12 +89,12 @@ public final class VisualizationTools {
   static final class SourceInspect extends Operation {
     SourceInspect(ToolRegistry registry) { super(registry); }
     @Override public String name() { return "visualization_source_inspect"; }
-    @Override public String description() { return "Inspect a recorded source by an admitted path or durable source_ref. Returns identity, entry types, schemas, sample counts and clock bounds. Result envelope: api_version, status, source. All operations require trusted local transport authority."; }
+    @Override public String description() { return "Inspect a recorded file or captured recording by an admitted path or durable source_ref. Returns identity, entry types, schemas, sample counts and clock bounds. A recording retains individual member inventories and conflicting declarations; its clock distinguishes the shared robot estimate from the last sample. Inspection does not enable live visualization panels. Result envelope: api_version, status, source. All operations require trusted local transport authority."; }
     @Override String resultKey() { return "source"; }
     @Override public JsonObject inputSchema() {
       return schema()
           .addProperty("path", "string", "Allowed local WPILOG path; alternative to source_ref", false)
-          .addProperty("source_ref", "object", "Durable recorded or unmanaged source identity; never contains a local path", false)
+          .addProperty("source_ref", "object", "Durable recorded, unmanaged or anchored session source identity; never contains a local path", false)
           .build();
     }
     @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {

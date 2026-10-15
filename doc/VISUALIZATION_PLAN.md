@@ -5,8 +5,10 @@ authorization. Accepted Stage 2b and its fixes are committed as `2fb2376`, and t
 first gate and review refinements as `719f163`. The accepted Stage 3 server integration checkpoint
 is committed as `182cb00`. Its four pre-broker contract refinements and the small-page deferral
 follow-up are committed as `6a0524f`; the shared broker and array fix as `9be98dc`, and the
-accepted bounded-refusal/client-cap follow-up as `b57eaf6`. The current checkpoint implements
-immutable opened jobs and uninterrupted peers, before live panel integration, with evidence below. Close cancellation
+accepted bounded-refusal/client-cap follow-up as `b57eaf6`. Immutable opened jobs are committed
+as `14eff73`, and the accepted catalog-retry fix and review-9 disposition as `0f1cd3e`. The current
+checkpoint begins live-panel integration with shared recording-source inspection; the renderer
+remains recorded-only, with evidence and remaining work below. Close cancellation
 remains unverified on the manual dialog, Linux/Windows native runs are outstanding, and Save As
 uses the specified refusal fallback. No publication or version change is part of this work.
 
@@ -1290,3 +1292,46 @@ The client intentionally stops with `INVALID_RESPONSE` for a present non-boolean
 flag on a 409; only boolean true permits retry, and a missing flag retains older-server behavior.
 That contract is already documented and regression-tested. Linux/Windows native execution,
 live panels and the season-sized measurements remain outstanding.
+
+
+### Stage 3 recording-source inspection checkpoint (2026-10-15)
+
+The accepted catalog-retry tree and review-9 disposition are committed as `0f1cd3e`.
+The next integration step first removes a single-file assumption from source admission:
+an open capture now returns the same anchored recording reference consumed by the follower.
+HTTP and MCP use the workspace-owned catalog and `CatalogRecordingSource` for membership,
+writer/hash proof, aliases, grant checks and fixed member prefixes. They share the conversion
+of that reference and the classification of typed native-reader refusals. No second recorder,
+catalog policy, inferred member path or telemetry cache is introduced.
+
+The detached inventory retains native descriptors for every admitted member, with a 4 MiB
+aggregate encoded limit and the reader's existing allocation preflight. Its name summary
+combines counts only for identical declared types and metadata, reporting conflicts separately;
+it does not decide field/schema compatibility for binding. Counts and time bounds use index
+metadata without decoding telemetry. Clock facts distinguish a finite shared robot estimate,
+the last sample, waiting for time synchronization and an empty finalized recording. This
+stateless inspection does not implement a held display edge. Each new finalized inspection
+verifies hashes again, so the eventual panel controller must retain broker state instead of
+polling this operation for every frame.
+
+The real Source Overview shows the recording, member/conflict counts and a readable clock
+status, with an inspection-only message and disabled live layout/template controls. Close and
+reopen it to inspect a new prefix. Recorded-file views keep their existing behavior. The
+capabilities result exposes `live_source_inspection: true`, while `live` remains false. Source
+inspection can supply a 1 MiB native follow, but the visualization renderer still cannot consume
+that follow or create/bind a live view.
+
+Failing-first tests, mutation plants, the full build and both native VS Code checks are recorded
+in `/private/tmp/wpilog-visualization-stage3-panels/validation.md`. Synthetic writer fixtures
+cover identity, growth/backward timestamps, aliases, rollovers, conflicts, finalization, cold
+reopen, hash/grant/writer refusals, clock absence and limits. The real HTTP/MCP inspection result
+also opens a native follow without losing ordinals. Native checks drive the actual controller,
+overview and Java server in isolated profiles; they establish inspection behavior only.
+
+This is a reviewable prerequisite within Stage 3, not its completed editor gate. Next are
+bindings over admitted recording members, the broker-to-panel controller with the agreed
+1 MiB pages and uninterrupted peers, a common displayed frontier and follow/inspect/pause/held
+clock behavior. The aggregate decoded-memory setting and hidden-view expiry, configured remote
+routing, all panel types and the declared resource/season-sized performance gates remain open.
+Native Linux/Windows execution, the manual Close-cancellation check and the Save As fallback
+remain disclosed limitations. No new checkpoint commit or publication is implied.

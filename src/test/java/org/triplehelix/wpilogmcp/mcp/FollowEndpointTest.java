@@ -32,7 +32,7 @@ class FollowEndpointTest {
   final Announce topic = new Announce("/x", 1, "int", null, new JsonObject());
   static final String WHEN = "2026-01-01T00:00:00Z";
   static final String STORE = "11111111-1111-4111-8111-111111111111", SESSION = "22222222-2222-4222-8222-222222222222";
-  HttpTransport transport; CaptureWriter writer; Path file, manifest; URI base;
+  HttpTransport transport; ToolRegistry registry; CaptureWriter writer; Path file, manifest; URI base;
   Set<Path> allowed;
 
   @BeforeEach void start() throws Exception {
@@ -53,7 +53,7 @@ class FollowEndpointTest {
           ((org.triplehelix.wpilogmcp.log.LiveLog.View) use.log()).captureIdentity());
     }
     Files.writeString(manifest, session.toString());
-    transport = new HttpTransport(new ToolRegistry(), 0); transport.setStoreDirectories(Set.of(temp)); transport.start();
+    registry = new ToolRegistry(); transport = new HttpTransport(registry, 0); transport.setStoreDirectories(Set.of(temp)); transport.start();
     base = URI.create("http://127.0.0.1:" + transport.getPort());
   }
   @AfterEach void stop() throws Exception {
@@ -84,6 +84,51 @@ class FollowEndpointTest {
   }
   String nextPath(JsonObject lease) { return "/read/v1/follows/" + lease.get("id").getAsString() + "/next"; }
   String nextBody(String cursor, int wait) { return "{\"cursor\":\"" + cursor + "\",\"wait_ms\":" + wait + "}"; }
+
+  @Test void sourceInspectionOverHttpAndMcpSuppliesTheSameAnchorToAOneMiBFollow() throws Exception {
+    var connected = call("POST", "/mcp", """
+        {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26",
+        "capabilities":{},"clientInfo":{"name":"inspection-fixture","version":"1"}}}
+        """);
+    assertEquals(200, connected.statusCode(), connected.body()); String client = connected.headers().firstValue("Mcp-Session-Id").orElseThrow();
+    var path = new JsonObject(); path.addProperty("path", file.toString());
+    var request = HttpRequest.newBuilder(base.resolve("/visualizations/v1/source")).header("Mcp-Session-Id", client)
+        .POST(HttpRequest.BodyPublishers.ofString(path.toString())).build();
+    var identified = json(http.send(request, HttpResponse.BodyHandlers.ofString()), 200);
+    var ref = identified.getAsJsonObject("source_ref");
+    assertEquals(JsonParser.parseString(creation()).getAsJsonObject().get("source_ref"), ref);
+    var query = new JsonObject(); query.add("source_ref", ref);
+    request = HttpRequest.newBuilder(base.resolve("/visualizations/v1/source/describe")).header("Mcp-Session-Id", client)
+        .POST(HttpRequest.BodyPublishers.ofString(query.toString())).build();
+    var inventory = json(http.send(request, HttpResponse.BodyHandlers.ofString()), 200);
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var arguments = path.deepCopy(); arguments.addProperty("api_version", 1);
+    var rpc = new JsonObject(); rpc.addProperty("jsonrpc", "2.0"); rpc.addProperty("id", 2); rpc.addProperty("method", "tools/call");
+    var params = new JsonObject(); params.addProperty("name", "visualization_source_inspect"); params.add("arguments", arguments); rpc.add("params", params);
+    var response = new McpMessageHandler(registry).handleMessage(rpc, null, CallerContext.Authority.STDIO_LOCAL).response();
+    var result = JsonParser.parseString(response.getAsJsonObject("result").getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString()).getAsJsonObject();
+    assertEquals("ok", result.get("status").getAsString(), result.toString());
+    assertEquals(ref, result.getAsJsonObject("source").get("source_ref"));
+    assertEquals(inventory, result.getAsJsonObject("source").get("inventory"), "Both transports use one inspection owner");
+    query.add("queries", JsonParser.parseString("[{\"entry\":\"NT:/x\",\"order\":\"file\"}]")); query.addProperty("max_page_bytes", 1 << 20);
+    var lease = json(call("POST", "/read/v1/follows", query.toString()), 201);
+    var first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
+    assertEquals(inventory.get("recording_id"), first.getAsJsonObject("frontier").get("recording_id"));
+    append(500_000, 42);
+    var delta = json(call("POST", nextPath(lease), nextBody(first.get("next_cursor").getAsString(), 100)), 200);
+    var sample = delta.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch").getAsJsonArray("samples").get(0).getAsJsonObject();
+    assertEquals(1, sample.get("ordinal").getAsInt()); assertEquals("42", sample.getAsJsonObject("value").get("value").getAsString());
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+    var changed = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+    changed.getAsJsonObject("open_capture").getAsJsonObject("provenance").addProperty("writer_identity", UUID.randomUUID().toString());
+    Files.writeString(manifest, changed.toString()); logs.catalogPublished();
+    var refused = json(http.send(request, HttpResponse.BodyHandlers.ofString()), 409);
+    assertEquals("HISTORY_UNAVAILABLE", refused.get("code").getAsString()); assertFalse(refused.get("retryable").getAsBoolean());
+    response = new McpMessageHandler(registry).handleMessage(rpc, null, CallerContext.Authority.STDIO_LOCAL).response();
+    result = JsonParser.parseString(response.getAsJsonObject("result").getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString()).getAsJsonObject();
+    assertEquals("error", result.get("status").getAsString()); assertEquals("HISTORY_UNAVAILABLE", result.get("code").getAsString());
+    assertFalse(result.get("retryable").getAsBoolean());
+  }
 
   @Test void httpFollowBootstrapsReplaysWaitsAndReturnsBackwardAppendsWithoutReopeningIdlePrefixes() throws Exception {
     var lease = create(); String path = nextPath(lease), firstCursor = lease.get("cursor").getAsString();

@@ -40,7 +40,9 @@ public final class VisualizationWorkspace implements AutoCloseable {
     result.addProperty("max_plot_points", 4096); result.addProperty("max_visible_series", 32);
     result.addProperty("max_raw_page_records", 4096); result.addProperty("max_raw_page_bytes", 1048576);
     result.addProperty("max_template_receipts", 64); result.addProperty("max_template_metadata_bytes", 1048576);
-    result.addProperty("live", false); result.addProperty("templates", true); result.add("roles", VisualizationBindings.roles());
+    result.addProperty("live", false); result.addProperty("live_source_inspection", true);
+    result.addProperty("max_recording_inventory_bytes", RecordingInventory.MAX_BYTES);
+    result.addProperty("templates", true); result.add("roles", VisualizationBindings.roles());
     result.add("declared_types", JsonParser.parseString("[\"boolean\",\"int64\",\"float\",\"double\",\"string\",\"json\",\"raw\",\"boolean[]\",\"int64[]\",\"float[]\",\"double[]\",\"string[]\",\"struct:Name\",\"struct:Name[]\",\"structarray:Name\"]"));
     return result;
   }

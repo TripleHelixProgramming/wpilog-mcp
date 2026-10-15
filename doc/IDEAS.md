@@ -554,6 +554,18 @@ simultaneous/staggered leases. The five-second check is an idle fallback; change
 admission can refresh sooner. Shared concurrent scans do not bound aggregate work under
 continued growth. Keep the strict cache and malformed-409 refusal contracts while measuring.
 
+Recording-source inspection is now shared by HTTP/MCP and uses the follower's catalog admission,
+not a path chosen by the editor. Member inventories keep their schemas/counts and report type or
+metadata conflicts. Fixed-view clock facts distinguish the shared robot estimate, last sample,
+waiting and empty-finalized states. This checkpoint is inspection-only: live view creation,
+template/field binding over the admitted members, one displayed frontier across all panels,
+held/pause/inspect/follow controls, the aggregate decoded budget and configured remote routing
+still need the next integration work. Keep the agreed 1 MiB panel pages and uninterrupted peers.
+Then run the full Stage 3 resource and season-sized catalog performance gates; source inspection
+does not establish them. Its state is deliberately distinguished by `live_source_inspection`
+and the still-false `live` capability. Repeated inspections are new prefix admissions and must
+not become a per-frame polling substitute for the broker.
+
 Five minor review follow-ups remain:
 
 - Replace the resolver enum exception for an unknown role with a public vocabulary hint.

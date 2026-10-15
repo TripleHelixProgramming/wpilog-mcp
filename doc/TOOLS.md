@@ -2980,15 +2980,27 @@ Supported configuration schema, type and role vocabulary, persistent identity, b
 
 ### `visualization_source_inspect`
 
-Inspect a recorded source by an admitted path or durable source_ref. Returns identity, entry types, schemas, sample counts and clock bounds.
+Inspect a recorded file or captured recording by an admitted path or durable source_ref. Returns identity, entry types, schemas, sample counts and clock bounds. Inspection of a recording does not yet enable live visualization panels.
 
 **Parameters:**
 
 - `api_version` (required, integer): `1`.
 - `path` (optional, string): Allowed local WPILOG file; alternative to source_ref.
-- `source_ref` (optional, object): Durable recorded source identity from source inspection.
+- `source_ref` (optional, object): Durable recorded, unmanaged or anchored session identity from source inspection.
 
 **Returns:** `api_version`, `status`, `source` on success; `code` and `error` on refusal.
+
+For an open manifested capture, `source.source_ref` is an anchored `session` reference accepted
+by the native follow route. `source.inventory.members` retains each member's ID, final content
+hash when present, and native descriptor with entries, schemas and sample counts. The shared
+`entries` summary omits names with differing types or metadata and reports them in
+`entry_conflicts`; it does not resolve cross-member field/schema compatibility. `clock` separates
+`robot_time_sec`, `last_sample_time_sec`, `right_edge_sec`, `basis` and `waiting_for_time_sync`.
+Its basis is `robot_estimate`, `last_sample`, `waiting_for_time_sync`, or `unavailable` for an
+empty finalized recording. A stateless inspection never holds or extrapolates a previous edge.
+Capabilities expose `live_source_inspection: true` and `max_recording_inventory_bytes: 4194304`;
+`live` remains false until the editor integration is complete. See the
+[standalone reference](STANDALONE.md#recorded-visualization-preview) for admission and staged limits.
 
 ### `visualization_template_list`
 

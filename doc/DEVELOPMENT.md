@@ -456,6 +456,16 @@ native Linux/Windows execution or the declared performance workloads.
 
 ### Visualization follow broker checkpoint
 
+The live-source integration prerequisite is covered by `LiveSourceInspectionTest` and
+`FollowEndpointTest.sourceInspectionOverHttpAndMcpSuppliesTheSameAnchorToAOneMiBFollow`.
+They drive real writer-owned prefixes through inspection, including empty/finalized clocks,
+late entries, backward timestamps, rollover conflicts, aliases, writer/hash/grant refusals,
+known-hash recovery and the aggregate metadata cap. The HTTP/MCP result opens a 1 MiB native
+follow and preserves exact ordinals. `recordedRendering.test.ts` executes the shipped overview
+script and checks that recording inspection does not offer unfinished live controls. These are
+source-admission checks; they do not establish the live-panel, display-budget or performance gates.
+Evidence is under `/private/tmp/wpilog-visualization-stage3-panels/`.
+
 Run `./gradlew followBrokerTest` after installing the extension dependencies. It compiles the
 extension and test classes, then runs `liveBrokerReal.test.ts` against a child JVM containing the
 real `CaptureWriter`, index and `HttpTransport`. `-PnodeExecutable=/path/to/node` uses the same

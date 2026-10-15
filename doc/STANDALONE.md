@@ -669,6 +669,32 @@ and retain equal/backward timestamps. The API permits 4,096 records and 1 MiB pe
 Explorer requests 256 and replaces its previous page. The source catalog is owned once per
 workspace and replaced when its configured roots change; access is revalidated on each operation.
 
+Recording inspection is the first live-panel integration checkpoint. On an open manifested
+capture, `POST /source` and `visualization_source_inspect` return an anchored `session`
+reference. `POST /source/describe` and the same MCP tool accept that reference across growth,
+member renames, retained session aliases and finalization, using the native follower's admission
+owner. `members` preserves each member's descriptor and final hash; `entries` summarizes only
+names with matching types and metadata, and `entry_conflicts` explains the omitted names.
+Member schemas remain separate and field bindings are not inferred from this summary.
+The inventory is capped at 4 MiB (`max_recording_inventory_bytes`); its native member admission
+retains the follower's 64-member and 128 MiB index limits. It is a detached inspection, not a
+retained read lease or a guarantee that later requests see the same prefix.
+Typed native-reader refusals keep their code and boolean `retryable` through both inspection
+adapters: a moving catalog can be retried, changed writer history stops, and metadata limits
+return a non-retryable 413 over HTTP. Inspection does not automatically retry for a caller.
+
+The inventory's `clock.robot_time_sec` is the shared NT4 estimate observed when the fixed view
+opens. Missing/non-finite estimates are null; `right_edge_sec` then uses the indexed
+`last_sample_time_sec`, if any. `basis` says `robot_estimate`, `last_sample`,
+`waiting_for_time_sync`, or `unavailable` for an empty finalized recording.
+`waiting_for_time_sync` is true only while unfinalized without a usable estimate. This call
+does not retain a previously valid display edge or mix receipt/wall time into sample timestamps.
+Capabilities say `live_source_inspection: true` but still `live: false`: creating/binding live
+views and reading them through single-file data routes remain unavailable until panel wiring.
+The overview labels this inspection-only state and points to the existing Explorer for live
+following. Reopen it for a fresh inventory. A finalized file opened afresh retains the recorded
+content-hash workflow; an already-held recording reference keeps its original identity.
+
 Store templates use `visualizations/templates/<uuid>.json`. Each atomic metadata record includes
 the definition and retry/import receipts, under the existing store queue/lock. A file is bounded
 to 1 MiB, each receipt map to 64 entries, and listings to 1,024 records or 8 MiB per store.
