@@ -525,17 +525,16 @@ Lease admission still does not reserve encoded bytes. The broker now backs off o
 `retryable: true` and retries the submitted cursor; it stops polling and DELETEs after consuming
 an `ended` page. It has no history cache: a joining consumer resets its peers' stream and reboots
 the same source/window, while removing one retains the query superset until the next reset.
-Evaluate a bounded shared history cache only with the display-budget/performance gate. Legacy missing writer proof at finalization
+Before panels, implement the approved uninterrupted-peer model with immutable opened jobs: only pending opens coalesce; later joins, refreshes and reveals get separate leases. Use 1 MiB panel pages and retain the 4 MiB protocol maximum. Evaluate a bounded shared history cache only if the display-budget/performance gate shows the lease limits binding. Legacy missing writer proof at finalization
 requires explicit rebootstrap. The body reader now classifies both malformed JSON and oversized
 requests before source work. The broker core checkpoint is implemented; live UI wiring, the decoded-buffer setting and
 aggregate recorded/live/webview accounting remain outstanding, explicitly within Stage 3.
 
-The broker array-limit fix's validation exposed a separate unresolved transport failure:
-`FollowEndpointTest.oversizedFollowBodiesAreStructuralRefusalsAndLeaveTheRetryPageIntact`
-lost the HTTP response with `Broken pipe` in both the full Java suite and an isolated endpoint-suite
-rerun. The Java route and test were unchanged. Investigate oversized-request response delivery;
-do not count the successful array regression as a green full build. Evidence is in
-`/private/tmp/wpilog-visualization-stage3-broker-array-limit/validation.md`.
+The oversized-request transport defect exposed by the array-limit round is fixed by the shared
+bounded refusal drain. Client requests now use the server's 64 KiB cap and oversized unions
+refuse synchronously before changing a job. Failing-first, plant and validation evidence is in
+`/private/tmp/wpilog-visualization-stage3-refusals/validation.md`. Native Linux/Windows execution
+remains outstanding; the new raw-socket tests run in the ordinary cross-platform Java suite.
 
 Five minor review follow-ups remain:
 

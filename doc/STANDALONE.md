@@ -589,6 +589,12 @@ On Windows, use `"command": "cmd"` and `"args": ["/c", "C:\\Users\\you\\.wpilog-
 ## HTTP Transport
 
 MCP request bodies are limited to 4 MiB and ten seconds; an unfinished body is disconnected.
+JSON body readers share bounded refusal draining: after reading the route's limit plus one byte,
+they discard up to another 4 MiB within ten seconds, or the route's earlier deadline, before
+replying. This includes read/follow, registration, visualization, store JSON and MCP requests;
+binary uploads keep their own streaming limits. A body ending before that discard bound and deadline receives
+the route's normal size refusal. At the bound or deadline, the exchange closes before response
+headers, so closing a response cannot start another blocking drain; the sender may lose the reply.
 At most 32 MCP requests run at once (fewer on small machines), with overload reported as HTTP
 503 rather than an unbounded wait. Data streams and native reads use 16 separate workers;
 store transfers and imports have another four, so readers cannot exhaust upload capacity.

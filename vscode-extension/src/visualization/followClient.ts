@@ -5,6 +5,25 @@ import { HttpHeaders, noHeaders } from "../pitCredential";
 import { FOLLOW_PAGE_BYTES, FollowError, FollowLease, FollowSelection, FollowSource, FollowWindow, lease, object, protocol } from "./followProtocol";
 
 export { FOLLOW_PAGE_BYTES } from "./followProtocol";
+export const FOLLOW_REQUEST_BYTES = 64 << 10;
+function requestSize(bytes: number): void {
+  if (bytes > FOLLOW_REQUEST_BYTES) throw new FollowError("RESOURCE_LIMIT", "Follow request exceeds 64 KiB; reduce selected signals or time windows");
+}
+/** Admission and HTTP use the same UTF-8 encoding, including the windows repeated per query.
+ * Stop at the first overflowing query instead of constructing the entire oversized union. */
+export function encodeFollowOpen(source: FollowSource, selections: readonly FollowSelection[], windows: readonly FollowWindow[], pageBytes: number): Buffer {
+  const head = Buffer.from(`{"source_ref":${JSON.stringify(source)},"queries":[`);
+  const tail = Buffer.from(`],"max_records":4096,"max_page_bytes":${pageBytes}}`);
+  const parts = [head]; let size = head.length + tail.length; requestSize(size);
+  for (const selection of selections) {
+    const part = Buffer.from((parts.length > 1 ? "," : "") + JSON.stringify({ ...selection, order: "file", windows }));
+    size += part.length; requestSize(size); parts.push(part);
+  }
+  return Buffer.concat([...parts, tail], size);
+}
+function encodeRequest(body: unknown): Buffer {
+  const encoded = Buffer.from(JSON.stringify(body)); requestSize(encoded.length); return encoded;
+}
 export interface FollowTransport {
   readonly pageBytes: number;
   open(source: FollowSource, selections: readonly FollowSelection[], windows: readonly FollowWindow[], signal: AbortSignal): Promise<FollowLease>;
@@ -31,21 +50,19 @@ export class FollowClient implements FollowTransport {
     if (!Number.isInteger(pageBytes) || pageBytes < 1024 || pageBytes > FOLLOW_PAGE_BYTES) throw new Error("Invalid follow page budget");
   }
   async open(source: FollowSource, selections: readonly FollowSelection[], windows: readonly FollowWindow[], signal: AbortSignal): Promise<FollowLease> {
-    return lease(await this.request("POST", "", { source_ref: source,
-      queries: selections.map(s => ({ ...s, order: "file", windows })), max_records: 4096, max_page_bytes: this.pageBytes }, signal, 201), source);
+    return lease(await this.request("POST", "", encodeFollowOpen(source, selections, windows, this.pageBytes), signal, 201), source);
   }
-  next(lease: FollowLease, cursor: string, signal: AbortSignal): Promise<unknown | undefined> {
-    return this.request("POST", `/${encodeURIComponent(lease.id)}/next`, { cursor, wait_ms: 25000 }, signal, 200);
+  async next(lease: FollowLease, cursor: string, signal: AbortSignal): Promise<unknown | undefined> {
+    return this.request("POST", `/${encodeURIComponent(lease.id)}/next`, encodeRequest({ cursor, wait_ms: 25000 }), signal, 200);
   }
   async close(lease: FollowLease): Promise<void> {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 2000);
     try { await this.request("DELETE", `/${encodeURIComponent(lease.id)}`, undefined, controller.signal, 204); }
     finally { clearTimeout(timer); }
   }
-  private async request(method: string, suffix: string, body: unknown, signal: AbortSignal, expected: number): Promise<unknown> {
+  private async request(method: string, suffix: string, encoded: Buffer | undefined, signal: AbortSignal, expected: number): Promise<unknown> {
     if (signal.aborted) throw aborted();
-    const url = new URL(`/read/v1/follows${suffix}`, this.base), encoded = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-    if (encoded && encoded.length > 1 << 20) throw new FollowError("RESOURCE_LIMIT", "Follow request exceeds byte limit");
+    const url = new URL(`/read/v1/follows${suffix}`, this.base);
     const headers = await credentials(this.headersFor(url.toString()), signal);
     if (signal.aborted) throw aborted();
     return new Promise((resolve, reject) => {

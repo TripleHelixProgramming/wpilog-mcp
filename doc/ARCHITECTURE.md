@@ -750,6 +750,16 @@ is distinct from MCP execution admission, which can return 503. MCP calls use a 
 min(32, max(4, 2 × CPU count)), with up to 64 further threads for event streams. Requests are
 not serialized per session.
 
+`RequestBodies` owns size-refusal draining for JSON routes. It retains only the route's limit
+plus one byte, then discards at most another 4 MiB through an 8 KiB buffer before the endpoint
+formats its existing refusal. Previously the JDK could close with unread bytes in flight,
+resetting the socket and losing the response. Draining has a ten-second deadline in addition
+to the route's existing earlier deadline. A daemon watchdog interrupts the owning reader; it
+does no socket I/O and cannot interrupt a later request after the drain finishes. If EOF has not arrived at the
+discard bound or deadline, the exchange closes before response headers, avoiding the JDK's
+additional blocking drain on response close. A complete refusal is then not guaranteed. Binary uploads remain with
+their streaming owner.
+
 Directory/key registration is serialized only with that session's removal, through the session map's per-key computation; validation and filesystem I/O happen beforehand. DELETE, expiry, and transport shutdown discard the session's permissions together, so a late registration cannot resurrect them. Keys remain in memory, with the most recent live registration taking precedence over the file. Registration is HTTP-only, behind the Origin check and refused on any non-loopback bind: a model's tool call cannot grant itself access.
 
 The design keeps shared mutable state small:
@@ -993,9 +1003,18 @@ rebootstraps that same source. This trades a history cache for a bounded stream;
 view can reread its peers' bootstrap window, without changing their independent view configuration.
 Removing a consumer keeps the existing query superset until the next reset, avoiding a restart
 for remaining consumers. Removing the last aborts next and DELETEs the lease.
+Before panels, the approved next contract replaces shared resets with immutable opened jobs:
+same-turn mounts can share a pending open, but a later join, refresh or reveal uses a separate
+lease and leaves its peers uninterrupted. Panel requests will use 1 MiB pages; the protocol
+maximum remains 4 MiB. These integration changes are still pending in the acquisition core.
 
 `FollowClient` borrows the existing origin-scoped credential provider. It never follows redirects
-or accepts credentials embedded in URLs. Responses are byte-capped before JSON parsing; tagged
+or accepts credentials embedded in URLs. The adapter and subscription admission share the exact
+UTF-8 open-request encoder, capped at the server's 64 KiB including repeated query windows.
+Admission sizes the full union before reserving or changing a job, so a refused join leaves its
+peers alone. Encoding stops at the first overflowing query; next-request bodies have the same
+cap, and oversized requests never consult credentials or reach the network.
+Responses are byte-capped before JSON parsing; tagged
 integers, floating-point bits, timestamps, ordinals and diagnosed gaps remain in the server's native
 representation. `followProtocol` validates identity, selection, work bounds and metadata presence
 before any delivery, then freezes the shared frame. A page carries each consumer's captured view

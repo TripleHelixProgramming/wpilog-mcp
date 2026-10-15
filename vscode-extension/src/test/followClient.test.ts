@@ -9,6 +9,40 @@ async function server(t: any, handler: http.RequestListener) {
   const s = http.createServer(handler); await new Promise<void>(r => s.listen(0, "127.0.0.1", r));
   t.after(() => { s.closeAllConnections(); s.close(); }); return `http://127.0.0.1:${(s.address() as AddressInfo).port}/mcp`;
 }
+for (const kind of ["windows", "utf8", "cursor"]) test(`HTTP follow refuses oversized ${kind} before credentials or network`, async t => {
+  const source = { kind: "session" as const, origin_store_id: "store", session_id: "session", anchor_member: { original_name: "capture.wpilog", recording_started_at: "2026-01-01T00:00:00Z" } };
+  let requests = 0, credentials = 0;
+  const endpoint = await server(t, (req, res) => {
+    requests++; req.resume(); req.on("end", () => {
+      if (kind === "cursor") { res.statusCode = 204; res.end(); }
+      else { res.statusCode = 201; res.end(JSON.stringify({ api_version: 1, id: "lease", server_epoch: "epoch", cursor: "c0", idle_timeout_sec: 60, max_wait_ms: 25000, source_ref: source })); }
+    });
+  });
+  const client = new FollowClient(endpoint, async () => { credentials++; return {}; });
+  const windows = kind === "windows" ? Array.from({ length: 1000 }, () => ({ start_us: "1000000000000000000", end_us: "1000000000000000001", end_inclusive: false })) : [];
+  const call = kind === "cursor" ? client.next(lease, "x".repeat(65536), new AbortController().signal)
+    : client.open(source, [{ entry: kind === "utf8" ? "é".repeat(33000) : "x" }], windows, new AbortController().signal);
+  await assert.rejects(call, (e: unknown) => e instanceof FollowError && e.code === "RESOURCE_LIMIT" && /64 KiB/.test(e.message) && !e.retryable);
+  assert.equal(credentials, 0); assert.equal(requests, 0);
+});
+test("HTTP follow accepts exactly 64 KiB of encoded UTF-8", async t => {
+  const source = { kind: "session" as const, origin_store_id: "store", session_id: "session", anchor_member: { original_name: "capture.wpilog", recording_started_at: "2026-01-01T00:00:00Z" } };
+  // The oracle uses the wire contract, independently of the production serializer.
+  const body = { source_ref: source, queries: [{ entry: "", order: "file", windows: [] }], max_records: 4096, max_page_bytes: 1048576 };
+  const padding = 65536 - Buffer.byteLength(JSON.stringify(body));
+  body.queries[0].entry = "é".repeat(Math.floor(padding / 2)) + "x".repeat(padding % 2);
+  let received = 0;
+  const endpoint = await server(t, (req, res) => {
+    req.on("data", (chunk: Buffer) => received += chunk.length); req.on("end", () => {
+      res.statusCode = 201; res.end(JSON.stringify({ api_version: 1, id: "lease", server_epoch: "epoch", cursor: "c0", idle_timeout_sec: 60, max_wait_ms: 25000, source_ref: source }));
+    });
+  });
+  const client = new FollowClient(endpoint, undefined, 1048576);
+  await client.open(source, [{ entry: body.queries[0].entry }], [], new AbortController().signal);
+  assert.equal(received, 65536);
+  await assert.rejects(client.open(source, [{ entry: body.queries[0].entry + "x" }], [], new AbortController().signal), /64 KiB/);
+  assert.equal(received, 65536);
+});
 test("HTTP follow cancellation disconnects a pending long poll", { timeout: 1000 }, async t => {
   let entered!: () => void; const seen = new Promise<void>(r => entered = r);
   let closed!: () => void; const gone = new Promise<void>(r => closed = r);

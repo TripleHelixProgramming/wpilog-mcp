@@ -1137,7 +1137,8 @@ Stage 3 checkpoint; this follow-up changes no extension behavior.
 
 ### Stage 3 shared broker checkpoint (2026-10-15)
 
-The next checkpoint is the extension acquisition core, before live panel wiring. `LiveBroker`
+The extension acquisition checkpoint is committed in `9be98dc`, including the array fix and
+review-5 disposition, before live panel wiring. `LiveBroker`
 is window/server scoped and unions entry/field demands for identical anchored sources and bootstrap
 windows. Different historical windows retain separate follows. A joining consumer triggers an
 explicit shared reset because the core stores no history cache. Existing view configurations and
@@ -1182,27 +1183,29 @@ recorded in [IDEAS.md](IDEAS.md); the array regression and real-server broker wo
 ### Stage 3 review 5: sharing behavior decision (2026-10-15)
 
 Finding 1 is fixed as recorded above. Finding 2 distinguishes the current acquisition-core
-checkpoint from the behavior still to choose for live panels. Today, joining an active job or
+checkpoint from the behavior required for live panels. Today, joining an active job or
 refreshing a subscription resets every consumer of the same anchored source and windows. Reveal
 would have that effect too when it re-subscribes. The core retains no bootstrap history; its
 64 MiB encoded limit is a reservation, not a cache. The earlier resource paragraph now agrees.
 
-The recommendation awaiting the owner's choice is that opening, refreshing or revealing one view
-leave other views' displayed samples, history interval and follow progress uninterrupted. If chosen,
-bootstrap work and any history retained to support that behavior must fit the existing window
-budget and server lease limits; an admission failure must affect the requesting view only. The
-concrete design must cover both an already-carried selection and a newly requested entry or field,
-plus a window larger than any bounded cache. A private bootstrap or cache hit alone is not a proof
-of seamless handoff: the gate must check ordinal gaps and duplicates, metadata, finalization,
-consumer cancellation and replacement of the server while joining.
-
-Keeping shared resets for the initial live preview is the other product choice. If selected, the
-live UI and gate must explicitly describe and exercise clearing/refilling peers on join, refresh
-and reveal. No choice is inferred from the core's implementation, and no behavioral change is made
-by this plan correction. The panel page size remains to be settled with the resource measurements;
-4 MiB is the tested core default and 64 KiB remains covered by the continuation fixture.
+The owner chose **uninterrupted peers** and **1 MiB panel pages**, with 4 MiB retained as the
+protocol maximum. Before panels, make opened jobs immutable: same-turn mounts may coalesce with
+a pending open, but a later join, refresh or reveal after hidden expiry gets its own job and
+lease. The existing peers' samples, history interval, generation and cursor remain unchanged.
+Admission failures affect only the requesting view. This needs no history cache or bootstrap
+handoff; measure the extra leases at the resource/performance gate before considering a cache.
+The gate must cover existing and new selections, wider windows, refresh, reveal, cancellation,
+finalization and server replacement while joining. With two page limits reserved per job,
+1 MiB pages allow the 32-job cap within 64 MiB; the server's 16 long-poll workers are a separate
+quiet-stream limit. The core still implements shared resets until that follow-up is built.
 
 The review's six notes require no immediate changes. Linux/Windows CI execution, native live-panel
 behavior, real proxy credentials, the real-webview deadline and performance measurements remain
-unverified as the review states. The separate oversized-request HTTP failure discovered during
-the array fix remains open and prevents claiming a green full Java build.
+unverified as the review states. Review 6 identified the array round's oversized-request failure
+as unread bytes resetting the
+socket before the refusal arrived. The follow-up now drains at most 4 MiB beyond the detection
+prefix within ten seconds (or an earlier route deadline), across the JSON body readers. It also
+aligns the client with the server's 64 KiB cap and sizes the actual encoded union before changing
+subscriptions. Raw-socket failing-first tests lost all 280 replies on the old readers; evidence,
+plants and the final build results are in
+`/private/tmp/wpilog-visualization-stage3-refusals/validation.md`. Panel wiring has not started.

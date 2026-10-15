@@ -62,7 +62,7 @@ final class StoreSyncEndpoint {
     }
     JsonObject body; Path root; String url; long rate;
     try {
-      var bytes = exchange.getRequestBody().readNBytes(65_537);
+      var bytes = RequestBodies.read(exchange, 65_536);
       if (bytes.length > 65_536) throw new IllegalArgumentException("Sync body exceeds 64 KiB");
       body = new GsonBuilder().setStrictness(Strictness.STRICT).create().fromJson(new String(bytes, StandardCharsets.UTF_8), JsonObject.class);
       if (body == null) throw new IllegalArgumentException("Expected a JSON object");

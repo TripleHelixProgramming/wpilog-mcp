@@ -1,4 +1,4 @@
-import { FollowTransport, aborted } from "./followClient";
+import { FollowTransport, aborted, encodeFollowOpen } from "./followClient";
 import { FollowPage, FollowSource, FollowWindow, FollowSelection, FollowFrontier, FollowError, FollowLease, canonical, freezeJson, page, selectionKey } from "./followProtocol";
 
 export interface ViewIdentity { readonly viewId: string; readonly generation: number; readonly revision: number; readonly queryKey: string }
@@ -73,8 +73,11 @@ export class LiveBroker {
       job = { key, source: freezeJson(JSON.parse(JSON.stringify(source))), windows: freezeJson(JSON.parse(JSON.stringify(windows))),
         consumers: new Set(), reset: 0, reserved: false };
     }
-    const union = new Set([...job.consumers].flatMap(c => [...c.keys])); unique.forEach((_, k) => union.add(k));
+    const union = new Map([...job.consumers].flatMap(c => c.selections.map(s => [selectionKey(s), s] as const)));
+    unique.forEach((s, k) => union.set(k, s));
     if (union.size > 256) throw new Error("Shared follow selection limit");
+    // Refuse impossible requests before reserving, attaching, or resetting an existing peer.
+    encodeFollowOpen(job.source, [...union.values()], job.windows, this.transport.pageBytes);
     this.reserve(job); this.jobs.set(key, job);
     const consumer: Consumer = { sink, identity: Object.freeze({ ...sink.identity }), keys: new Set(unique.keys()), selections: [...unique.values()], stop: new AbortController() };
     job.consumers.add(consumer); this.restart(job, "Subscriptions changed; rebootstrap the same recording");

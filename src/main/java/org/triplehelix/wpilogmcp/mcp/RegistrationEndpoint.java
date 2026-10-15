@@ -122,7 +122,7 @@ final class RegistrationEndpoint {
   }
 
   private static JsonObject readBody(HttpExchange exchange) throws IOException {
-    var bytes = exchange.getRequestBody().readNBytes(MAX_BODY + 1);
+    var bytes = RequestBodies.read(exchange, MAX_BODY);
     if (bytes.length > MAX_BODY) {
       throw new IllegalArgumentException("Registration body is too large");
     }

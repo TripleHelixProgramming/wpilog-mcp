@@ -49,7 +49,7 @@ final class VisualizationEndpoint implements AutoCloseable {
       if (!get && !exchange.getRequestMethod().equals("POST")) { error(exchange, 405, "INVALID_REQUEST", "Use GET or POST"); return; }
       var body = new JsonObject();
       if (!get) {
-        var bytes = exchange.getRequestBody().readNBytes(VisualizationContracts.MAX_CONFIGURATION_BYTES + 1);
+        var bytes = RequestBodies.read(exchange, VisualizationContracts.MAX_CONFIGURATION_BYTES);
         body = VisualizationContracts.parse(new String(bytes, StandardCharsets.UTF_8));
       }
       JsonObject result;

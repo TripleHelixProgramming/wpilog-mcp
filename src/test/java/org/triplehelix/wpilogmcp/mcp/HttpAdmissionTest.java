@@ -84,6 +84,21 @@ class HttpAdmissionTest {
     } finally { transport.stop(); }
   }
   static final String INITIALIZE = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}";
+  @Test void anOversizedBodyDrainKeepsTheEarlierMcpDeadline() throws Exception {
+    var transport = new HttpTransport(new ToolRegistry(), 0);
+    transport.requestLimits(64, 1, Duration.ofMillis(200)); transport.start();
+    try (var socket = new Socket("127.0.0.1", transport.getPort())) {
+      socket.setSoTimeout(3000);
+      long started = System.nanoTime();
+      socket.getOutputStream().write(("POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1000000\r\n\r\n"
+          + "x".repeat(65)).getBytes(StandardCharsets.US_ASCII));
+      assertEquals(-1, socket.getInputStream().read(), "An unfinished drain is disconnected, not replied to early");
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+      while (transport.readingBodies() != 0 && System.nanoTime() < deadline) Thread.onSpinWait();
+      assertEquals(0, transport.readingBodies());
+      assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(2), "The original body deadline still bounds draining");
+    } finally { transport.stop(); }
+  }
   @Test void oversizedBodiesAreRefusedBeforeJsonParsing() throws Exception {
     var transport = new HttpTransport(new ToolRegistry(), 0);
     transport.requestLimits(128, 2, Duration.ofSeconds(10)); transport.start();

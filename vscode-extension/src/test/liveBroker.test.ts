@@ -45,6 +45,26 @@ function consumer(id: string) {
 function fixture(t: any, options = {}) { const transport = new Fake(), broker = new LiveBroker(transport, { retryBaseMs: 1, retryMaxMs: 2, random: () => 0, ...options });
   t.after(() => broker.dispose()); return { transport, broker }; }
 
+test("oversized repeated windows refuse synchronously without reserving or opening a job", t => {
+  const { transport, broker } = fixture(t);
+  const windows = Array.from({ length: 1000 }, () => ({ start_us: "1000000000000000000", end_us: "1000000000000000001", end_inclusive: false }));
+  assert.throws(() => broker.subscribe(source, windows, [{ entry: "x" }], consumer("a").value),
+    (e: unknown) => e instanceof FollowError && e.code === "RESOURCE_LIMIT" && /64 KiB/.test(e.message));
+  assert.deepEqual(broker.resources, { jobs: 0, consumers: 0, reservedBytes: 0 }); assert.equal(transport.opens.length, 0);
+});
+test("oversized union refuses before changing an admitted peer", async t => {
+  const { transport, broker } = fixture(t), a = consumer("a"), b = consumer("b");
+  const selections = (prefix: string) => Array.from({ length: 20 }, (_, i) => ({ entry: prefix + i + "é".repeat(900) }));
+  transport.handle = async (_l, _c, signal) => transport.wait(signal);
+  broker.subscribe(source, [], selections("a"), a.value); await until(() => transport.polls.length === 1);
+  const resources = broker.resources, states = [...a.states];
+  assert.throws(() => broker.subscribe(source, [], selections("b"), b.value),
+    (e: unknown) => e instanceof FollowError && e.code === "RESOURCE_LIMIT" && /64 KiB/.test(e.message));
+  await pause(5);
+  assert.deepEqual(broker.resources, resources); assert.deepEqual(a.states, states); assert.deepEqual(b.states, []);
+  assert.equal(transport.opens.length, 1); assert.equal(transport.closes.length, 0); assert.equal(transport.aborted, 0);
+});
+
 test("broker passes its transport page budget to protocol traversal", async t => {
   const { transport, broker } = fixture(t), a = consumer("a");
   transport.handle = async (l, c, s, n) => {

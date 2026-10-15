@@ -143,7 +143,7 @@ final class StoreImportEndpoint {
   private void submit(HttpExchange exchange, boolean assignment) throws IOException {
     Request request;
     try {
-      byte[] bytes = exchange.getRequestBody().readNBytes(MAX_BODY_BYTES + 1);
+      byte[] bytes = RequestBodies.read(exchange, MAX_BODY_BYTES);
       if (bytes.length > MAX_BODY_BYTES) throw new IllegalArgumentException("Import body exceeds 1 MiB");
       request = parse(new String(bytes, StandardCharsets.UTF_8), assignment);
     } catch (RuntimeException e) {

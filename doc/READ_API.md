@@ -260,8 +260,13 @@ its numeric value and nullable label (`enum_u64` for unsigned 64-bit enums), and
 lists and named struct fields. Negative
 zero and non-finite floating values survive this native interface. They are not converted to
 MCP's JSON null policy. The request body is bounded at 64 KiB, JSON/NDJSON frames at 16 MiB and
-nested values at 64 levels; a limit is an explained refusal, never a truncated value. Arrow
-batches instead follow the encoded record and batch bounds above. NDJSON may split a source
+nested values at 64 levels; a limit is an explained refusal, never a truncated value. For an
+oversized request, the shared body reader consumes the detection prefix (64 KiB + 1 byte) and
+discards up to another 4 MiB within ten seconds, subject to any earlier route deadline, before
+replying. This lets a sender finish and receive the refusal instead of losing it to a TCP reset.
+If the body has not ended when that discard bound or deadline is reached, the connection closes
+without a guaranteed reply; this also prevents response close from starting another blocking drain.
+Arrow batches instead follow the encoded record and batch bounds above. NDJSON may split a source
 batch into smaller frames to fit that budget. Samples retain `payload_bytes` from their record
 headers; visited-record and payload-byte totals are preserved exactly across the frames.
 Diagnostics and filtered-record accounting may occupy a final empty frame. A single value that

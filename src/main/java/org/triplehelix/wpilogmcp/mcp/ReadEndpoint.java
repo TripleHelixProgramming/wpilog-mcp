@@ -378,7 +378,7 @@ final class ReadEndpoint implements AutoCloseable {
   JsonObject body(HttpExchange exchange) throws IOException {
     var timeout = timer.schedule(exchange::close, 10, TimeUnit.SECONDS);
     try (var input = exchange.getRequestBody()) {
-      byte[] bytes = input.readNBytes(MAX_REQUEST_BYTES + 1);
+      byte[] bytes = RequestBodies.read(exchange, MAX_REQUEST_BYTES);
       if (bytes.length > MAX_REQUEST_BYTES) throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT, "Read request exceeds " + MAX_REQUEST_BYTES + " bytes");
       try { return ReadWire.parse(bytes); }
       catch (IOException invalid) { throw new IllegalArgumentException("Invalid read JSON", invalid); }

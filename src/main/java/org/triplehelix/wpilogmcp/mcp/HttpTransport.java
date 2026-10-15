@@ -485,11 +485,7 @@ public class HttpTransport {
     }, bodyTimeout.toMillis(), TimeUnit.MILLISECONDS);
     readingBodies.incrementAndGet();
     try {
-      var declared = exchange.getRequestHeaders().getFirst("Content-Length");
-      if (declared != null && Long.parseLong(declared) > maxRequestBytes) {
-        sendError(exchange, 413, "MCP request body exceeds " + maxRequestBytes + " bytes"); return;
-      }
-      var bytes = exchange.getRequestBody().readNBytes(maxRequestBytes + 1);
+      var bytes = RequestBodies.read(exchange, maxRequestBytes);
       if (!reading.compareAndSet(true, false)) return;
       if (bytes.length > maxRequestBytes) {
         sendError(exchange, 413, "MCP request body exceeds " + maxRequestBytes + " bytes"); return;

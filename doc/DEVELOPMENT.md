@@ -464,7 +464,9 @@ all 77,824 floating-point bit patterns. That full server page exceeds the unrele
 the byte-derived traversal bound, negotiated-budget propagation and the separate depth limit. Pure Node broker
 checks cover union/refcounts, consumer deadlines, generation rejection, terminal/expiry states,
 byte admission and exact retry cursors. HTTP tests cover cancellation (including credential lookup),
-response limits, proxy authentication/refusals and origin confinement. This checkpoint does not
+response limits, proxy authentication/refusals and origin confinement. Client-cap regressions
+check the 64 KiB UTF-8 boundary, repeated windows and synchronous union admission without changing
+an existing peer. This checkpoint does not
 exercise a live editor or establish the combined decoded display budget or performance gate.
 
 ### Visualization recorded preview
@@ -569,6 +571,12 @@ and input/decoded expansion bounds, plus selective decoding for exact device/sig
 the progress watchdog releases a blocked socket without the client disconnecting. These tests
 use bounded generated batches, so heap exhaustion cannot accidentally free a worker and disguise
 the starvation being tested.
+`HttpRefusalTest` sends an oversized body twenty times to each JSON body-reader route with a raw
+socket client that cannot hide a lost reply by retrying. It also tests chunked MCP/follow input;
+every attempt must receive the full refusal. `RequestBodiesTest` checks the four-MiB discard
+bound, deadline cleanup and real sockets that stop during draining or exactly at the discard
+ceiling; neither may strand a worker in request or response close. The follow endpoint
+suite separately proves that a size refusal leaves the retained retry page intact.
 `ReadEndpointTest`, `ReadWireTest`, `RemoteLogAccessTest` and `RevReadEndpointTest` cover the
 versioned read routes, exact typed values, projected/reduced Arrow shapes, multi-entry NDJSON
 and multipart Arrow, bounded leases, cancellation, completion proof and input/path admission.

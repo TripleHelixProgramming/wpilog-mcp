@@ -45,7 +45,7 @@ final class MirrorEndpoint implements AutoCloseable {
       }
       if (route.equals(PATH) && method.equals("DELETE")) { close(); StoreEndpoint.send(exchange, 200, Map.of("state", "disabled")); return; }
       if (!method.equals("POST")) { StoreEndpoint.send(exchange, 405, Map.of("error", "Mirror controls require POST")); return; }
-      byte[] bytes = exchange.getRequestBody().readNBytes(65_537);
+      byte[] bytes = RequestBodies.read(exchange, 65_536);
       if (bytes.length > 65_536) throw new IllegalArgumentException("Mirror body exceeds 64 KiB");
       var body = new GsonBuilder().setStrictness(Strictness.STRICT).create().fromJson(new String(bytes, StandardCharsets.UTF_8), JsonObject.class);
       if (body == null) throw new IllegalArgumentException("Expected a JSON object");

@@ -38,7 +38,7 @@ final class PitMcpEndpoint {
     if (auth == null) { reply(exchange, 403, "No active pit credential lease; open VS Code and register the credential"); return; }
     String method = exchange.getRequestMethod();
     if (!List.of("POST", "GET", "DELETE").contains(method)) { reply(exchange, 405, "Method not allowed"); return; }
-    byte[] body = exchange.getRequestBody().readNBytes(4 * 1024 * 1024 + 1);
+    byte[] body = RequestBodies.read(exchange, 4 * 1024 * 1024);
     if (body.length > 4 * 1024 * 1024) { reply(exchange, 413, "MCP request exceeds 4 MiB"); return; }
     var request = HttpRequest.newBuilder(endpoint).timeout(Duration.ofMinutes(10)).header("Authorization", auth)
         .method(method, body.length == 0 ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofByteArray(body));

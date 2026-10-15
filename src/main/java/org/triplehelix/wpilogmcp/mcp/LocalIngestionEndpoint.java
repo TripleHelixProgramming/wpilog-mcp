@@ -38,7 +38,7 @@ final class LocalIngestionEndpoint {
     try {
       if (route.equals(PATH) && method.equals("GET")) send(exchange, 200, ingestion.snapshot());
       else if (route.equals(PATH) && method.equals("PUT")) {
-        var bytes = exchange.getRequestBody().readNBytes(65537);
+        var bytes = RequestBodies.read(exchange, 65536);
         if (bytes.length > 65536) { error(exchange, 413, "RESOURCE_LIMIT", "Ingestion policy exceeds 64 KiB"); return; }
         LocalIngestion.Policy policy;
         try {
