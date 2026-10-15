@@ -73,6 +73,23 @@ class MirrorSyncTest {
   }
   Path copy(Path source) { return mirror.root().resolve(origin.root().relativize(source)); }
 
+  @Test void aMirrorPreservesWriterIncarnationsForBothOpenAndFinalizedMembers() throws Exception {
+    for (boolean open : List.of(false, true)) {
+      var file = session(open ? "growing-writer" : "closed-writer", "2026-01-19", "RIO", null, open, 2, open ? 7 : 8);
+      var manifest = file.resolveSibling("session.json");
+      var json = com.google.gson.JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+      var member = open ? json.getAsJsonObject("open_capture") : json.getAsJsonArray("files").get(0).getAsJsonObject();
+      member.getAsJsonObject("provenance").addProperty("writer_identity", "11111111-1111-4111-8111-111111111111");
+      origin.capture(io -> { io.write(manifest, json); return null; });
+    }
+    sync();
+    var snapshot = catalog(mirror);
+    var members = new java.util.ArrayList<>(snapshot.files()); members.addAll(snapshot.openCaptures());
+    assertEquals(2, members.size());
+    for (var member : members) assertEquals(new com.google.gson.JsonPrimitive("11111111-1111-4111-8111-111111111111"),
+        StoreJson.JSON.toJsonTree(member.file().provenance()).getAsJsonObject().get("writer_identity"));
+  }
+
   @Test void mirrorCopiesMergeAliasesThroughOpenAndClosedSessionManifests() throws Exception {
     for (boolean open : List.of(false, true)) {
       var file = session(open ? "growing-alias" : "closed-alias", "2026-01-19", "RIO", null, open, 2, open ? 7 : 8);

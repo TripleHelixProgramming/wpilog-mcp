@@ -35,7 +35,6 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
   private final Catalogs catalogs;
   private final RecordingReference reference;
   private final Map<Stamp, Boolean> verified = new HashMap<>();
-  private final Map<String, String> writers = new HashMap<>();
   private StoreReadCatalog.Recording recording;
   private Map<Path, Object> publications = Map.of();
   private List<Stamp> stamps = List.of();
@@ -77,15 +76,18 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
             verified.put(stamp, true);
           }
           var snapshot = lease.value().openWpilog(path);
+          // Register ownership before any validation below can throw.
           opened.add(new OrdinalFollow.Member(member.facts().file().provenance().originalName(), 0, snapshot, stamp.hash()));
           if (!growing && (!java.util.Objects.equals(stamp.boundary(), FileSnapshot.of(path))
               || snapshot.boundary() != null && !stamp.boundary().sameAs(snapshot.boundary())))
             throw new IOException("SOURCE_UNAVAILABLE: finalized recording changed after hash verification");
-          if (snapshot instanceof ManagedReadSnapshot managed && managed.log() instanceof org.triplehelix.wpilogmcp.log.LiveLog.View live) {
-            String previous = writers.putIfAbsent(member.facts().file().provenance().originalName(), live.captureIdentity());
-            if (previous != null && !previous.equals(live.captureIdentity()))
-              throw new ReadException(ReadProblem.Code.FILE_CHANGED, "The recording writer was replaced; explicitly rebootstrap the same retained recording");
+          String identity = member.facts().file().provenance().writerIdentity();
+          if (growing && snapshot instanceof ManagedReadSnapshot managed && managed.log() instanceof org.triplehelix.wpilogmcp.log.LiveLog.View live) {
+            if (identity != null && !identity.equals(live.captureIdentity()))
+              throw new ReadException(ReadProblem.Code.FILE_CHANGED, "Recording metadata belongs to another writer; explicitly rebootstrap the same retained recording");
+            identity = live.captureIdentity();
           }
+          opened.set(opened.size() - 1, new OrdinalFollow.Member(member.facts().file().provenance().originalName(), 0, snapshot, stamp.hash(), identity));
           if (growing && !snapshot.live()) throw new IOException("SOURCE_UNAVAILABLE: open recording needs its writer's managed prefix");
           indexed = Math.addExact(indexed, snapshot.indexBytes());
           if (indexed > StoreReadCatalog.DEFAULT_SESSION_INDEX_BYTES)

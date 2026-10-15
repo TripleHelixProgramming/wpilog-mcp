@@ -379,7 +379,7 @@ final class ReadEndpoint implements AutoCloseable {
     var timeout = timer.schedule(exchange::close, 10, TimeUnit.SECONDS);
     try (var input = exchange.getRequestBody()) {
       byte[] bytes = input.readNBytes(MAX_REQUEST_BYTES + 1);
-      if (bytes.length > MAX_REQUEST_BYTES) throw new Refusal(413, "RESOURCE_LIMIT", "Read request exceeds " + MAX_REQUEST_BYTES + " bytes");
+      if (bytes.length > MAX_REQUEST_BYTES) throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT, "Read request exceeds " + MAX_REQUEST_BYTES + " bytes");
       try { return ReadWire.parse(bytes); }
       catch (IOException invalid) { throw new IllegalArgumentException("Invalid read JSON", invalid); }
     } finally { timeout.cancel(false); }
@@ -397,15 +397,20 @@ final class ReadEndpoint implements AutoCloseable {
     try (var out = exchange.getResponseBody()) { out.write(bytes); }
   }
   static void sendFailure(HttpExchange exchange, int status, String code, String message) throws IOException {
+    sendFailure(exchange, status, code, message, false);
+  }
+  static void sendFailure(HttpExchange exchange, int status, String code, String message, boolean retryable) throws IOException {
     if (exchange.getResponseCode() >= 0) { exchange.close(); return; }
-    var body = new JsonObject(); body.addProperty("status", "error"); body.addProperty("code", code); body.addProperty("message", message); send(exchange, status, body);
+    var body = new JsonObject(); body.addProperty("status", "error"); body.addProperty("code", code); body.addProperty("message", message);
+    if (status == 413) body.addProperty("retryable", retryable);
+    send(exchange, status, body);
   }
   private static ReadException explained(Exception failure) {
     if (failure instanceof ReadWire.WireLimit) return new ReadException(ReadProblem.Code.RESOURCE_LIMIT, failure.getMessage(), failure);
     return failure instanceof ReadException read ? read : new ReadException(ReadProblem.Code.MALFORMED_RECORD, failure.getMessage(), failure);
   }
   static int status(ReadProblem.Code code) {
-    return switch (code) { case ACCESS_DENIED -> 403; case FILE_CHANGED -> 409; case CLOSED -> 410; case BUSY -> 503; case RESOURCE_LIMIT -> 413; default -> 400; };
+    return switch (code) { case ACCESS_DENIED -> 403; case FILE_CHANGED -> 409; case CLOSED, FOLLOW_ENDED -> 410; case BUSY -> 503; case RESOURCE_LIMIT -> 413; default -> 400; };
   }
   private static final class Refusal extends IOException {
     final int status; final String code;

@@ -50,7 +50,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
   private final java.util.Map<String, String> loggedSerials = new java.util.LinkedHashMap<>();
   private final List<IdentityConflict> conflicts = new ArrayList<>();
   public static final long UPDATE_PERIOD_US = 5_000_000;
-  private record Update(CaptureWriter.Session owner, String name, boolean open, Instant endedAt,
+  private record Update(CaptureWriter.Session owner, String name, String writerIdentity, boolean open, Instant endedAt,
       long size, double min, double max, List<CaptureWriter.ClosedFile> files,
       String event, String matchType, Integer matchNumber, Integer teamNumber, String endReason,
       org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity, List<IdentityConflict> conflicts, org.triplehelix.wpilogmcp.capture.CaptureStats statistics) {}
@@ -115,7 +115,8 @@ public final class CaptureStore implements CaptureWriter.Observer {
         var manifest = path.getParent().resolve("session.json");
         var old = io.read(manifest, Session.class);
         reopening.put(path, old);
-        var provenance = new Provenance(Provenance.CAPTURED, null, path.getFileName().toString(), start.toString(), false);
+        var provenance = new Provenance(Provenance.CAPTURED, null, path.getFileName().toString(), start.toString(), false,
+            null, List.of(), previous.writerIdentity());
         String filename = path.getFileName().toString();
         var files = old.files().stream().filter(f -> !f.path().equals(filename)).toList();
         io.write(manifest, new Session(old.id(), old.startedAt(), old.endedAt(), old.startBasis(),
@@ -215,7 +216,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
     boolean due = factChanged || now - submittedAtUs >= UPDATE_PERIOD_US;
     if (!due && pending.get() == null) return;
     if (due) submittedAtUs = now;
-    var snapshot = new Update(capture, capture.path().getFileName().toString(), capture.open(),
+    var snapshot = new Update(capture, capture.path().getFileName().toString(), capture.writerIdentity(), capture.open(),
         capture.open() ? capture.observedAt() : capture.endedAt(), capture.sizeBytes(),
         capture.minTimestampUs() / 1_000_000.0, capture.maxTimestampUs() / 1_000_000.0,
         capture.files(), event, matchType, matchNumber, teamNumber, capture.endReason(), capture.identity(), List.copyOf(conflicts), statistics);
@@ -275,12 +276,14 @@ public final class CaptureStore implements CaptureWriter.Observer {
       var previous = old.files().stream().filter(f -> f.path().equals(closed.name()) && f.sizeBytes() == closed.sizeBytes()).findFirst();
       String hash = previous.isPresent() ? previous.get().sha256() : StoreFiles.hash(file);
       files.add(new LogFile(closed.name(), hash, closed.sizeBytes(), "wpilog",
-          new Provenance(Provenance.CAPTURED, null, closed.name(), capture.startedAt().toString(), false), true,
+          new Provenance(Provenance.CAPTURED, null, closed.name(), capture.startedAt().toString(), false,
+              null, List.of(), closed.writerIdentity()), true,
           closed.minUs() / 1_000_000.0, closed.maxUs() / 1_000_000.0,
           capture.startedAt().toString(), closed.endedAt().toString(), "pit_clock", false, null));
     }
     OpenCapture open = update.open() ? new OpenCapture(update.name(),
-        new Provenance(Provenance.CAPTURED, null, update.name(), capture.startedAt().toString(), false),
+        new Provenance(Provenance.CAPTURED, null, update.name(), capture.startedAt().toString(), false,
+            null, List.of(), update.writerIdentity()),
         update.size(), update.min(), update.max()) : null;
     var identityConflicts = java.util.stream.Stream.concat(old.identityConflicts().stream(), update.conflicts().stream()).distinct().toList();
     String ended = Instant.parse(old.endedAt()).isAfter(update.endedAt()) ? old.endedAt() : update.endedAt().toString();

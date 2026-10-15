@@ -121,7 +121,7 @@ public final class LiveLog implements LogData, AutoCloseable {
   }
 
   private volatile Path path;
-  private final String captureIdentity = java.util.UUID.randomUUID().toString();
+  private final String captureIdentity;
   private final long hotWindowUs;
   private final java.util.function.Supplier<Double> robotNowUs;
   private volatile State state = new State(Map.of(), Map.of(), 0, 0, 0, 0, -1, true, 0);
@@ -142,6 +142,11 @@ public final class LiveLog implements LogData, AutoCloseable {
   public LiveLog(Path path, long hotWindowUs) { this(path, hotWindowUs, () -> null); }
 
   public LiveLog(Path path, long hotWindowUs, java.util.function.Supplier<Double> robotNowUs) {
+    this(path, hotWindowUs, robotNowUs, java.util.UUID.randomUUID().toString());
+  }
+  /** CaptureWriter supplies the same incarnation to this index and its durable provenance. */
+  public LiveLog(Path path, long hotWindowUs, java.util.function.Supplier<Double> robotNowUs, String captureIdentity) {
+    this.captureIdentity = java.util.Objects.requireNonNull(captureIdentity);
     this.robotNowUs = robotNowUs;
     if (hotWindowUs < 0) throw new IllegalArgumentException("Negative hot window");
     this.path = path.toAbsolutePath().normalize(); this.hotWindowUs = hotWindowUs;

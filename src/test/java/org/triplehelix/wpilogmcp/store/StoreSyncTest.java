@@ -108,6 +108,18 @@ class StoreSyncTest {
     assertEquals(before.sizeBytes(), result.filesCopied().get(0).bytes());
   }
 
+  @Test void aWriterIncarnationSurvivesPeerCopiesAndTheirPlacementReceipts() throws Exception {
+    put(b, fixture("incarnation.wpilog", 1, "SERIAL"));
+    var file = catalog(b).files().get(0); String identity = "11111111-1111-4111-8111-111111111111";
+    var json = com.google.gson.JsonParser.parseString(Files.readString(file.manifestPath())).getAsJsonObject();
+    var provenance = json.getAsJsonArray("files").get(0).getAsJsonObject().getAsJsonObject("provenance");
+    provenance.addProperty("kind", "captured"); provenance.addProperty("writer_identity", identity);
+    b.capture(io -> { io.write(file.manifestPath(), json); return null; });
+    sync(a, httpB);
+    var copied = StoreJson.JSON.toJsonTree(catalog(a).files().get(0).file()).getAsJsonObject();
+    assertEquals(new com.google.gson.JsonPrimitive(identity), copied.getAsJsonObject("provenance").get("writer_identity"));
+  }
+
   @Test void calendarOnlyPlacementKeepsItsBasisThroughThePeerCopy() throws Exception {
     put(b, fixture("first.wpilog", 1, "SERIAL")); put(b, fixture("overlap.wpilog", 2, "SERIAL"));
     var source = catalog(b).files().stream().filter(f -> f.file().placementMethod() != null).findFirst().orElseThrow().file();

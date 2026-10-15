@@ -407,7 +407,7 @@ public final class StoreSync {
       var target = destination(item); var original = item.file(); var provenance = original.provenance();
       var origins = new ArrayList<>(provenance.copiedFrom()); origins.add(new PeerCopy(peer.description().id(), peer.url(), clock.instant().toString()));
       var file = new LogFile(StoreFiles.relative(item.manifest().getParent(), target), original.sha256(), original.sizeBytes(), original.kind(),
-          new Provenance(provenance.kind(), provenance.originalPath(), provenance.originalName(), provenance.importedAt(), provenance.moved(), provenance.sourceRobotSerial(), origins),
+          new Provenance(provenance.kind(), provenance.originalPath(), provenance.originalName(), provenance.importedAt(), provenance.moved(), provenance.sourceRobotSerial(), origins, provenance.writerIdentity()),
           true, original.minTimestampSec(), original.maxTimestampSec(), original.startedAt(), original.endedAt(), original.startBasis(), original.truncated(),
           original.matching(), original.robotFingerprint(), original.matchingReason(), original.placementMethod());
       var pending = new Placement(entry.localName(), StoreFiles.relative(root, target), StoreFiles.relative(root, item.manifest()), file, false);

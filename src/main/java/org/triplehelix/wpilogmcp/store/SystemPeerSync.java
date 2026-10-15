@@ -140,7 +140,7 @@ final class SystemPeerSync {
     public String verified(PullManifest.Entry transfer) throws IOException {
       var item = wanted.get(transfer.remoteName()); var original = item.entry().file(); var p = original.provenance();
       var origins = new ArrayList<>(p.copiedFrom()); origins.add(new PeerCopy(peer.description().id(), peer.url(), clock.instant().toString()));
-      var provenance = new Provenance(p.kind(), p.originalPath(), p.originalName(), p.importedAt(), p.moved(), p.sourceRobotSerial(), origins);
+      var provenance = new Provenance(p.kind(), p.originalPath(), p.originalName(), p.importedAt(), p.moved(), p.sourceRobotSerial(), origins, p.writerIdentity());
       // Event renames change a store path, not the identity of that session's growing text.
       String sourceKey = HexFormat.of().formatHex(sha256().digest((peer.description().id() + "/" + item.originSession() + "/" + original.path()).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
       var destination = original.location() == SystemLogState.Location.STORE ? io.resolve(root, original.path())

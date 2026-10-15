@@ -42,6 +42,29 @@ class SessionAliasesTest {
         StoreFiles.JSON.toJsonTree(session).getAsJsonObject().get("merged_session_ids"));
   }
 
+  @Test void everyProvenanceCopyPreservesItsWriterIncarnation() throws Exception {
+    var compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
+    try (var files = java.nio.file.Files.list(java.nio.file.Path.of("src/main/java/org/triplehelix/wpilogmcp/store"));
+         var manager = compiler.getStandardFileManager(null, null, null)) {
+      var sources = manager.getJavaFileObjectsFromPaths(files.filter(p -> p.toString().endsWith(".java")).toList());
+      var parse = (com.sun.source.util.JavacTask) compiler.getTask(null, manager, null, List.of("-proc:none"), null, sources);
+      var checked = new java.util.ArrayList<String>();
+      for (var tree : parse.parse()) new com.sun.source.util.TreeScanner<Void, Void>() {
+        @Override public Void visitNewClass(com.sun.source.tree.NewClassTree node, Void ignored) {
+          var args = node.getArguments();
+          if (node.getIdentifier().toString().endsWith("Provenance") && !args.isEmpty() && args.get(0).toString().endsWith(".kind()")) {
+            checked.add(tree.getSourceFile().getName());
+            assertEquals(8, args.size(), "A provenance copy lost fields: " + node);
+            assertTrue(args.get(7).toString().endsWith(".writerIdentity()"), "A copy dropped the writer proof: " + node);
+          }
+          return super.visitNewClass(node, ignored);
+        }
+      }.scan(tree, null);
+      assertTrue(checked.stream().anyMatch(p -> p.endsWith("StoreSync.java")));
+      assertTrue(checked.stream().anyMatch(p -> p.endsWith("SystemPeerSync.java")));
+    }
+  }
+
   @Test void everyManifestReconstructionCarriesTheAliases() throws Exception {
     var compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
     try (var files = java.nio.file.Files.list(java.nio.file.Path.of("src/main/java/org/triplehelix/wpilogmcp/store"));

@@ -828,7 +828,11 @@ and mirror copies; an alias cannot widen a follow to another recording in the me
 Follows retain at most 32 leases, expire after 60 idle seconds, and wait up to 25 seconds on
 16 separate workers. Creation and closure use ordinary read workers so waiting followers cannot
 occupy their control capacity. See the [follow protocol](READ_API.md#following-a-server-recording)
-for retry cursors, final hashes, explicit history loss and cancellation. These are custom-reader
+for retry cursors, final hashes, explicit history loss and cancellation. Pages carry `ended`;
+acknowledging the terminal page returns 410 `FOLLOW_ENDED` until closure or expiry. Follow 413
+refusals carry `retryable` so clients distinguish temporary byte pressure from structural limits.
+Writer identity persists through finalization, and bounded turns share pages among selected signals.
+These are custom-reader
 routes; the optional visualization editor still provides the recorded workflow.
 A standalone library excludes open captures it cannot freeze and names the recording-server route
 as the remedy. Session indexes share a bounded catalog allowance as described in the API guide.

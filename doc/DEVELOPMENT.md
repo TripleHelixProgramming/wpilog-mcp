@@ -428,6 +428,21 @@ duplicate fields and truncated JSON, while preserving exact retained-page retrie
 idle expiry, cancellation and retained bytes; an acknowledged frontier releases its native prefix
 before waiting. Store tests prove alias preservation, anchored membership, mirror copying and the
 safe outcome after older writers drop aliases. A syntax-tree guard checks every session copy.
+The pre-broker contract tests cover multi-page final drains, exact terminal retries and repeated
+410 acknowledgements, terminal data release/expiry, typed structural/transient 413 refusals,
+and resumption after a budget refusal that already acknowledged the prior page. Fairness cases
+cover quiet members, distinct projections, malformed records, tiny pages and byte deferral;
+the independent reader still checks exact values and physical ordinals. A 64 KiB page fixture
+puts 5,000 numeric records beside ten 40,000-byte raw records: the first deferred selection
+opens the second page, other selections fill remaining space, and each deferred lookahead is
+read only once per page. A second large selection and a capped numeric query check that the
+first deferral keeps priority; all values, timestamps, ordinals and exact retries are checked
+through the completed prefix.
+Writer-incarnation
+tests drive real capture open/close/resume/rollover, cold replacement followed by finalization,
+legacy finalization refusal, recovery, peer copying and mirroring. A provenance-copy syntax-tree
+guard covers both telemetry and system-text copy constructors. These checks also require
+`*CaptureStoreTest`; capture changes run the available shop harness with native replay selection.
 These suites do not establish authenticated remote visualization, an editor live workflow,
 native Linux/Windows execution or the declared performance workloads.
 

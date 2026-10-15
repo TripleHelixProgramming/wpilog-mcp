@@ -49,7 +49,7 @@ public final class CaptureIndex implements CaptureWriter.Observer {
   }
   @Override public void identity(CaptureWriter.Session session) throws IOException { placement.identity(session); }
   @Override public void opened(CaptureWriter.Session session, boolean resumed) throws IOException {
-    if (!resumed) live = new LiveLog(session.path(), hotWindowUs, robotNowUs);
+    if (!resumed) live = new LiveLog(session.path(), hotWindowUs, robotNowUs, session.writerIdentity());
     manager.beginCapture(live);
     placement.opened(session, resumed);
   }

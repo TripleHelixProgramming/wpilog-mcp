@@ -48,6 +48,68 @@ class CaptureStoreTest {
     writer.timeSync(time, received); writer.announce(VALUE); loop.until(writer::ready);
   }
 
+  @ParameterizedTest @ValueSource(booleans = {false, true})
+  void writerIncarnationsArePersistedForOpenClosedResumedAndRolloverFiles(boolean rollover) throws Exception {
+    var manager = LogManager.getInstance(); var store = manager.stores().store(directory.resolve("identity"));
+    var placement = store.captures(WALL); var loop = new ManualScheduler();
+    var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex(placement, manager, 0);
+    var identities = new java.util.HashMap<String, String>();
+    try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index, rollover ? 1024 : 1L << 30)) {
+      connect(writer, loop, 10_000_000, 0); placement.completion().get();
+      try (var use = manager.acquire(writer.session().path().toString())) {
+        String identity = ((org.triplehelix.wpilogmcp.log.LiveLog.View) use.log()).captureIdentity();
+        identities.put(writer.session().path().getFileName().toString(), identity);
+        var json = com.google.gson.JsonParser.parseString(Files.readString(writer.session().path().resolveSibling("session.json"))).getAsJsonObject();
+        assertEquals(new com.google.gson.JsonPrimitive(identity), json.getAsJsonObject("open_capture")
+            .getAsJsonObject("provenance").get("writer_identity"));
+      }
+      for (int i = 0; i < 200; i++) {
+        writer.value(VALUE, new ValueFrame(1, 10_000_000 + i, 2, (long) i), 0);
+        try (var use = manager.acquire(writer.session().path().toString())) {
+          identities.put(writer.session().path().getFileName().toString(), ((org.triplehelix.wpilogmcp.log.LiveLog.View) use.log()).captureIdentity());
+        }
+      }
+      writer.disconnected(); placement.completion().get();
+      if (rollover) assertTrue(identities.size() > 1);
+      assertEquals(identities.size(), new java.util.HashSet<>(identities.values()).size(), "Each rollover is a distinct writer incarnation");
+      var json = com.google.gson.JsonParser.parseString(Files.readString(writer.session().path().resolveSibling("session.json"))).getAsJsonObject();
+      assertEquals(identities.size(), json.getAsJsonArray("files").size());
+      for (var file : json.getAsJsonArray("files")) {
+        var f = file.getAsJsonObject();
+        assertEquals(new com.google.gson.JsonPrimitive(identities.get(f.get("path").getAsString())),
+            f.getAsJsonObject("provenance").get("writer_identity"));
+      }
+      String last = identities.get(writer.session().path().getFileName().toString());
+      connect(writer, loop, 11_000_000, 1_000_000); placement.completion().get();
+      json = com.google.gson.JsonParser.parseString(Files.readString(writer.session().path().resolveSibling("session.json"))).getAsJsonObject();
+      assertEquals(new com.google.gson.JsonPrimitive(last), json.getAsJsonObject("open_capture").getAsJsonObject("provenance").get("writer_identity"));
+      writer.disconnected(); placement.completion().get();
+      connect(writer, loop, 1_000_000, 2_000_000); placement.completion().get();
+      json = com.google.gson.JsonParser.parseString(Files.readString(writer.session().path().resolveSibling("session.json"))).getAsJsonObject();
+      assertNotEquals(new com.google.gson.JsonPrimitive(last), json.getAsJsonObject("open_capture").getAsJsonObject("provenance").get("writer_identity"));
+      writer.disconnected(); placement.completion().get();
+    }
+  }
+
+  @Test void resumedAdmissionKeepsTheWriterProofBeforeTheFileIsReopened() throws Exception {
+    var manager = LogManager.getInstance(); var store = manager.stores().store(directory.resolve("resume-proof"));
+    var placement = store.captures(WALL); var loop = new ManualScheduler();
+    var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex(placement, manager, 0);
+    try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index)) {
+      connect(writer, loop, 10_000_000, 0); String identity;
+      try (var use = manager.acquire(writer.session().path().toString())) {
+        identity = ((org.triplehelix.wpilogmcp.log.LiveLog.View) use.log()).captureIdentity();
+      }
+      writer.disconnected(); placement.completion().get();
+      var path = placement.createAsync(writer.session().address(), writer.session().startedAt(), writer.session(), null).get();
+      try {
+        var manifest = com.google.gson.JsonParser.parseString(Files.readString(path.resolveSibling("session.json"))).getAsJsonObject();
+        assertEquals(new com.google.gson.JsonPrimitive(identity), manifest.getAsJsonObject("open_capture")
+            .getAsJsonObject("provenance").get("writer_identity"));
+      } finally { placement.abandoned(path, WALL.instant(), "fixture cancelled resume").get(); }
+    }
+  }
+
   @Test void openClosedResumeAndSameSecondSessionsKeepTheirFactsAndBytes() throws Exception {
     directory = directory.toRealPath();
     var security = new SecurityValidator(); security.addAllowedDirectory(directory);

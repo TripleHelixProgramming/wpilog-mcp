@@ -84,7 +84,11 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
 
   /** Immutable facts for one closed file; all paths within a session remain relative. */
-  public record ClosedFile(String name, long sizeBytes, long minUs, long maxUs, Instant endedAt) {}
+  public record ClosedFile(String name, long sizeBytes, long minUs, long maxUs, Instant endedAt, String writerIdentity) {
+    public ClosedFile(String name, long sizeBytes, long minUs, long maxUs, Instant endedAt) {
+      this(name, sizeBytes, minUs, maxUs, endedAt, null);
+    }
+  }
 
   /** Identity survives a short disconnect. The store may relocate the directory after close. */
   public static final class Session {
@@ -92,6 +96,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     private final Instant startedAt;
     private final String address;
     private final CapturePolicy policy;
+    private String writerIdentity = java.util.UUID.randomUUID().toString();
     private Instant endedAt;
     private boolean open;
     private String endReason;
@@ -113,6 +118,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     public Instant endedAt() { return endedAt; }
     public String address() { return address; }
     public boolean open() { return open; }
+    /** One file's writer incarnation survives a short reconnect, but never a rollover or new boot. */
+    public String writerIdentity() { return writerIdentity; }
     public String endReason() { return endReason; }
     public DeviceIdentity identity() { return identity; }
     public long minTimestampUs() { return minUs == Long.MAX_VALUE ? 0 : minUs; }
@@ -565,6 +572,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       throw new IOException("capture.max_file_bytes cannot hold identity and active declarations");
     }
     session.path = session.path().resolveSibling("capture-" + ++session.fileNumber + ".wpilog");
+    session.writerIdentity = java.util.UUID.randomUUID().toString();
     session.nextEntry = 1; session.minUs = Long.MAX_VALUE; session.maxUs = Long.MIN_VALUE;
     openFile(false);
     for (var topic : topics.values()) {
@@ -711,7 +719,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     try {
       session.sizeBytes = Files.size(session.path());
       session.files.add(new ClosedFile(session.path().getFileName().toString(), session.sizeBytes,
-          session.minTimestampUs(), session.maxTimestampUs(), session.endedAt()));
+          session.minTimestampUs(), session.maxTimestampUs(), session.endedAt(), session.writerIdentity()));
       observer.fileClosed(session);
     } catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
     if (failure != null) throw failure;

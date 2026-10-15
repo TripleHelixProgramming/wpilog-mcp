@@ -45,7 +45,12 @@ class FollowEndpointTest {
     writer.connected(RobotAddress.uri("127.0.0.1", 5810, "follow-test"), "networktables.first.wpi.edu");
     writer.timeSync(1_000_000, 0); writer.announce(topic); append(1_000_001, 41);
     var open = new OpenCapture("capture.wpilog", new Provenance("captured", null, "capture.wpilog", WHEN, false), Files.size(file), 1, 1);
-    Files.writeString(manifest, StoreJson.JSON.toJson(new Session(SESSION, WHEN, WHEN, "pit_clock", null, null, null, null, List.of(), open)));
+    var session = StoreJson.JSON.toJsonTree(new Session(SESSION, WHEN, WHEN, "pit_clock", null, null, null, null, List.of(), open)).getAsJsonObject();
+    try (var use = logs.acquire(file.toString())) {
+      session.getAsJsonObject("open_capture").getAsJsonObject("provenance").addProperty("writer_identity",
+          ((org.triplehelix.wpilogmcp.log.LiveLog.View) use.log()).captureIdentity());
+    }
+    Files.writeString(manifest, session.toString());
     transport = new HttpTransport(new ToolRegistry(), 0); transport.setStoreDirectories(Set.of(temp)); transport.start();
     base = URI.create("http://127.0.0.1:" + transport.getPort());
   }
@@ -168,9 +173,12 @@ class FollowEndpointTest {
     Files.writeString(manifest, StoreJson.JSON.toJson(new Session(before.id(), WHEN, WHEN, "pit_clock",
         null, null, null, null, List.of(closed)))); logs.catalogPublished();
   }
-  @Test void finalizationDrainsTheLastRecordsAndNeverSwitchesToANewBoot() throws Exception {
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void finalizationDrainsTheLastRecordsAndNeverSwitchesToANewBoot(boolean cold) throws Exception {
     var lease = create(); var first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
     append(1_000_002, 42); finalizeRecording(false);
+    if (cold) logs.release(temp);
     var last = json(call("POST", nextPath(lease), nextBody(first.get("next_cursor").getAsString(), 100)), 200);
     assertTrue(last.getAsJsonObject("frontier").get("finalized").getAsBoolean());
     assertEquals(org.triplehelix.wpilogmcp.store.LogStore.contentHash(file), last.getAsJsonObject("frontier")
@@ -178,8 +186,38 @@ class FollowEndpointTest {
     assertEquals(first.getAsJsonObject("frontier").get("recording_id"), last.getAsJsonObject("frontier").get("recording_id"));
     assertEquals(1, last.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch").getAsJsonArray("samples").size());
     Files.writeString(manifest, StoreJson.JSON.toJson(new Session(UUID.randomUUID().toString(), WHEN, WHEN, "pit_clock", null, null, null, null, List.of())));
-    var done = json(call("POST", nextPath(lease), nextBody(last.get("next_cursor").getAsString(), 25000)), 200);
-    assertTrue(done.get("frontier_complete").getAsBoolean()); assertTrue(done.getAsJsonArray("batches").isEmpty());
+    var done = json(call("POST", nextPath(lease), nextBody(last.get("next_cursor").getAsString(), 25000)), 410);
+    assertEquals("FOLLOW_ENDED", done.get("code").getAsString());
+  }
+
+  @Test void aLiveManifestCannotClaimAnotherWritersIncarnation() throws Exception {
+    var json = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+    json.getAsJsonObject("open_capture").getAsJsonObject("provenance").addProperty("writer_identity", UUID.randomUUID().toString());
+    Files.writeString(manifest, json.toString()); logs.catalogPublished();
+    assertEquals("HISTORY_UNAVAILABLE", json(call("POST", "/read/v1/follows", creation()), 409).get("code").getAsString());
+  }
+
+  @Test void terminalPagesDrainInOrderReplayExactlyAndRetainTheirAcknowledgement() throws Exception {
+    var request = JsonParser.parseString(creation()).getAsJsonObject(); request.addProperty("max_records", 1);
+    var lease = json(call("POST", "/read/v1/follows", request.toString()), 201);
+    var first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
+    assertEquals(new JsonPrimitive(false), first.get("ended"));
+    append(1_000_002, 42); append(1_000_003, 43); finalizeRecording(false);
+    var second = json(call("POST", nextPath(lease), nextBody(first.get("next_cursor").getAsString(), 0)), 200);
+    assertEquals(new JsonPrimitive(false), second.get("ended"));
+    String input = second.get("next_cursor").getAsString();
+    var response = call("POST", nextPath(lease), nextBody(input, 0)); var last = json(response, 200);
+    assertEquals(new JsonPrimitive(true), last.get("ended"));
+    assertTrue(last.get("frontier_complete").getAsBoolean());
+    assertEquals(2, last.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch")
+        .getAsJsonArray("samples").get(0).getAsJsonObject().get("ordinal").getAsInt());
+    assertEquals(response.body(), call("POST", nextPath(lease), nextBody(input, 25000)).body());
+    String terminal = last.get("next_cursor").getAsString();
+    for (int i = 0; i < 2; i++) assertEquals("FOLLOW_ENDED",
+        json(call("POST", nextPath(lease), nextBody(terminal, 25000)), 410).get("code").getAsString());
+    assertEquals("INVALID_REQUEST", json(call("POST", nextPath(lease), nextBody(input, 0)), 400).get("code").getAsString());
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+    assertEquals("CURSOR_EXPIRED", json(call("POST", nextPath(lease), nextBody(terminal, 0)), 410).get("code").getAsString());
   }
   @Test void aChangedFinalHashIsUnavailableAndCannotBeAcceptedAsContinuousHistory() throws Exception {
     var lease = create(); var first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
@@ -254,6 +292,77 @@ class FollowEndpointTest {
       replacement.append(entry, new ValueFrame(entry.id(), 1_000_001, 2, 99L), written);
       assertEquals("HISTORY_UNAVAILABLE", json(call("POST", nextPath(lease), nextBody(cursor, 0)), 409).get("code").getAsString());
     } finally { logs.finishCapture(replacement); }
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void finalizationWithoutTheOriginalWriterProofRequiresExplicitRebootstrap(boolean legacy) throws Exception {
+    var lease = create(); var first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
+    finalizeRecording(false);
+    var json = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+    var provenance = json.getAsJsonArray("files").get(0).getAsJsonObject().getAsJsonObject("provenance");
+    if (legacy) provenance.remove("writer_identity"); else provenance.addProperty("writer_identity", UUID.randomUUID().toString());
+    Files.writeString(manifest, json.toString()); logs.catalogPublished();
+    var refusal = json(call("POST", nextPath(lease), nextBody(first.get("next_cursor").getAsString(), 0)), 409);
+    assertEquals("HISTORY_UNAVAILABLE", refusal.get("code").getAsString());
+    // The independently hashed finalized file remains readable through an explicit new bootstrap.
+    var fresh = create();
+    assertEquals(200, call("POST", nextPath(fresh), nextBody(fresh.get("cursor").getAsString(), 0)).statusCode());
+  }
+
+  @Test void aReplacementThatFinalizesBetweenPollsCannotPassWithTheSameEntryCounts() throws Exception {
+    var lease = create(); var first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
+    String cursor = first.get("next_cursor").getAsString();
+    assertEquals(204, call("POST", nextPath(lease), nextBody(cursor, 0)).statusCode());
+    writer.close(); logs.release(temp); Files.delete(file);
+    var index = new CaptureIndex((address, start) -> file, logs, 10_000_000);
+    writer = new CaptureWriter(Clock.fixed(Instant.parse(WHEN), ZoneOffset.UTC), new ManualScheduler(), CapturePolicy.ALL, index);
+    writer.connected(RobotAddress.uri("127.0.0.1", 5810, "replacement"), "networktables.first.wpi.edu");
+    writer.timeSync(1_000_000, 0); writer.announce(topic); append(1_000_001, 99);
+    var metadata = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+    try (var use = logs.acquire(file.toString())) {
+      metadata.getAsJsonObject("open_capture").getAsJsonObject("provenance").addProperty("writer_identity",
+          ((org.triplehelix.wpilogmcp.log.LiveLog.View) use.log()).captureIdentity());
+    }
+    Files.writeString(manifest, metadata.toString()); finalizeRecording(false); logs.release(temp);
+    assertEquals("HISTORY_UNAVAILABLE", json(call("POST", nextPath(lease), nextBody(cursor, 0)), 409).get("code").getAsString());
+    var fresh = create(); var accepted = json(call("POST", nextPath(fresh), nextBody(fresh.get("cursor").getAsString(), 0)), 200);
+    assertEquals("99", accepted.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch")
+        .getAsJsonArray("samples").get(0).getAsJsonObject().getAsJsonObject("value").get("value").getAsString());
+  }
+
+  @Test void bytePressureAfterAcknowledgementResumesTheDeltaWithoutRebootstrap() throws Exception {
+    var field = HttpTransport.class.getDeclaredField("followEndpoint"); field.setAccessible(true);
+    var endpoint = (FollowEndpoint) field.get(transport);
+    var budget = FollowEndpoint.class.getDeclaredField("budget"); budget.setAccessible(true);
+    budget.set(endpoint, new org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Budget(256 << 10));
+    var request = JsonParser.parseString(creation()).getAsJsonObject(); request.addProperty("max_page_bytes", 128 << 10);
+    var a = json(call("POST", "/read/v1/follows", request.toString()), 201);
+    var first = json(call("POST", nextPath(a), nextBody(a.get("cursor").getAsString(), 0)), 200);
+    request.addProperty("max_page_bytes", 64 << 10);
+    var b = json(call("POST", "/read/v1/follows", request.toString()), 201);
+    json(call("POST", nextPath(b), nextBody(b.get("cursor").getAsString(), 0)), 200);
+    append(1_000_002, 42); String cursor = first.get("next_cursor").getAsString();
+    var failure = json(call("POST", nextPath(a), nextBody(cursor, 0)), 413);
+    assertEquals(new JsonPrimitive(true), failure.get("retryable"));
+    call("DELETE", "/read/v1/follows/" + b.get("id").getAsString(), null);
+    var response = call("POST", nextPath(a), nextBody(cursor, 0)); var delta = json(response, 200);
+    assertFalse(delta.get("bootstrap").getAsBoolean());
+    assertEquals(1, delta.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch")
+        .getAsJsonArray("samples").get(0).getAsJsonObject().get("ordinal").getAsInt());
+    assertEquals(response.body(), call("POST", nextPath(a), nextBody(cursor, 0)).body());
+  }
+
+  @Test void oversizedFollowBodiesAreStructuralRefusalsAndLeaveTheRetryPageIntact() throws Exception {
+    var lease = create(); String cursor = lease.get("cursor").getAsString();
+    var first = call("POST", nextPath(lease), nextBody(cursor, 0)); json(first, 200);
+    String oversized = " ".repeat((1 << 20) + 1);
+    for (String path : List.of("/read/v1/follows", nextPath(lease))) {
+      var failure = json(call("POST", path, oversized), 413);
+      assertEquals("RESOURCE_LIMIT", failure.get("code").getAsString());
+      assertEquals(new JsonPrimitive(false), failure.get("retryable"));
+      assertEquals(first.body(), call("POST", nextPath(lease), nextBody(cursor, 0)).body());
+    }
   }
 
   @Test void theRealTransportKeepsHealthAndDeleteAvailableWhenAllFollowWorkersWait() throws Exception {

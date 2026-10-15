@@ -96,6 +96,173 @@ class OrdinalFollowTest {
     }
   }
 
+  @Test void fieldTurnsRotateAcrossAcknowledgedPagesWithoutLosingProjectionOrdinals() throws Exception {
+    try (var file = new Recording(temp.resolve("field-turns.wpilog"))) {
+      file.entry("/x", "double[]", ""); var entry = file.entries.get("/x");
+      for (int i = 0; i < 2; i++) {
+        var written = file.output.append(entry.id(), i, ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
+            .putDouble(3 + i).putDouble(7 + i).array());
+        file.live.append(entry, new ValueFrame(entry.id(), i, 17, List.of(3.0 + i, 7.0 + i)), written);
+      }
+      try (var follow = new OrdinalFollow(EPOCH, () -> file.prefix(1), List.of(X.project("[0]"), X.project("[1]")), budget(), 1, 128 << 10)) {
+        String cursor = follow.initialCursor();
+        for (int i = 0; i < 4; i++) {
+          var page = page(follow, cursor); assertEquals(page, page(follow, cursor));
+          var frame = page.getAsJsonArray("batches").get(0).getAsJsonObject();
+          assertEquals("[" + i % 2 + "]", frame.get("field").getAsString());
+          var sample = frame.getAsJsonObject("batch").getAsJsonArray("samples").get(0).getAsJsonObject();
+          assertEquals(i / 2, sample.get("ordinal").getAsInt());
+          assertEquals((i % 2 == 0 ? 3.0 : 7.0) + i / 2, ReadWire.value(sample.getAsJsonObject("value")));
+          cursor = cursor(page);
+        }
+      }
+    }
+  }
+
+  @Test void byteDeferredRecordsYieldToQuietEntriesAndResumeWithoutSkipping() throws Exception {
+    try (var file = new Recording(temp.resolve("deferred-turn.wpilog"))) {
+      file.entry("/x", "string", ""); file.entry("/quiet", "string", "");
+      for (int i = 0; i < 32; i++) file.text("/x", i + "s".repeat(1000));
+      file.text("/quiet", "quiet"); var actual = new ArrayList<String>(); boolean quiet = false;
+      try (var follow = new OrdinalFollow(EPOCH, () -> file.prefix(1), List.of(X,
+          new ReadQuery("/quiet", List.of(), ReadQuery.Order.FILE, 4096, 4 << 20)), budget(), 4096, 16 << 10)) {
+        String cursor = follow.initialCursor();
+        for (int number = 0; number < 8; number++) {
+          var page = page(follow, cursor); assertEquals(page, page(follow, cursor));
+          for (var frame : page.getAsJsonArray("batches")) {
+            var b = frame.getAsJsonObject(); var samples = b.getAsJsonObject("batch").getAsJsonArray("samples");
+            assertTrue(b.getAsJsonObject("batch").getAsJsonArray("problems").isEmpty());
+            if (b.get("entry").getAsString().equals("/quiet")) { assertFalse(quiet); quiet = true; }
+            else for (var sample : samples) {
+              var value = sample.getAsJsonObject(); assertEquals(actual.size(), value.get("ordinal").getAsInt());
+              actual.add(value.getAsJsonObject("value").get("value").getAsString());
+            }
+          }
+          if (number == 1) assertTrue(quiet, "A byte-deferred turn must yield the next page to the quiet entry");
+          cursor = cursor(page); if (page.get("frontier_complete").getAsBoolean()) break;
+        }
+      }
+      assertTrue(quiet); assertEquals(32, actual.size());
+      for (int i = 0; i < 32; i++) assertEquals(i + "s".repeat(1000), actual.get(i));
+    }
+  }
+
+  @ParameterizedTest @ValueSource(ints = {1, 2})
+  void byteDeferredLargeRecordsOpenTheNextPageBeforeTheChattyBacklogDrains(int largeEntries) throws Exception {
+    var pages = largeRecordPages(largeEntries);
+    var first = pages.get(1).getAsJsonArray("batches").get(0).getAsJsonObject();
+    assertEquals("/large/0", first.get("entry").getAsString(),
+        "The first deferred selection must open the next page, even if later selections also defer");
+    assertEquals(0, first.getAsJsonObject("batch").getAsJsonArray("samples").get(0)
+        .getAsJsonObject().get("ordinal").getAsInt());
+  }
+
+  @Test void byteDeferralKeepsPackingTheOtherSelections() throws Exception {
+    var pages = largeRecordPages(1);
+    assertTrue(entryRecords(pages.get(1), "/large/0") == 1 && entryRecords(pages.get(1), "/x") > 0,
+        "Deferring a second large record must leave the remaining space available to the chatty entry");
+  }
+
+  @Test void byteDeferredPrioritySurvivesOtherSelectionsReachingTheirPageLimit() throws Exception {
+    var pages = largeRecordPages(1, 256);
+    assertEquals("/large/0", pages.get(1).getAsJsonArray("batches").get(0).getAsJsonObject().get("entry").getAsString(),
+        "The first deferral keeps priority even when a query cap ends packing before its turn comes around again");
+  }
+
+  /** Small transport pages must make progress on both large and small values. The values and
+   * timestamps below have independent, exact expectations; retries must not read them again. */
+  private List<JsonObject> largeRecordPages(int largeEntries) throws Exception {
+    return largeRecordPages(largeEntries, 4096);
+  }
+
+  private List<JsonObject> largeRecordPages(int largeEntries, int chattyLimit) throws Exception {
+    try (var file = new Recording(temp.resolve("large-deferral-" + largeEntries + ".wpilog"))) {
+      file.entry("/x", "int64", "");
+      for (int i = 0; i < 5000; i++) file.number("/x", i, 3L * i + 7, false);
+      var queries = new ArrayList<ReadQuery>();
+      queries.add(new ReadQuery("/x", List.of(), ReadQuery.Order.FILE, chattyLimit, 4 << 20));
+      for (int entryNumber = 0; entryNumber < largeEntries; entryNumber++) {
+        String name = "/large/" + entryNumber; file.entry(name, "raw", "");
+        queries.add(new ReadQuery(name, List.of(), ReadQuery.Order.FILE, 4096, 4 << 20));
+        var entry = file.entries.get(name);
+        for (int i = 0; i < 10; i++) {
+          byte[] payload = new byte[40000]; java.util.Arrays.fill(payload, (byte) (entryNumber * 16 + i + 1));
+          long time = (i + 1) * 1000L;
+          var written = file.output.append(entry.id(), time, payload);
+          file.live.append(entry, new ValueFrame(entry.id(), time, 5, payload), written); file.live.expire();
+        }
+      }
+      var reads = new HashMap<String, Integer>();
+      var source = (OrdinalFollow.Source) () -> new OrdinalFollow.Prefix(RECORDING, 1, false, List.of(
+          new OrdinalFollow.Member("member", 1, new TrackingSnapshot(file.member("member", 1).snapshot(), new AtomicInteger()) {
+            @Override public SampleCursor read(ReadQuery query) throws IOException {
+              var delegate = super.read(query);
+              return new SampleCursor() {
+                @Override public SampleBatch next() throws IOException {
+                  var result = delegate.next(); reads.merge(query.entry(), result.recordsVisited(), Integer::sum); return result;
+                }
+                @Override public void close() throws IOException { delegate.close(); }
+              };
+            }
+          })));
+      var pages = new ArrayList<JsonObject>(); var ordinals = new HashMap<String, Integer>();
+      try (var follow = new OrdinalFollow(EPOCH, source, queries, budget(), 4096, 64 << 10)) {
+        String cursor = follow.initialCursor();
+        while (pages.size() < 64) {
+          reads.clear(); byte[] encoded;
+          try (var response = follow.next(cursor)) { encoded = bytes(response); }
+          var readCounts = Map.copyOf(reads);
+          for (int retry = 0; retry < 2; retry++) {
+            try (var response = follow.next(cursor)) { assertArrayEquals(encoded, bytes(response)); }
+            assertEquals(readCounts, reads, "A retained page retry must not read or advance the schedule");
+          }
+          assertTrue(encoded.length <= 64 << 10);
+          assertTrue(reads.values().stream().mapToInt(Integer::intValue).sum() <= 4096);
+          var page = ReadWire.parse(encoded); pages.add(page);
+          for (var query : queries) assertTrue(reads.getOrDefault(query.entry(), 0) <= entryRecords(page, query.entry()) + 1,
+              "A deferred selection must not be read again on this page: " + query.entry());
+          for (var frame : page.getAsJsonArray("batches")) {
+            var item = frame.getAsJsonObject(); String name = item.get("entry").getAsString();
+            var batch = item.getAsJsonObject("batch"); assertTrue(batch.getAsJsonArray("problems").isEmpty());
+            assertTrue(batch.get("records_visited").getAsInt() <= 256);
+            for (var value : batch.getAsJsonArray("samples")) {
+              var sample = value.getAsJsonObject(); int ordinal = ordinals.getOrDefault(name, 0);
+              assertEquals(ordinal, sample.get("ordinal").getAsInt());
+              var wire = sample.getAsJsonObject("value");
+              if (name.equals("/x")) {
+                assertEquals("i64", wire.get("type").getAsString());
+                assertEquals(3L * ordinal + 7, wire.get("value").getAsLong());
+                assertEquals(ordinal, sample.get("timestamp_us").getAsLong());
+              } else {
+                assertEquals("bytes", wire.get("type").getAsString());
+                byte[] expected = new byte[40000];
+                java.util.Arrays.fill(expected, (byte) (Integer.parseInt(name.substring("/large/".length())) * 16 + ordinal + 1));
+                assertArrayEquals(expected, java.util.Base64.getDecoder().decode(wire.get("value").getAsString()));
+                assertEquals((ordinal + 1) * 1000L, sample.get("timestamp_us").getAsLong());
+              }
+              ordinals.put(name, ordinal + 1);
+            }
+          }
+          cursor = cursor(page); if (page.get("frontier_complete").getAsBoolean()) break;
+        }
+      }
+      assertTrue(pages.get(pages.size() - 1).get("frontier_complete").getAsBoolean());
+      assertEquals(5000, ordinals.get("/x"));
+      for (int i = 0; i < largeEntries; i++) assertEquals(10, ordinals.get("/large/" + i));
+      int firstLargePage = java.util.stream.IntStream.range(0, pages.size())
+          .filter(i -> entryRecords(pages.get(i), "/large/0") != 0).findFirst().orElseThrow() + 1;
+      System.out.printf("Deferral fixture: largeEntries=%d chattyLimit=%d pages=%d firstLargePage=%d firstChattyRecords=%d%n",
+          largeEntries, chattyLimit, pages.size(), firstLargePage, entryRecords(pages.get(0), "/x"));
+      return pages;
+    }
+  }
+
+  private static int entryRecords(JsonObject page, String entry) {
+    return page.getAsJsonArray("batches").asList().stream().map(com.google.gson.JsonElement::getAsJsonObject)
+        .filter(frame -> frame.get("entry").getAsString().equals(entry))
+        .mapToInt(frame -> frame.getAsJsonObject("batch").get("records_visited").getAsInt()).sum();
+  }
+
   @Test void byteBoundariesDeferFittingRecordsAndChargeLookaheadAsWork() throws Exception {
     try (var file = new Recording(temp.resolve("byte-boundary.wpilog"))) {
       file.entry("/x", "string", "");
@@ -261,7 +428,9 @@ class OrdinalFollowTest {
         collect(first, actual, problems);
         assertTrue(first.get("bootstrap").getAsBoolean());
         assertFalse(first.get("frontier_complete").getAsBoolean());
-        assertEquals(4096, first.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch").get("records_visited").getAsInt());
+        assertEquals(4096, first.getAsJsonArray("batches").asList().stream().mapToInt(b ->
+            b.getAsJsonObject().getAsJsonObject("batch").get("records_visited").getAsInt()).sum());
+        assertTrue(actual.stream().anyMatch(d -> d.entry.equals("/y")), "The sparse entry is served on the first page");
         String prefix = first.get("prefix_id").getAsString();
         var counts = member(first, 0).getAsJsonObject("snapshot").getAsJsonObject("sample_counts");
         assertEquals(4100, counts.get("/x").getAsInt()); assertEquals(1, counts.get("/unselected").getAsInt());
@@ -271,7 +440,7 @@ class OrdinalFollowTest {
         var second = page(follow, cursor); cursor = cursor(second); collect(second, actual, problems);
         assertEquals(prefix, second.get("prefix_id").getAsString());
         assertTrue(second.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch").get("complete").getAsBoolean());
-        assertEquals(2, second.getAsJsonArray("batches").size());
+        assertEquals(1, second.getAsJsonArray("batches").size());
         assertTrue(second.get("frontier_complete").getAsBoolean());
         assertFalse(second.has("frontier"));
         var delta = page(follow, cursor); cursor = cursor(delta); collect(delta, actual, problems);
@@ -404,9 +573,37 @@ class OrdinalFollowTest {
         var last = page(follow, cursor(rollover)); assertEquals(1, ordinal(last));
         assertTrue(last.getAsJsonObject("frontier").get("finalized").getAsBoolean());
         assertTrue(last.get("frontier_complete").getAsBoolean()); int before = opens.get();
-        stage.set(3); var ended = page(follow, cursor(last));
+        stage.set(3);
+        assertEquals("FOLLOW_ENDED", assertThrows(ReadException.class, () -> follow.next(cursor(last))).code().name());
         assertEquals(before, opens.get(), "A finalized follow cannot attach itself to a later boot");
-        assertTrue(ended.getAsJsonArray("batches").isEmpty()); assertFalse(ended.get("bootstrap").getAsBoolean());
+      }
+    }
+  }
+
+  @ParameterizedTest @ValueSource(ints = {1, 257, 4096})
+  void quietEntriesReceiveATurnBeforeAChattyEntryCanDrain(int pageSize) throws Exception {
+    try (var a = new Recording(temp.resolve("fair-a.wpilog")); var b = new Recording(temp.resolve("fair-b.wpilog"))) {
+      a.entry("/x", "int64", ""); a.entry("/quiet", "int64", ""); b.entry("/x", "int64", "");
+      for (int i = 0; i < 600; i++) a.number("/x", i, i, i == 255);
+      a.number("/quiet", 0, 71, false); b.number("/x", 0, 72, false);
+      var quiet = new ReadQuery("/quiet", List.of(), ReadQuery.Order.FILE, 4096, 4 << 20);
+      try (var follow = new OrdinalFollow(EPOCH, () -> new OrdinalFollow.Prefix(RECORDING, 1, false,
+          List.of(a.member("a", 1), b.member("b", 1))), List.of(X, quiet), budget(), pageSize, 128 << 10)) {
+        String cursor = follow.initialCursor(); var order = new ArrayList<String>(); int visits = 0;
+        while (order.size() < 3) {
+          var page = page(follow, cursor); assertEquals(page, page(follow, cursor), "Retries cannot rotate the schedule");
+          for (var element : page.getAsJsonArray("batches")) {
+            var frame = element.getAsJsonObject(); var batch = frame.getAsJsonObject("batch");
+            String key = frame.get("member_id").getAsString() + frame.get("entry").getAsString();
+            if (!order.contains(key)) order.add(key);
+            if (key.equals("a/x") && !order.contains("b/x")) {
+              visits += batch.get("records_visited").getAsInt();
+              assertTrue(visits <= 256, "A quiet member must get a turn within 256 chatty records, including malformed ones");
+            }
+          }
+          cursor = cursor(page);
+        }
+        assertEquals(List.of("a/x", "a/quiet", "b/x"), order);
       }
     }
   }
@@ -575,6 +772,7 @@ class OrdinalFollowTest {
 
   private static final class Recording implements AutoCloseable {
     final Path path; final WpilogOutput output; final LiveLog live; final LogManager manager;
+    final String writerIdentity = java.util.UUID.randomUUID().toString();
     final Map<String, EntryInfo> entries = new HashMap<>(); boolean finished;
     Recording(Path path) throws IOException {
       try {
@@ -598,7 +796,7 @@ class OrdinalFollowTest {
       var before = entries.get(name); output.setMetadata(before.id(), metadata, 0);
       var after = new EntryInfo(before.id(), name, before.type(), metadata); entries.put(name, after); live.metadata(after);
     }
-    OrdinalFollow.Member member(String id, long generation) throws IOException { return new OrdinalFollow.Member(id, generation, manager.readAccess().open(path)); }
+    OrdinalFollow.Member member(String id, long generation) throws IOException { return new OrdinalFollow.Member(id, generation, manager.readAccess().open(path), null, writerIdentity); }
     OrdinalFollow.Prefix prefix(long revision) throws IOException { return new OrdinalFollow.Prefix(RECORDING, revision, finished, List.of(member("member", 1))); }
     void finish() throws IOException { if (!finished) { output.close(); manager.finishCapture(live); finished = true; } }
     @Override public void close() throws IOException { try { finish(); } finally { manager.shutdown(); } }

@@ -359,9 +359,9 @@ one serving location rather than guessing between them.
 A 201 response gives `id`, `server_epoch`, `cursor`, `source_ref`, `idle_timeout_sec: 60.0`,
 `max_wait_ms: 25000` and `api_version`. POST `{"cursor":"...","wait_ms":25000}` to
 `/read/v1/follows/<id>/next`. The page has `server_epoch`, `follow_id`, `cursor`, `next_cursor`,
-`prefix_id`, `bootstrap`, `frontier_complete` and `batches`. A `frontier` appears once per prefix:
+`prefix_id`, `bootstrap`, `frontier_complete`, `ended` and `batches`. A `frontier` appears once per prefix:
 `recording_id`, `catalog_revision`, `finalized`, and `members`, each with `member_id`, `generation`,
-nullable `content_sha256` and the native snapshot descriptor. The catalog revision is monotonic
+nullable `content_sha256`, nullable `writer_identity` and the native snapshot descriptor. The catalog revision is monotonic
 within the follow, not a persistent store revision. Retain the frontier until the next one arrives.
 Each batch identifies its `member_id`, `entry`, nullable `field`, `next_ordinal`, and native `batch`.
 Its completion flag concerns that projection/member; `frontier_complete` concerns the whole page
@@ -377,24 +377,37 @@ page can precede the samples when the full frontier occupies its space. Wire pre
 six bytes per UTF-16 code unit in a string plus fixed framing, so a string can become a gap at
 roughly one sixth of the page budget, even when its recorded payload is smaller than that budget.
 Other framing can lower this threshold; it is a conservative bound, not an exact JSON size test.
-Members are served in lexicographic original-filename order (`capture-10` before `capture-2`),
-then queries in request order. A busy earlier entry can delay later entries across several pages
-of the same prefix; this checkpoint does not round-robin between them.
+The initial schedule uses lexicographic original-filename order (`capture-10` before `capture-2`),
+then query order. It rotates across `(member, entry, field)` selections, visiting at most 256
+records per turn, including filtered or malformed records. The next turn survives page boundaries
+only when that page is acknowledged; retries keep exactly the same order. A byte-deferred record
+retains its ordinal and its selection is skipped for the rest of that page, while other selections
+keep filling the remaining space. The first deferred selection starts the next page after
+acknowledgement, so it gets a fresh byte budget rather than repeatedly losing its space to a
+chatty selection. Its lookahead is charged once on the page where it was deferred.
+Per-query batch record/payload limits
+still apply across the whole page. Member names are identities, not chronological order.
 
 Use `next_cursor` only after consuming the entire page. Retrying the preceding `cursor` returns
 the exact same bytes; acknowledgement retires them. A 204 means no publication before the wait
 deadline: keep the submitted cursor and wait again. An acknowledged frontier releases its native
 prefix before waiting; unchanged polls do not reopen it. Finalization supplies member hashes,
 drains the last ordinals, and never attaches the follow to another recording. Once its finalized
-frontier is complete, DELETE the lease. There is no per-page terminal flag in this checkpoint:
-further polls return empty pages immediately, ignoring `wait_ms`. Clients must remember
-`frontier.finalized` and stop when its `frontier_complete` page has been consumed. A terminal
-envelope/acknowledgement contract is planned before the visualization broker.
+frontier is complete, its last page has `ended: true` (all other pages have `false`). Consume that
+page before acknowledging its `next_cursor`. The terminal data page remains byte-identically
+retryable until then. Its acknowledgement releases native data and encoded bytes and returns
+HTTP 410 `FOLLOW_ENDED` immediately, regardless of `wait_ms`. The lightweight lease retains that
+same acknowledgement result until DELETE or idle expiry, so a lost acknowledgement response is
+safe to repeat. Stop polling and DELETE; neither an empty batch nor a 204 means the follow ended.
 
-Reduced counts and changed known final hashes refuse continuity. Writer replacement is detected
-while the member is still live; a replacement that also finalized between polls is not yet
-proved against the previous live writer identity. The final hash verifies the finalized file,
-not its continuity with previously delivered live bytes; closing this transition gap is planned.
+Reduced counts and changed known final hashes refuse continuity. Capture provenance persists a
+`writer_identity` per file, shared with the live index, retained through short reconnects and
+finalization, and preserved by recovery, store copies and mirrors. A rollover or new writer gets
+a new identity. Continuation compares that identity even if replacement and finalization happen
+between polls. Legacy finalized metadata without this proof requires explicit rebootstrap at
+the live-to-finalized transition; an initially finalized file can bootstrap from its verified
+hash. The hash verifies final bytes and the writer identity proves continuity; neither substitutes
+for the other.
 A stale/foreign cursor is `INVALID_REQUEST`; an expired, deleted or restarted lease is HTTP 410
 `CURSOR_EXPIRED`. An already admitted wait cancelled by DELETE or shutdown ends with HTTP 410
 `CLOSED`. Rebootstrap the same source explicitly after losing a cursor or the retained client
@@ -405,13 +418,13 @@ acknowledge a page or expose parser-library advice.
 Each transport admits at most 32 follows and shares a 64 MiB encoded-page/serialization budget.
 Lease admission does not reserve a maximal page. Building a page temporarily reserves twice its
 page limit (8 MiB at the default), and retained unacknowledged pages also consume the shared
-budget, so a next call can return HTTP 413 `RESOURCE_LIMIT` even below the lease cap. A refusal
-that says to finish or close another read and retry this cursor is transient: release other
-retained pages, back off, then retry the same submitted cursor without rebootstrap. The preceding
+budget, so a next call can return HTTP 413 `RESOURCE_LIMIT` even below the lease cap. Every 413
+has a boolean `retryable`: `true` for shared encoded-budget pressure, `false` for structural
+request, metadata, frame or index limits. For transient pressure, release other retained pages,
+back off, then retry the same submitted cursor without rebootstrap. The preceding
 page may already be acknowledged, but no part of the unsuccessful next page is acknowledged.
 Other 413 refusals, such as metadata that cannot fit a page, need the stated limit/query remedy;
-blind retries cannot fix those. The broker will receive a machine-readable distinction before
-its implementation, rather than classifying errors by message text.
+blind retries cannot fix those. Clients must use `retryable`, not classify message text.
 Native indexes are owned by the shared reader; follow admission also caps the sum of member index
 bytes at 128 MiB and the recording at 64 members. Only one next call per lease may run. Sixteen
 dedicated workers bound long polls; saturation returns 503 `BUSY`, and creation/DELETE have

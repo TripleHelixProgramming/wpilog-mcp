@@ -91,7 +91,7 @@ final class FollowEndpoint implements AutoCloseable {
       } finally { synchronized (leases) { lease.active--; lease.used = clock.getAsLong(); } }
     } catch (Refusal e) { ReadEndpoint.sendFailure(exchange, e.status, e.code, e.getMessage()); }
     catch (ReadException e) { ReadEndpoint.sendFailure(exchange, ReadEndpoint.status(e.code()),
-        e.code() == org.triplehelix.wpilogmcp.read.ReadProblem.Code.FILE_CHANGED ? "HISTORY_UNAVAILABLE" : e.code().name(), e.getMessage()); }
+        e.code() == org.triplehelix.wpilogmcp.read.ReadProblem.Code.FILE_CHANGED ? "HISTORY_UNAVAILABLE" : e.code().name(), e.getMessage(), e.retryable()); }
     catch (java.nio.file.AccessDeniedException | org.triplehelix.wpilogmcp.log.LogFileException e) { ReadEndpoint.sendFailure(exchange, 403, "ACCESS_DENIED", e.getMessage()); }
     catch (ReadWire.WireLimit e) { ReadEndpoint.sendFailure(exchange, 413, "RESOURCE_LIMIT", e.getMessage()); }
     catch (IllegalArgumentException e) { ReadEndpoint.sendFailure(exchange, 400, "INVALID_REQUEST", e.getMessage()); }

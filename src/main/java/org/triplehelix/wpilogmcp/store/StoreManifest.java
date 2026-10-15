@@ -124,11 +124,15 @@ public final class StoreManifest {
   public record OpenCapture(String path, Provenance provenance, long sizeBytes,
       double minTimestampSec, double maxTimestampSec) {}
   public record Provenance(String kind, String originalPath, String originalName,
-      String importedAt, boolean moved, String sourceRobotSerial, List<PeerCopy> copiedFrom) {
+      String importedAt, boolean moved, String sourceRobotSerial, List<PeerCopy> copiedFrom, String writerIdentity) {
     /** Writer provenance, shared with readers so rollover admission cannot drift from the store. */
     public static final String CAPTURED = "captured";
     public boolean captured() { return CAPTURED.equals(kind); }
     public Provenance { copiedFrom = copiedFrom == null ? List.of() : List.copyOf(copiedFrom); }
+    public Provenance(String kind, String originalPath, String originalName, String importedAt, boolean moved,
+        String sourceRobotSerial, List<PeerCopy> copiedFrom) {
+      this(kind, originalPath, originalName, importedAt, moved, sourceRobotSerial, copiedFrom, null);
+    }
     public Provenance(String kind, String originalPath, String originalName, String importedAt, boolean moved, String sourceRobotSerial) {
       this(kind, originalPath, originalName, importedAt, moved, sourceRobotSerial, List.of());
     }

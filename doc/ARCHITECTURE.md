@@ -919,9 +919,15 @@ Clients must retain the frontier; lost client state requires explicit rebootstra
 
 Pages pack batches across entries and members, visiting at most 4,096 records across the entire
 query, with a 4 MiB encoded ceiling; entry completion is distinct from frontier completion.
-The engine uses one native cursor per entry/page and bounded one-record reads to assign problem
+The engine rotates across member/entry/field selections in turns of at most 256 visited records.
+The pending page owns its next scheduling position; only acknowledgement commits it, including
+when byte pressure defers a record. Per-query batch limits remain page-wide. It uses one native
+cursor per turn and bounded one-record reads to assign problem
 ordinals and decide fit. A record fitting a fresh data page but not the current page is deferred
-without progress; its lookahead counts as work. Fixed frame overhead and each record's encoded
+without progress; its lookahead counts as work. That selection is skipped for the rest of the
+page while the others keep packing. The first deferred selection gets the next page's first
+turn, committed only by acknowledgement. This avoids repeatedly denying a large record space
+behind a chatty selection at small page budgets. Fixed frame overhead and each record's encoded
 wrapper are charged conservatively before merging, then the final encoding enforces the ceiling.
 A record above the payload cap or conservative wire expansion budget becomes a `RESOURCE_LIMIT`
 problem carrying its ordinal, physical offset and payload size. This explicit data gap advances
@@ -947,10 +953,13 @@ and `StoreReadCatalog.recording`. Session aliases survive every store reconstruc
 and mirror copy; an ambiguous anchor or lost alias without known final hashes refuses. Recovery
 preserves the original open-capture provenance even after a merged session's calendar expands.
 `CatalogRecordingSource` admits only these members, verifies final hashes at each changed file
-boundary and rechecks that boundary after snapshot admission. While a member is live it rejects
-a new writer identity masquerading behind the same provenance and counts. The live identity is
-not yet carried into finalized metadata: a replacement that also finalized between polls is an
-unproved transition, even when the final hash matches. Persisting that proof is pre-broker work.
+boundary and rechecks that boundary after snapshot admission. `CaptureWriter` creates one writer
+incarnation per file and supplies it to the live index and immutable store-update snapshots.
+`provenance.writer_identity` survives close, recovery, relocation, peer copies and mirrors;
+a short reconnect keeps it, while rollover and new writers create another. The source checks
+open metadata against its live index; the engine owns continuity checks across prefixes, including
+finalization after replacement between polls. Legacy missing finalization proof requires explicit
+rebootstrap. Initially finalized legacy files still bootstrap from verified hashes.
 
 `FollowEndpoint` owns 32 temporary leases, 60-second idle expiry and a shared 64 MiB encoded budget.
 Its transport gives next calls 16 dedicated workers, independent of creation and DELETE. Waits
@@ -966,13 +975,15 @@ native prefix. Admission/grants are checked again even for an encoded retry. Act
 their lease alive; DELETE and shutdown cancel waits, and disconnected idle sockets are reclaimed
 after the bounded wait and idle expiry. Final member hashes travel with frontier metadata.
 The lease count does not reserve encoded bytes: a page build reserves twice its page limit and
-retained retries share the same budget. Transient exhaustion returns 413 and permits retrying the
-same cursor after other pages release their bytes. Request-body JSON parsing is classified at
+retained retries share the same budget. Transient exhaustion returns 413 with `retryable: true`
+and permits retrying the same cursor after other pages release their bytes; structural request,
+metadata, frame and index limits return `retryable: false`. Request-body JSON parsing is classified at
 the shared read endpoint before source work; malformed bodies return 400 with a short diagnostic.
-The current finalized frontier requires the client to DELETE after draining: further calls
-return empty pages immediately. Explicit terminal acknowledgement, a machine-readable transient
-budget refusal, persistent live-to-finalized identity and fair page scheduling are specified in
-the plan before the client broker; they are not implemented by this checkpoint.
+Every page carries `ended`, true only on the page completing the finalized frontier. That page
+remains retryable until acknowledged. Acknowledgement releases prefixes, proofs and encoded data;
+the bounded lease retains only the terminal cursor outcome and admission context until DELETE
+or expiry. Repeating that cursor returns 410 `FOLLOW_ENDED`, without opening a prefix or waiting.
+The client stops polling and DELETEs after consuming the terminal page.
 These checks establish the server integration boundary. Configured remote visualization routing,
 the shared window broker, live editor/clock states, and measured display/resource workloads remain
 Stage 3 work. The native routes do not make the recorded editor live.

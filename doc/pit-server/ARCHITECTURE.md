@@ -260,6 +260,13 @@ when they change. Cosmetic renames wait for close and reader release on every pl
 asynchronous directory move can race a rollover open or a mapping growth. Address directories carry
 robot basis `address`, since an endpoint is not a stated robot identity.
 
+Each file's `provenance.writer_identity` comes from the capture writer and is shared with the
+live index. It survives short disconnect/resume, finalization, recovery and copies; rollover and
+new writers get fresh identities. Closed-file facts and pending manifest updates capture it
+immutably, so a later rollover cannot overwrite an earlier file's proof. Publication uses the
+existing metadata handoff and adds no per-value store work. Native follows compare the proof
+through finalization; a legacy missing proof requires an explicit new bootstrap.
+
 A device serial learned during recording is written as context in the current file. Its manifest
 update is asynchronous; promotion waits for session close and reader release, like the event rename.
 New sessions already use the known serial. A reader that prevents the move leaves the directory in

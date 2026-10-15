@@ -76,6 +76,20 @@ class CaptureRecoveryTest {
 
   @org.junit.jupiter.params.ParameterizedTest
   @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void recoveryPreservesTheWriterIncarnationEvenWhenTheFileIsUnreadable(boolean readable) throws Exception {
+    var root = directory.resolve("incarnation"); var file = plant(root, readable, false);
+    String identity = "11111111-1111-4111-8111-111111111111";
+    var json = com.google.gson.JsonParser.parseString(Files.readString(file.resolveSibling("session.json"))).getAsJsonObject();
+    json.getAsJsonObject("open_capture").getAsJsonObject("provenance").addProperty("writer_identity", identity);
+    Files.writeString(file.resolveSibling("session.json"), json.toString());
+    startup(root);
+    var recovered = com.google.gson.JsonParser.parseString(Files.readString(file.resolveSibling("session.json"))).getAsJsonObject();
+    var member = readable ? recovered.getAsJsonArray("files").get(0).getAsJsonObject() : recovered.getAsJsonObject("open_capture");
+    assertEquals(new com.google.gson.JsonPrimitive(identity), member.getAsJsonObject("provenance").get("writer_identity"));
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
   void recoveryKeepsMergeAliasesAndTheOriginalRecordingProvenance(boolean readable) throws Exception {
     var root = directory.resolve("merged"); var file = plant(root, readable, false);
     var original = manifest(file).openCapture().provenance();

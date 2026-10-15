@@ -24,6 +24,7 @@ import org.triplehelix.wpilogmcp.read.server.OrdinalFollow;
 class FollowLeaseTest {
   @TempDir Path temp;
   final AtomicLong clock = new AtomicLong();
+  final AtomicBoolean finalized = new AtomicBoolean();
   final AtomicInteger opened = new AtomicInteger(), released = new AtomicInteger(), waiting = new AtomicInteger();
   final HttpClient client = HttpClient.newHttpClient();
   HttpServer server; StreamingRequests streams; ReadEndpoint reads; FollowEndpoint follows; LogAccess access; URI base;
@@ -46,7 +47,7 @@ class FollowLeaseTest {
           try { return method.invoke(delegate, args); }
           catch (java.lang.reflect.InvocationTargetException failure) { throw failure.getCause(); }
         });
-        return new OrdinalFollow.Prefix("recording", 1, false, List.of(new OrdinalFollow.Member("member", 0, snapshot)));
+        return new OrdinalFollow.Prefix("recording", 1, finalized.get(), List.of(new OrdinalFollow.Member("member", 0, snapshot)));
       }
       public boolean awaitChange(Duration wait, java.util.function.BooleanSupplier cancelled) throws java.io.IOException {
         waiting.incrementAndGet(); long end = System.nanoTime() + wait.toNanos();
@@ -99,6 +100,17 @@ class FollowLeaseTest {
     assertEquals("CURSOR_EXPIRED", json(call("POST", path(a) + "/next", body(a.get("cursor").getAsString(), 0)), 410).get("code").getAsString());
     create(); assertEquals(3, opened.get());
   }
+
+  @Test void aTerminalAcknowledgementReleasesDataButKeepsItsResultUntilExpiry() throws Exception {
+    finalized.set(true); var lease = create(); String cursor = bootstrap(lease);
+    assertTrue(follows.heldBytes() > 0); assertEquals(0, released.get());
+    for (int i = 0; i < 2; i++) assertEquals("FOLLOW_ENDED",
+        json(call("POST", path(lease) + "/next", body(cursor, 25000)), 410).get("code").getAsString());
+    assertEquals(0, follows.heldBytes()); assertEquals(1, released.get()); assertEquals(1, opened.get());
+    assertEquals(0, waiting.get()); assertEquals(1, follows.size());
+    clock.set(Duration.ofSeconds(60).toNanos()); follows.expire(); assertEquals(0, follows.size());
+    assertEquals("CURSOR_EXPIRED", json(call("POST", path(lease) + "/next", body(cursor, 0)), 410).get("code").getAsString());
+  }
   @Test void saturatedWaitsLeaveControlCapacityAndIdleTimeoutCannotExpireAnActiveRequest() throws Exception {
     var a = create(); var b = create(); String ca = bootstrap(a), cb = bootstrap(b);
     var first = client.sendAsync(request("POST", path(a) + "/next", body(ca, 25000)), HttpResponse.BodyHandlers.ofString());
@@ -123,5 +135,27 @@ class FollowLeaseTest {
     var other = create();
     assertEquals("INVALID_REQUEST", json(call("POST", path(other) + "/next", body(cursor, 0)), 400).get("code").getAsString());
     assertEquals(2, opened.get());
+  }
+
+  @Test void sharedBytePressureIsRetryableAndTheSameCursorResumesAfterBytesAreReleased() throws Exception {
+    var field = FollowEndpoint.class.getDeclaredField("budget"); field.setAccessible(true);
+    field.set(follows, new OrdinalFollow.Budget(128 << 10));
+    String create = CREATE.replace("\"queries\"", "\"max_page_bytes\":65536,\"queries\"");
+    var a = json(call("POST", FollowEndpoint.PATH, create), 201);
+    var b = json(call("POST", FollowEndpoint.PATH, create), 201);
+    bootstrap(a); String cursor = b.get("cursor").getAsString();
+    var failure = json(call("POST", path(b) + "/next", body(cursor, 0)), 413);
+    assertEquals("RESOURCE_LIMIT", failure.get("code").getAsString());
+    assertEquals(new JsonPrimitive(true), failure.get("retryable"));
+    assertEquals(204, call("DELETE", path(a), null).statusCode());
+    var resumed = json(call("POST", path(b) + "/next", body(cursor, 0)), 200);
+    assertEquals(0, resumed.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch")
+        .getAsJsonArray("samples").get(0).getAsJsonObject().get("ordinal").getAsInt());
+  }
+
+  @Test void aStructuralPageLimitIsNotRetryable() throws Exception {
+    var failure = json(call("POST", FollowEndpoint.PATH,
+        CREATE.replace("\"queries\"", "\"max_page_bytes\":1024,\"queries\"")), 413);
+    assertEquals(new JsonPrimitive(false), failure.get("retryable"));
   }
 }

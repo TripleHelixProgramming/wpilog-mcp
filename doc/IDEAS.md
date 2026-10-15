@@ -515,12 +515,17 @@ admitted tools before closing the workspace. If workspace startup fails, preview
 unavailable and this stream stays ping-only until restart; runtime workspace recovery remains
 deferred. The internal engine still opens a prefix after every completed non-finalized frontier;
 the production source/publication waiter now avoids repeated disk scans during unchanged idle polls.
-The server integration review's pre-broker work is specified in the visualization plan: explicit
-terminal-page/acknowledgement semantics, a machine-readable transient byte-budget refusal,
-writer-incarnation proof through finalization, and bounded round-robin entry scheduling. Today's
-finalized follow requires client DELETE and can return immediate empty pages; lease admission does
-not reserve encoded bytes; live identity is not yet persisted in finalized metadata; page order is
-member/query order. The malformed-body classification is fixed separately in the shared body reader.
+The server integration review's four pre-broker contracts have passed review and remain uncommitted:
+terminal pages and retained 410 acknowledgements, typed retryable byte-budget refusals, persisted
+writer-incarnation proof through finalization, and acknowledged round-robin entry/field turns.
+The small-page follow-up keeps packing after a byte deferral and gives the first deferred
+selection the next page's first turn; the broker need not avoid small pages to prevent that
+selection losing its space on every request.
+Lease admission still does not reserve encoded bytes, so the future broker must back off on
+`retryable: true`, release unnecessary consumers and retry the submitted cursor. It must stop
+polling and DELETE after consuming an `ended` page. Legacy missing writer proof at finalization
+requires explicit rebootstrap. The body reader now classifies both malformed JSON and oversized
+requests before source work. Shared broker and end-to-end live UI validation remain outstanding.
 Five minor review follow-ups remain:
 
 - Replace the resolver enum exception for an unknown role with a public vocabulary hint.

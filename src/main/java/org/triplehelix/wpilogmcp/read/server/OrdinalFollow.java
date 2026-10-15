@@ -42,13 +42,16 @@ import org.triplehelix.wpilogmcp.read.internal.ReadWire;
  */
 public final class OrdinalFollow implements AutoCloseable {
   public static final int MAX_RECORDS = 4096, MAX_PAGE_BYTES = 4 << 20;
+  private static final int TURN_RECORDS = 256;
 
   /** Identity/generation come from the source owner, never a filename or inferred clock. */
-  public record Member(String id, long generation, ReadSnapshot snapshot, String contentSha256) {
-    public Member(String id, long generation, ReadSnapshot snapshot) { this(id, generation, snapshot, null); }
+  public record Member(String id, long generation, ReadSnapshot snapshot, String contentSha256, String writerIdentity) {
+    public Member(String id, long generation, ReadSnapshot snapshot) { this(id, generation, snapshot, null, null); }
+    public Member(String id, long generation, ReadSnapshot snapshot, String contentSha256) { this(id, generation, snapshot, contentSha256, null); }
     public Member {
       requireId(id); if (generation < 0) throw new IllegalArgumentException("Negative member generation");
       Objects.requireNonNull(snapshot);
+      if (writerIdentity != null) requireId(writerIdentity);
       if (contentSha256 != null && !contentSha256.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("Invalid final member hash");
     }
   }
@@ -95,7 +98,7 @@ public final class OrdinalFollow implements AutoCloseable {
       do {
         old = held.get();
         if (bytes > limit - old) throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT,
-            "Follow pages exceed the shared " + limit + " byte budget; finish or close another read, then retry this cursor");
+            "Follow pages exceed the shared " + limit + " byte budget; finish or close another read, then retry this cursor", bytes <= limit);
       } while (!held.compareAndSet(old, old + bytes));
     }
     private void release(long bytes) { held.addAndGet(-bytes); }
@@ -131,9 +134,12 @@ public final class OrdinalFollow implements AutoCloseable {
 
   private record Selection(String entry, String field) {}
   private record Key(String member, String entry, String field) {}
-  private record Pending(String input, String output, Buffer buffer, Map<Key, Integer> progress, boolean complete) {}
+  private record Turn(Member member, ReadQuery query) {
+    Key key() { return new Key(member.id(), query.entry(), query.field()); }
+  }
+  private record Pending(String input, String output, Buffer buffer, Map<Key, Integer> progress, boolean complete, Key turn) {}
   private record EntryProof(int id, String type, long count) {}
-  private record MemberProof(long generation, String hash, Map<String, EntryProof> entries) {}
+  private record MemberProof(long generation, String hash, String writerIdentity, Map<String, EntryProof> entries) {}
   private record FrontierProof(String recording, long revision, boolean finalized, Map<String, MemberProof> members) {
     static FrontierProof of(Prefix prefix) {
       var members = new LinkedHashMap<String, MemberProof>();
@@ -141,7 +147,7 @@ public final class OrdinalFollow implements AutoCloseable {
         var entries = new LinkedHashMap<String, EntryProof>();
         for (var entry : member.snapshot().entries().values()) entries.put(entry.name(),
             new EntryProof(entry.id(), entry.type(), member.snapshot().sampleCount(entry.name())));
-        members.put(member.id(), new MemberProof(member.generation(), member.contentSha256(), Map.copyOf(entries)));
+        members.put(member.id(), new MemberProof(member.generation(), member.contentSha256(), member.writerIdentity(), Map.copyOf(entries)));
       }
       return new FrontierProof(prefix.recordingId(), prefix.catalogRevision(), prefix.finalized(), Map.copyOf(members));
     }
@@ -158,7 +164,8 @@ public final class OrdinalFollow implements AutoCloseable {
   private String prefixId, cursor = initial;
   private Map<Key, Integer> progress = Map.of();
   private Pending pending;
-  private boolean bootstrap = true, complete, described;
+  private Key turn;
+  private boolean bootstrap = true, complete, described, ended;
 
   public OrdinalFollow(String epoch, Source source, List<ReadQuery> queries, Budget budget) throws IOException {
     this(epoch, source, queries, budget, MAX_RECORDS, MAX_PAGE_BYTES);
@@ -199,11 +206,18 @@ public final class OrdinalFollow implements AutoCloseable {
       if (pending != null && pending.input().equals(acknowledgement)) return java.util.Optional.of(new Page(pending.buffer()));
       if (pending != null && pending.output().equals(acknowledgement)) {
         progress = pending.progress(); complete = pending.complete(); cursor = pending.output(); described = true;
+        turn = pending.turn();
         pending.buffer().release(); pending = null;
-        if (complete) { var retired = prefix; prefix = null; if (retired != null) retired.close(); }
+        if (complete) {
+          ended = proof.finalized();
+          var retired = prefix; prefix = null;
+          if (ended) { proof = null; description = null; progress = Map.of(); turn = null; }
+          if (retired != null) retired.close();
+        }
       }
       if (!cursor.equals(acknowledgement)) throw new ReadException(ReadProblem.Code.INVALID_REQUEST,
           "Follow cursor is stale or belongs to another lease/epoch; rebootstrap the same recording explicitly");
+      if (ended) throw new ReadException(ReadProblem.Code.FOLLOW_ENDED, "The finalized recording is fully acknowledged; close this follow");
       if (complete) {
         if (!proof.finalized()) {
           if (!source.awaitChange(wait, closed::get)) { checkOpen(); return java.util.Optional.empty(); }
@@ -215,21 +229,34 @@ public final class OrdinalFollow implements AutoCloseable {
       budget.reserve(reservation);
       try {
         var next = new HashMap<>(progress); var batches = new JsonArray();
+        var payloads = new HashMap<Key, Long>();
         String nextCursor = UUID.randomUUID().toString();
         var response = envelope(prefixId, nextCursor, described ? null : description, bootstrap);
         response.add("batches", batches);
         int remaining = pageBytes - ReadWire.bytes(response, pageBytes).length;
-        int work = 0;
-        outer: for (var member : prefix == null ? List.<Member>of() : prefix.members()) for (var query : queries) {
-          var key = new Key(member.id(), query.entry(), query.field());
+        var turns = new java.util.ArrayList<Turn>();
+        for (var member : prefix.members()) for (var query : queries) turns.add(new Turn(member, query));
+        int position = 0;
+        for (int i = 0; i < turns.size(); i++) if (turns.get(i).key().equals(turn)) { position = i; break; }
+        int work = 0, skipped = 0;
+        var deferred = new HashSet<Key>(); Key firstDeferred = null;
+        // Fill the remaining space from other selections after a byte deferral, without
+        // reading the blocked selection again. Give the first deferral a fresh page next;
+        // otherwise a chatty selection can consume its space on every page. Only ack commits it.
+        while (work < pageRecords && skipped < turns.size()) {
+          var selected = turns.get(position); position = (position + 1) % turns.size();
+          var member = selected.member(); var query = selected.query(); var key = selected.key();
           int ordinal = next.getOrDefault(key, 0);
           long count = member.snapshot().sampleCount(query.entry());
-          if (ordinal == count) continue;
-          if (work == pageRecords) break outer;
+          int admitted = ordinal - progress.getOrDefault(key, 0);
+          if (deferred.contains(key) || ordinal == count || admitted >= query.batchRecords() || payloads.getOrDefault(key, 0L) >= query.batchBytes()) {
+            skipped++; continue;
+          }
+          skipped = 0;
           var frame = new EntryPage(member.id(), query);
           int overhead = frame.overhead();
           int recordBytes = singleRecordBytes(prefixId, overhead);
-          // Read one physical record at a time, on one cursor per entry/page. This keeps
+          // Read one physical record at a time, on one cursor per entry/turn. This keeps
           // problem coordinates exact and lets an unfilled page defer one record without
           // acknowledging it. Lookahead is charged as work even when its value is deferred.
           int payloadLimit = query.recordLimit() == null ? recordBytes : Math.min(recordBytes, query.recordLimit().maxBytes());
@@ -237,9 +264,10 @@ public final class OrdinalFollow implements AutoCloseable {
               1, query.batchBytes(), query.field(), null, ordinal)
               .withRecordLimit(payloadLimit, ReadQuery.LimitAction.PROBLEM);
           try (var samples = member.snapshot().read(read)) {
-            while (work < pageRecords && frame.records < query.batchRecords() && ordinal < count
-                && (frame.records == 0 || frame.payload < query.batchBytes())) {
-              var batch = samples.next(); checkOpen(); work++;
+            int visited = 0;
+            while (work < pageRecords && visited < TURN_RECORDS && admitted < query.batchRecords() && ordinal < count
+                && payloads.getOrDefault(key, 0L) < query.batchBytes()) {
+              var batch = samples.next(); checkOpen(); work++; visited++;
               if (batch.recordsVisited() != 1) throw new IOException("Follow reader must visit one physical ordinal");
               int end = Math.addExact(ordinal, 1);
               if (end > count) throw new IOException("Follow reader exceeded its fixed prefix");
@@ -248,18 +276,24 @@ public final class OrdinalFollow implements AutoCloseable {
               // arrays. Fixed frame widths and commas are reserved separately, so the final
               // encoding is bounded without serializing the growing page after each sample.
               int bytes = ReadWire.bytes(body, recordBytes).length + (frame.records == 0 ? overhead : 0);
-              if (bytes > remaining) break outer;
+              if (bytes > remaining) {
+                deferred.add(key); if (firstDeferred == null) firstDeferred = key;
+                break;
+              }
               if (frame.records == 0) batches.add(frame.json);
               remaining -= bytes; frame.add(body, batch.payloadBytes(), end, end == count);
-              next.put(key, end); ordinal = end;
+              next.put(key, end); ordinal = end; admitted++;
+              payloads.merge(key, batch.payloadBytes(), Long::sum);
             }
           }
         }
         boolean finished = atFrontier(next);
         response.addProperty("frontier_complete", finished);
+        response.addProperty("ended", finished && proof.finalized());
         byte[] encoded = ReadWire.bytes(response, pageBytes); checkOpen();
         budget.release(reservation - encoded.length); reservation = 0;
-        pending = new Pending(cursor, nextCursor, new Buffer(encoded, budget), Map.copyOf(next), finished);
+        pending = new Pending(cursor, nextCursor, new Buffer(encoded, budget), Map.copyOf(next), finished,
+            firstDeferred == null ? turns.get(position).key() : firstDeferred);
         return java.util.Optional.of(new Page(pending.buffer()));
       } catch (ReadWire.WireLimit failure) {
         throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT,
@@ -278,6 +312,7 @@ public final class OrdinalFollow implements AutoCloseable {
     response.addProperty("cursor", cursor); response.addProperty("next_cursor", nextCursor);
     response.addProperty("prefix_id", prefix); response.addProperty("bootstrap", history);
     response.addProperty("frontier_complete", false);
+    response.addProperty("ended", false);
     if (frontier != null) response.add("frontier", frontier);
     response.add("batches", new JsonArray()); return response;
   }
@@ -352,6 +387,7 @@ public final class OrdinalFollow implements AutoCloseable {
       for (var member : candidate.members()) {
         var item = new JsonObject(); item.addProperty("member_id", member.id()); item.addProperty("generation", Long.toString(member.generation()));
         item.addProperty("content_sha256", member.contentSha256());
+        item.addProperty("writer_identity", member.writerIdentity());
         item.add("snapshot", ReadWire.descriptor(member.id(), member.snapshot()));
         metadataBytes = Math.addExact(metadataBytes, ReadWire.bytes(item, pageBytes).length);
         if (metadataBytes > pageBytes) throw metadataLimit(null);
@@ -391,6 +427,10 @@ public final class OrdinalFollow implements AutoCloseable {
       var next = members.get(old.getKey());
       if (next == null) throw changed("Retained recording member is no longer available");
       if (old.getValue().generation() != next.generation()) throw changed("Recording member was replaced");
+      if (old.getValue().writerIdentity() != null && !old.getValue().writerIdentity().equals(next.writerIdentity())
+          || old.getValue().writerIdentity() == null && old.getValue().hash() == null
+              && (next.contentSha256() != null || !proof.finalized() && candidate.finalized()))
+        throw changed("Recording writer identity changed or its finalization proof is missing");
       if (old.getValue().hash() != null && !old.getValue().hash().equals(next.contentSha256())) throw changed("Finalized recording member hash changed");
       for (var entry : old.getValue().entries().entrySet()) {
         var after = next.snapshot().entries().get(entry.getKey());

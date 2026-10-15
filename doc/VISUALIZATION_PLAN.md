@@ -2,8 +2,10 @@
 
 Status: Stage 1 committed as `632b492`; accepted Stage 2a committed as `c6436d6` after owner
 authorization. Accepted Stage 2b and its fixes are committed as `2fb2376`, and the Stage 3
-first gate and review refinements as `719f163`. The Stage 3 server integration checkpoint is
-implemented locally, with its evidence and remaining live workflow work recorded below. Close cancellation
+first gate and review refinements as `719f163`. The accepted Stage 3 server integration checkpoint
+is committed as `182cb00`. Its four pre-broker contract refinements have passed review and remain
+uncommitted. The small-page deferral follow-up is implemented locally for review, with evidence
+and remaining live workflow work recorded below. Close cancellation
 remains unverified on the manual dialog, Linux/Windows native runs are outstanding, and Save As
 uses the specified refusal fallback. No publication or version change is part of this work.
 
@@ -373,12 +375,13 @@ Valid cursors support exact catch-up. After 60 seconds idle expiry or a server r
 
 Finalization drains final counts, resolves final locations/hashes, and changes source status to recorded while retaining the view and inspected interval. Session alias resolution preserves the anchored recording membership. New boots or unproved clock continuity require explicit selection of another source.
 
-The server integration review adds four **pre-broker requirements**. These are the next contract
-changes, not behavior implemented by the malformed-body fix:
+The server integration review added four **pre-broker requirements**. The owner authorized this
+follow-up; the server portions below are now implemented locally. Broker behavior remains the
+next integration work, separate from these native-route contracts:
 
-- **Terminal acknowledgement:** every page will carry `ended`, true only when that page completes
+- **Terminal acknowledgement:** every page carries `ended`, true only when that page completes
   a finalized frontier. The terminal data page remains byte-identically retryable until
-  acknowledged. Its acknowledgement will release retained data and return HTTP 410 `FOLLOW_ENDED`,
+  acknowledged. Its acknowledgement releases retained data and returns HTTP 410 `FOLLOW_ENDED`,
   instead of generating another empty page. A bounded lightweight lease retains that terminal
   result until DELETE or idle expiry so a repeated terminal acknowledgement is unambiguous.
   The broker consumes the terminal page, stops scheduling polls and DELETEs; it never infers
@@ -398,17 +401,19 @@ changes, not behavior implemented by the malformed-body fix:
   bootstrap from its verified hash. Test replacement plus finalization between polls with the
   same provenance, entry IDs/types/counts, and test genuine finalization and recovery separately.
   Identity publication stays off the acquisition hot path beyond its existing metadata handoff.
-- **Page fairness:** the engine will rotate across `(member, entry, field)` selections, allowing
+- **Page fairness:** the engine rotates across `(member, entry, field)` selections, allowing
   at most 256 visited records per turn under the existing page work/byte limits. Retry pages keep
   the same order; only acknowledgement commits the next scheduling position. This places one
-  scheduling owner above native cursors instead of making each client reorder queries. Test a
+  scheduling owner above native cursors instead of making each client reorder queries. A
+  byte-deferred selection is skipped for the rest of the page while the others keep packing;
+  the first deferral receives the next page's first turn after acknowledgement. Test a
   chatty first entry with sparse later entries, tiny page budgets, deferred records, malformed
   gaps and a retried page. Lexicographic member names remain identities, not chronological order.
 
-The current route's terminal behavior, transient-budget diagnostic, transition proof limitation
-and query-order scheduling remain documented in [READ_API.md](READ_API.md#following-a-server-recording)
-until these requirements are implemented and planted. None is claimed as part of the accepted
-server checkpoint, and none moves the remaining live workflow out of Stage 3.
+The implemented route contracts are documented in
+[READ_API.md](READ_API.md#following-a-server-recording). Their failing-first and plant evidence
+is separate from the previously accepted server checkpoint. None moves the remaining live
+workflow out of Stage 3 or makes the recorded preview live.
 
 Define the live last-N-seconds interval in the recorded source's robot/server clock domain, using the shared NT4 time estimate as the right edge and reporting `clock_basis`. Capture currently requires time synchronization before declarations and writes sample timestamps unchanged. Without a usable estimate, show Waiting for Time Sync and hold a previously valid edge with `clock_basis:"held_robot_edge"`. If no valid edge exists, use the latest published sample timestamp with `clock_basis:"last_sample"`; if neither exists, show the waiting state without fabricating a range. Do not mix receive timestamps into the sample axis. Receipt time remains appropriate for freshness and latency. A receive-time plotting mode would require a separate explicit projection and is deferred. See [capture clock admission](../src/main/java/org/triplehelix/wpilogmcp/capture/CaptureWriter.java#L407) and [sample timestamp preservation](../src/main/java/org/triplehelix/wpilogmcp/capture/CaptureWriter.java#L619).
 
@@ -1058,10 +1063,9 @@ bounded leases, a separate long-poll executor, 60-second idle expiry, explicit u
 responses and same-Origin/path admission. Retry bytes do not bypass revoked access. Acknowledged
 frontiers release native prefixes before waiting and retain immutable identity/type/count proof.
 Publication checks retain only writer identity and revision, with no follower callbacks on its
-loop or retained index. Final hashes are rechecked against the admitted file boundary; while a
-member is live, writer identity rejects replacement even at unchanged sample counts. That live
-identity is not yet persisted through finalization; the pre-broker proof requirement above closes
-the theoretical replacement-plus-finalization gap.
+loop or retained index. Final hashes are rechecked against the admitted file boundary. At this
+checkpoint writer identity rejected replacement only while a member remained live, even at
+unchanged sample counts. The pre-broker follow-up below persists that identity through finalization.
 Distinct projections of one entry have separate ordinal progress and use the native projector.
 
 Failing-first regressions, plants and fresh build results belong in
@@ -1080,5 +1084,52 @@ failures in the shared HTTP body reader as 400 `INVALID_REQUEST` with a short di
 any source action. The regression also covers the snapshot route and preserves exact pending-page
 retries after refused bodies. Failing-first, plant and current verification evidence is in
 `/private/tmp/wpilog-visualization-stage3-live-review/validation.md`. The four design notes are
-settled as the pre-broker requirements above; the route guide separately describes today's
-behavior, including 410 `CLOSED`, numeric idle expiry, string wire expansion and member ordering.
+settled as the pre-broker requirements above. The accepted fix-round review independently reran
+the full build (3,737 passed, 84 skipped), extension suite (428 passed), and HTTP probe (54/54).
+
+### Stage 3 pre-broker contract follow-up (2026-10-15)
+
+The native route now marks the terminal page with `ended`, retains exact retries, and retains
+410 `FOLLOW_ENDED` for repeated terminal acknowledgements while releasing data. Every 413 carries
+`retryable`; transient budget pressure preserves the submitted continuation even after retiring
+its preceding page. Testing this boundary also found and corrected oversized follow request
+bodies returning a 409 source error instead of a structural 413.
+
+The capture writer owns a per-file incarnation, shared with the live index and captured in
+immutable open/closed manifest facts. Recovery, relocation, peer copies and mirrors preserve it.
+The engine compares proof across finalization, including a replacement with identical entry
+types/counts after its live index is unloaded. Legacy missing proof refuses that transition;
+an explicitly new finalized bootstrap can use the verified hash. Initial metadata must agree
+with the currently registered live writer. Admission and rollover remain asynchronous with the
+existing store queue; no per-value identity write was added.
+
+Scheduling rotates member/entry/field selections in turns of at most 256 physical records, with
+page-wide work and per-query limits preserved. Only acknowledgement commits the next turn;
+malformed, filtered and byte-deferred records cannot silently lose their ordinals. The
+independent-reader comparison continues to check values, timestamps, offsets and ordinal gaps.
+
+Evidence, exact commands, failing-first corrections and plant restores are recorded under
+`/private/tmp/wpilog-visualization-stage3-contracts/validation.md`. This is a server-contract
+checkpoint for review. The shared broker, live editor and remote/resource/performance gates
+remain outstanding; no native editor behavior changes in this follow-up.
+
+### Small-page deferral follow-up (2026-10-15)
+
+The independent fourth Stage 3 review accepted the four contracts and reproduced the full
+build, extension suite and plants, plus its own 73-check HTTP and 47-check engine probes.
+It found that, at a 64 KiB page budget, a 40,000-byte raw record could repeatedly lose space
+to the first 256-record numeric turn: deferral ended the page and advanced the schedule past
+the waiting selection. The default 4 MiB page did not expose that scenario in the review.
+
+Resolve this before the broker chooses its page size: smaller budgets are already supported
+by the engine and should not depend on the broker avoiding this case. The engine now skips
+byte-deferred selections for the remainder of the page, keeps packing the others, and gives
+the first deferred selection the next page's first turn. Acknowledgement still owns both
+progress and scheduling; retained retries perform no reads. No default budget changed.
+
+The 64 KiB regression has 5,000 numeric records and ten 40,000-byte raw records, with another
+case adding a second large selection and one capping the numeric query. It checks next-page priority, remaining-space packing,
+bounded lookahead and every value, timestamp and ordinal through completion. Failing-first
+tests, plants and final verification are recorded under
+`/private/tmp/wpilog-visualization-stage3-deferral/validation.md`. The broker remains the next
+Stage 3 checkpoint; this follow-up changes no extension behavior.
