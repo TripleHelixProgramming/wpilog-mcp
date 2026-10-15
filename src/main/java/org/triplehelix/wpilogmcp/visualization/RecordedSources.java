@@ -15,20 +15,22 @@ import org.triplehelix.wpilogmcp.read.*;
 import org.triplehelix.wpilogmcp.read.catalog.StoreReadCatalog;
 import org.triplehelix.wpilogmcp.read.internal.ReadWire;
 import org.triplehelix.wpilogmcp.read.server.CatalogRecordingSource;
+import org.triplehelix.wpilogmcp.read.server.VerifiedContentHashes;
 import org.triplehelix.wpilogmcp.store.*;
 
 /** Source admission does no value decoding. Locators stay local; catalog identities stay portable.
  * Each operation rechecks the current grants and fixed file boundary before using a source. */
 public final class RecordedSources implements AutoCloseable {
-  private record ContentBoundary(Path path, FileSnapshot boundary, String sha256) {}
-  private final com.github.benmanes.caffeine.cache.Cache<ContentBoundary, Boolean> verified =
-      com.github.benmanes.caffeine.cache.Caffeine.newBuilder().maximumSize(256)
-          .expireAfterAccess(java.time.Duration.ofMinutes(10)).build();
+  private final VerifiedContentHashes verified;
   private final LogManager logs;
   private final VisualizationService views;
   private final StoreDoor door;
   public RecordedSources(LogManager logs, VisualizationService views, StoreDoor door) {
+    this(logs, views, door, LogStore::contentHash);
+  }
+  RecordedSources(LogManager logs, VisualizationService views, StoreDoor door, VerifiedContentHashes.Hasher hash) {
     this.logs = logs; this.views = views; this.door = door;
+    verified = new VerifiedContentHashes(hash);
   }
   private final Object catalogLock = new Object();
   private Catalog current;
@@ -74,6 +76,7 @@ public final class RecordedSources implements AutoCloseable {
       closed = true;
       if (current != null) { current.retired = true; if (current.users == 0) retiring = current; current = null; }
     }
+    verified.close();
     if (retiring != null && retiring.value != null) retiring.value.close();
   }
   public JsonObject identify(Authority caller, Path requested) throws Exception {
@@ -123,15 +126,7 @@ public final class RecordedSources implements AutoCloseable {
         String expected = ref.get("content_sha256").getAsString();
         var path = logs.validateSourcePath(catalog.resolveContent(ref.get("origin_store_id").getAsString(), expected).facts().path());
         var boundary = FileSnapshot.of(path);
-        try {
-          verified.get(new ContentBoundary(path, boundary, expected), key -> {
-            try {
-              if (!expected.equals(LogStore.contentHash(path))) throw new IOException("SOURCE_UNAVAILABLE: recorded bytes no longer match their manifested content hash");
-              return true;
-            } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
-          });
-        } catch (java.io.UncheckedIOException e) { throw e.getCause(); }
-        if (!Objects.equals(boundary, FileSnapshot.of(path))) throw new IOException("SOURCE_UNAVAILABLE: recorded file changed during content verification");
+        verified.verify(path, boundary, expected);
         return path;
       }
     }
@@ -157,7 +152,7 @@ public final class RecordedSources implements AutoCloseable {
   public JsonObject describe(JsonObject source) throws IOException {
     var ref = VisualizationContracts.source(source);
     if (ref.get("kind").getAsString().equals("session")) {
-      var recording = new CatalogRecordingSource(logs, this::catalog, VisualizationContracts.recordingReference(ref));
+      var recording = new CatalogRecordingSource(logs, this::catalog, VisualizationContracts.recordingReference(ref), verified);
       try (var prefix = recording.open()) {
         var out = RecordingInventory.describe(prefix);
         recording.authorize(); return out;

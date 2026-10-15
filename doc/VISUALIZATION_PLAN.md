@@ -7,9 +7,11 @@ is committed as `182cb00`. Its four pre-broker contract refinements and the smal
 follow-up are committed as `6a0524f`; the shared broker and array fix as `9be98dc`, and the
 accepted bounded-refusal/client-cap follow-up as `b57eaf6`. Immutable opened jobs are committed
 as `14eff73`, and the accepted catalog-retry fix and review-9 disposition as `0f1cd3e`. Shared
-recording-source inspection is accepted by review 10 and committed as `ffc1f63`. The current
-follow-up retains 1 MiB panel pages with explicitly negotiated metadata for queried entries;
-the renderer remains recorded-only, with evidence and remaining work below. Close cancellation
+recording-source inspection is accepted by review 10 and committed as `ffc1f63`. Queried-frontier
+metadata is accepted by review 11 and committed as `7a8b656`, retaining 1 MiB panel pages.
+Review 12 accepts the bounded inventory design with amendments. The current checkpoint builds
+its shared verified-hash prerequisite; inventory paging and the declaration-burst workloads
+remain proposed contracts and unrun gates. The renderer remains recorded-only. Close cancellation
 remains unverified on the manual dialog, Linux/Windows native runs are outstanding, and Save As
 uses the specified refusal fallback. No publication or version change is part of this work.
 
@@ -440,6 +442,230 @@ Restore working-view UUIDs and configuration/checkpoints from named-server state
 
 Missing or updated templates do not invalidate pinned configuration snapshots. Resolve moved managed sources through proven identity/aliases; unmanaged-file changes require fingerprint validation. An unavailable store or source leaves the recovered configuration inspectable with a specific unavailable state and retry/locate action. Do not silently substitute another source, recreate a missing store, or start acquisition. Ended live sessions reopen against their finalized source when it remains available.
 
+### Bounded recording inventories (proposed before panel wiring)
+
+**Design accepted with review-12 amendments; paging is not implemented.** Queried follow metadata solves delivery after
+selection; it does not solve discovery. The recording overview still requests every member's
+complete descriptor plus a combined name list in one 4 MiB reply. Review 11 confirmed that
+20,000 topics can now follow at 1 MiB but cannot be selected through that overview. Keep the
+legacy inspection result and its cap; add an explicitly negotiated paged mode for recording
+sources. Recorded single-file inspection remains unchanged in this step.
+
+Source anchors checked for this design: the [current inventory builder](../src/main/java/org/triplehelix/wpilogmcp/visualization/RecordingInventory.java)
+encodes all member descriptors before its summary; the [shared source service](../src/main/java/org/triplehelix/wpilogmcp/visualization/RecordedSources.java)
+closes its admitted prefix after each description; the [recording admission owner](../src/main/java/org/triplehelix/wpilogmcp/read/server/CatalogRecordingSource.java)
+owns grants, member limits and finalized hash checks. The [overview controller](../vscode-extension/src/visualization/recordedPreview.ts)
+currently requests one full inventory. These are verified current facts; the operations and
+limits below are proposed replacements for that discovery path, not claims about today's API.
+
+Choose a **short-lived, detached inventory snapshot**, with compact signal pages and separate
+selected-entry details. Stateless keyset paging over unique ordered names can avoid duplicates,
+but reopening admission on every page repeats catalog inventory scans during a growing capture
+and does not describe one fixed prefix. A detached listing pays that admission cost once. Raising
+the full-response cap only moves the ceiling and makes every overview carry more unused data.
+A fixed listing is discovery evidence, not a continuously updated table or a follow cursor.
+
+#### Ownership and admission
+
+The workspace service owns the inventory, filter, ordering, cursors and limits for both HTTP
+and MCP. Reuse the existing recording admission, catalog lease, alias/provenance rules,
+writer/hash checks, index/member limits and shared clock facts. Extract summary construction
+from the current inspection owner so paged and legacy modes do not make different deductions.
+The extension displays returned rows; it does not merge member declarations, resolve roles,
+infer units or compile schemas. No extra recorder, store scan policy or telemetry cache is added.
+
+Opening freezes one admitted prefix. Copy only compact immutable listing facts; close every
+member prefix and catalog lease **before publishing the inventory handle**. Retain neither
+mapped log buffers nor complete JSON descriptors, raw metadata strings, schema graphs or
+decoded values. Count and reserve the detached objects/strings before allocating them. A
+failed, cancelled or oversized build releases everything and publishes no partial inventory.
+The existing 64-member and 128 MiB native index admission still applies separately.
+
+Before adding the build deadline, share successful finalized-member hash verification across
+workspace source admissions: legacy inspection, future inventory opens and selected details
+must use one owner. Retain only a bounded memory of canonical path, file boundary and expected
+manifest hash, never payloads or open mappings. A miss hashes the file and verifies that its
+boundary stayed unchanged before remembering success; failures are not remembered. Changed
+path, size, modification time, file identity or manifest hash require verification again.
+Always recheck current catalog/path grants and the admitted native snapshot boundary. The
+memory is an optimization, not authority or proof against edits that preserve all observed
+filesystem attributes. Expiry/eviction and a new workspace make admission cold again. Measure
+cold and warm rollover costs separately; this does not promise an unmeasured cold build can
+meet ten seconds on every disk.
+
+For each exact entry name, retain its declared type, per-member counts, membership and
+declaration agreement/conflict. Compare raw metadata through the existing owner while the
+prefix is open; a digest is an identity token, not evidence for a unit or a binding. Identical
+declarations may expose the exact summed count; conflicting declarations retain their per-member
+facts and do not receive a fabricated aggregate. Counts are decimal strings, with checked sums.
+Each row has an opaque inventory-local ID. Do not persist that ID in a view or template.
+
+#### Proposed operations and payloads
+
+All new operations require the existing trusted-local authority; reading additionally requires
+current path/store admission. Inventory IDs use unguessable random values and bind to the
+opening transport session (the stdio process is its session); another local session cannot
+read, replay or close that handle. Session removal releases its inventories. Close remains
+available to the opening session after grant revocation and reveals no contents.
+These names are proposals, not registered tools or routes. HTTP paths below are relative to
+`/visualizations/v1`; HTTP and MCP call the same workspace operations.
+
+| Operation | HTTP | MCP | Result |
+| --- | --- | --- | --- |
+| Open inventory | POST `/source/describe` with `inventory_mode: "paged"` | `visualization_source_inspect` with the same optional mode | Explicit `inventory_mode: "paged"` echo, server epoch, inventory ID, fixed summary/member facts, exact totals, hard expiry and limits; no full entry/schema arrays. |
+| List entries | POST `/source/entries/list` | `visualization_source_entries_list` | A bounded page from that inventory, exact matching/total counts, continuation and unavailable-row facts. |
+| Read selected details | POST `/source/entries/get` | `visualization_source_entries_get` | Freshly admitted details for up to 32 inventory row IDs: exact names, member declarations, counts and native schema dependencies, with current declaration/binding evidence. |
+| Release inventory | POST `/source/inventory/close` | `visualization_source_inventory_close` | Idempotent release acknowledgement. |
+
+Omitting `inventory_mode` preserves today's full result; unknown values refuse. Advertise
+`recording_inventory_paging` and its limits through capabilities only when implemented. The
+client must verify the mode echo before treating a reply as paged. An old server ignoring the
+option cannot accidentally trigger a full inventory download: check capabilities first, retain
+the 1 MiB response cap for the paged request, and explain that the server needs updating. Neither
+request intent nor a truncated `entries` array proves negotiation.
+
+The open summary includes the anchored source reference, recording ID, inventory ID, finalized
+state, member identities/boundaries/writer or final-hash proof, fixed clock/time bounds and
+damaged/truncated facts. It reports `total_entry_names`, `conflicting_entry_names` and
+`unavailable_entry_names`; it contains no duplicate name list. Clock facts are labeled as taken
+at inventory creation; listing activity never advances the display clock. Oversized summary
+facts refuse explicitly rather than dropping members or diagnostics.
+
+List requests carry the inventory ID and either an initial literal name substring/exact-type
+filter or an opaque continuation. Filter semantics are shared server code: case folding uses
+`Locale.ROOT`; type matching is exact, not a type family. Order by exact name with the server's
+UTF-16 string order, then stable member identity within a row. The client never computes an
+offset or re-sorts pages. A cursor binds the server epoch, inventory, filter, row limit and next
+position, authenticated by a per-process secret. Changed arguments, foreign-server handles,
+cursors for another inventory or tampered cursors refuse before work. A retry returns the
+identical data page, including its deterministic continuation; no single mutable “next”
+position is advanced by a read. Changing a filter starts a new traversal of the same snapshot.
+
+Each page reports `returned`, `total_matching`, `total_entry_names`, `complete` and
+`next_cursor` (null only at completion). Counts mean names, not summed member occurrences.
+The MCP adapter applies the ordinary result contract: a cut list carries `limits` with the
+true matching total, returned count and effective page limit. A zero-match page has
+`status: "no_match"`, `looked_for` and a hint to change the filter or refresh the inventory;
+it never implies an empty recording. HTTP and MCP retain identical page facts and cursors
+inside their respective envelopes. Every expiry refusal gives the explicit remedy to reopen
+from the anchored source reference and restart the traversal; old cursors cannot cross that
+refresh. Compact rows carry names,
+types, counts and conflict status, not raw metadata, schema text or filesystem paths. A single
+unrepresentable name/type row becomes an explicit unavailable row with a bounded display
+preview, original lengths, row ID and reason; the preview is never usable as a binding name.
+Unavailable rows have their own paged `unavailable` filter and exact count in every page;
+ordinary name/type matching excludes them and says so. This avoids one huge declaration
+hiding other signals, without pretending its full text was searched. Large *metadata* alone
+does not make a name unavailable because the listing never retains that text.
+
+Selected details reopen through the same source owner and project only the requested entries
+and their transitive native schemas. They are **fresh evidence**, not the inventory's original
+sample-count boundary: return a distinct detail revision, current member facts and counts.
+Compare the selected names/types/metadata with their original listing tokens. A changed or
+removed selected declaration returns `INVENTORY_CHANGED` with an explicit refresh remedy.
+In particular, a selected name whose declared type changed never receives new-type details
+under an old-type row ID; refresh the listing and select/validate that name again;
+ordinary count growth is allowed and labeled. New members, writer replacement or changed
+recording identity require a fresh inventory. Finalization may retain the inventory when
+membership and writer proof still match; fresh details carry the verified final hash. Share
+the read owner's identity/continuity rules, extracting that policy where needed rather than
+writing a second comparison in visualization code. Invalid/missing schemas and cross-member schema
+conflicts remain explicit, and details do not mark a conflicting row compatible. A selected
+detail set too large for 1 MiB refuses; the list and other entries remain usable.
+
+Binding stays a separate shared-server decision over an admitted recording prefix. Templates
+and resolver roles must inspect the complete native entry set, never only the page the user
+has loaded. The subsequent binding/follow admission rechecks the selected evidence; no
+inventory cursor authorizes access or substitutes for the follower's full history proof. New
+follow jobs still use immutable queries, 1 MiB pages and queried-frontier negotiation. Snapshot
+handles, cursors and detail revisions are ephemeral and never enter saved source references.
+
+#### Proposed resource and lifecycle bounds
+
+These are initial admission limits to validate, not measured heap or latency claims. Publish
+them through capabilities and reject before allocation; any adjustment needs recorded evidence.
+
+| Resource | Proposed bound and outcome |
+| --- | --- |
+| Inventory handles | 8 total per server workspace, at most 2 per opening transport session (including builds). A third from one session or a ninth overall refuses with retryable `RESOURCE_LIMIT`, without evicting another overview. Capabilities publish both limits. One window cannot consume all eight; this is a per-session share, not a per-user identity guarantee. |
+| Detached listing | 32 MiB accounted allocation per inventory, 64 MiB aggregate including builds; 200,000 member-entry occurrences per inventory. Exceeding a structural limit is non-retryable and explained. |
+| Page/details/summary | 1 MiB encoded per reply, including the transport envelope; at most 256 names per list page and 32 selected detail names. The shared owner sizes against the larger HTTP/MCP encoding so both adapters return the same data page within the cap. Requests at most 64 KiB, with name-filter text at most 256 Unicode code points and at most 16 exact types. |
+| Response work | At most 4 concurrent data-producing inventory requests (open/list/details), no waiting queue; reserve two reply limits per request in a separate 8 MiB server response pool. Close and expiry bypass these slots. Temporary saturation is retryable; bounded inventory workers cannot occupy the control workers. |
+| Inventory construction | At most 2 read workers, no waiting build queue; reserve the per-inventory allowance before starting. A 10-second response deadline cancels publication and requests cooperative cancellation. |
+| Lifetime | 60 seconds idle, 5 minutes absolute; successful access renews only idle expiry. Close, idle/absolute expiry and shutdown reclaim state. Restart invalidates handles with the server epoch. |
+| Extension | At most two list pages retained per overview, one in-flight list/detail request per overview; share the existing 64 MiB window encoded allowance with follow jobs, reserving twice the reply cap before sending. Retained decoded rows in the host and webview both count toward the planned window decoded-data budget. |
+
+The server metadata and response pools are separate from native indexes and the follow pool;
+measure and report all of them, not just page bytes. Build reservations downgrade to the
+actual accounted detached size on success. Slow filesystem I/O may outlive a cancelled response:
+it retains its worker/reservation until unwound, cannot publish a handle, and releases its
+prefix in `finally`. Test this explicitly; do not claim that cancelling a future interrupts an
+arbitrary OS read. No inventory I/O occurs on the NT4 loop, store queue or under a workspace/
+session registry lock. Reclamation claims ownership under a short lock and closes outside it.
+
+Check current local authority and source grants before **every** page/detail response,
+including replay; the opaque token is not a permission grant. Reuse the catalog owner for that
+check without reopening/hash-verifying payloads for list pages. A detached list may describe
+an older authorized prefix after ordinary growth or rename; that is its labeled snapshot
+contract. Details and binding perform new identity/hash admission. Revocation closes the
+inventory and stops delivery. Existing transport/session admission remains; no per-account
+isolation or new remote mutation surface is implied by the handle.
+
+Use explained typed refusals: 400 for invalid mode/filter/cursor, 403 for access denial, 410
+`INVENTORY_EXPIRED` for an expired/old-epoch handle, 409 `INVENTORY_CHANGED` for stale selected
+identity/declaration evidence, and 413 `RESOURCE_LIMIT` with a boolean `retryable` distinguishing
+temporary reservation pressure from fixed limits. Preserve existing source-refusal codes where
+the source owner already supplies them. MCP carries the same codes/remedies in its usual
+result envelope. Return an explicit retry delay for temporary admission pressure; never spin.
+
+#### Overview behavior and implementation gate
+
+Show catalog facts immediately, then the paged summary and the first matching page. Use inline
+search, exact-type filtering, visible result counts and keyboard-accessible Previous/Next
+controls; do not fetch the entire inventory in the background. Loading another page replaces
+the bounded row window. Preserve selection by exact name plus source identity, not row position.
+Fetch details only when needed for inspection/selection. A late reply is accepted only for the
+same source, inventory, filter and view generation; close/filter/refresh abort obsolete work.
+Refresh explicitly creates a new inventory and retires the old one after successful admission;
+failure preserves the readable old snapshot with its age while it is still valid. A visible
+overview automatically opens a fresh inventory at absolute expiry, with at most one refresh
+in flight, preserving filter and exact-name/source selection and revalidating selected details.
+An expiry race follows the same refresh path. A failed refresh shows the reason and an explicit
+Retry action with bounded backoff; it keeps selection/configuration and marks old rows expired
+rather than presenting an empty recording or repeatedly spinning. Hidden overviews may expire
+silently and open a fresh inventory on reveal. Hiding or closing releases its handle; no
+heartbeat keeps hidden snapshots alive. Any fallback on an
+older server remains visibly limited by the legacy 4 MiB contract.
+
+Implement and review this prerequisite **before panel wiring**:
+
+0. Build the shared verified-hash memory first, with real hash-read counts for repeated
+   inspections and changed manifest/file boundaries, failed verification, eviction, expiry,
+   concurrent callers and workspace close. Grant checks must still run on reuse.
+1. Shared server service, additive HTTP/MCP operations, capabilities and typed lifecycle.
+   Gate on independent exact enumeration of 5,000/10,000/20,000-topic recordings with two
+   members, both overlapping and disjoint names. Include counts/conflicts, Unicode filters,
+   no matches, exact caps, a 3 MiB metadata value, an unavailable oversized row, selected
+   schema closure/problems, malformed/foreign/replayed cursors and unchanged legacy replies.
+2. Interleave declarations, appends, alias changes, revocation, finalization, expiry and
+   restart between pages. The frozen traversal has no duplicates/omissions; refresh sees
+   new declarations. Prove fresh detail evidence and revalidation, bounded construction/
+   cancellation, no retained mappings after open, and independent inventory/follow lifetimes.
+3. Wire only overview discovery/selection to this service. Drive both supported VS Code
+   versions through a source above the former full-inventory cap, search/page/detail/refresh,
+   stale replies, automatic visible absolute-expiry refresh with retained selection, hidden/closed
+   views and refusal states. Use the real Java server, and prove
+   HTTP/MCP parity and no second binding logic. Live layout controls remain gated until the
+   separate recording binding and panel stages pass.
+
+Each implementation change needs failing-first evidence and mutation plants, including a
+moving-prefix pagination plant, dropping a row/count, bypassing a byte/handle limit, accepting
+stale or foreign cursors, skipping grant rechecks, leaking a cancelled build, and binding from
+only the loaded page. Compare repeated per-page fresh admission with one detached open on the
+season-sized catalog, recording catalog scans and cold/warm hash reads separately. Run the
+declaration-burst gate below alongside these correctness cases; neither this proposed design
+nor a successful small fixture proves season-sized performance.
+
 ## MCP interface and complete handoff example
 
 Retain existing tools including `list_available_logs`, `list_entries`, `get_entry_info`, `resolve_signals`, `list_struct_types`, `get_statistics`, `align_entries`, `render_chart`, and `list_sessions`. `get_latest_values` is not history, and `wait_for_change` is not a replayable visualization feed. [Existing live tool semantics](../src/main/java/org/triplehelix/wpilogmcp/tools/LiveTools.java#L159).
@@ -794,8 +1020,46 @@ metadata-only prefixes, schema changes, backward-timestamp appends, finalization
 at 1 MiB. Measure frontier/page bytes and allocations separately from full inspection bytes.
 Include large unselected metadata and nested selected schema dependencies; an oversized selected
 declaration must still refuse explicitly. Full inspection above its 4 MiB cap remains an
-explained refusal, not an empty signal list. A bounded inventory-listing design remains required
+explained refusal, not an empty signal list. Implement and review the
+[bounded inventory design](#bounded-recording-inventories-proposed-before-panel-wiring)
 before claiming the complete panel workflow supports these sources.
+
+**Declaration burst with 32 leases (review 11; not yet run).** Start one synthetic recording
+with 100 declared topics, then open 32 independent queried-frontier leases with 1 MiB pages
+before publishing more declarations. Each immutable query names 28 existing signals and four
+signals declared during the burst. Run separate 5,000/10,000/20,000 final-topic workloads:
+announce the remaining topics as fast as the fixture can, then in a controlled 1,000-declaration/
+second run, with independently counted 50 Hz values continuing on the 28 selected signals.
+Include nested schema declarations, a 3 MiB **unselected** metadata value, late selected
+declarations and equal/backward timestamps. Declare the name/property sizes, overlap and
+schema shape in the evidence. Repeat with two rollover members and with the season-sized
+catalog workload below; compare with the same recording and zero follow leases.
+
+Read actual prefix-open counts from a server test seam or metric, per lease and total; never
+infer them from HTTP polls. Measure coalesced declarations
+per prefix, metadata-only/data pages, bytes, native index/mapping work, catalog scans,
+CPU/allocation/GC and peak retained/in-flight memory. Correlate declaration receipt to the
+next observed selected frontier, and selected-sample receipt to delivery, within measured
+clock domains. Keep the complete native history proof and strict catalog reuse while measuring;
+do not optimize away unselected publications without a separate correctness design. The
+source may coalesce several publications into one opened prefix, so do not assert one page
+per declaration as the oracle.
+
+All 32 handles remain open. First rotate polls in two cohorts with at most 16 simultaneous
+waits, matching the existing wait-worker pool. Then deliberately let all 32 wait together:
+record expected retryable pool-pressure refusals and bounded backoff, with no healthy peer
+reset or permanent stop. This distinguishes declaration cost from intentional poll saturation.
+The 32 jobs already reserve the full 64 MiB client encoded allowance; additional inventory
+requests must refuse locally until capacity is released. Use 31 follow jobs plus one inventory
+request for the overlap case, proving the same aggregate budget rather than adding an allowance.
+
+Pass only with exact final selected counts/physical ordinals/values, no acquisition loss,
+unchanged peer generations, byte-identical replay, bounded queues/reservations and eventual
+zero owned resources after closure. Include health and close latency and evaluate source-to-
+delivery delay against the local 500 ms/LAN one-second target below; report p50/p95/max,
+refusals and calibrated uncertainty, not only a passing percentile. Before panel integration
+this establishes server/broker behavior only; rerun with renderer acknowledgements for the
+publication-to-display gate. Sustained throughput and native platform runs remain unverified.
 
 Proposed targets—not measured results—are:
 
@@ -1394,3 +1658,66 @@ No change was requested to the pre-existing withdrawn-grant classification. Nati
 manual Close cancellation, Save As and remaining Stage 3 panel/resource gates remain open.
 Evidence for this follow-up is recorded in
 `/private/tmp/wpilog-visualization-stage3-selected-frontier/validation.md`.
+
+### Stage 3 review 11 disposition and inventory design (2026-10-15)
+
+Review 11 accepts the queried-frontier change without a defect. The owner requested its commit;
+`7a8b656` contains exactly the 19 reviewed blobs, including the existing plan disposition. The
+review independently reproduced 3,832 Java passes/84 skips, 523 extension passes/3 skips,
+three real-server broker passes and all 21 plant restores. Its added probes passed 25 raw-HTTP
+scope checks and nine compiled-client checks. These are reviewer observations; this design
+round verified the tree/commit hashes and did not rerun the already accepted implementation.
+
+The topic-count wire ceiling is removed for small queried metadata sets, not for arbitrary
+selected metadata or native indexes. The review's one-member, 32-selection shape produced
+8,279-byte first pages at 1,000, 5,000 and 20,000 topics. The separate 4 MiB overview cap still
+prevents discovery of the largest source. The proposed bounded-inventory section above makes
+that prerequisite concrete: fixed compact discovery pages, fresh selected details, explicit
+limits/lifetime and one owner for GUI/MCP. No paged inventory route or panel behavior has been
+implemented by this documentation round.
+
+Every declaration can wake every queried lease even if the entry is unselected; actual prefix
+opens may coalesce publications. The performance gate now includes 32 open leases during
+declaration bursts, both within and above the existing wait-worker capacity, with zero-lease
+controls, exact sample/history oracles, resource accounting and health/close measurements.
+It has not run. Do not turn this note into an unmeasured declaration-suppression optimization.
+The existing absence of a frontier diagnostic for an unknown schema is unchanged; proposed
+selection details must make schema availability visible before binding.
+
+Review 12 adds a shared verified-hash prerequisite before the bounded inventory service and its overview adapter,
+after design review and before live binding/panel wiring. Linux/Windows, native editor validation
+for this future adapter, two-member independent probing and sustained throughput remain open.
+Local commit verification and documentation checks for this round are recorded in
+`/private/tmp/wpilog-visualization-stage3-inventory-design/validation.md`.
+
+
+### Stage 3 review 12 disposition and hash-memory prerequisite (2026-10-15)
+
+Review 12 confirms `7a8b656` matches all 19 accepted blobs and accepts the detached inventory
+design with amendments. It independently reran 3,832 Java passes/84 skips and 17 documentation
+checks on the two-document design tree. Those are reviewer observations, not new runs here.
+
+All amendments are incorporated above: a shared hash-verification owner precedes the ten-second
+build deadline; inventory handles have eight server-wide and two per-session slots, unguessable
+session-bound IDs and session-close reclamation; MCP list pages carry true limits and no-match
+remedies; a visible overview automatically refreshes at absolute expiry while retaining and
+revalidating selection. A changed selected type refuses with `INVENTORY_CHANGED`. The burst
+gate reads prefix-open counts from an actual server seam/metric. Stateless keyset paging was
+not duplicate-prone; repeated catalog admission on growing captures is the reason to prefer
+a detached listing here.
+
+This implementation checkpoint changes only verification ownership. Workspace source admissions
+share up to 256 successful path/boundary/expected-hash proofs for ten idle minutes, with the same
+policy used by followers. Changed boundaries/hashes and failed verification cannot reuse a
+proof. Every current catalog/path grant and native snapshot check remains. No hash I/O runs
+under the memory lock; concurrent cold misses can duplicate work, and close prevents later
+publication. The memory retains no mapped log or payload and does not detect changes that
+preserve every observed file attribute. Cold/evicted hashing and season-sized strict catalog
+scans remain costs to measure, not a ten-second performance guarantee.
+
+The next checkpoint is paged inventory service implementation, followed by its overview adapter
+and native checks, before live binding/panel wiring. No paged operation or capability, deadline,
+new handle quota, MCP schema, automatic overview refresh or prefix-open metric is claimed as
+implemented here. Linux/Windows, native editor work and the 32-lease declaration-burst/season
+workloads remain unrun. Local evidence is recorded in
+`/private/tmp/wpilog-visualization-stage3-verified-hashes/validation.md`.

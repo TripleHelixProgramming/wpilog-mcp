@@ -18,7 +18,6 @@ import org.triplehelix.wpilogmcp.read.ReadException;
 import org.triplehelix.wpilogmcp.read.ReadProblem;
 import org.triplehelix.wpilogmcp.read.catalog.RecordingReference;
 import org.triplehelix.wpilogmcp.read.catalog.StoreReadCatalog;
-import org.triplehelix.wpilogmcp.store.LogStore;
 
 /** Catalog/provenance admission for the ordinal engine. Only the read worker probes publication;
  * the recorder exposes only writer identity and revision, and never executes follower work.
@@ -34,14 +33,18 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
   private final LogManager logs;
   private final Catalogs catalogs;
   private final RecordingReference reference;
-  private final Map<Stamp, Boolean> verified = new HashMap<>();
+  private final VerifiedContentHashes verified;
   private StoreReadCatalog.Recording recording;
   private Map<Path, Object> publications = Map.of();
   private List<Stamp> stamps = List.of();
   private long catalogPublication, revision, checkedAt;
 
   public CatalogRecordingSource(LogManager logs, Catalogs catalogs, RecordingReference reference) {
+    this(logs, catalogs, reference, new VerifiedContentHashes());
+  }
+  public CatalogRecordingSource(LogManager logs, Catalogs catalogs, RecordingReference reference, VerifiedContentHashes verified) {
     this.logs = logs; this.catalogs = catalogs; this.reference = reference;
+    this.verified = verified;
   }
   public RecordingReference reference() { return reference; }
   @Override public void authorize() throws IOException {
@@ -69,12 +72,7 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
           tokens.put(path, logs.capturePublication(path));
           var stamp = new Stamp(path, FileSnapshot.of(path), member.facts().file().sha256()); boundaries.add(stamp);
           boolean growing = StoreReadCatalog.open(member.facts());
-          if (!growing && !verified.containsKey(stamp)) {
-            if (stamp.hash() == null || !stamp.hash().equals(LogStore.contentHash(path))
-                || !java.util.Objects.equals(stamp.boundary(), FileSnapshot.of(path)))
-              throw new IOException("SOURCE_UNAVAILABLE: finalized recording bytes do not match their manifested hash");
-            verified.put(stamp, true);
-          }
+          if (!growing) verified.verify(path, stamp.boundary(), stamp.hash());
           var snapshot = lease.value().openWpilog(path);
           // Register ownership before any validation below can throw.
           opened.add(new OrdinalFollow.Member(member.facts().file().provenance().originalName(), 0, snapshot, stamp.hash()));
@@ -98,7 +96,6 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
         var prefix = new OrdinalFollow.Prefix(identity, ++revision, resolved.finalized(), opened);
         recording = resolved; publications = java.util.Collections.unmodifiableMap(tokens);
         stamps = List.copyOf(boundaries); catalogPublication = version; checkedAt = System.nanoTime();
-        verified.keySet().retainAll(boundaries);
         return prefix;
       } catch (Throwable failure) {
         for (var member : opened) try { member.snapshot().close(); } catch (IOException e) { failure.addSuppressed(e); }

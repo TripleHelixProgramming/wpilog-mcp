@@ -461,8 +461,12 @@ empty/finalized clocks, late entries, backward timestamps, rollover conflicts, a
 writer/hash/grant refusals, known-hash recovery and the aggregate metadata cap. The HTTP/MCP
 result opens a 1 MiB native follow and preserves exact ordinals. Shipped-overview checks prove
 that recording inspection does not offer unfinished live controls. These establish source
-admission, not the live-panel, display-budget or performance gates. The
-[checkpoint record](VISUALIZATION_PLAN.md#stage-3-recording-source-inspection-checkpoint-2026-10-15)
+admission, not the live-panel, display-budget or performance gates. Hash-memory regressions
+count actual SHA-256 reads across two synthetic finalized rollover members, repeated inspection,
+recorded-file admission and index eviction. They check path/size/time/identity/manifest changes,
+failed or unstable verification, quota eviction, idle expiry, concurrent cold/warm calls,
+nonblocking close and no late cache resurrection. Grant revocation still refuses cached proofs.
+The [checkpoint record](VISUALIZATION_PLAN.md#stage-3-recording-source-inspection-checkpoint-2026-10-15)
 links the local validation evidence.
 
 The queried-frontier regressions run 5,000- and 10,000-topic recordings with two members,

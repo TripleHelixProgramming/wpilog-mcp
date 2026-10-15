@@ -927,8 +927,19 @@ The Source Overview can inspect a recording, while live view creation, template 
 the single-file analysis routes remain unavailable. Capabilities distinguish inspection from
 the still-false `live` editor capability.
 The HTTP and MCP adapters share one typed native-reader refusal mapping,
-including temporary inventory changes versus permanent recording-history changes. Finalized
-members are hash-verified on each new inspection admission; this metadata operation must not
+including temporary inventory changes versus permanent recording-history changes. One workspace
+source owner shares successful content verification between recording inspection and recorded-file
+admission. It remembers at most 256 canonical path/file-boundary/manifest-hash tuples, expiring
+after ten idle minutes; close clears them. No payload, mapping or permission is retained by
+this memory. A miss hashes the file, checking its boundary before and after; a changed path,
+size, modification time, file identity or expected hash needs a new proof. Failures are never
+remembered, and the opened native snapshot still has to match the verified boundary. Every
+admission retains current catalog and path/grant checks. Edits preserving all observed file
+attributes remain outside this proof, as with the existing loaded-log boundary checks.
+Concurrent cold misses may duplicate hashing; no I/O holds the metadata lock or a cache
+computation lock, and a hash finishing after close cannot repopulate the memory. Followers use
+the same verification policy with memory owned by each lease. Inventory paging will reuse the
+workspace owner for open/details; it is still unimplemented. Repeated full inspection must not
 become per-frame polling in place of the long-lived broker.
 
 Follow metadata can be explicitly limited to the queried entries. This projects the wire

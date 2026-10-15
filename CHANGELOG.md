@@ -130,6 +130,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The unreleased visualization preview shares bounded finalized-file hash verification across recording inspections and recorded-file admissions. Previously each fresh recording inspection rehashed every finalized rollover member. Changed file boundaries or manifest hashes still require verification, and current access checks remain mandatory.
+
 - HTTP JSON size refusals now drain a bounded excess body before replying. Previously closing while a client was still sending could reset the socket and lose the explanation, including MCP and native read requests. Draining discards at most another 4 MiB within ten seconds or the route's earlier deadline; senders still transmitting at that bound or deadline are disconnected before response headers, without a guaranteed reply.
 
 - `robot-facts --server` now explains configured-store access refusals and gives platform-appropriate service-account and direct-address guidance; previously an ordinary account saw only a path. On POSIX file systems it refuses a differently owned or unverifiable store before creating locks or replacing owner-only host-key manifests, so a privileged invocation cannot strand the service's local pins. Windows admission follows actual filesystem permissions; writable group-owned stores are no longer refused by comparing their owner with the current user.

@@ -679,6 +679,12 @@ Member schemas remain separate and field bindings are not inferred from this sum
 The inventory is capped at 4 MiB (`max_recording_inventory_bytes`); its native member admission
 retains the follower's 64-member and 128 MiB index limits. It is a detached inspection, not a
 retained read lease or a guarantee that later requests see the same prefix.
+Repeated inspections and recorded-file admissions share up to 256 successful finalized-file
+hash proofs in workspace memory, expiring after ten idle minutes and cleared at workspace
+close. A changed path, file boundary or expected manifest hash requires verification again;
+current access checks still run. The memory retains no file handle or sample data. It cannot
+detect edits that preserve all observed file attributes, and a cold/evicted proof still needs
+a full file hash. Concurrent cold requests may duplicate that read.
 Typed native-reader refusals keep their code and boolean `retryable` through both inspection
 adapters: a moving catalog can be retried, changed writer history stops, and metadata limits
 return a non-retryable 413 over HTTP. Inspection does not automatically retry for a caller.

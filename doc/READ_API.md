@@ -447,7 +447,12 @@ a new identity. Continuation compares that identity even if replacement and fina
 between polls. Legacy finalized metadata without this proof requires explicit rebootstrap at
 the live-to-finalized transition; an initially finalized file can bootstrap from its verified
 hash. The hash verifies final bytes and the writer identity proves continuity; neither substitutes
-for the other.
+for the other. Successful final hashes use bounded verification memory: a follow owns its
+memory, while visualization source admissions share their workspace's. Both remember at most
+256 path/boundary/expected-hash tuples for ten idle minutes, retaining no mappings or payloads.
+Boundary or expected-hash changes force verification; current path/catalog checks and native
+snapshot-boundary checks still run. This does not detect edits that preserve all observed
+filesystem attributes. Concurrent cold misses may duplicate hash I/O without a shared I/O lock.
 A stale/foreign cursor is `INVALID_REQUEST`; an expired, deleted or restarted lease is HTTP 410
 `CURSOR_EXPIRED`. An already admitted wait cancelled by DELETE or shutdown ends with HTTP 410
 `CLOSED`. Rebootstrap the same source explicitly after losing a cursor or the retained client

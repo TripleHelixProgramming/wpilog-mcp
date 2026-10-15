@@ -573,10 +573,21 @@ metadata. The follow-up projects only the wire descriptors and required schemas;
 recording history proof, strict catalog reuse and byte reservations remain. Legacy follows keep
 full metadata. The gate now covers 5,000 and 10,000 topics per member across two members.
 
-Full overview inspection is still capped at 4 MiB and can refuse large inventories even when
-queried follows fit. Design bounded inventory listing before large-recording panel integration;
-do not silently truncate discovery or raise caps as a substitute. Finalized-inspection hash
-cost and season-sized scans remain performance measurements. Improve disabled control contrast
+Review 11 accepts queried metadata, committed unchanged as `7a8b656`. Full overview inspection
+is still capped at 4 MiB and can refuse large inventories even when queried follows fit. The
+[bounded inventory design](VISUALIZATION_PLAN.md#bounded-recording-inventories-proposed-before-panel-wiring)
+proposes compact pages from a detached fixed snapshot, separate fresh selected-entry details,
+shared HTTP/MCP ownership and bounded lifetime/allocation. Review 12 accepts it with explicit
+server/session quotas, the MCP list-result contract, session-bound unguessable handles, fresh
+type-change refusals and automatic visible expiry refresh. Paging is not implemented; prove
+it before panel wiring. The performance gate now also requires declaration bursts with
+32 open 1 MiB leases, including the existing 16-waiter saturation and shared client byte budget.
+These workloads have not run. Do not silently truncate discovery or raise caps as a substitute.
+Review 12's prerequisite now shares bounded successful hash verification across workspace
+source admissions; cold/evicted hashes and strict season-sized catalog scans still need
+performance measurements. The cache has 256 entries and ten-minute idle expiry, does not retain
+mappings or permissions, and may duplicate concurrent cold reads. Paged open/details must reuse
+that owner rather than add their own memory. Improve disabled control contrast
 during panel accessibility work; the current controls are functionally disabled.
 
 Five minor review follow-ups remain:
