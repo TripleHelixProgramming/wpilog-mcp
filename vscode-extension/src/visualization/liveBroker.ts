@@ -17,11 +17,11 @@ export interface BrokerOptions { readonly encodedBudgetBytes?: number; readonly 
   readonly retryBaseMs?: number; readonly retryMaxMs?: number; readonly random?: () => number }
 interface Consumer {
   readonly sink: FollowConsumer; readonly identity: ViewIdentity; readonly keys: ReadonlySet<string>;
-  readonly selections: readonly FollowSelection[]; readonly stop: AbortController;
+  readonly selections: readonly FollowSelection[]; readonly stop: AbortController; reset: number;
 }
 interface Job {
   readonly key: string; readonly source: FollowSource; readonly windows: readonly FollowWindow[];
-  readonly consumers: Set<Consumer>; reset: number; reserved: boolean;
+  readonly consumers: Set<Consumer>; selections?: readonly FollowSelection[]; reserved: boolean;
   restart?: { reason: string; code?: string }; controller?: AbortController; task?: Promise<void>;
 }
 function delay(ms: number, signals: readonly AbortSignal[]): Promise<void> {
@@ -34,11 +34,13 @@ function delay(ms: number, signals: readonly AbortSignal[]): Promise<void> {
   });
 }
 /** Window-owned acquisition. No VS Code dependency, renderer, decoder or recorder connection.
- * A new subscriber resets the shared stream because this broker deliberately owns no history
- * cache. Callers clear their generation on reset. A page is borrowed until its callback settles;
+ * Only pending opens coalesce. Opened jobs keep their queries even through server replacement;
+ * a later join or refresh bootstraps independently without resetting peers. No history is cached.
+ * Callers clear their generation on reset. A page is borrowed until its callback settles;
  * bounded display buffers and webview copies belong to the later display-budget integration. */
 export class LiveBroker {
-  private readonly jobs = new Map<string, Job>();
+  private readonly jobs = new Set<Job>();
+  private readonly pending = new Map<string, Job>();
   private closed = false;
   private readonly budget: number;
   private readonly timeout: number;
@@ -67,23 +69,47 @@ export class LiveBroker {
     // Make the identity independent of object property insertion order and caller mutations.
     const key = canonical({ source, windows });
     if (key.length > 1 << 20) throw new Error("Follow source/window byte limit");
-    let job = this.jobs.get(key);
-    if (!job) {
-      if (this.jobs.size >= 32) throw new Error("Follow source limit");
-      job = { key, source: freezeJson(JSON.parse(JSON.stringify(source))), windows: freezeJson(JSON.parse(JSON.stringify(windows))),
-        consumers: new Set(), reset: 0, reserved: false };
-    }
-    const union = new Map([...job.consumers].flatMap(c => c.selections.map(s => [selectionKey(s), s] as const)));
-    unique.forEach((s, k) => union.set(k, s));
-    if (union.size > 256) throw new Error("Shared follow selection limit");
-    // Refuse impossible requests before reserving, attaching, or resetting an existing peer.
-    encodeFollowOpen(job.source, [...union.values()], job.windows, this.transport.pageBytes);
-    this.reserve(job); this.jobs.set(key, job);
-    const consumer: Consumer = { sink, identity: Object.freeze({ ...sink.identity }), keys: new Set(unique.keys()), selections: [...unique.values()], stop: new AbortController() };
-    job.consumers.add(consumer); this.restart(job, "Subscriptions changed; rebootstrap the same recording");
-    return { dispose: () => this.remove(job!, consumer), refresh: () => {
-      if (!consumer.stop.signal.aborted) this.restart(job!, "Explicit refresh of the same recording");
+    let consumer: Consumer = { sink, identity: Object.freeze({ ...sink.identity }), keys: new Set(unique.keys()),
+      selections: Object.freeze([...unique.values()]), stop: new AbortController(), reset: 0 };
+    let job = this.admit(key, source, windows, consumer, "Opening the selected recording");
+    return { dispose: () => this.remove(job, consumer), refresh: () => {
+      if (this.closed || consumer.stop.signal.aborted) return;
+      const replacement: Consumer = { ...consumer, stop: new AbortController() };
+      // Admission is synchronous and precedes detachment: a refusal preserves this view too.
+      // Replacing one of 256 consumers requires byte/job headroom, not a 257th consumer slot.
+      const next = this.admit(key, job.source, job.windows, replacement, "Explicit refresh of the same recording");
+      this.remove(job, consumer); job = next; consumer = replacement;
     } };
+  }
+  private admit(key: string, source: FollowSource, windows: readonly FollowWindow[], consumer: Consumer, reason: string): Job {
+    encodeFollowOpen(source, consumer.selections, windows, this.transport.pageBytes);
+    let job = this.pending.get(key);
+    if (job) {
+      const union = this.union([...job.consumers, consumer]);
+      if (union.length > 256) job = undefined;
+      else try { encodeFollowOpen(job.source, union, job.windows, this.transport.pageBytes); }
+      catch (error) {
+        if (!(error instanceof FollowError) || error.code !== "RESOURCE_LIMIT") throw error;
+        job = undefined;
+      }
+    }
+    // A valid subscription that cannot fit a pending union can open independently.
+    if (!job) {
+      if (this.jobs.size >= 32) throw new FollowError("RESOURCE_LIMIT", "Follow job limit reached; close another view before opening or refreshing");
+      job = { key, source: freezeJson(JSON.parse(JSON.stringify(source))), windows: freezeJson(JSON.parse(JSON.stringify(windows))),
+        consumers: new Set(), reserved: false };
+    }
+    this.reserve(job); this.jobs.add(job); this.pending.set(key, job);
+    job.consumers.add(consumer);
+    if (!job.task) this.start(job, reason);
+    return job;
+  }
+  private union(consumers: Iterable<Consumer>): FollowSelection[] {
+    return [...new Map([...consumers].flatMap(c => c.selections.map(s => [selectionKey(s), s] as const))).values()]
+      .sort((a, b) => selectionKey(a) < selectionKey(b) ? -1 : 1);
+  }
+  private unpend(job: Job): void {
+    if (this.pending.get(job.key) === job) this.pending.delete(job.key);
   }
   private reserve(job: Job): void {
     // A response plus the previous frontier may coexist. No encoded page history is cached.
@@ -95,12 +121,13 @@ export class LiveBroker {
     if (!job.consumers.delete(c)) return;
     c.stop.abort();
     if (!job.consumers.size) { job.restart = undefined; job.controller?.abort();
-      if (!job.task) { this.jobs.delete(job.key); job.reserved = false; } }
+      this.unpend(job);
+      if (!job.task) { this.jobs.delete(job); job.reserved = false; } }
   }
   private state(job: Job, state: Omit<FollowState, "reset">, only?: Consumer): void {
     for (const c of only ? [only] : [...job.consumers]) {
       if (!this.current(job, c)) continue;
-      try { c.sink.state({ ...state, reset: job.reset }); } catch { this.remove(job, c); }
+      try { c.sink.state({ ...state, reset: c.reset }); } catch { this.remove(job, c); }
     }
   }
   private current(job: Job, c: Consumer): boolean {
@@ -108,20 +135,20 @@ export class LiveBroker {
     try { if (c.sink.current(c.identity)) return true; } catch { /* A failed/stale view cannot hold acquisition. */ }
     this.remove(job, c); return false;
   }
-  private restart(job: Job, reason: string, code?: string): void {
-    this.reserve(job); job.restart = { reason, code }; job.controller?.abort();
-    if (job.task) return;
-    // Coalesce synchronous mounts; serialize retirement before replacement admission.
+  private start(job: Job, reason: string): void {
+    job.restart = { reason };
+    // Seal before callbacks or awaiting credentials/create, not after the lease arrives.
     job.task = Promise.resolve().then(async () => {
+      this.unpend(job); job.selections = Object.freeze(this.union(job.consumers));
       while (job.restart && job.consumers.size && !this.closed) {
         const why = job.restart; job.restart = undefined; job.controller = new AbortController();
-        job.reset++; this.state(job, { kind: "reset", ...why });
+        for (const c of job.consumers) c.reset++;
+        this.state(job, { kind: "reset", ...why });
         await this.run(job, job.controller.signal);
       }
     }).finally(() => {
       job.task = undefined; job.controller = undefined; job.reserved = false;
-      if (!job.consumers.size) this.jobs.delete(job.key);
-      else if (job.restart && !this.closed) this.restart(job, job.restart.reason, job.restart.code);
+      if (!job.consumers.size) this.jobs.delete(job);
     });
   }
   private backoff(attempt: number): number {
@@ -129,8 +156,7 @@ export class LiveBroker {
   }
   private async run(job: Job, signal: AbortSignal): Promise<void> {
     let lease: FollowLease | undefined, cursor = "", previous: { prefix: string; frontier: FollowFrontier } | undefined, attempt = 0;
-    const selections = [...new Map([...job.consumers].flatMap(c => c.selections.map(s => [selectionKey(s), s] as const))).values()]
-      .sort((a, b) => selectionKey(a) < selectionKey(b) ? -1 : 1);
+    const selections = job.selections!;
     const keys = new Set(selections.map(selectionKey));
     try {
       this.state(job, { kind: "connecting", reason: "Opening the selected recording" });
@@ -178,7 +204,7 @@ export class LiveBroker {
     try {
       const selected = Object.freeze({ ...data, batches: Object.freeze(data.batches.filter(b => c.keys.has(selectionKey(b)))) });
       await Promise.race([
-        Promise.resolve().then(() => { if (!signal.aborted && this.current(job, c)) return c.sink.page(Object.freeze({ identity: c.identity, reset: job.reset, page: selected, frontier })); }),
+        Promise.resolve().then(() => { if (!signal.aborted && this.current(job, c)) return c.sink.page(Object.freeze({ identity: c.identity, reset: c.reset, page: selected, frontier })); }),
         timer.then(() => { throw new FollowError("CONSUMER_TIMEOUT", "View did not consume its follow page within the deadline; reopen it to rebootstrap"); })
       ]);
     } catch (error) {
@@ -192,7 +218,7 @@ export class LiveBroker {
     this.closed = true;
     const jobs = [...this.jobs.values()];
     for (const job of jobs) for (const c of [...job.consumers]) this.remove(job, c);
-    await Promise.all(jobs.map(j => j.task)); this.jobs.clear();
+    await Promise.all(jobs.map(j => j.task)); this.jobs.clear(); this.pending.clear();
   }
   get resources(): { jobs: number; consumers: number; reservedBytes: number } {
     const jobs = [...this.jobs.values()];

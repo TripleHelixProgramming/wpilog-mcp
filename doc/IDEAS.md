@@ -523,17 +523,22 @@ selection the next page's first turn; the broker need not avoid small pages to p
 selection losing its space on every request.
 Lease admission still does not reserve encoded bytes. The broker now backs off on
 `retryable: true` and retries the submitted cursor; it stops polling and DELETEs after consuming
-an `ended` page. It has no history cache: a joining consumer resets its peers' stream and reboots
-the same source/window, while removing one retains the query superset until the next reset.
-Before panels, implement the approved uninterrupted-peer model with immutable opened jobs: only pending opens coalesce; later joins, refreshes and reveals get separate leases. Use 1 MiB panel pages and retain the 4 MiB protocol maximum. Evaluate a bounded shared history cache only if the display-budget/performance gate shows the lease limits binding. Legacy missing writer proof at finalization
+an `ended` page. Opened jobs now keep immutable queries; only pending opens coalesce. Later
+joins, refreshes and subscription reveals get independent leases, preserving peers' streams.
+Refresh needs spare job/byte admission before it detaches its old binding. The acquisition
+fixture proves this with 1 MiB pages; retain that choice for panels and the 4 MiB protocol maximum.
+Evaluate a bounded shared history cache only if the display-budget/performance gate shows the
+extra leases binding. Native visibility still needs the later panel integration. Legacy missing writer proof at finalization
 requires explicit rebootstrap. The body reader now classifies both malformed JSON and oversized
 requests before source work. The broker core checkpoint is implemented; live UI wiring, the decoded-buffer setting and
 aggregate recorded/live/webview accounting remain outstanding, explicitly within Stage 3.
 
 The oversized-request transport defect exposed by the array-limit round is fixed by the shared
-bounded refusal drain. Client requests now use the server's 64 KiB cap and oversized unions
-refuse synchronously before changing a job. Failing-first, plant and validation evidence is in
-`/private/tmp/wpilog-visualization-stage3-refusals/validation.md`. Native Linux/Windows execution
+bounded refusal drain. Client requests now use the server's 64 KiB cap and oversized individual requests
+refuse synchronously before changing a job; valid requests that overflow a pending union split
+into another admitted job. Failing-first, plant and validation evidence is in
+`/private/tmp/wpilog-visualization-stage3-refusals/validation.md`, with the immutable-job follow-up
+in `/private/tmp/wpilog-visualization-stage3-immutable-jobs/validation.md`. Native Linux/Windows execution
 remains outstanding; the new raw-socket tests run in the ordinary cross-platform Java suite.
 
 Five minor review follow-ups remain:

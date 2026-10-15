@@ -994,26 +994,34 @@ remains retryable until acknowledged. Acknowledgement releases prefixes, proofs 
 the bounded lease retains only the terminal cursor outcome and admission context until DELETE
 or expiry. Repeating that cursor returns 410 `FOLLOW_ENDED`, without opening a prefix or waiting.
 The client stops polling and DELETEs after consuming the terminal page.
-The extension's `visualization/LiveBroker` is the next tested boundary. A window supplies one
-broker per server/credential context. Within it, an anchored SourceRef and identical historical
-windows own one follow; entry/field requirements are unioned and identical selections deduplicated.
-Different bootstrap windows remain separate jobs: the broker never invents a time projection.
-Joining an active job or explicitly refreshing resets every consumer's data generation and
-rebootstraps that same source. This trades a history cache for a bounded stream; opening another
-view can reread its peers' bootstrap window, without changing their independent view configuration.
-Removing a consumer keeps the existing query superset until the next reset, avoiding a restart
-for remaining consumers. Removing the last aborts next and DELETEs the lease.
-Before panels, the approved next contract replaces shared resets with immutable opened jobs:
-same-turn mounts can share a pending open, but a later join, refresh or reveal uses a separate
-lease and leaves its peers uninterrupted. Panel requests will use 1 MiB pages; the protocol
-maximum remains 4 MiB. These integration changes are still pending in the acquisition core.
+The extension's window-owned acquisition broker is the next tested boundary. A window supplies
+one broker per server/credential context. Same-turn subscriptions with an identical anchored
+SourceRef and bootstrap windows can share a pending open: entry/field requirements are unioned
+and identical selections deduplicated. If the union exceeds 256 selections or the 64 KiB request
+cap, a subscription that fits alone gets a separate pending job, subject to admission limits.
+Different bootstrap windows always remain separate; the broker never invents a time projection.
+
+Opening freezes the query set before callbacks, credential lookup or a network await. A later
+join, explicit refresh or reveal after releasing a subscription gets its own lease, leaving
+peers' cursor, samples and data generation uninterrupted. Removing a consumer retains the
+opened query superset, including through server expiry/replacement. Removing the last aborts
+next and DELETEs the lease. A refresh reserves and attaches its replacement before detaching
+the old subscription; local admission failure leaves the requesting view and its peers unchanged.
+This requires spare job/byte capacity even when the old subscription has no peers. Reset
+numbers belong to each subscription and increase across refreshes; stale callbacks from the
+old binding cannot deliver or acknowledge work for its replacement. No history cache or
+bootstrap handoff is involved. Panels will request 1 MiB pages; the protocol maximum and
+adapter default remain 4 MiB. The real-server fixture exercises both page sizes; live panels
+are not wired yet.
 
 `FollowClient` borrows the existing origin-scoped credential provider. It never follows redirects
 or accepts credentials embedded in URLs. The adapter and subscription admission share the exact
 UTF-8 open-request encoder, capped at the server's 64 KiB including repeated query windows.
-Admission sizes the full union before reserving or changing a job, so a refused join leaves its
-peers alone. Encoding stops at the first overflowing query; next-request bodies have the same
-cap, and oversized requests never consult credentials or reach the network.
+Admission sizes the individual request and any pending union before reserving or changing a
+job, so a refused join leaves its peers alone. Encoding stops at the first overflowing query;
+next-request bodies have the same cap, and oversized requests never consult credentials or
+reach the network. A remote refusal after refresh admission stops the requesting view without
+resetting its peers.
 Responses are byte-capped before JSON parsing; tagged
 integers, floating-point bits, timestamps, ordinals and diagnosed gaps remain in the server's native
 representation. `followProtocol` validates identity, selection, work bounds and metadata presence
@@ -1031,9 +1039,14 @@ source and windows. History and access refusals stop with their code. A terminal
 then DELETEd without another poll. Cleanup has a two-second deadline; lost DELETEs fall back to the
 server's 60-second idle expiry. Cancellation also interrupts a stalled credential lookup.
 
-Admission limits each broker to 32 source/window jobs and 256 consumers, with at most 256 unioned
-entry/field selections per job. Its 64 MiB encoded reservation covers two page limits per active
-job (default 4 MiB per page: at most eight active jobs); finished jobs release the reservation.
+Admission limits each broker to 32 jobs (including separate leases for the same source/windows)
+and 256 consumers, with at most 256 unioned entry/field selections per job. Its 64 MiB encoded
+reservation covers two page limits per active job: eight jobs at the adapter's 4 MiB default,
+or 32 at the approved 1 MiB panel size. A retiring job retains its slot and reservation until
+DELETE finishes or reaches the adapter's two-second deadline. Ended/error jobs release bytes
+but keep a job slot until their subscriptions close. Refresh replaces a consumer within the
+256-consumer cap; it still needs job/byte headroom. The server's 16 long-poll workers remain
+a separate limit; busy replies back off without reopening or resetting peers.
 There is no encoded history cache or per-consumer frame copy. Parsed frames limit traversal to
 the negotiated page byte budget in nodes, counting primitives, and 96 levels of nesting. Every JSON
 node requires at least one encoded byte, so the traversal bound admits every byte-bounded page

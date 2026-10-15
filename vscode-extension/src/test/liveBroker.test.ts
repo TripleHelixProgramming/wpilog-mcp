@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { LiveBroker, FollowConsumer, FollowDelivery, FollowState } from "../visualization/liveBroker";
+import { LiveBroker, FollowConsumer, FollowDelivery, FollowState, FollowSubscription } from "../visualization/liveBroker";
 import { FollowTransport } from "../visualization/followClient";
 import { FollowError, FollowLease, FollowSource, FollowWindow, FollowSelection } from "../visualization/followProtocol";
 
@@ -52,13 +52,13 @@ test("oversized repeated windows refuse synchronously without reserving or openi
     (e: unknown) => e instanceof FollowError && e.code === "RESOURCE_LIMIT" && /64 KiB/.test(e.message));
   assert.deepEqual(broker.resources, { jobs: 0, consumers: 0, reservedBytes: 0 }); assert.equal(transport.opens.length, 0);
 });
-test("oversized union refuses before changing an admitted peer", async t => {
+test("oversized subscription refuses before changing an admitted peer", async t => {
   const { transport, broker } = fixture(t), a = consumer("a"), b = consumer("b");
   const selections = (prefix: string) => Array.from({ length: 20 }, (_, i) => ({ entry: prefix + i + "é".repeat(900) }));
   transport.handle = async (_l, _c, signal) => transport.wait(signal);
   broker.subscribe(source, [], selections("a"), a.value); await until(() => transport.polls.length === 1);
   const resources = broker.resources, states = [...a.states];
-  assert.throws(() => broker.subscribe(source, [], selections("b"), b.value),
+  assert.throws(() => broker.subscribe(source, [], [...selections("b"), ...selections("c")], b.value),
     (e: unknown) => e instanceof FollowError && e.code === "RESOURCE_LIMIT" && /64 KiB/.test(e.message));
   await pause(5);
   assert.deepEqual(broker.resources, resources); assert.deepEqual(a.states, states); assert.deepEqual(b.states, []);
@@ -132,15 +132,15 @@ test("expiry resets explicitly and reopens the same anchored source and window",
   assert.deepEqual(transport.opens.map(x => x.source), [source, source]); assert.deepEqual(transport.opens.map(x => x.windows), [windows, windows]);
   assert.deepEqual(a.pages.map(p => p.reset), [1, 2]); assert.ok(a.states.some(s => s.kind === "reset" && s.code === "CURSOR_EXPIRED"));
 });
-test("joining an active source resets all consumers; different windows and sources remain independent", async t => {
+test("joining an active source leaves peers uninterrupted; different windows and sources remain independent", async t => {
   const { transport, broker } = fixture(t), a = consumer("a"), b = consumer("b");
   transport.handle = async (l, c, s) => c === "c0" ? frame(l, c, 0, { entries: ["x"] }) : transport.wait(s);
   broker.subscribe(source, [], [{ entry: "x" }], a.value); await until(() => a.pages.length === 1);
   broker.subscribe(source, [], [{ entry: "x" }], b.value); await until(() => b.pages.length === 1);
-  assert.equal(transport.opens.length, 2); assert.equal(transport.closes[0], "lease1"); assert.deepEqual(a.pages.map(p => p.reset), [1, 2]);
+  assert.equal(transport.opens.length, 2); assert.deepEqual(transport.closes, []); assert.deepEqual(a.pages.map(p => p.reset), [1]);
   broker.subscribe(source, [{ start_us: "0", end_us: "100", end_inclusive: true }], [{ entry: "x" }], consumer("c").value);
   broker.subscribe({ ...source, session_id: "33333333-3333-4333-8333-333333333333" }, [], [{ entry: "x" }], consumer("d").value);
-  await until(() => transport.opens.length === 4); assert.equal(broker.resources.jobs, 3);
+  await until(() => transport.opens.length === 4); assert.equal(broker.resources.jobs, 4);
 });
 test("stale generation never receives a page and slow consumers do not create a queue", async t => {
   const { transport, broker } = fixture(t, { consumerTimeoutMs: 15 }), a = consumer("a"), b = consumer("b");
@@ -228,7 +228,7 @@ test("source, query and consumer caps reject admission without mutating existing
   assert.throws(() => broker.subscribe({ ...source, kind: "robot" } as any, [], [{ entry: "x" }], a.value), /anchored/);
   assert.throws(() => broker.subscribe(source, [], [], a.value), /selection/);
   broker.subscribe(source, [], Array.from({ length: 256 }, (_, i) => ({ entry: `entry${i}` })), a.value);
-  assert.throws(() => broker.subscribe(source, [], [{ entry: "too-many" }], consumer("b").value), /selection/);
+  assert.throws(() => broker.subscribe(source, [], Array.from({ length: 257 }, (_, i) => ({ entry: `entry${i}` })), consumer("b").value), /selection/);
   await until(() => transport.opens.length === 1); assert.equal(transport.opens[0].selections.length, 256);
   await broker.dispose(); assert.throws(() => broker.subscribe(source, [], [{ entry: "x" }], a.value), /closed/);
 });
@@ -246,4 +246,192 @@ for (const bootstrap of [true, false]) test(`incomplete ${bootstrap ? "bootstrap
   transport.handle = async (l, c, s, n) => n === 0 ? { ...frame(l, c, 0, { bootstrap }), frontier_complete: false } : transport.wait(s);
   broker.subscribe(source, [], [{ entry: "x" }], a.value); await until(() => transport.polls.length === 2);
   assert.equal(a.states.at(-1)?.kind, bootstrap ? "bootstrapping" : "catching_up");
+});
+
+// Every lease starts its own ordinal stream. Reopening a peer must not disguise a reset as a delta.
+function selectedFrame(transport: Fake, lease: FollowLease, cursor: string, ordinal = 0): unknown {
+  const selections = transport.opens[Number(lease.id.slice(5)) - 1].selections;
+  const result = frame(lease, cursor, ordinal, { entries: selections.map(s => s.entry) });
+  result.batches.forEach((b: any, i: number) => b.field = selections[i].field ?? null);
+  return result;
+}
+for (const selection of [{ entry: "x" }, { entry: "y" }, { entry: "x", field: "position" }]) {
+  test(`late ${JSON.stringify(selection)} subscription bootstraps separately while peer ordinals continue`, async t => {
+    const { broker, transport } = fixture(t), a = consumer("a"), b = consumer("b"), delta = deferred();
+    transport.handle = async (l, c, s) => {
+      if (c === "c0") return selectedFrame(transport, l, c);
+      if (l.id === "lease1" && c === "c1") { await delta.promise; return selectedFrame(transport, l, c, 1); }
+      return transport.wait(s);
+    };
+    try {
+      broker.subscribe(source, [], [{ entry: "x" }], a.value); await until(() => a.pages.length === 1);
+      broker.subscribe(source, [], [selection], b.value); await until(() => b.pages.length === 1);
+      assert.deepEqual(a.states.filter(s => s.kind === "reset").map(s => s.reset), [1]);
+      assert.deepEqual(transport.closes, []); assert.equal(transport.aborted, 0);
+      delta.resolve(); await until(() => a.pages.length === 2);
+      assert.deepEqual(a.pages.flatMap(p => p.page.batches[0].batch.samples.map(s => s.ordinal)), [0, 1]);
+      assert.deepEqual(a.pages.map(p => p.page.follow_id), ["lease1", "lease1"]);
+      assert.deepEqual(transport.opens.map(o => o.selections), [[{ entry: "x" }], [selection]]);
+    } finally { delta.resolve(); }
+  });
+}
+test("opening is sealed before awaiting transport, and retired jobs cannot remove matching successors", async t => {
+  const { broker, transport } = fixture(t), a = consumer("a"), b = consumer("b"), hold = deferred();
+  const open = transport.open.bind(transport);
+  transport.open = async (...args) => { const lease = await open(...args); if (lease.id === "lease1") await hold.promise; return lease; };
+  transport.handle = async (l, c, s) => c === "c0" ? selectedFrame(transport, l, c) : transport.wait(s);
+  const sa = broker.subscribe(source, [], [{ entry: "x" }], a.value);
+  try {
+    await until(() => transport.opens.length === 1);
+    broker.subscribe(source, [], [{ entry: "y" }], b.value);
+    await until(() => transport.opens.length === 2);
+    assert.deepEqual(transport.opens.map(o => o.selections), [[{ entry: "x" }], [{ entry: "y" }]]);
+    sa.dispose(); hold.resolve(); await until(() => transport.closes.length === 1 && b.pages.length === 1);
+    assert.equal(transport.closes[0], "lease1"); assert.equal(broker.resources.jobs, 1);
+    assert.equal(broker.resources.consumers, 1); assert.equal(b.pages[0].reset, 1);
+  } finally { hold.resolve(); }
+});
+test("state callbacks cannot attach a new consumer to a job whose opening has begun", async t => {
+  const { broker, transport } = fixture(t), a = consumer("a"), b = consumer("b"); let joined = false;
+  a.value.state = state => { a.states.push(state); if (state.kind === "reset" && !joined) {
+    joined = true; broker.subscribe(source, [], [{ entry: "y" }], b.value);
+  } };
+  transport.handle = async (l, c, s) => c === "c0" ? selectedFrame(transport, l, c) : transport.wait(s);
+  broker.subscribe(source, [], [{ entry: "x" }], a.value);
+  await until(() => a.pages.length > 0 && b.pages.length > 0);
+  assert.equal(transport.opens.length, 2); assert.deepEqual(a.pages.map(p => p.reset), [1]);
+  assert.deepEqual(transport.opens.map(o => o.selections), [[{ entry: "x" }], [{ entry: "y" }]]);
+});
+test("refresh moves only its subscription; repeated refresh and dispose target the replacement", async t => {
+  const { broker, transport } = fixture(t), a = consumer("a"), b = consumer("b");
+  transport.handle = async (l, c, s) => c === "c0" ? selectedFrame(transport, l, c) : transport.wait(s);
+  const sa = broker.subscribe(source, [], [{ entry: "x" }], a.value);
+  broker.subscribe(source, [], [{ entry: "y" }], b.value);
+  await until(() => b.pages.length === 1);
+  sa.refresh(); await until(() => a.pages.length === 2);
+  assert.deepEqual(b.pages.map(p => p.reset), [1]); assert.deepEqual(transport.closes, []);
+  assert.deepEqual(transport.opens[1].selections, [{ entry: "x" }]);
+  sa.refresh(); await until(() => a.pages.length === 3 && transport.closes.length === 1);
+  assert.deepEqual(a.pages.map(p => p.reset), [1, 2, 3]); assert.deepEqual(transport.closes, ["lease2"]);
+  sa.dispose(); await until(() => transport.closes.length === 2);
+  assert.deepEqual(transport.closes, ["lease2", "lease3"]); assert.equal(broker.resources.consumers, 1);
+  sa.refresh(); await pause(5); assert.equal(transport.opens.length, 3);
+  assert.equal(transport.aborted, 2); assert.deepEqual(b.states.filter(s => s.kind === "reset").map(s => s.reset), [1]);
+});
+test("refresh releases its borrowed page without resetting the peer or admitting its late reply", async t => {
+  const { broker, transport } = fixture(t), a = consumer("a"), b = consumer("b"), hold = deferred();
+  a.value.page = async p => { a.pages.push(p); if (p.reset === 1) await hold.promise; };
+  transport.handle = async (l, c, s) => c === "c0" ? selectedFrame(transport, l, c)
+    : l.id === "lease1" && c === "c1" ? selectedFrame(transport, l, c, 1) : transport.wait(s);
+  const sa = broker.subscribe(source, [], [{ entry: "x" }], a.value);
+  broker.subscribe(source, [], [{ entry: "x" }], b.value);
+  await until(() => b.pages.length === 1); assert.equal(transport.polls.length, 1);
+  sa.refresh(); await until(() => a.pages.length === 2 && b.pages.length === 2);
+  assert.deepEqual(b.pages.map(p => [p.reset, p.page.follow_id]), [[1, "lease1"], [1, "lease1"]]);
+  assert.deepEqual(b.pages.flatMap(p => p.page.batches[0].batch.samples.map(s => s.ordinal)), [0, 1]);
+  const polls = [...transport.polls]; hold.resolve(); await pause(5);
+  assert.deepEqual(transport.polls, polls); assert.deepEqual(a.pages.map(p => p.reset), [1, 2]);
+});
+for (const boundary of ["selections", "bytes"] as const) test(`pending ${boundary} overflow splits jobs without changing earlier requests`, async t => {
+  const { broker, transport } = fixture(t);
+  const selections = (prefix: string) => Array.from({ length: boundary === "selections" ? 200 : 20 }, (_, i) => ({ entry: prefix + i + (boundary === "bytes" ? "é".repeat(900) : "") }));
+  transport.handle = async (_l, _c, s) => transport.wait(s);
+  broker.subscribe(source, [], selections("a"), consumer("a").value);
+  broker.subscribe(source, [], selections("b"), consumer("b").value);
+  broker.subscribe(source, [], [selections("b")[0]], consumer("c").value);
+  await until(() => transport.opens.length === 2);
+  assert.deepEqual(transport.opens.map(o => new Set(o.selections.map(s => s.entry))), [new Set(selections("a").map(s => s.entry)), new Set(selections("b").map(s => s.entry))]);
+  assert.equal(broker.resources.jobs, 2); assert.equal(broker.resources.consumers, 3);
+});
+test("join and refresh refuse a full byte budget before detaching or resetting any subscription", async t => {
+  const { broker, transport } = fixture(t, { encodedBudgetBytes: 8192 }), a = consumer("a"), b = consumer("b");
+  const sa = broker.subscribe(source, [], [{ entry: "x" }], a.value);
+  broker.subscribe(source, [], [{ entry: "x" }], b.value); await until(() => transport.polls.length === 2);
+  const states = [...a.states, ...b.states], resources = broker.resources;
+  assert.throws(() => sa.refresh(), /budget/i);
+  assert.throws(() => broker.subscribe(source, [], [{ entry: "x" }], consumer("c").value), /budget/i);
+  await pause(5); assert.deepEqual(broker.resources, resources); assert.deepEqual([...a.states, ...b.states], states);
+  assert.deepEqual(transport.closes, []); assert.equal(transport.aborted, 0); assert.equal(transport.opens.length, 1);
+});
+test("32 identical opened jobs use the full 64 MiB reservation with 1 MiB pages", async t => {
+  const { broker, transport } = fixture(t); Object.defineProperty(transport, "pageBytes", { value: 1 << 20 });
+  transport.handle = async (_l, _c, s) => transport.wait(s);
+  const subscriptions: FollowSubscription[] = [];
+  for (let n = 0; n < 32; n++) {
+    subscriptions.push(broker.subscribe(source, [], [{ entry: "x" }], consumer(String(n)).value));
+    await until(() => transport.opens.length === n + 1);
+  }
+  assert.deepEqual(broker.resources, { jobs: 32, consumers: 32, reservedBytes: 64 << 20 });
+  assert.throws(() => broker.subscribe(source, [], [{ entry: "x" }], consumer("full").value), /job.*limit/i);
+  assert.throws(() => subscriptions[0].refresh(), /job.*limit/i);
+  assert.equal(transport.closes.length, 0); subscriptions[0].dispose(); await until(() => broker.resources.jobs === 31);
+  broker.subscribe(source, [], [{ entry: "x" }], consumer("replacement").value); await until(() => transport.opens.length === 33);
+  assert.deepEqual(broker.resources, { jobs: 32, consumers: 32, reservedBytes: 64 << 20 });
+});
+test("refresh replaces a consumer at the 256-consumer cap without disrupting the other 255", async t => {
+  const { broker, transport } = fixture(t), a = consumer("a"), b = consumer("b");
+  transport.handle = async (_l, _c, s) => transport.wait(s);
+  const sa = broker.subscribe(source, [], [{ entry: "x" }], a.value);
+  for (let n = 1; n < 256; n++) broker.subscribe(source, [], [{ entry: "x" }], b.value);
+  await until(() => transport.opens.length === 1);
+  assert.throws(() => broker.subscribe(source, [], [{ entry: "x" }], consumer("full").value), /consumer limit/);
+  sa.refresh(); await until(() => transport.opens.length === 2);
+  assert.equal(broker.resources.consumers, 256); assert.equal(broker.resources.jobs, 2);
+  assert.equal(transport.closes.length, 0); assert.equal(b.states.filter(s => s.kind === "reset").length, 255);
+  assert.deepEqual(a.states.filter(s => s.kind === "reset").map(s => s.reset), [1, 2]);
+});
+test("retiring jobs hold their byte reservation until DELETE settles", async t => {
+  const { broker, transport } = fixture(t, { encodedBudgetBytes: 16384 }), hold = deferred();
+  transport.handle = async (_l, _c, s) => transport.wait(s);
+  transport.close = async l => { transport.closes.push(l.id); if (l.id === "lease1") await hold.promise; };
+  const sa = broker.subscribe(source, [], [{ entry: "x" }], consumer("a").value);
+  try {
+    await until(() => transport.opens.length === 1); sa.refresh();
+    await until(() => transport.opens.length === 2 && transport.closes.length === 1);
+    assert.deepEqual(broker.resources, { jobs: 2, consumers: 1, reservedBytes: 16384 });
+    assert.throws(() => broker.subscribe(source, [], [{ entry: "x" }], consumer("b").value), /budget/i);
+    hold.resolve(); await until(() => broker.resources.jobs === 1);
+    assert.equal(broker.resources.reservedBytes, 8192);
+    broker.subscribe(source, [], [{ entry: "x" }], consumer("b").value); await until(() => transport.opens.length === 3);
+    assert.equal(broker.resources.jobs, 2);
+  } finally { hold.resolve(); }
+});
+test("removing a peer retains the immutable query superset even through server expiry", async t => {
+  const { broker, transport } = fixture(t), a = consumer("a"), hold = deferred();
+  transport.handle = async (l, c, s) => {
+    if (c === "c0") return selectedFrame(transport, l, c);
+    if (l.id === "lease1") { await hold.promise; throw new FollowError("CLOSED", "Server stopped", 410); }
+    return transport.wait(s);
+  };
+  broker.subscribe(source, [], [{ entry: "x" }], a.value);
+  const sb = broker.subscribe(source, [], [{ entry: "y" }], consumer("b").value);
+  try {
+    await until(() => a.pages.length === 1); sb.dispose(); hold.resolve();
+    await until(() => a.pages.length === 2);
+    assert.deepEqual(transport.opens.map(o => o.selections), [[{ entry: "x" }, { entry: "y" }], [{ entry: "x" }, { entry: "y" }]]);
+    assert.deepEqual(a.pages.map(p => p.reset), [1, 2]); assert.ok(Object.isFrozen(transport.opens[0].selections));
+  } finally { hold.resolve(); }
+});
+test("refresh before the pending open coalesces and cannot resurrect after disposal", async t => {
+  const { broker, transport } = fixture(t), a = consumer("a"), b = consumer("b");
+  const sa = broker.subscribe(source, [], [{ entry: "x" }], a.value);
+  broker.subscribe(source, [], [{ entry: "x" }], b.value); sa.refresh();
+  await until(() => a.pages.length === 1 && b.pages.length === 1);
+  assert.equal(transport.opens.length, 1); assert.deepEqual(a.pages.map(p => p.reset), [1]);
+  await broker.dispose(); sa.refresh(); sa.dispose();
+  assert.deepEqual(broker.resources, { jobs: 0, consumers: 0, reservedBytes: 0 });
+});
+
+test("sealing an earlier split job preserves the newer pending job for callback subscriptions", async t => {
+  const { broker, transport } = fixture(t), a = consumer("a"); let joined = false;
+  const selections = (prefix: string) => Array.from({ length: 200 }, (_, i) => ({ entry: prefix + i }));
+  a.value.state = state => { if (state.kind === "reset" && !joined) {
+    joined = true; broker.subscribe(source, [], [{ entry: "b0" }], consumer("c").value);
+  } };
+  transport.handle = async (_l, _c, s) => transport.wait(s);
+  broker.subscribe(source, [], selections("a"), a.value);
+  broker.subscribe(source, [], selections("b"), consumer("b").value);
+  await until(() => transport.polls.length >= 2);
+  assert.equal(transport.opens.length, 2); assert.equal(broker.resources.consumers, 3);
+  assert.deepEqual(transport.opens.map(o => new Set(o.selections.map(s => s.entry))), [new Set(selections("a").map(s => s.entry)), new Set(selections("b").map(s => s.entry))]);
 });

@@ -4,8 +4,9 @@ Status: Stage 1 committed as `632b492`; accepted Stage 2a committed as `c6436d6`
 authorization. Accepted Stage 2b and its fixes are committed as `2fb2376`, and the Stage 3
 first gate and review refinements as `719f163`. The accepted Stage 3 server integration checkpoint
 is committed as `182cb00`. Its four pre-broker contract refinements and the small-page deferral
-follow-up are committed as `6a0524f`. The next checkpoint is the shared extension follow broker,
-before live panel integration, with scope and evidence recorded below. Close cancellation
+follow-up are committed as `6a0524f`; the shared broker and array fix as `9be98dc`, and the
+accepted bounded-refusal/client-cap follow-up as `b57eaf6`. The current checkpoint implements
+immutable opened jobs and uninterrupted peers, before live panel integration, with evidence below. Close cancellation
 remains unverified on the manual dialog, Linux/Windows native runs are outstanding, and Save As
 uses the specified refusal fallback. No publication or version change is part of this work.
 
@@ -339,7 +340,7 @@ Recorder/index
     → independent view controllers
 ```
 
-The server broker publishes cheap source/catalog/frontier changes without decoding or network work on the acquisition loop. The extension maintains one broker per source/server/window, unions signal requirements, and deduplicates identical reads. It shares acquisition and data, not interactive state.
+The server broker publishes cheap source/catalog/frontier changes without decoding or network work on the acquisition loop. The extension maintains one broker per server/window. Pending opens union signal requirements for the same anchored source and bootstrap windows; opened jobs are immutable and later joins bootstrap independently. It shares acquisition and data, not interactive state.
 
 Proposed `/read/v1/follows` operations are create, bounded `next`, and close. Long polling has a maximum wait of 25 seconds on a bounded dedicated executor. Telemetry remains separate from the MCP control notifications; the currently ping-only SSE stream needs the explicit control-channel implementation described below.
 
@@ -426,7 +427,7 @@ Display behavior:
 - Source health distinguishes acquisition, transport heartbeat, publication age, and history availability.
 - Late records invalidate affected visible reductions; update bounded data frames without rebuilding layouts or rereading the complete recording.
 
-Hidden views stop rendering and their data work. Release decoded buffers after 30 seconds hidden; reveal reboots the requested interval. Apply one configurable aggregate decoded-data budget per VS Code window to recorded and live sources, counting any decoded broker caches and per-webview copies. The `wpilog-mcp.visualization.decodedBufferMiB` setting defaults to **64 MiB** and accepts integers from 16 to 1024 MiB. Raising it permits longer exact recorded series at greater memory cost; lowering it requests reductions sooner. Capabilities report the default and range, plus each attached window's effective `decoded_buffer_budget_bytes`; never report a caller-supplied value as the server's own allocation. Stage 3 implements and validates this setting with the broker. Request server reduction or bounded paging before admission would exceed that budget; do not load millions of recorded samples per series. Publish the budget and table/page limits through capabilities. Bound encoded acquisition separately to 64 MiB in the new visualization broker. The current core reserves two page limits per active job and retains no history cache. Any later encoded history cache must share that budget with in-flight responses and retained frontiers; a cache is not an additional 64 MiB allowance. Review 5 leaves the sharing behavior for the live workflow gate as an explicit product decision, described below.
+Hidden views stop rendering and their data work. Release decoded buffers after 30 seconds hidden; reveal reboots the requested interval. Apply one configurable aggregate decoded-data budget per VS Code window to recorded and live sources, counting any decoded broker caches and per-webview copies. The `wpilog-mcp.visualization.decodedBufferMiB` setting defaults to **64 MiB** and accepts integers from 16 to 1024 MiB. Raising it permits longer exact recorded series at greater memory cost; lowering it requests reductions sooner. Capabilities report the default and range, plus each attached window's effective `decoded_buffer_budget_bytes`; never report a caller-supplied value as the server's own allocation. Stage 3 implements and validates this setting with the broker. Request server reduction or bounded paging before admission would exceed that budget; do not load millions of recorded samples per series. Publish the budget and table/page limits through capabilities. Bound encoded acquisition separately to 64 MiB in the new visualization broker. The current core reserves two page limits per active job and retains no history cache. Any later encoded history cache must share that budget with in-flight responses and retained frontiers; a cache is not an additional 64 MiB allowance. The owner chose uninterrupted peers after review 5; the immutable-job checkpoint below implements that acquisition contract before live panel wiring.
 
 Add an `AbortSignal`/owned HTTP request handle to data and follow requests. Closing/hiding a view or replacing its query destroys that request only when its last consumer detaches, and closes its follow lease. Server cancellation closes admitted cursors, removes follow waiters, and releases snapshots on disconnect, lease closure, or deadline. Disconnection is detected at response writes and cursor batch boundaries, so cancellation is bounded and cooperative, not instantaneous. The recorded DataClient already supports cancellation; the native follow adapter now supplies the same owned lifecycle. Last-view closure never stops acquisition. Every response also carries view generation, configuration revision, and query identity as a final stale-response guard. See [data request lifecycle](../vscode-extension/src/dataClient.ts#L134) and [read cursor cleanup](../src/main/java/org/triplehelix/wpilogmcp/mcp/ReadEndpoint.java#L240).
 
@@ -1137,8 +1138,9 @@ Stage 3 checkpoint; this follow-up changes no extension behavior.
 
 ### Stage 3 shared broker checkpoint (2026-10-15)
 
-The extension acquisition checkpoint is committed in `9be98dc`, including the array fix and
-review-5 disposition, before live panel wiring. `LiveBroker`
+The original extension acquisition checkpoint is committed in `9be98dc`, including the array fix and
+review-5 disposition, before live panel wiring. The following describes that historical checkpoint;
+the immutable-job follow-up below replaces its shared-reset behavior. Its broker
 is window/server scoped and unions entry/field demands for identical anchored sources and bootstrap
 windows. Different historical windows retain separate follows. A joining consumer triggers an
 explicit shared reset because the core stores no history cache. Existing view configurations and
@@ -1183,21 +1185,21 @@ recorded in [IDEAS.md](IDEAS.md); the array regression and real-server broker wo
 ### Stage 3 review 5: sharing behavior decision (2026-10-15)
 
 Finding 1 is fixed as recorded above. Finding 2 distinguishes the current acquisition-core
-checkpoint from the behavior required for live panels. Today, joining an active job or
-refreshing a subscription resets every consumer of the same anchored source and windows. Reveal
-would have that effect too when it re-subscribes. The core retains no bootstrap history; its
+checkpoint from the behavior required for live panels. At that checkpoint, joining an active job or
+refreshing a subscription reset every consumer of the same anchored source and windows. Reveal
+would have had that effect too when it re-subscribed. The core retains no bootstrap history; its
 64 MiB encoded limit is a reservation, not a cache. The earlier resource paragraph now agrees.
 
 The owner chose **uninterrupted peers** and **1 MiB panel pages**, with 4 MiB retained as the
-protocol maximum. Before panels, make opened jobs immutable: same-turn mounts may coalesce with
-a pending open, but a later join, refresh or reveal after hidden expiry gets its own job and
+protocol maximum. The approved contract, now implemented in the follow-up below, makes opened
+jobs immutable: same-turn mounts may coalesce with a pending open, but a later join, refresh or reveal after hidden expiry gets its own job and
 lease. The existing peers' samples, history interval, generation and cursor remain unchanged.
 Admission failures affect only the requesting view. This needs no history cache or bootstrap
 handoff; measure the extra leases at the resource/performance gate before considering a cache.
 The gate must cover existing and new selections, wider windows, refresh, reveal, cancellation,
 finalization and server replacement while joining. With two page limits reserved per job,
 1 MiB pages allow the 32-job cap within 64 MiB; the server's 16 long-poll workers are a separate
-quiet-stream limit. The core still implements shared resets until that follow-up is built.
+quiet-stream limit. The immutable-job follow-up replaces shared resets without a history cache.
 
 The review's six notes require no immediate changes. Linux/Windows CI execution, native live-panel
 behavior, real proxy credentials, the real-webview deadline and performance measurements remain
@@ -1208,4 +1210,36 @@ prefix within ten seconds (or an earlier route deadline), across the JSON body r
 aligns the client with the server's 64 KiB cap and sizes the actual encoded union before changing
 subscriptions. Raw-socket failing-first tests lost all 280 replies on the old readers; evidence,
 plants and the final build results are in
-`/private/tmp/wpilog-visualization-stage3-refusals/validation.md`. Panel wiring has not started.
+`/private/tmp/wpilog-visualization-stage3-refusals/validation.md`. Review 7 accepted that tree,
+now committed as `b57eaf6`. Panel wiring has not started.
+
+
+### Stage 3 immutable opened jobs (2026-10-15)
+
+Only pending opens coalesce. The job freezes its sorted entry/field union before publishing
+startup states or awaiting credentials/create. A later join, refresh or re-subscription after
+hiding gets an independent lease, with no reset or cursor change for existing peers. A valid
+subscription that exceeds a pending union's selection/request cap opens separately if capacity
+allows. Query supersets survive consumer departure and same-recording server replacement.
+
+Refresh admits its new binding before retiring the old one, so local byte/job refusal leaves the
+requesting view running as well as its peers. It needs spare job/byte capacity, even for a
+single-consumer job. A later remote refusal stops only the requesting view. It replaces a
+consumer within the 256-consumer cap. Reset numbers are
+per subscription and remain monotonic across successive refreshes and server replacement.
+Pending and retiring jobs are identified independently, so cleanup of an old matching job
+cannot remove its successor. Retiring jobs retain reservations until bounded DELETE completes.
+Ended/error jobs release bytes but retain a job slot until their subscriptions close.
+
+The 32-job cap includes matching source/windows. At the approved 1 MiB panel page size,
+two-page reservations for 32 jobs fit exactly in the 64 MiB encoded budget. The adapter's 4 MiB
+default and protocol maximum remain available and independently tested; the fixture explicitly
+requests 1 MiB for the uninterrupted-peer workflow. Server poll-pool pressure remains separate
+and retryable. No shared history cache, display budget or panel wiring is introduced here.
+
+Failing-first, plants and final verification are recorded in
+`/private/tmp/wpilog-visualization-stage3-immutable-jobs/validation.md`. The real-server workflow
+checks exact int64 values, timestamps and ordinals through joins, isolated refresh, subscription
+release/reveal, wider windows, metadata, replacement while joining and finalization while joining.
+Native editor hide/reveal, remote credentials, aggregate recorded/live/webview buffers, the
+clock/display workflow and the full Stage 3 resource/performance gate remain outstanding.

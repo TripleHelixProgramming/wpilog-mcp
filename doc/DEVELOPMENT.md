@@ -452,7 +452,7 @@ Run `./gradlew followBrokerTest` after installing the extension dependencies. It
 extension and test classes, then runs `liveBrokerReal.test.ts` against a child JVM containing the
 real `CaptureWriter`, index and `HttpTransport`. `-PnodeExecutable=/path/to/node` uses the same
 lookup as `compileExtension`. The task supplies the JDK and test classpath; ordinary `npm test`
-explicitly skips this one integration case when that classpath is absent. CI runs the task on both
+explicitly skips the two integration cases when that classpath is absent. CI runs the task on both
 Linux and Windows when extension/broker dependencies change. No editor, robot or user store is used.
 
 The driver checks exact tagged values, signed zero, physical ordinals and duplicate/backward
@@ -461,11 +461,18 @@ publication, an oversized raw-record gap, server restart and a final hash/drain.
 4,096 records of 19-element double arrays at the default 4 MiB page size, independently checking
 all 77,824 floating-point bit patterns. That full server page exceeds the unreleased broker's old
 262,144-node ceiling. The protocol regression admits the same-sized synthetic page and checks
-the byte-derived traversal bound, negotiated-budget propagation and the separate depth limit. Pure Node broker
-checks cover union/refcounts, consumer deadlines, generation rejection, terminal/expiry states,
-byte admission and exact retry cursors. HTTP tests cover cancellation (including credential lookup),
+the byte-derived traversal bound, negotiated-budget propagation and the separate depth limit.
+A second real-server case uses the approved 1 MiB panel page size. It checks that later joins,
+refresh, subscription release/reveal and wider windows preserve peers' leases, resets and exact
+ordinal deltas; joining during server replacement and after finalization still drains the same
+recording and retires each lease exactly once. This tests acquisition, not editor visibility.
+Pure Node checks cover same-turn union/refcounts, sealing before callbacks/awaits, overflow
+splitting, immutable query supersets through expiry, refresh admission before detachment,
+monotonic reset numbers, cancelled borrowed pages and retirement reservations. They exercise
+32 matching jobs at 1 MiB within 64 MiB, and refresh at the 256-consumer cap, alongside deadlines,
+generation rejection, terminal/expiry states and exact retry cursors. HTTP tests cover cancellation (including credential lookup),
 response limits, proxy authentication/refusals and origin confinement. Client-cap regressions
-check the 64 KiB UTF-8 boundary, repeated windows and synchronous union admission without changing
+check the 64 KiB UTF-8 boundary, repeated windows and synchronous admission without changing
 an existing peer. This checkpoint does not
 exercise a live editor or establish the combined decoded display budget or performance gate.
 
