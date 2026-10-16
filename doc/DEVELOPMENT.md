@@ -521,6 +521,15 @@ check the 64 KiB UTF-8 boundary, repeated windows and synchronous admission with
 an existing peer. This checkpoint does not
 exercise a live editor or establish the combined decoded display budget or performance gate.
 
+Recording compatibility checks use generated two-member sources and a real capture writer.
+They cover complete-entry resolution beyond a 20,000-name overview, per-member absence and
+conflicts, exact-name/role/unit rules, native schema/projection evidence, late declarations,
+aliases, writer proof and finalization. HTTP and MCP must return equal compatibility facts.
+Native evidence is checked against the existing resolver for every role and against explicit
+values for backward/equal timestamps; limits, malformed evidence, cancellation, concurrent
+admission, grant revocation and changed finalized boundaries must refuse and release ownership.
+These tests do not claim live panel integration or a sustained-performance gate.
+
 ### Visualization recorded preview
 
 Run `./gradlew shadowJar extensionSmokeFixture`, then `npm run test:recorded-visualization`

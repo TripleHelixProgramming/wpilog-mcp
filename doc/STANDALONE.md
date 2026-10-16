@@ -699,8 +699,9 @@ opens. Missing/non-finite estimates are null; `right_edge_sec` then uses the ind
 `waiting_for_time_sync`, or `unavailable` for an empty finalized recording.
 `waiting_for_time_sync` is true only while unfinalized without a usable estimate. This call
 does not retain a previously valid display edge or mix receipt/wall time into sample timestamps.
-Capabilities say `live_source_inspection: true` but still `live: false`: creating/binding live
-views and reading them through single-file data routes remain unavailable until panel wiring.
+Capabilities say `live_source_inspection: true` and `recording_bindings: true`, but still
+`live: false`: creating live views and reading them through single-file data routes remain
+unavailable until panel wiring. The separate compatibility operation is described below.
 The overview labels this inspection-only state and points to the existing Explorer for live
 following. Refresh signals replaces its frozen inventory; a visible overview also refreshes at
 absolute expiry. A failed reopen keeps known-expired rows disabled until a valid replacement
@@ -781,7 +782,41 @@ or 413 `RESOURCE_LIMIT`. Resource refusals include boolean `retryable`; temporar
 also includes `retry_after_ms: 1000`. Existing native source refusals retain their codes. HTTP
 and MCP return the same page facts; MCP adds true-total `limits` and `no_match` with a hint when
 nothing matches. Old handles cannot survive a server restart. This service does not enable
-live template binding or panel rendering; those gates remain pending.
+live view creation or panel rendering; those gates remain pending.
+
+`POST /templates/check` and `visualization_template_check` also accept an anchored `session`
+source reference. They admit a fresh recording prefix and resolve every requirement using each
+member's complete entry set, independently of overview pages. A returned binding resolves only
+when its present members agree on the exact name, type, metadata and transitive struct schemas.
+Missing members stay `absent`; missing everywhere, heuristic candidates, ambiguous roles, unit
+mismatches and conflicting declarations remain unresolved with per-member reasons. No unit
+conversion or preferred-member selection occurs. Dynamic fields/array indices need a recorded
+numeric witness; a valid declaration with no such sample stays unresolved. Schema fallbacks
+retain their reported basis in warnings.
+
+Recording compatibility returns `source_ref`, `recording_id`, `catalog_revision`, `finalized`,
+`binding_basis: fresh_recording_prefix`, `bindings`, `compatibility`,
+`evidence_records_visited` and `evidence_payload_bytes`. Each binding carries member evidence
+with writer identity/final hash and exact string sample counts, plus `problems` and warnings.
+This is evidence for that admitted prefix, not an authorization token or a continuing lease.
+A later bind/follow must admit again. Checks release every native prefix/cursor, perform no
+store write and recheck grants and finalized-file boundaries before returning.
+
+Capabilities expose `recording_binding_limits`: two concurrent checks without a waiting queue,
+200,000 member-entry occurrences, at most 128 candidates for one role/member, 65,536 visited
+records and 8 MiB of evaluated payload per check, a 64 KiB individual evidence-record cap, and
+a 1 MiB compatibility-result allowance (`max_result_bytes`) in ordinary and MCP-escaped
+encoding, with conservative serialization headroom. This result allowance excludes the outer
+JSON-RPC request ID/envelope, which retain the general transport limits. Evidence scans
+stream one record at a time and stop at the first witness where possible; work does not grow
+with an entire selected history in memory. Crossing the cumulative payload limit can read one
+additional capped record before refusing. A cooperative ten-second work budget checks between
+operations; it is **not** an interruptible filesystem deadline, so cold hashes or OS reads can
+outlast it while retaining their slot. The source owner's index/hash bounds still apply.
+Temporary concurrency pressure returns retryable `RESOURCE_LIMIT`; fixed limits do not retry
+in a loop. Select exact entries or fewer requirements when the stated limit permits that remedy.
+Unreadable evidence keeps the native reader error instead of becoming a negative match.
+These bounds are functional admission limits, not measured heap or throughput claims.
 
 Store templates use `visualizations/templates/<uuid>.json`. Each atomic metadata record includes
 the definition and retry/import receipts, under the existing store queue/lock. A file is bounded

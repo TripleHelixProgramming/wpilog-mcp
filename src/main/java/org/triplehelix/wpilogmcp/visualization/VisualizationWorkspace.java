@@ -22,13 +22,14 @@ public final class VisualizationWorkspace implements AutoCloseable {
   public final ControlNotifications notifications = new ControlNotifications();
   public final RecordedSources sources;
   public final RecordingInventories inventories;
+  private final RecordingBindings recordingBindings;
   private final ServerIdentity identity;
   private final LogManager logs;
   private final StoreDoor door;
   public VisualizationWorkspace(ServerIdentity identity, LogManager logs) throws IOException {
     this.identity = identity; this.logs = logs; door = new StoreDoor(logs::getAllowedDirectories);
     views = new VisualizationService(identity); views.onChanged(notifications::changed); sources = new RecordedSources(logs, views, door);
-    inventories = new RecordingInventories(sources);
+    inventories = new RecordingInventories(sources); recordingBindings = new RecordingBindings(sources);
   }
   public void close() { inventories.close(); views.close(); try { sources.close(); } catch (IOException e) { throw new java.io.UncheckedIOException(e); } }
   public JsonObject capabilities() {
@@ -42,6 +43,7 @@ public final class VisualizationWorkspace implements AutoCloseable {
     result.addProperty("max_plot_points", 4096); result.addProperty("max_visible_series", 32);
     result.addProperty("max_raw_page_records", 4096); result.addProperty("max_raw_page_bytes", 1048576);
     result.addProperty("max_template_receipts", 64); result.addProperty("max_template_metadata_bytes", 1048576);
+    result.addProperty("recording_bindings", true); result.add("recording_binding_limits", RecordingBindings.limits());
     result.addProperty("live", false); result.addProperty("live_source_inspection", true);
     result.addProperty("max_recording_inventory_bytes", RecordingInventory.MAX_BYTES);
     result.addProperty("recording_inventory_paging", true); result.add("recording_inventory_limits", inventories.capabilities());
@@ -135,7 +137,8 @@ public final class VisualizationWorkspace implements AutoCloseable {
   }
   public JsonObject check(JsonObject request) throws Exception {
     var config = request.has("template_ref") ? template(request).getAsJsonObject("template").getAsJsonObject("configuration") : configuration(request);
-    var source = request.getAsJsonObject("source_ref");
+    var source = VisualizationContracts.source(request.getAsJsonObject("source_ref"));
+    if (source.get("kind").getAsString().equals("session")) return recordingBindings.check(source, config);
     try (var use = logs.acquireReadOnly(sources.resolve(source).toString())) {
       var out = VisualizationBindings.check(use.log(), config); sources.resolve(source); return out;
     }

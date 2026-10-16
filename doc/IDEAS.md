@@ -678,7 +678,7 @@ cleanup. Live layout controls remain disabled. Native gates use a 20,000-name ac
 plus rollover and the real five-minute expiry; evidence is in
 `/private/tmp/wpilog-visualization-stage3-overview/validation.md`.
 
-Remaining before completing Stage 3: recording binding/template ownership, live panel integration,
+Remaining before completing Stage 3: recording-view creation and binding/follow admission, live panel integration,
 the configurable aggregate recorded/live decoded display budget and its capabilities, the
 32-lease declaration-burst workload, season-sized catalog scan/hash measurements, and native
 Linux/Windows editor runs. The current inventory accounting is a conservative bounded estimate,
@@ -691,5 +691,20 @@ Review 14's overview correction round adds single-owner initialization across na
 persistent known expiry through failed reopening, and an exclusive unavailable-declarations mode
 that preserves ordinary filters. Evidence is under
 `/private/tmp/wpilog-visualization-stage3-overview-fixes/validation.md`; the correction round is
-uncommitted for review. The Stage 3 panel, combined-budget, performance and other-platform work
+committed with the overview as `f567d62`. The Stage 3 panel, combined-budget, performance and other-platform work
 listed above remains deferred to its gates.
+
+
+#### Recording compatibility (2026-10-16)
+
+The shared HTTP/MCP compatibility operation now accepts recording references and checks complete
+member inventories with bounded native evidence. It reports per-member absence, selector/unit
+reasons and declaration/schema conflicts without creating a view or follow. The checkpoint is
+uncommitted for review; evidence is under
+`/private/tmp/wpilog-visualization-stage3-bindings/validation.md`.
+Remaining binding work is recording-view creation and revalidation when a follow is admitted;
+then live panels, shared display budgets and the Stage 3 workload/performance gates above.
+Cold hash/OS-read duration can outlast the cooperative compatibility work budget, and large
+value-dependent searches can refuse; measure these costs on season-sized stores before making
+latency claims or changing limits. Native Linux/Windows and the earlier manual Close/Save As
+limitations remain unverified. No new editor, capture or transfer behavior is claimed here.

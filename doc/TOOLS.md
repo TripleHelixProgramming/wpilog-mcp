@@ -3095,12 +3095,12 @@ Read an exact pinned template_ref; a changed revision refuses rather than silent
 
 ### `visualization_template_check`
 
-Check exact entries or explicit shared-resolver roles against a source. Returns compatibility and per-requirement bindings, reasons, candidates, unit basis and warnings; missing exact names never fall back.
+Check exact entries or explicit shared-resolver roles against a recorded file or anchored recording. Recording checks inspect every admitted member, report absent members and refuse conflicting names, declarations or schemas. Returns compatibility and per-requirement bindings, reasons, candidates, unit basis and warnings; missing exact names never fall back. Recording evidence is bounded and can refuse with RESOURCE_LIMIT; this does not create a live view.
 
 **Parameters:**
 
 - `api_version` (required, integer): `1`.
-- `source_ref` (required, object): Durable recorded source identity from source inspection.
+- `source_ref` (required, object): Recorded, unmanaged or anchored recording identity from source inspection.
 - `template_ref` (optional, object): Origin, template UUID and pinned revision; store origins also name a store ID.
 - `configuration_json` (optional, string): Strict configuration JSON text; mutually exclusive with a template or working-view input.
 

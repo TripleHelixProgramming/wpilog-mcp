@@ -422,16 +422,14 @@ public final class SignalResolver {
   }
 
   private static boolean hasFiniteSample(LogData log, String name) {
-    var values = log.values().get(name);
-    return values != null && values.stream()
-        .anyMatch(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()));
+    return log.anyValue(name, value -> value instanceof Number n && Double.isFinite(n.doubleValue()));
   }
 
   // ==================== DriverStation ====================
 
   /** DriverStation roles: AdvantageKit /DriverStation/..., WPILib DS:..., or FMSControlData. */
   private static Resolution driverStation(LogData log, Role role) {
-    var sources = MatchTimeline.of(log).sources();
+    var sources = MatchTimeline.sourcesOf(log);
     var entry = switch (role) {
       case ROBOT_ENABLED -> sources.enabled();
       case AUTONOMOUS -> sources.autonomous();
@@ -824,9 +822,7 @@ public final class SignalResolver {
   private static boolean isSendableChooser(LogData log, String prefix) {
     var type = log.entries().get(prefix + "/.type");
     if (type != null && "string".equals(type.type())) {
-      var values = log.values().get(type.name());
-      if (values != null && values.stream()
-          .anyMatch(tv -> "String Chooser".equals(tv.value()))) {
+      if (log.anyValue(type.name(), "String Chooser"::equals)) {
         return true;
       }
     }

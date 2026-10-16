@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Recording template compatibility now uses every freshly admitted member through the shared resolver, with explicit absence, conflicts, schema/unit evidence and bounded native witness scans. Previously the unreleased visualization checker rejected recording references as single-file sources. HTTP and MCP share the result and resource refusals; live view creation and panels remain gated.
+
 - Source Overview now pages recording signals with literal search, exact-type filters, true totals and fresh selected-member details. Previously this unreleased preview downloaded one full inventory and refused large recordings. Refresh preserves exact-name selection, visible expiry refreshes automatically, hidden/closed views release their handles and rows, and older servers get an update hint. Review of the unreleased overview corrected overlapping initialization orphaning an inventory owner and failed reopen attempts making known-expired rows actionable again. Unavailable declarations use an explicitly exclusive mode that retains ordinary filters for switching back. Requests, retained rows and acknowledged renderer delivery have bounded memory admission; live layout controls remain gated.
 
 

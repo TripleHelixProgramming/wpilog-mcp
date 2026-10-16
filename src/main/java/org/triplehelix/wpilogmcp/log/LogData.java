@@ -45,6 +45,22 @@ public interface LogData {
    */
   Map<String, List<TimestampedValue>> values();
 
+  /** Existential evidence for selection, without requiring a materialized history. Native
+   * fixed-prefix adapters stream until the first witness and can refuse bounded work. */
+  default boolean anyValue(String entry, java.util.function.Predicate<Object> predicate) {
+    var samples = values().get(entry);
+    return samples != null && samples.stream().anyMatch(sample -> predicate.test(sample.value()));
+  }
+
+  /** Last matching value in stable timestamp order. Selection must not replace this with
+   * file order: backward timestamps are legal, and equal timestamps retain record order. */
+  default Optional<TimestampedValue> lastValue(String entry, java.util.function.Predicate<Object> predicate) {
+    var samples = values().get(entry);
+    if (samples != null) for (int i = samples.size() - 1; i >= 0; i--)
+      if (predicate.test(samples.get(i).value())) return Optional.of(samples.get(i));
+    return Optional.empty();
+  }
+
   /** The earliest timestamp in the log (seconds). */
   double minTimestamp();
 

@@ -107,7 +107,7 @@ and exact-name selection retained. No heartbeat keeps a hidden inventory alive. 
 without paged discovery show an update hint instead of downloading the full recording inventory.
 Blank layout and template opening stay disabled there; use the existing Explorer for continuous
 display. Recorded-file views keep the workflow above. This checkpoint does not yet wire the
-shared follow broker into visualization panels.
+shared follow broker into visualization panels. The shared server API can now check recording template compatibility across all members; those checks do not enable these editor controls.
 
 Draft gestures are persisted on the local server, with a local recovery journal; drafts do not
 trigger native Save prompts. **Save view…** chooses a labeled writable store, or **Create store…**

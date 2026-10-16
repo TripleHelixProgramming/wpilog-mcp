@@ -1821,5 +1821,34 @@ distinguishes its historical full-inspection behavior from current paged integra
 
 Evidence, failing-first tests, plants and native results are recorded in
 `/private/tmp/wpilog-visualization-stage3-overview-fixes/validation.md`. This correction round
-remains uncommitted for review. Live bindings/panels, combined configurable sample budgets,
+and the overview checkpoint were committed as `f567d62`. Live bindings/panels, combined configurable sample budgets,
 declaration-burst and season-sized performance gates, and native Linux/Windows remain pending.
+
+
+### Stage 3 recording compatibility checkpoint (2026-10-16)
+
+The paged overview and review-14 corrections are committed as `f567d62`, matching all 35 saved
+implementation hashes. The next checkpoint extends the shared compatibility operation to
+anchored recording references, before editor binding or panel wiring. It checks every member's
+complete entry set through the existing resolver. Exact names never fall back, roles retain
+candidates/ambiguity and unit basis, and per-member absence is explicit. A combined binding
+requires agreement on the resolved name, declared type, metadata and transitive schema text;
+conflicts never select a preferred member. Native schema fallbacks retain their warning basis.
+Dynamic field/index compatibility needs a numeric witness, while an exact scalar declaration
+can be compatible before its first sample.
+
+A check uses fresh source admission and the shared hash memory, returns prefix/member proof,
+then closes it. It is not a persistent binding or permission grant; a later follow must recheck
+its selected evidence. Value-dependent resolver rules stream bounded native evidence instead
+of loading whole histories; the shared Driver Station selector does not build a timeline.
+The server publishes `recording_bindings: true` and its limits while `live` stays false.
+Two checks may run concurrently, with no waiting queue; inventory, evidence, candidate and reply
+limits are explicit in the standalone guide. The ten-second work budget is cooperative,
+not a promise to interrupt an OS read. The complete workload and resource gate is still pending.
+
+Evidence is recorded in `/private/tmp/wpilog-visualization-stage3-bindings/validation.md`.
+This server-only checkpoint remains uncommitted for review. Native editor behavior does not
+change: live layout/template controls remain disabled. Next are recording-view creation and
+binding/follow admission, the broker-to-panel controller with immutable 1 MiB queried pages,
+common displayed frontiers and clock states, combined configurable sample budgets, the
+32-lease declaration burst, season-sized scans/hashes and sustained-performance measurements.

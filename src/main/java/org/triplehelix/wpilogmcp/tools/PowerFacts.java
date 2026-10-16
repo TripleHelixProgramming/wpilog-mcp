@@ -71,14 +71,9 @@ final class PowerFacts {
         .sorted(Comparator.comparingInt(EntryInfo::id))
         .toList();
     for (var e : logged) {
-      var values = log.values().get(e.name());
-      if (values == null) continue;
-      for (int i = values.size() - 1; i >= 0; i--) {
-        if (values.get(i).value() instanceof Number n && Double.isFinite(n.doubleValue())
-            && n.doubleValue() > 0) {
-          return new Threshold(n.doubleValue(), "logged", e.name());
-        }
-      }
+      var last = log.lastValue(e.name(), value -> value instanceof Number n
+          && Double.isFinite(n.doubleValue()) && n.doubleValue() > 0);
+      if (last.isPresent()) return new Threshold(((Number) last.get().value()).doubleValue(), "logged", e.name());
     }
     return new Threshold(DEFAULT_THRESHOLD, "default: roboRIO 1 (6.8 V); a roboRIO 2 defaults "
         + "to 6.3 V, and this log does not record which is installed", null);

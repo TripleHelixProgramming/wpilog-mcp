@@ -330,6 +330,27 @@ class VisualizationEndpointTest {
     assertEquals(view.get("view_id"), unavailable.get("view_id")); assertTrue(unavailable.get("reason").getAsString().contains("changed"));
   }
 
+  @Test void recordingCompatibilityUsesTheSameCompleteEvidenceOverHttpAndMcp() throws Exception {
+    org.triplehelix.wpilogmcp.tools.WpilogTools.registerAll(registry);
+    var fixture = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("recording"), 20_000);
+    var config = VisualizationContracts.blank(); var requirement = JsonParser.parseString("""
+        {"id":"s","selector_kind":"entry","entry":"/signal/19999","accepted_entry_types":["int64"],
+         "value_type":"number","field_path":null,"unit":null}
+        """).getAsJsonObject(); config.getAsJsonArray("requirements").add(requirement);
+    var request = object("source_ref", fixture.reference); request.add("configuration", config);
+    var direct = call("/templates/check", request); assertEquals("compatible", direct.get("compatibility").getAsString());
+    request.remove("configuration"); request.addProperty("configuration_json", config.toString()); request.addProperty("api_version", 1);
+    var mcp = tool("visualization_template_check", request); assertEquals("ok", mcp.get("status").getAsString()); assertEquals(direct, mcp.get("compatibility"));
+    assertFalse(call("/capabilities", null).get("live").getAsBoolean());
+    assertTrue(call("/capabilities", null).get("recording_bindings").getAsBoolean());
+    assertEquals(409, raw("/views", object("source_ref", fixture.reference).toString(), session, null).statusCode(), "Live creation remains gated");
+    LogManager.getInstance().clearAllowedDirectories(); LogManager.getInstance().addAllowedDirectory(Files.createDirectory(temp.resolve("withdrawn")));
+    assertNotEquals(200, raw("/templates/check", request.toString(), session, null).statusCode());
+    assertEquals("error", tool("visualization_template_check", request).get("status").getAsString());
+    LogManager.getInstance().addAllowedDirectory(temp);
+    assertTrue(LogManager.getInstance().release(fixture.root).released());
+  }
+
   JsonObject tool(String name, JsonObject arguments) throws Exception {
     var request = obj("jsonrpc", "2.0"); request.addProperty("id", 77); request.addProperty("method", "tools/call");
     var params = obj("name", name); params.add("arguments", arguments); request.add("params", params);

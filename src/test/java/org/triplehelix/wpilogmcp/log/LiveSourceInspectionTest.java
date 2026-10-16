@@ -82,6 +82,42 @@ class LiveSourceInspectionTest {
     request.add("row_ids", ids); return workspace.inventories.details(inventoryClient, request);
   }
 
+  JsonObject binding(String name) throws Exception {
+    var config = VisualizationContracts.blank();
+    var requirement = JsonParser.parseString("""
+        {"id":"s","selector_kind":"entry","entry":"%s","accepted_entry_types":["int64"],
+         "value_type":"number","field_path":null,"unit":null}
+        """.formatted(name)).getAsJsonObject();
+    config.getAsJsonArray("requirements").add(requirement);
+    var request = new JsonObject(); request.add("source_ref", ref()); request.add("configuration", config);
+    return workspace.check(request);
+  }
+  @Test void bindingReadsFreshLivePrefixesAndKeepsFinalWriterProof() throws Exception {
+    append(10_000_000, 1); var before = binding("NT:/x");
+    assertEquals("compatible", before.get("compatibility").getAsString()); assertFalse(before.get("finalized").getAsBoolean());
+    var proof = before.getAsJsonArray("bindings").get(0).getAsJsonObject().getAsJsonArray("members").get(0).getAsJsonObject();
+    assertEquals("1", proof.get("sample_count").getAsString()); assertEquals(writer.session().writerIdentity(), proof.get("writer_identity").getAsString());
+    assertEquals("incompatible", binding("NT:/late").get("compatibility").getAsString());
+    var late = new Announce("/late", 2, "int", null, new JsonObject()); writer.announce(late);
+    writer.value(late, new ValueFrame(2, 9_000_000, 2, 5L), 0); append(8_000_000, 3);
+    assertEquals("compatible", binding("NT:/late").get("compatibility").getAsString());
+    assertEquals("1", proof.get("sample_count").getAsString(), "An admitted result stays immutable");
+    var grown = binding("NT:/x"); assertEquals("2", grown.getAsJsonArray("bindings").get(0).getAsJsonObject().getAsJsonArray("members").get(0).getAsJsonObject().get("sample_count").getAsString());
+    finalizeRecording(false); var after = binding("NT:/x"); assertTrue(after.get("finalized").getAsBoolean());
+    var finalProof = after.getAsJsonArray("bindings").get(0).getAsJsonObject().getAsJsonArray("members").get(0).getAsJsonObject();
+    assertEquals(proof.get("writer_identity"), finalProof.get("writer_identity")); assertEquals(LogStore.contentHash(file), finalProof.get("content_sha256").getAsString());
+    assertEquals(before.get("recording_id"), after.get("recording_id"));
+  }
+  @Test void bindingSurvivesRecordedAliasButRejectsAnotherWriter() throws Exception {
+    append(10_000_000, 1); var before = binding("NT:/x");
+    var moved = file.resolveSibling("renamed.wpilog"); Files.move(file, moved); logs.relocateCapture(index.live(), file, moved); file = moved;
+    session.addProperty("id", "33333333-3333-4333-8333-333333333333"); session.add("merged_session_ids", StoreJson.JSON.toJsonTree(List.of(SESSION)));
+    session.getAsJsonObject("open_capture").addProperty("path", "renamed.wpilog"); writeManifest();
+    assertEquals(before, binding("NT:/x"));
+    session.getAsJsonObject("open_capture").getAsJsonObject("provenance").addProperty("writer_identity", "other-writer"); writeManifest();
+    assertThrows(org.triplehelix.wpilogmcp.read.ReadException.class, () -> binding("NT:/x"));
+  }
+
   @Test void pagedTraversalStaysFrozenWhileFreshDetailsSeeAppendsAndRefreshSeesDeclarations() throws Exception {
     append(10_000_000, 7); var fixed = paged(); var before = inventoryPage(fixed);
     var late = new Announce("/late", 2, "double", null, new JsonObject()); writer.announce(late); append(9_000_000, 8); now.set(14_000_000.0);

@@ -197,11 +197,11 @@ public final class VisualizationTools {
   static final class TemplateCheck extends Operation {
     TemplateCheck(ToolRegistry registry) { super(registry); }
     @Override public String name() { return "visualization_template_check"; }
-    @Override public String description() { return "Check exact entries or explicit shared-resolver roles against a source. Returns compatibility and per-requirement bindings, reasons, candidates, unit basis and warnings; missing exact names never fall back. Result envelope: api_version, status, compatibility. All operations require trusted local transport authority."; }
+    @Override public String description() { return "Check exact entries or explicit shared-resolver roles against a recorded file or anchored recording. Recording checks inspect every admitted member, report absent members and refuse conflicting names, declarations or schemas. Returns compatibility and per-requirement bindings, reasons, candidates, unit basis and warnings; missing exact names never fall back. Recording evidence is bounded and can refuse with RESOURCE_LIMIT; this does not create a live view. Result envelope: api_version, status, compatibility. All operations require trusted local transport authority."; }
     @Override String resultKey() { return "compatibility"; }
     @Override public JsonObject inputSchema() {
       return schema()
-          .addProperty("source_ref", "object", "Durable recorded or unmanaged source identity; never contains a local path", true)
+          .addProperty("source_ref", "object", "Durable recorded, unmanaged or anchored recording source identity; never contains a local path", true)
           .addProperty("template_ref", "object", "Pinned origin, template_id and revision; store origin also needs store_id", false)
           .addProperty("configuration_json", "string", "Strict JSON text for the versioned configuration; duplicate keys are rejected", false)
           .build();

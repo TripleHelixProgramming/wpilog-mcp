@@ -16,6 +16,11 @@ public final class VisualizationBindings {
   private VisualizationBindings() {}
   public static JsonArray roles() { var out = new JsonArray(); for (var r : SignalResolver.Role.values()) out.add(r.name().toLowerCase(Locale.ROOT)); return out; }
   public static JsonObject check(LogData log, JsonObject configuration) {
+    return check(log, configuration, false);
+  }
+  /** Native recording evidence uses the same selector/type/unit rules, with bounded witness
+   * scans for dynamic fields instead of constructing every projected sample. */
+  public static JsonObject check(LogData log, JsonObject configuration, boolean boundedEvidence) {
     var config = VisualizationContracts.configuration(configuration); var bindings = new JsonArray(); int resolved = 0;
     for (var requirement : config.getAsJsonArray("requirements")) {
       var r = requirement.getAsJsonObject(); var binding = new JsonObject(); binding.add("requirement_id", r.get("id")); binding.add("selector", r.get(r.get("selector_kind").getAsString()));
@@ -26,8 +31,10 @@ public final class VisualizationBindings {
         if (r.get("selector_kind").getAsString().equals("entry")) {
           entry = r.get("entry").getAsString(); binding.addProperty("basis", "exact entry selected by caller"); binding.add("candidates", new JsonArray());
         } else {
-          role = SignalResolver.Role.valueOf(r.get("role").getAsString().toUpperCase(Locale.ROOT));
+          role = SignalResolver.Role.fromWire(r.get("role").getAsString());
           var resolution = SignalResolver.resolve(log, role); binding.addProperty("role", r.get("role").getAsString());
+          if (boundedEvidence && resolution.candidates().size() > 128)
+            throw new org.triplehelix.wpilogmcp.visualization.BindingLimit("Role has more than 128 candidates; select an exact entry");
           binding.addProperty("basis", resolution.basis()); var candidates = new JsonArray(); resolution.candidates().forEach(candidates::add); binding.add("candidates", candidates);
           if (resolution.entries().size() != 1 || resolution.needsConfirmation() || resolution.ambiguous()) throw new IllegalArgumentException("Role has no unique published binding: " + resolution.basis());
           entry = resolution.entries().get(0);
@@ -36,6 +43,11 @@ public final class VisualizationBindings {
         var info = log.entries().get(entry); if (info == null) throw new IllegalArgumentException("Exact entry is missing: " + entry);
         binding.addProperty("entry", entry); binding.addProperty("declared_type", info.type());
         if (!r.getAsJsonArray("accepted_entry_types").contains(new JsonPrimitive(info.type()))) throw new IllegalArgumentException("Declared type " + info.type() + " is not in accepted_entry_types");
+        if (boundedEvidence) {
+          String schema = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(info.type());
+          if (schema != null && log.structSchemas().info(schema).filter(s -> s.valid()).isEmpty())
+            throw new IllegalArgumentException("Selected struct has no valid schema: " + schema);
+        }
         String field = r.get("field_path").isJsonNull() ? null : r.get("field_path").getAsString();
         String valueType = r.get("value_type").getAsString();
         if (field == null) {
@@ -50,7 +62,8 @@ public final class VisualizationBindings {
         } else {
           var path = FieldPath.parse(field); if (path.hasWildcard()) throw new IllegalArgumentException("Choose a scalar field or array index for this preview");
           if (!valueType.equals("number")) throw new IllegalArgumentException("Structured preview fields currently require number values");
-          NumericSignal.resolve(log, entry, field); // Shared schema/value diagnostics, including dynamic missing indices.
+          if (boundedEvidence) NumericSignal.validateField(log, entry, field);
+          else NumericSignal.resolve(log, entry, field);
         }
         var unit = SignalResolver.visualizationUnit(log, entry, role); binding.add("unit", unit);
         var expected = r.get("unit");

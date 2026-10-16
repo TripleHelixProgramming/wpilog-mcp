@@ -151,6 +151,16 @@ public final class RecordedSources implements AutoCloseable {
   }
   public record Admission(org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Prefix prefix,
       CatalogRecordingSource.Access access) implements AutoCloseable {
+    /** A compatibility result cannot span replacement of a finalized member. Growing writer
+     * prefixes have no file boundary and remain the immutable prefix admitted at open. */
+    public void check() throws IOException {
+      access.check();
+      for (var member : prefix.members()) {
+        var snapshot = member.snapshot(); var boundary = snapshot.boundary();
+        if (boundary != null && !boundary.sameAs(FileSnapshot.of(snapshot.path())))
+          throw new ReadException(ReadProblem.Code.FILE_CHANGED, "Recording member changed during compatibility; reopen and check again");
+      }
+    }
     @Override public void close() throws IOException { prefix.close(); }
   }
   public Admission admitRecording(JsonObject source) throws IOException {

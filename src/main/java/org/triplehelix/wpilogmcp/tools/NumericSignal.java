@@ -307,17 +307,7 @@ final class NumericSignal {
     }
     var type = log.entries().get(entryName).type();
     var structName = StructSchemas.structName(type);
-    boolean scalar = ToolUtils.isNumericType(type) || "boolean".equals(type);
-
-    if (path.isRoot() && !scalar) throw notANumber(log, entryName, type, structName);
-    if (!path.isRoot() && scalar) {
-      throw new IllegalArgumentException("Entry " + entryName + " is " + type
-          + ", a single number: it has no field " + path + ". Pass the entry name alone.");
-    }
-    if (!path.isRoot() && structName == null && !NUMERIC_ARRAYS.contains(type)) {
-      throw new IllegalArgumentException("Entry " + entryName + " is " + type + "; field paths "
-          + "apply to struct entries and numeric arrays (double[], float[], int64[], boolean[]).");
-    }
+    validateProjectionType(log, entryName, type, structName, path);
 
     var raw = log.values().get(entryName);
     if (raw == null) raw = List.of();
@@ -346,6 +336,33 @@ final class NumericSignal {
     var angle = structName != null
         ? angleUnit(log.structSchemas(), structName, path) : AngleUnit.NONE;
     return new NumericSignal(entryName, path, type, angle, out, raw.size(), without);
+  }
+
+  private static void validateProjectionType(LogData log, String entry, String type, String structName, FieldPath path) {
+    boolean scalar = ToolUtils.isNumericType(type) || "boolean".equals(type);
+
+    if (path.isRoot() && !scalar) throw notANumber(log, entry, type, structName);
+    if (!path.isRoot() && scalar) {
+      throw new IllegalArgumentException("Entry " + entry + " is " + type
+          + ", a single number: it has no field " + path + ". Pass the entry name alone.");
+    }
+    if (!path.isRoot() && structName == null && !NUMERIC_ARRAYS.contains(type)) {
+      throw new IllegalArgumentException("Entry " + entry + " is " + type + "; field paths "
+          + "apply to struct entries and numeric arrays (double[], float[], int64[], boolean[]).");
+    }
+
+  }
+
+  /** Compatibility needs one numeric witness, not a materialized projected history. The same
+   * decoder, field-path grammar and numeric-leaf conversion supply that proof. Empty/dynamic
+   * fields remain unresolved until a sample actually supplies the selected scalar. */
+  static void validateField(LogData log, String entry, String field) {
+    String type = log.entries().get(entry).type();
+    var path = FieldPath.parse(field);
+    if (path.isRoot() || path.hasWildcard()) throw new IllegalArgumentException("Choose a scalar field or array index");
+    validateProjectionType(log, entry, type, StructSchemas.structName(type), path);
+    if (!log.anyValue(entry, value -> FieldPath.toNumber(path.resolveOne(value)) != null))
+      throw new IllegalArgumentException("No recorded numeric value at " + entry + path + "; check the schema/index or wait for a sample");
   }
 
   /** The longest entry name that {@code name} starts with, followed by '.' or '['; or null. */

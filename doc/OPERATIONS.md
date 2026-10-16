@@ -359,7 +359,13 @@ switches to bounded previews of names too large to list, with a reason; ordinary
 and those previews cannot be selected. Name/type inputs are disabled in this mode and their
 filters are not sent. Uncheck it and apply to return to the retained ordinary search and type.
 Choose **Inspect** beside a signal for fresh per-member counts, metadata, schemas and problems.
-Conflicting declarations stay explicit; the preview does not infer a compatible live binding.
+Conflicting declarations stay explicit; the overview does not infer a compatible live binding.
+For a server-side compatibility check, pass this source reference and a pinned `template_ref`
+or `configuration_json` to `visualization_template_check`. A recording result reports each
+member, absent declarations and conflict reasons, using the complete native entry set rather
+than the visible page. Only `resolved` bindings are compatible; a resource refusal is not
+evidence that a signal is missing. The check does not create a view or start a follow. See the
+[standalone reference](STANDALONE.md#http-transport) for bounds and remedies.
 
 **Refresh signals / Retry** admits a new snapshot before retiring the old one. Selection stays
 with the exact name in this source and is checked again. A visible overview refreshes itself

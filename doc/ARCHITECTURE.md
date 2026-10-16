@@ -927,9 +927,22 @@ from the later display-memory budget. Clock facts use the fixed view's shared NT
 or the indexed last sample if no finite estimate exists. No telemetry is decoded for
 counts or bounds, and no receipt/wall time enters the sample axis. A stateless inspection cannot
 hold a previous display edge; that policy still belongs to the upcoming live display controller.
-The Source Overview can inspect a recording, while live view creation, template binding and
-the single-file analysis routes remain unavailable. Capabilities distinguish inspection from
-the still-false `live` editor capability.
+The Source Overview can inspect a recording; live view creation and single-file analysis routes
+remain unavailable. A separate shared compatibility operation checks templates against fresh
+recording prefixes. Capabilities distinguish both inspection and recording bindings from the
+still-false `live` editor capability.
+
+Recording compatibility borrows every admitted member and delegates selectors, roles, units
+and numeric projection rules to the existing shared owners. Complete entry sets decide roles;
+the overview page cannot influence the answer. Value-dependent roles and dynamic fields use
+bounded native witness scans rather than materialized histories. Driver Station selection
+reads declarations without constructing a timeline. Absent members remain explicit, and differing
+resolved names, declarations or transitive schemas prevent a combined binding. Each member
+retains counts and writer/hash proof. The result rechecks grants and finalized boundaries,
+then closes its cursors/prefixes; it owns no continuing lease or cache. Two concurrent calls
+are admitted without a queue. The cooperative work budget is checked between operations, so a
+blocked filesystem read keeps its slot until it unwinds. The [standalone bounds](STANDALONE.md#http-transport)
+separate this work from later panel memory accounting and performance measurements.
 The HTTP and MCP adapters share one typed native-reader refusal mapping,
 including temporary inventory changes versus permanent recording-history changes. One workspace
 source owner shares successful content verification between recording inspection and recorded-file
