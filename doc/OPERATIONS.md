@@ -364,7 +364,8 @@ For a server-side compatibility check, pass this source reference and a pinned `
 or `configuration_json` to `visualization_template_check`. A recording result reports each
 member, absent declarations and conflict reasons, using the complete native entry set rather
 than the visible page. Only `resolved` bindings are compatible; a resource refusal is not
-evidence that a signal is missing. The check does not create a view or start a follow. See the
+evidence that a signal is missing. The check does not create a view or start a follow. Temporary pressure gives a one-second
+retry delay; retry the same intent after that delay. See the
 [standalone reference](STANDALONE.md#http-transport) for bounds and remedies.
 
 **Refresh signals / Retry** admits a new snapshot before retiring the old one. Selection stays
@@ -375,7 +376,13 @@ expired, with paging, filtering and Inspect disabled, until a replacement page i
 Retry becomes available after a bounded delay; it does not spin in the background. Hiding or
 closing cancels pending initialization and releases the handle and rows, and reveal opens fresh. A server without paged inventory
 support shows an update hint. Blank layout and live template opening remain disabled; use the
-existing Explorer for continuous display.
+existing Explorer for continuous display. An agent can prepare a recording layout with
+`visualization_view_create` using the anchored source and a configuration or pinned template,
+then use the existing view edit/save tools. This stores intent even when requirements are still
+unresolved. Saved reopen and clone recheck the source; previously stored metadata remains
+recoverable if it is unavailable. Recording layouts appear in the overview with Resume/Open
+disabled and an explanation until live panels are available. Creation does not start acquisition
+or a follow, and the stored identity is retained after finalization.
 
 The overview calls the same owner as `visualization_source_inspect` with `inventory_mode: "paged"`
 and the [list/get/close operations](TOOLS.md#visualization_source_entries_list). Tool inspection's

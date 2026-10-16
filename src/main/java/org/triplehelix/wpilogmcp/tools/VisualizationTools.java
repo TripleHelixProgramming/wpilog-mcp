@@ -73,8 +73,10 @@ public final class VisualizationTools {
         }
         if (cause instanceof org.triplehelix.wpilogmcp.read.ReadException read) {
           var refusal = VisualizationReadFailure.of(read);
-          return ResponseBuilder.error(refusal.message()).addProperty("api_version", 1).addProperty("code", refusal.code())
-              .addProperty("retryable", refusal.retryable()).build();
+          var response = ResponseBuilder.error(refusal.message()).addProperty("api_version", 1).addProperty("code", refusal.code())
+              .addProperty("retryable", refusal.retryable());
+          if (refusal.retryAfterMs() > 0) response.addProperty("retry_after_ms", refusal.retryAfterMs());
+          return response.build();
         }
         String message = Objects.toString(cause.getMessage(), cause.getClass().getSimpleName());
         String code = message.matches("^[A-Z_]+:.*") ? message.substring(0, message.indexOf(':')) : cause instanceof java.nio.file.AccessDeniedException || cause instanceof org.triplehelix.wpilogmcp.log.LogFileException ? "ACCESS_DENIED" : "INVALID_REQUEST";
@@ -293,7 +295,7 @@ public final class VisualizationTools {
     @Override String resultKey() { return "workspace"; }
     @Override public JsonObject inputSchema() {
       return schema()
-          .addProperty("source_ref", "object", "Durable recorded or unmanaged source identity; never contains a local path", false)
+          .addProperty("source_ref", "object", "Durable recorded, unmanaged or anchored recording identity; never contains a local path", false)
           .build();
     }
     @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
@@ -319,12 +321,12 @@ public final class VisualizationTools {
   static final class ViewCreate extends Operation {
     ViewCreate(ToolRegistry registry) { super(registry); }
     @Override public String name() { return "visualization_view_create"; }
-    @Override public String description() { return "Create an independent working view from source_ref and configuration_json or template_ref, or an empty layout. Returns its stable view_id and revision, configuration and persistence state. Creation does not request display or start acquisition. Result envelope: api_version, status, view. All operations require trusted local transport authority."; }
+    @Override public String description() { return "Create an independent working view from source_ref and configuration_json or template_ref, or an empty layout. Returns its stable view_id and revision, configuration and persistence state. Recording references admit metadata only; unresolved requirements stay editable. Creation does not request display or start acquisition. Result envelope: api_version, status, view. All operations require trusted local transport authority."; }
     @Override String resultKey() { return "view"; }
     @Override public JsonObject inputSchema() {
       return schema()
           .addProperty("request_id", "string", "Unique UUID; reuse only for an identical retry", true)
-          .addProperty("source_ref", "object", "Durable recorded or unmanaged source identity; never contains a local path", true)
+          .addProperty("source_ref", "object", "Durable recorded, unmanaged or anchored recording identity; never contains a local path", true)
           .addProperty("configuration_json", "string", "Strict JSON text for the versioned configuration; duplicate keys are rejected", false)
           .addProperty("template_ref", "object", "Pinned origin, template_id and revision; store origin also needs store_id", false)
           .build();
@@ -355,7 +357,7 @@ public final class VisualizationTools {
   static final class ViewClone extends Operation {
     ViewClone(ToolRegistry registry) { super(registry); }
     @Override public String name() { return "visualization_view_clone"; }
-    @Override public String description() { return "Create another working UUID from the pinned expected_revision. Returns an independent view with the same source and configuration; selection and later edits are not shared. Result envelope: api_version, status, view. All operations require trusted local transport authority."; }
+    @Override public String description() { return "Create another working UUID from the pinned expected_revision. Returns an independent view with the same source and configuration; selection and later edits are not shared. Recording sources are admitted again before cloning. Result envelope: api_version, status, view. All operations require trusted local transport authority."; }
     @Override String resultKey() { return "view"; }
     @Override public JsonObject inputSchema() {
       return schema()

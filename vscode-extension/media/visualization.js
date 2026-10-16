@@ -295,7 +295,13 @@
         get(id).replaceChildren(...views.map(v => {
           const row = el("div", undefined, "view-row"); row.append(el("span", v.title ?? `Unsaved view ${v.view_id.slice(0, 8)}`));
           if (id === "drafts") row.append(el("p", v.attached_client_id ? "Open in a window" : `Expires ${v.detached_expires_at}`));
-          row.append(button(id === "saved" ? "Open new view" : "Resume", () => send(id === "saved" ? "openSaved" : "resume", { saved_view_id: v.saved_view_id, store_id: v.store_id, view_id: v.view_id }))); return row;
+          const recording = source?.source_ref.kind === "session";
+          const open = button(id === "saved" ? "Open new view" : "Resume", () => {
+            if (!recording) send(id === "saved" ? "openSaved" : "resume", { saved_view_id: v.saved_view_id, store_id: v.store_id, view_id: v.view_id });
+          });
+          open.disabled = recording; row.append(open);
+          if (recording) row.append(el("p", "Recording view saved; use the existing Explorer for display until live panels are available."));
+          return row;
         }));
         if (!views.length) get(id).append(el("p", id === "saved" ? "No saved views yet" : "No unsaved views"));
       }

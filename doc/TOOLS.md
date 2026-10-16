@@ -3172,7 +3172,7 @@ List unexpired working views, optionally for source_ref. Returns views with revi
 **Parameters:**
 
 - `api_version` (required, integer): `1`.
-- `source_ref` (optional, object): Durable recorded source identity from source inspection.
+- `source_ref` (optional, object): Durable recorded, unmanaged or anchored recording identity from source inspection.
 
 **Returns:** `api_version`, `status`, `workspace` on success; `code` and `error` on refusal.
 
@@ -3189,13 +3189,13 @@ Read one working view: revision, configuration, source_ref, checkpoint, saved/te
 
 ### `visualization_view_create`
 
-Create an independent working view from source_ref and configuration_json or template_ref, or an empty layout. Returns its stable view_id and revision, configuration and persistence state. Creation does not request display or start acquisition.
+Create an independent working view from source_ref and configuration_json or template_ref, or an empty layout. Returns its stable view_id and revision, configuration and persistence state. Recording references admit metadata only; unresolved requirements stay editable. Creation does not request display or start acquisition.
 
 **Parameters:**
 
 - `api_version` (required, integer): `1`.
 - `request_id` (required, string): UUID identifying this exact intent.
-- `source_ref` (required, object): Durable recorded source identity from source inspection.
+- `source_ref` (required, object): Durable recorded, unmanaged or anchored recording identity from source inspection.
 - `configuration_json` (optional, string): Strict configuration JSON text; mutually exclusive with a template or working-view input.
 - `template_ref` (optional, object): Origin, template UUID and pinned revision; store origins also name a store ID.
 
@@ -3217,7 +3217,7 @@ CAS edit a working view with strict configuration_json at expected_revision. Ret
 
 ### `visualization_view_clone`
 
-Create another working UUID from the pinned expected_revision. Returns an independent view with the same source and configuration; selection and later edits are not shared.
+Create another working UUID from the pinned expected_revision. Returns an independent view with the same source and configuration; selection and later edits are not shared. Recording sources are admitted again before cloning.
 
 **Parameters:**
 

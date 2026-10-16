@@ -124,7 +124,7 @@ test("overview shows unreadable shared records beside its readable saved views",
 test("a recording overview is explicitly inspection-only until live panels are wired", () => {
   const r = renderer(true);
   r.send({ type: "summary", summary: { source_ref: { kind: "session" }, label: "Synthetic recording", size_bytes: 12 } });
-  assert.equal(r.get("blank").disabled, true, "do not offer a view the server cannot create yet");
+  assert.equal(r.get("blank").disabled, true, "do not offer a view the editor cannot render yet");
   assert.equal(r.get("template-open").disabled, true);
   r.send({ type: "inventory", inventory: { source_kind: "session", entries: [], members: [{ member_id: "one" }], entry_conflicts: [{ name: "/x" }], duration_sec: 2, clock: { basis: "last_sample", waiting_for_time_sync: true }, clock_basis: "Robot time" } });
   assert.match(r.get("status").text(), /Recording inspected/);
@@ -267,4 +267,24 @@ test("unavailable mode is exclusive and restores ordinary filters after switchin
   assert.equal(r.get("inventory-search").disabled, false); assert.equal(r.get("inventory-type").disabled, false);
   (r.get("inventory-find") as any).onclick();
   assert.equal(r.messages.at(-1).query, "literal.*"); assert.equal(r.messages.at(-1).exact_type, "double"); assert.equal(r.messages.at(-1).unavailable, false);
+});
+
+
+test("recording view metadata stays visible with opening disabled until panel wiring", () => {
+  const r = renderer(true);
+  const lists = { working_views: [{ view_id: "draft-1234", saved_view_ref: null, detached_expires_at: "tomorrow" }],
+    saved_views: [{ title: "Saved recording", saved_view_id: "saved", store_id: "store" }], unreadable: [] };
+  r.send({ type: "summary", summary: { source_ref: { kind: "session" }, label: "Capture" } });
+  r.send({ type: "lists", lists });
+  for (const id of ["saved", "drafts"]) {
+    const row = r.get(id).children[0], action = row.children.find(e => e.textContent === (id === "saved" ? "Open new view" : "Resume"))!;
+    assert.ok(action, "saved and unsaved metadata remain listed"); assert.equal(action.disabled, true, "recording panels are not enabled by API metadata creation");
+    assert.match(row.text(), /existing Explorer/);
+    const before = r.messages.length; (action as any).onclick(); assert.equal(r.messages.length, before);
+  }
+  r.send({ type: "summary", summary: { source_ref: { kind: "recorded" }, label: "File" } }); r.send({ type: "lists", lists });
+  for (const id of ["saved", "drafts"]) {
+    const row = r.get(id).children[0], action = row.children.find(e => e.textContent === (id === "saved" ? "Open new view" : "Resume"))!;
+    assert.equal(action.disabled, false); const before = r.messages.length; (action as any).onclick(); assert.equal(r.messages.length, before + 1);
+  }
 });

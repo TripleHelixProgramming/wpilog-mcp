@@ -343,12 +343,45 @@ class VisualizationEndpointTest {
     var mcp = tool("visualization_template_check", request); assertEquals("ok", mcp.get("status").getAsString()); assertEquals(direct, mcp.get("compatibility"));
     assertFalse(call("/capabilities", null).get("live").getAsBoolean());
     assertTrue(call("/capabilities", null).get("recording_bindings").getAsBoolean());
-    assertEquals(409, raw("/views", object("source_ref", fixture.reference).toString(), session, null).statusCode(), "Live creation remains gated");
+    var create = object("source_ref", fixture.reference); create.addProperty("request_id", UUID.randomUUID().toString()); create.add("configuration", config);
+    var view = call("/views", create); assertEquals(fixture.reference, view.get("source_ref"));
+    create.addProperty("api_version", 1); create.addProperty("configuration_json", create.remove("configuration").toString());
+    var toolView = tool("visualization_view_create", create); assertEquals(view, toolView.get("view"), "Both adapters share the creation receipt");
+    assertTrue(call("/capabilities", null).get("recording_views").getAsBoolean());
+    assertEquals(409, raw("/source/value", object("source_ref", fixture.reference).toString(), session, null).statusCode(), "Single-file reads must not choose one recording member");
     LogManager.getInstance().clearAllowedDirectories(); LogManager.getInstance().addAllowedDirectory(Files.createDirectory(temp.resolve("withdrawn")));
     assertNotEquals(200, raw("/templates/check", request.toString(), session, null).statusCode());
     assertEquals("error", tool("visualization_template_check", request).get("status").getAsString());
     LogManager.getInstance().addAllowedDirectory(temp);
     assertTrue(LogManager.getInstance().release(fixture.root).released());
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void recordingCompatibilityPressureSuppliesRetryDelay(boolean mcp) throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var fixture = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("retry-store"), 2);
+    var request = object("source_ref", fixture.reference); request.add("configuration", VisualizationContracts.blank());
+    // Hold exactly the two admission permits, without timing-dependent cold disk reads.
+    var ownerField = VisualizationWorkspace.class.getDeclaredField("recordingBindings"); ownerField.setAccessible(true);
+    var owner = ownerField.get(registry.visualizations());
+    var slotsField = owner.getClass().getDeclaredField("slots"); slotsField.setAccessible(true);
+    var slots = (java.util.concurrent.Semaphore) slotsField.get(owner); slots.acquire(2);
+    try {
+      JsonObject failure;
+      if (mcp) {
+        var args = request.deepCopy(); args.addProperty("api_version", 1);
+        args.addProperty("configuration_json", args.remove("configuration").toString());
+        failure = tool("visualization_template_check", args); assertEquals("error", failure.get("status").getAsString());
+      } else {
+        var response = raw("/templates/check", request.toString(), session, null); assertEquals(413, response.statusCode());
+        failure = JsonParser.parseString(response.body()).getAsJsonObject();
+      }
+      assertEquals("RESOURCE_LIMIT", failure.get("code").getAsString()); assertTrue(failure.get("retryable").getAsBoolean());
+      assertTrue(failure.has("retry_after_ms"), "Temporary compatibility pressure must provide the inventory retry delay");
+      assertEquals(new JsonPrimitive(1000), failure.get("retry_after_ms"));
+    } finally { slots.release(2); }
+    assertEquals("compatible", call("/templates/check", request).get("compatibility").getAsString());
   }
 
   JsonObject tool(String name, JsonObject arguments) throws Exception {

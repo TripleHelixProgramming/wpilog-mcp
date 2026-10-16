@@ -1847,8 +1847,43 @@ limits are explicit in the standalone guide. The ten-second work budget is coope
 not a promise to interrupt an OS read. The complete workload and resource gate is still pending.
 
 Evidence is recorded in `/private/tmp/wpilog-visualization-stage3-bindings/validation.md`.
-This server-only checkpoint remains uncommitted for review. Native editor behavior does not
-change: live layout/template controls remain disabled. Next are recording-view creation and
-binding/follow admission, the broker-to-panel controller with immutable 1 MiB queried pages,
+This server-only checkpoint is committed as `4178768`, accepted by reviews 15 and 16. Live
+layout/template editor controls remain disabled. Recording-view metadata is implemented below.
+Remaining work includes binding/follow admission, the broker-to-panel controller with immutable 1 MiB queried pages,
 common displayed frontiers and clock states, combined configurable sample budgets, the
 32-lease declaration burst, season-sized scans/hashes and sustained-performance measurements.
+
+
+### Stage 3 recording-view admission checkpoint (2026-10-16)
+
+Reviews 15 and 16 accept recording compatibility and its committed foundation; all 27
+compatibility blobs match the accepted evidence. The owner authorized committing that tree,
+normalizing retry advice and continuing. Temporary native-read refusals in the visualization
+HTTP and MCP adapters now carry the same one-second retry delay as inventory pressure;
+permanent refusals do not recommend an automatic retry.
+
+The next integration boundary is durable recording-backed view metadata. Create and saved-open
+admit the anchored source through the existing bounded compatibility owner with an empty
+requirement set; clone does the same for recording sources. This checks identity, writer/hash,
+grants and finalized boundaries without requiring signals to be resolvable or acquiring a
+follow. It is bounded by the same two admission slots and source/evidence limits. The source
+prefix is released before the working-state queue writes metadata. Admission describes that
+instant; it is not a permission token for future data reads. A grant may change after admission,
+so every later compatibility/follow operation must admit again. Reads of existing metadata and
+editing/saving it remain possible when its source is unavailable.
+
+Create keeps the existing idempotent request receipts, pinned template snapshot and configuration
+schema. The blank schema already carries recorded full-range and live following-30-seconds
+policies; explicit ranges are retained. Missing requirements can be saved as unresolved intent.
+Saved reopen creates a new working id. Restart, rollover/alias resolution and finalization keep
+the anchored source and configuration, without selecting another recording. Capabilities expose
+`recording_views: true` while `live` stays false. The editor's live controls and single-file data
+routes remain gated; no native follow is opened by create, clone, save or reopen.
+
+This checkpoint remains uncommitted for review. Evidence is in
+`/private/tmp/wpilog-visualization-stage3-view-admission/validation.md`. Next are revision-bound
+binding/follow admission and the panel controller using immutable 1 MiB queried jobs. Combined
+decoded budgets, clock/frontier display, remote routing, declaration bursts, season-sized and
+sustained-performance workloads remain the existing Stage 3 gates. Review 15's repeated-result
+encoding cost and bounded last-value scan, and review 16's older documentation/class-name debt,
+remain explicit follow-up notes; no performance or native-platform claim is added here.

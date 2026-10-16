@@ -113,6 +113,7 @@ final class VisualizationEndpoint implements AutoCloseable {
       if (cause instanceof org.triplehelix.wpilogmcp.read.ReadException read) {
         var refusal = VisualizationReadFailure.of(read); var result = new JsonObject();
         result.addProperty("code", refusal.code()); result.addProperty("error", refusal.message()); result.addProperty("retryable", refusal.retryable());
+        if (refusal.retryAfterMs() > 0) result.addProperty("retry_after_ms", refusal.retryAfterMs());
         send(exchange, refusal.status(), result); return;
       }
       String message = Objects.toString(cause.getMessage(), cause.getClass().getSimpleName());

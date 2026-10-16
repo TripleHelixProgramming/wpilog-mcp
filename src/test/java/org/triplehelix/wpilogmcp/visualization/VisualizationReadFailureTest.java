@@ -24,6 +24,7 @@ class VisualizationReadFailureTest {
       var failure = VisualizationReadFailure.of(new ReadException(codes[i], "explained", retryable));
       assertEquals(statuses[i], failure.status()); assertEquals(codes[i].name(), failure.code());
       assertEquals("explained", failure.message()); assertEquals(retryable, failure.retryable());
+      assertEquals(retryable ? 1000 : 0, failure.retryAfterMs());
     }
   }
 }

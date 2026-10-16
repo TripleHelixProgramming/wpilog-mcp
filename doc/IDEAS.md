@@ -557,8 +557,8 @@ continued growth. Keep the strict cache and malformed-409 refusal contracts whil
 Recording-source inspection is now shared by HTTP/MCP and uses the follower's catalog admission,
 not a path chosen by the editor. Member inventories keep their schemas/counts and report type or
 metadata conflicts. Fixed-view clock facts distinguish the shared robot estimate, last sample,
-waiting and empty-finalized states. This checkpoint is inspection-only: live view creation,
-template/field binding over the admitted members, one displayed frontier across all panels,
+waiting and empty-finalized states. Compatibility and recording-view metadata now build on
+this inspection below. Revision-bound binding at follow admission, one displayed frontier across all panels,
 held/pause/inspect/follow controls, the aggregate decoded budget and configured remote routing
 still need the next integration work. Keep the agreed 1 MiB panel pages and uninterrupted peers.
 Then run the full Stage 3 resource and season-sized catalog performance gates; source inspection
@@ -678,7 +678,7 @@ cleanup. Live layout controls remain disabled. Native gates use a 20,000-name ac
 plus rollover and the real five-minute expiry; evidence is in
 `/private/tmp/wpilog-visualization-stage3-overview/validation.md`.
 
-Remaining before completing Stage 3: recording-view creation and binding/follow admission, live panel integration,
+Remaining before completing Stage 3: binding/follow admission, live panel integration,
 the configurable aggregate recorded/live decoded display budget and its capabilities, the
 32-lease declaration-burst workload, season-sized catalog scan/hash measurements, and native
 Linux/Windows editor runs. The current inventory accounting is a conservative bounded estimate,
@@ -700,11 +700,28 @@ listed above remains deferred to its gates.
 The shared HTTP/MCP compatibility operation now accepts recording references and checks complete
 member inventories with bounded native evidence. It reports per-member absence, selector/unit
 reasons and declaration/schema conflicts without creating a view or follow. The checkpoint is
-uncommitted for review; evidence is under
+committed as `4178768`, accepted by reviews 15 and 16; evidence is under
 `/private/tmp/wpilog-visualization-stage3-bindings/validation.md`.
-Remaining binding work is recording-view creation and revalidation when a follow is admitted;
+Recording-view metadata creation is implemented in the follow-up below. Remaining binding work
+is revalidation when a follow is admitted;
 then live panels, shared display budgets and the Stage 3 workload/performance gates above.
 Cold hash/OS-read duration can outlast the cooperative compatibility work budget, and large
 value-dependent searches can refuse; measure these costs on season-sized stores before making
 latency claims or changing limits. Native Linux/Windows and the earlier manual Close/Save As
 limitations remain unverified. No new editor, capture or transfer behavior is claimed here.
+
+
+#### Recording-view metadata and retry advice (2026-10-16)
+
+Create, saved-open and clone now accept anchored recordings through shared bounded admission,
+then release the prefix before persisting metadata. The API retains unresolved intent, pinned
+templates and existing request/revision semantics; it does not start a follow or enable live
+panels. Temporary visualization read/admission refusals include the inventory service's
+one-second retry advice. Recording layouts remain visible with disabled Resume/Open until
+panel wiring. Evidence: `/private/tmp/wpilog-visualization-stage3-view-admission/validation.md`.
+
+Review 15's repeated result-encoding cost near the 1 MiB cap remains to be measured/improved;
+the latest-value evidence scan intentionally refuses beyond its stated history budget. Review
+16's older class names in architecture prose and differing historical ledger formats are style
+follow-ups, not changes to accepted behavior. Revision-bound binding/follow admission, live
+panels, combined budgets, clocks, remote routing and all workload/platform gates remain open.

@@ -44,6 +44,7 @@ public final class VisualizationWorkspace implements AutoCloseable {
     result.addProperty("max_raw_page_records", 4096); result.addProperty("max_raw_page_bytes", 1048576);
     result.addProperty("max_template_receipts", 64); result.addProperty("max_template_metadata_bytes", 1048576);
     result.addProperty("recording_bindings", true); result.add("recording_binding_limits", RecordingBindings.limits());
+    result.addProperty("recording_views", true);
     result.addProperty("live", false); result.addProperty("live_source_inspection", true);
     result.addProperty("max_recording_inventory_bytes", RecordingInventory.MAX_BYTES);
     result.addProperty("recording_inventory_paging", true); result.add("recording_inventory_limits", inventories.capabilities());
@@ -66,7 +67,9 @@ public final class VisualizationWorkspace implements AutoCloseable {
     return views.revise(caller, uuid(request, "view_id"), TemplateDefinition.revision(request, "expected_revision", false), uuid(request, "request_id"), null, false, true).get();
   }
   public JsonObject cloneView(Authority caller, JsonObject request) throws Exception {
-    UUID id = uuid(request, "view_id"), operation = uuid(request, "request_id");
+    caller.requireLocal(); UUID id = uuid(request, "view_id"), operation = uuid(request, "request_id");
+    var source = views.get(id).getAsJsonObject("source_ref");
+    if (text(source, "kind").equals("session")) admitViewSource(source);
     var intent = request.deepCopy(); intent.addProperty("operation", "clone");
     var receipt = views.prepareMutation(caller, id, TemplateDefinition.revision(request, "expected_revision", false), operation, intent, null).get();
     if (receipt.has("result")) return receipt.getAsJsonObject("result");
@@ -95,13 +98,21 @@ public final class VisualizationWorkspace implements AutoCloseable {
     RecordingInventories.checkRequest(request); return inventories.open(client, source);
   }
   public JsonObject create(Authority authority, JsonObject body) throws Exception {
-    var source = body.getAsJsonObject("source_ref"); sources.resolve(source);
+    authority.requireLocal(); var source = VisualizationContracts.source(body.getAsJsonObject("source_ref"));
     if (body.has("template_ref") && (body.has("configuration") || body.has("configuration_json"))) throw new IllegalArgumentException("Choose a template_ref or configuration, not both");
     var definition = body.has("template_ref") ? template(body) : null;
     var configuration = definition != null ? definition.getAsJsonObject("template").getAsJsonObject("configuration")
         : body.has("configuration") || body.has("configuration_json") ? configuration(body) : VisualizationContracts.blank();
-    return views.create(authority, uuid(body, "request_id"), source, configuration,
+    UUID request = uuid(body, "request_id"); configuration = VisualizationContracts.configuration(configuration);
+    admitViewSource(source);
+    return views.create(authority, request, source, configuration,
         definition == null ? null : definition.getAsJsonObject("template_ref")).get();
+  }
+  /** Metadata admission shares recording identity/bounds, but retains no prefix while writing
+   * working state. Unresolved requirements remain editable intent, never a cached permission. */
+  private void admitViewSource(JsonObject source) throws IOException {
+    if (text(source, "kind").equals("session")) recordingBindings.check(source, VisualizationContracts.blank());
+    else sources.resolve(source);
   }
   public JsonObject templates(JsonObject request) throws IOException {
     String query = request.has("query") ? text(request, "query").toLowerCase(Locale.ROOT) : "";
@@ -294,8 +305,9 @@ public final class VisualizationWorkspace implements AutoCloseable {
     return views.checkpointAttached(authority, view, current.get("revision").getAsLong(), ref, client).get();
   }
   public JsonObject openSaved(Authority authority, JsonObject request) throws Exception {
+    authority.requireLocal();
     var store = door.select(text(request, "store_id")); var saved = saved(store, uuid(request, "saved_view_id"));
-    sources.resolve(saved.getAsJsonObject("source_ref"));
+    admitViewSource(saved.getAsJsonObject("source_ref"));
     var view = views.create(authority, uuid(request, "request_id"), saved.getAsJsonObject("source_ref"), saved.getAsJsonObject("configuration"), saved.get("template_ref").isJsonNull() ? null : saved.getAsJsonObject("template_ref")).get();
     if (!view.get("saved_view_ref").isJsonNull()) return view;
     return checkpoint(authority, null, UUID.fromString(view.get("view_id").getAsString()), view, store, saved);

@@ -528,7 +528,13 @@ aliases, writer proof and finalization. HTTP and MCP must return equal compatibi
 Native evidence is checked against the existing resolver for every role and against explicit
 values for backward/equal timestamps; limits, malformed evidence, cancellation, concurrent
 admission, grant revocation and changed finalized boundaries must refuse and release ownership.
-These tests do not claim live panel integration or a sustained-performance gate.
+Recording-view metadata tests cover independent drafts, pinned templates, unresolved intent,
+idempotent creation, save/reopen and restart, clone admission, source revocation, aliases and
+finalization without retaining mappings or interfering with acquisition. Create/clone/open
+share the compatibility slots. Real HTTP/MCP pressure tests require a numeric one-second retry
+delay; permanent refusals omit it. The shipped renderer is driven directly to keep recording
+Resume/Open disabled while recorded-file actions work. These checks do not claim live panel
+integration or a sustained-performance gate.
 
 ### Visualization recorded preview
 

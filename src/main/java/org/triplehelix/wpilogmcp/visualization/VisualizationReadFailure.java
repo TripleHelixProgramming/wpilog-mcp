@@ -10,6 +10,8 @@ import org.triplehelix.wpilogmcp.read.ReadProblem;
 /** HTTP and MCP retain native admission's distinction between moving inventory and changed
  * recording history. A transport must not turn either into a malformed-request diagnosis. */
 public record VisualizationReadFailure(int status, String code, String message, boolean retryable) {
+  /** The same one-second backoff used by inventory pressure; permanent refusals give no delay. */
+  public int retryAfterMs() { return retryable ? 1000 : 0; }
   public static VisualizationReadFailure of(ReadException failure) {
     int status = switch (failure.code()) {
       case ACCESS_DENIED -> 403;

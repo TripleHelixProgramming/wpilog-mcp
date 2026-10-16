@@ -927,10 +927,14 @@ from the later display-memory budget. Clock facts use the fixed view's shared NT
 or the indexed last sample if no finite estimate exists. No telemetry is decoded for
 counts or bounds, and no receipt/wall time enters the sample axis. A stateless inspection cannot
 hold a previous display edge; that policy still belongs to the upcoming live display controller.
-The Source Overview can inspect a recording; live view creation and single-file analysis routes
-remain unavailable. A separate shared compatibility operation checks templates against fresh
+The Source Overview can inspect a recording; editor opening and single-file analysis routes
+remain unavailable. The API can persist recording-backed working and saved view metadata. A separate shared compatibility operation checks templates against fresh
 recording prefixes. Capabilities distinguish both inspection and recording bindings from the
-still-false `live` editor capability.
+still-false `live` editor capability. Recording metadata create, clone and saved-open borrow the
+same bounded admission owner with no requirements, then release the prefix before queuing a
+working-state write. The configuration is intent, not a cached binding or grant; subsequent
+compatibility and follow work must recheck source access. Missing signals do not prevent saving
+a layout, and unavailable sources do not destroy previously persisted metadata.
 
 Recording compatibility borrows every admitted member and delegates selectors, roles, units
 and numeric projection rules to the existing shared owners. Complete entry sets decide roles;
@@ -944,7 +948,8 @@ are admitted without a queue. The cooperative work budget is checked between ope
 blocked filesystem read keeps its slot until it unwinds. The [standalone bounds](STANDALONE.md#http-transport)
 separate this work from later panel memory accounting and performance measurements.
 The HTTP and MCP adapters share one typed native-reader refusal mapping,
-including temporary inventory changes versus permanent recording-history changes. One workspace
+including temporary inventory changes versus permanent recording-history changes, and a shared
+one-second retry delay only for temporary refusals. One workspace
 source owner shares successful content verification between recording inspection and recorded-file
 admission. It remembers at most 256 canonical path/file-boundary/manifest-hash tuples, expiring
 after ten idle minutes; close clears them. No payload, mapping or permission is retained by

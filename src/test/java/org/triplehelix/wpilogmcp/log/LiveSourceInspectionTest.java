@@ -92,6 +92,24 @@ class LiveSourceInspectionTest {
     var request = new JsonObject(); request.add("source_ref", ref()); request.add("configuration", config);
     return workspace.check(request);
   }
+  @Test void recordingViewsSurviveAppendsAliasAndFinalizationWithoutOwningAcquisition() throws Exception {
+    append(10_000_000, 1);
+    var request = new JsonObject(); request.add("source_ref", ref()); request.addProperty("request_id", UUID.randomUUID().toString());
+    var first = workspace.create(Authority.STDIO_LOCAL, request); request.addProperty("request_id", UUID.randomUUID().toString());
+    var second = workspace.create(Authority.STDIO_LOCAL, request);
+    assertNotEquals(first.get("view_id"), second.get("view_id"));
+    assertNotNull(writer.session()); append(9_000_000, 2);
+    assertEquals("2", binding("NT:/x").getAsJsonArray("bindings").get(0).getAsJsonObject().getAsJsonArray("members").get(0).getAsJsonObject().get("sample_count").getAsString());
+    session.addProperty("id", "33333333-3333-4333-8333-333333333333"); session.add("merged_session_ids", StoreJson.JSON.toJsonTree(List.of(SESSION))); writeManifest();
+    request.addProperty("request_id", UUID.randomUUID().toString());
+    assertEquals(first.get("source_ref"), workspace.create(Authority.STDIO_LOCAL, request).get("source_ref"));
+    finalizeRecording(false); request.addProperty("request_id", UUID.randomUUID().toString());
+    var finalized = workspace.create(Authority.STDIO_LOCAL, request);
+    assertEquals(first.get("source_ref"), finalized.get("source_ref")); assertEquals(first.get("configuration"), finalized.get("configuration"));
+    assertEquals(first.get("configuration"), workspace.views.get(UUID.fromString(first.get("view_id").getAsString())).get("configuration"));
+    workspace.close(); workspace = null; assertTrue(logs.release(temp).released());
+  }
+
   @Test void bindingReadsFreshLivePrefixesAndKeepsFinalWriterProof() throws Exception {
     append(10_000_000, 1); var before = binding("NT:/x");
     assertEquals("compatible", before.get("compatibility").getAsString()); assertFalse(before.get("finalized").getAsBoolean());

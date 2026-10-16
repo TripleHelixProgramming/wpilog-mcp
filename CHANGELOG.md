@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Recording template compatibility now uses every freshly admitted member through the shared resolver, with explicit absence, conflicts, schema/unit evidence and bounded native witness scans. Previously the unreleased visualization checker rejected recording references as single-file sources. HTTP and MCP share the result and resource refusals; live view creation and panels remain gated.
+- Recording-backed view layouts can now be created, saved, reopened and cloned through the shared API; the unreleased metadata workflow previously refused recording sources. Admission reuses the bounded identity/grant checks, releases the prefix before persistence and retains unresolved layout intent. Recording Resume/Open controls stay disabled with an explanation until live panels are wired.
+
+- Recording template compatibility now uses every freshly admitted member through the shared resolver, with explicit absence, conflicts, schema/unit evidence and bounded native witness scans. Previously the unreleased visualization checker rejected recording references as single-file sources. HTTP and MCP share the result and resource refusals; live editor opening and panels remain gated.
 
 - Source Overview now pages recording signals with literal search, exact-type filters, true totals and fresh selected-member details. Previously this unreleased preview downloaded one full inventory and refused large recordings. Refresh preserves exact-name selection, visible expiry refreshes automatically, hidden/closed views release their handles and rows, and older servers get an update hint. Review of the unreleased overview corrected overlapping initialization orphaning an inventory owner and failed reopen attempts making known-expired rows actionable again. Unavailable declarations use an explicitly exclusive mode that retains ordinary filters for switching back. Requests, retained rows and acknowledged renderer delivery have bounded memory admission; live layout controls remain gated.
 
@@ -136,6 +138,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `start` verifies that a process answering its port is wpilog-mcp, adopts a matching server missing its PID file, and reports an unrelated listener without starting another process. Previously any HTTP response counted as the daemon and a busy port could spawn a server that immediately failed to bind.
 
 ### Fixed
+
+- Temporary recording-compatibility and other native-read refusals in the unreleased visualization API now include the same one-second retry delay as inventory pressure. Previously HTTP and MCP returned a retryable flag without timing advice; permanent refusals still omit it.
 
 - The unreleased visualization preview shares bounded finalized-file hash verification across recording inspections and recorded-file admissions. Previously each fresh recording inspection rehashed every finalized rollover member. Changed file boundaries or manifest hashes still require verification, and current access checks remain mandatory.
 

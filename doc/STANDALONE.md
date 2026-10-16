@@ -691,7 +691,9 @@ detect edits that preserve all observed file attributes, and a cold/evicted proo
 a full file hash. Concurrent cold requests may duplicate that read.
 Typed native-reader refusals keep their code and boolean `retryable` through both inspection
 adapters: a moving catalog can be retried, changed writer history stops, and metadata limits
-return a non-retryable 413 over HTTP. Inspection does not automatically retry for a caller.
+return a non-retryable 413 over HTTP. Temporary refusals also supply `retry_after_ms: 1000`,
+including recording compatibility and view-admission pressure. Permanent refusals omit that delay.
+Inspection does not automatically retry for a caller.
 
 The inventory's `clock.robot_time_sec` is the shared NT4 estimate observed when the fixed view
 opens. Missing/non-finite estimates are null; `right_edge_sec` then uses the indexed
@@ -699,9 +701,10 @@ opens. Missing/non-finite estimates are null; `right_edge_sec` then uses the ind
 `waiting_for_time_sync`, or `unavailable` for an empty finalized recording.
 `waiting_for_time_sync` is true only while unfinalized without a usable estimate. This call
 does not retain a previously valid display edge or mix receipt/wall time into sample timestamps.
-Capabilities say `live_source_inspection: true` and `recording_bindings: true`, but still
-`live: false`: creating live views and reading them through single-file data routes remain
-unavailable until panel wiring. The separate compatibility operation is described below.
+Capabilities say `live_source_inspection: true`, `recording_bindings: true` and
+`recording_views: true`, but still `live: false`. Recording-backed working and saved metadata
+is available through the API; editor opening and single-file data routes remain unavailable
+until panel wiring. The separate compatibility and metadata operations are described below.
 The overview labels this inspection-only state and points to the existing Explorer for live
 following. Refresh signals replaces its frozen inventory; a visible overview also refreshes at
 absolute expiry. A failed reopen keeps known-expired rows disabled until a valid replacement
@@ -781,8 +784,8 @@ with a reopen-and-restart remedy, 409 `INVENTORY_CHANGED` with a refresh-and-res
 or 413 `RESOURCE_LIMIT`. Resource refusals include boolean `retryable`; temporary pressure
 also includes `retry_after_ms: 1000`. Existing native source refusals retain their codes. HTTP
 and MCP return the same page facts; MCP adds true-total `limits` and `no_match` with a hint when
-nothing matches. Old handles cannot survive a server restart. This service does not enable
-live view creation or panel rendering; those gates remain pending.
+nothing matches. Old handles cannot survive a server restart. This inventory service does not create views or render panels. Recording-backed metadata
+creation is a separate operation below; panel rendering remains pending.
 
 `POST /templates/check` and `visualization_template_check` also accept an anchored `session`
 source reference. They admit a fresh recording prefix and resolve every requirement using each
@@ -817,6 +820,22 @@ Temporary concurrency pressure returns retryable `RESOURCE_LIMIT`; fixed limits 
 in a loop. Select exact entries or fewer requirements when the stated limit permits that remedy.
 Unreadable evidence keeps the native reader error instead of becoming a negative match.
 These bounds are functional admission limits, not measured heap or throughput claims.
+
+`POST /views` and `visualization_view_create` accept anchored recording references for metadata
+creation, and saved-open and recording clones admit that same source again. Admission shares the
+two recording-compatibility slots and limits, using an empty requirement set; it does not insist
+that every requirement already resolves. Each native prefix closes before the working-state
+queue persists the layout. Reads of existing view metadata, edits and saves remain available
+when the source is offline; new create/clone/open operations can refuse. Retry the same request
+ID and intent after retryable pressure; changes require a new ID. No create/open response is
+an authorization token for a later read, and a grant can change after admission.
+
+The existing configuration contains both recorded full-range and live following-30-seconds
+policies; explicit ranges and pinned template snapshots are retained. Save writes only metadata
+into a caller-selected writable store. Reopen creates an independent working UUID, with the
+anchored recording identity retained through aliases, restart and finalization. No operation
+here starts a recorder, follow lease or renderer. Source Overview lists recording view metadata
+with disabled Resume/Open actions and an existing-Explorer hint until panels are wired.
 
 Store templates use `visualizations/templates/<uuid>.json`. Each atomic metadata record includes
 the definition and retry/import receipts, under the existing store queue/lock. A file is bounded
