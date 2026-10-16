@@ -443,23 +443,23 @@ Restore working-view UUIDs and configuration/checkpoints from named-server state
 
 Missing or updated templates do not invalidate pinned configuration snapshots. Resolve moved managed sources through proven identity/aliases; unmanaged-file changes require fingerprint validation. An unavailable store or source leaves the recovered configuration inspectable with a specific unavailable state and retry/locate action. Do not silently substitute another source, recreate a missing store, or start acquisition. Ended live sessions reopen against their finalized source when it remains available.
 
-### Bounded recording inventories (proposed before panel wiring)
+### Bounded recording inventories
 
-**Design accepted with review-12 amendments; the shared server operations are implemented in
-this checkpoint. Overview paging and the performance workload remain pending.** Queried follow metadata solves delivery after
-selection; it does not solve discovery. The recording overview still requests every member's
-complete descriptor plus a combined name list in one 4 MiB reply. Review 11 confirmed that
-20,000 topics can now follow at 1 MiB but cannot be selected through that overview. Keep the
-legacy inspection result and its cap; add an explicitly negotiated paged mode for recording
-sources. Recorded single-file inspection remains unchanged in this step.
+**Design accepted with review-12 amendments; the shared server operations are committed and
+overview paging is implemented, pending review of its correction round. The performance workload
+remains pending.** Queried follow metadata solves delivery after selection; it does not solve
+discovery. Before the paged overview checkpoint, discovery requested every member's descriptor
+and a combined name list in one 4 MiB reply. Review 11 confirmed that 20,000 topics could follow
+at 1 MiB but could not be selected through that earlier overview. The legacy inspection result
+and its cap remain; the overview now explicitly negotiates paged recording discovery.
+Recorded single-file inspection is unchanged.
 
-Source anchors checked for this design: the [current inventory builder](../src/main/java/org/triplehelix/wpilogmcp/visualization/RecordingInventory.java)
+Source anchors checked for this design: the [legacy inventory builder](../src/main/java/org/triplehelix/wpilogmcp/visualization/RecordingInventory.java)
 encodes all member descriptors before its summary; the [shared source service](../src/main/java/org/triplehelix/wpilogmcp/visualization/RecordedSources.java)
 closes its admitted prefix after each description; the [recording admission owner](../src/main/java/org/triplehelix/wpilogmcp/read/server/CatalogRecordingSource.java)
 owns grants, member limits and finalized hash checks. The [overview controller](../vscode-extension/src/visualization/recordedPreview.ts)
-currently requests one full inventory. These are verified current facts; the operations and
-limits below now govern the additive server API. The overview behavior remains the next
-implementation checkpoint.
+now uses the bounded list/detail operations for recordings. The operations and limits below
+govern the additive server API; the latest checkpoint dispositions record the review state.
 
 Choose a **short-lived, detached inventory snapshot**, with compact signal pages and separate
 selected-entry details. Stateless keyset paging over unique ordered names can avoid duplicates,
@@ -598,7 +598,7 @@ publish the server limits; the extension row remains pending. Adjustments need r
 | Response work | At most 4 concurrent data-producing inventory requests (open/list/details), no waiting queue; reserve two reply limits per request in a separate 8 MiB server response pool. Close and expiry bypass these slots. Temporary saturation is retryable; refusals preserve normal session/JSON-RPC validation, notification suppression and mixed-batch controls. Refusal I/O uses bounded streaming workers and the progress watchdog. Exhausting final-refusal capacity closes the exchange before headers, without an unread-body drain on control workers. |
 | Inventory construction | At most 2 read workers, no waiting build queue; reserve the per-inventory allowance before starting. A 10-second response deadline cancels publication and requests cooperative cancellation. |
 | Lifetime | 60 seconds idle, 5 minutes absolute; successful access renews only idle expiry. Close, idle/absolute expiry and shutdown reclaim state. Restart invalidates handles with the server epoch. |
-| Extension (pending) | At most two list pages retained per overview, one in-flight list/detail request per overview; share the existing 64 MiB window encoded allowance with follow jobs, reserving twice the reply cap before sending. Retained decoded rows in the host and webview both count toward the planned window decoded-data budget. |
+| Extension (inspection checkpoint) | At most two list pages retained per overview, one in-flight list/detail request per overview; use the broker's shared 64 MiB encoded budget owner, reserving twice the reply cap before sending. Host/webview copies share a fixed 64 MiB inventory/display allowance; integration with the configurable combined recorded/live sample budget remains panel work. |
 
 The server metadata and response pools are separate from native indexes and the follow pool;
 measure and report all of them, not just page bytes. Build reservations downgrade to the
@@ -1772,3 +1772,54 @@ Failing-first, mutation and final-check evidence is recorded in
 `/private/tmp/wpilog-visualization-stage3-inventory-refusals/validation.md`. The checkpoint remains
 uncommitted for focused re-review. Overview integration, native editor paging/expiry behavior,
 live panels and the declaration-burst/season-sized performance gates remain pending.
+
+
+### Stage 3 paged overview checkpoint (2026-10-15)
+
+The owner authorized committing the accepted inventory/refusal tree and continuing. Commit
+`2b9409f` contains the exact 48 validated files. The following checkpoint implements only the
+bounded overview prerequisite before live bindings and panels. Catalog facts arrive first;
+literal search, exact-type filters, 256-row pages and selected details use the existing shared
+service. The adapter verifies capability and paged-mode echo, refuses an old server with an
+update hint, enforces 64 KiB requests/1 MiB replies and a 15-second per-request deadline, and
+keeps inventory handles in their opening MCP session.
+
+Refresh admits the replacement before closing the old handle. Exact-name/source selection and
+filters survive refresh, expiry and hide/reveal; selected details are revalidated. Two pages
+plus bounded cursor breadcrumbs and one detail are accounted; explicit off-page selection
+lookup uses a bounded literal prefix, matches the full name exactly, and has a 1,024-page ceiling. Hidden views discard their
+renderer context and release the inventory. Renderer delivery coalesces pending state behind
+one acknowledged copy with a five-second stall budget. Encoded requests share the broker's
+64 MiB budget owner, while retained inventory/display copies have a conservative 64 MiB
+window allowance. This is the inventory portion of display admission; the configurable combined
+recorded/live sample budget and attached-window capability reporting still belong to panels.
+
+Failing-first tests, plants, native editor results and final checks are recorded in
+`/private/tmp/wpilog-visualization-stage3-overview/validation.md`. The native fixture uses an
+active two-member 20,000-name recording, real capacity refusals, actual MCP/HTTP parity and a
+real five-minute expiry, rather than shortening the production lifetime. New work remains
+uncommitted for review. The 32-lease declaration-burst gate and season-sized scan/hash comparison
+remain explicitly unrun; neither this functional gate nor conservative byte accounting claims
+sustained performance. Native Linux/Windows runs, live binding/panels and the earlier disclosed
+manual Close-cancellation and Save As limitations remain open.
+
+
+### Review 14 correction round (2026-10-16)
+
+The review reproduced two lifecycle defects beyond the ordinary passing editor workflows.
+A renderer recreated during catalog identification could publish a second controller and lose
+the first owner. Initialization now coalesces within a visible generation, rejects late replies
+after hide/close, and publishes a source with its single owner before awaiting the renderer.
+A failed reopen could also clear known idle expiry because the absolute deadline was still in
+the future. Known expiry/session/declaration invalidation now persists until a replacement
+page is admitted; rows stay readable but their actions stay disabled.
+
+The nonblocking filter mismatch is corrected in the same round: **Show unavailable declarations
+only** is an exclusive traversal, ordinary filters are disabled and omitted from its requests,
+and their values survive switching back. The earlier bounded-inventory introduction now
+distinguishes its historical full-inspection behavior from current paged integration.
+
+Evidence, failing-first tests, plants and native results are recorded in
+`/private/tmp/wpilog-visualization-stage3-overview-fixes/validation.md`. This correction round
+remains uncommitted for review. Live bindings/panels, combined configurable sample budgets,
+declaration-burst and season-sized performance gates, and native Linux/Windows remain pending.

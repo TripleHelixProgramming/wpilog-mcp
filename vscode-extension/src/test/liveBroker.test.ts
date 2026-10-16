@@ -478,3 +478,16 @@ test("sealing an earlier split job preserves the newer pending job for callback 
   assert.equal(transport.opens.length, 2); assert.equal(broker.resources.consumers, 3);
   assert.deepEqual(transport.opens.map(o => new Set(o.selections.map(s => s.entry))), [new Set(selections("a").map(s => s.entry)), new Set(selections("b").map(s => s.entry))]);
 });
+
+test("follow jobs share encoded acquisition capacity with inventory requests", async t => {
+  const { ByteBudget } = await import("../visualization/byteBudget");
+  const encodedBudget = new ByteBudget(16384), inventory = encodedBudget.reserve(8192);
+  const { broker, transport } = fixture(t, { encodedBudget }); transport.handle = async (_l, _c, signal) => transport.wait(signal);
+  const a = broker.subscribe(source, [], [{ entry: "x" }], consumer("a").value);
+  await until(() => transport.polls.length === 1);
+  assert.throws(() => broker.subscribe(source, [], [{ entry: "y" }], consumer("b").value), /budget/);
+  assert.equal(encodedBudget.reserved, 16384); inventory();
+  const b = broker.subscribe(source, [], [{ entry: "y" }], consumer("b").value);
+  assert.equal(encodedBudget.reserved, 16384); a.dispose(); b.dispose();
+  await until(() => broker.resources.jobs === 0); assert.equal(encodedBudget.reserved, 0);
+});

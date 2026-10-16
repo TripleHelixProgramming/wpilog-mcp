@@ -702,11 +702,16 @@ does not retain a previously valid display edge or mix receipt/wall time into sa
 Capabilities say `live_source_inspection: true` but still `live: false`: creating/binding live
 views and reading them through single-file data routes remain unavailable until panel wiring.
 The overview labels this inspection-only state and points to the existing Explorer for live
-following. Reopen it for a fresh inventory. A finalized file opened afresh retains the recorded
+following. Refresh signals replaces its frozen inventory; a visible overview also refreshes at
+absolute expiry. A failed reopen keeps known-expired rows disabled until a valid replacement
+page is admitted. Unavailable declarations use a separate, explicitly labeled traversal without
+name/type filters; ordinary filters are retained for switching back. A finalized file opened afresh retains the recorded
 content-hash workflow; an already-held recording reference keeps its original identity.
 
-Paged recording discovery is also available to local HTTP/MCP callers; the overview UI has not
-switched to it yet. Capabilities publish `recording_inventory_paging: true` and
+Paged recording discovery is shared by the overview and local HTTP/MCP callers. The overview
+negotiates support before opening, requires the paged-mode echo, and caps responses at 1 MiB
+and requests at 64 KiB under a 15-second client deadline per request. Unsupported servers
+receive an update hint, with no automatic full-inventory fallback. Capabilities publish `recording_inventory_paging: true` and
 `recording_inventory_limits`. POST `/source/describe` with `source_ref` and
 `inventory_mode: "paged"` returns a fixed summary, anchored source, member proofs, clock facts,
 exact totals, `inventory_id`, `server_epoch` and `expires_at`. Omitting the mode or choosing
@@ -955,7 +960,7 @@ Callers may explicitly negotiate `frontier_scope: "queries"` to keep metadata fo
 and their required struct schemas within 1 MiB pages, while retaining every recording member's
 identity and the full internal history proof. Omission keeps complete descriptors. The create
 reply acknowledges the scope; an older server ignoring the option has not negotiated it.
-This does not reduce the Source Overview's separate 4 MiB inventory or enlarge either limit.
+This does not enlarge the default full inspection's separate 4 MiB limit; Source Overview now uses the 1 MiB paged inventory operations.
 These are custom-reader
 routes; the optional visualization editor still provides the recorded workflow.
 A standalone library excludes open captures it cannot freeze and names the recording-server route

@@ -663,6 +663,7 @@
     "test:smoke:plants": "tsc -p ./ && node out/smoke/plants.js",
     "package": "vsce package",
     "test:visualization": "tsc -p ./ && node out/smoke/visualizationRun.js",
+    "test:inventory-overview": "tsc -p ./ && node out/smoke/overviewRun.js",
     "test:recorded-visualization": "tsc -p ./ && node out/smoke/recordedRun.js"
   },
   "devDependencies": {

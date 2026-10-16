@@ -13,7 +13,7 @@ export class RecordedClient implements Backend {
   constructor(readonly client: () => Promise<McpClient>) {}
   async call<T>(route: string, body?: unknown, signal?: AbortSignal): Promise<T> { return (await this.client()).visualization<T>(route, body, signal); }
   capabilities(): Promise<Capabilities> { return this.call("/capabilities"); }
-  identify(path: string): Promise<SourceSummary> { return this.call("/source", { path }); }
+  identify(path: string, signal?: AbortSignal): Promise<SourceSummary> { return this.call("/source", { path }, signal); }
   describe(source_ref: SourceRef, signal?: AbortSignal): Promise<Inventory> { return this.call("/source/describe", { source_ref }, signal); }
   lists(source_ref: SourceRef): Promise<{ unreadable: { store_id: string; file: string; reason: string }[]; listing_incomplete: boolean; working_views: RecordedView[]; saved_views: (RecordedView & { saved_view_id: string; store_id: string; title: string })[] }> {
     return this.call("/source/views", { source_ref });

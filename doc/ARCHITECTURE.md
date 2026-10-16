@@ -974,7 +974,45 @@ after 60 idle seconds or five absolute minutes; expiry and close bypass data req
 Current grants are checked on every page and retry. Ordinary listing never reopens payloads;
 only a missing pathname triggers catalog alias resolution. Details reopen through native
 admission. The [standalone reference](STANDALONE.md#recorded-visualization-preview) owns the
-limits and refusal contract. The overview adapter and display-memory gate are still pending.
+limits and refusal contract.
+
+The recording overview borrows the window's MCP session and grants. It explicitly negotiates
+paged support before sending a bounded open request; handle requests never migrate silently
+to a replacement session. One initialization promise per visible generation owns catalog
+identification and controller publication. Repeated ready messages join it; hide/close cancels
+it and invalidates late identity, catalog and renderer replies. A source and its single inventory
+owner are assigned together before awaiting renderer delivery, so initialization cannot overwrite
+an admitted owner or fall back to full recording inspection. One serial request chain then owns
+each overview. Generation checks reject
+late filter, detail and refresh replies; the renderer returns a delivery acknowledgement before
+another page copy is sent. Pending paints coalesce to the latest state. A five-second renderer
+stall stops inventory acquisition, retaining the outstanding copy's reservation until receipt or
+editor close. Hidden overviews discard the webview context, close their handle and release row
+buffers; reveal recreates the renderer and opens a fresh snapshot. No hidden heartbeat exists.
+
+At most two list pages, cursor breadcrumbs and one selected detail are retained per overview.
+Selection uses the exact name in the anchored source. Refresh admits the replacement and its
+first page before retiring the old handle, then resolves that selection again and reads fresh
+details. An off-page selection uses a literal prefix of at most 256 codepoints and matches the full name exactly, one page at a time,
+under the same cancellation and byte accounting, with a 1,024-page traversal ceiling and a
+refine-and-reselect remedy. Visible absolute expiry and idle-expiry responses use the same
+refresh path. Failed admission retains readable old rows with their timestamp and reason;
+expired rows are labeled and disabled, and Retry backs off from one to thirty seconds. Known
+idle/session/declaration invalidation survives a failed reopen independently of the absolute
+deadline; only an admitted replacement page clears it. Deciding whether to queue one automatic
+reopen does not determine whether an invalid snapshot is marked expired.
+
+Unavailable declarations are an exclusive traversal of bounded previews. The renderer disables
+ordinary name/type filters while keeping their values, and the request adapter omits those
+filters in this mode. It never merges two inventories or searches shortened names locally.
+
+Encoded inventory requests reserve twice their 1 MiB reply cap from the same 64 MiB acquisition
+budget owner used by follow jobs. The window separately accounts retained inventory JSON,
+host/webview copies and outstanding renderer delivery against 64 MiB, using conservative object
+and string estimates rather than claiming an exact JavaScript heap bound. Admission refuses
+before retaining or delivering excess rows. This inspection checkpoint does not connect live
+panels. The planned configurable combined recorded/live display budget and its performance
+gate remain part of panel integration; existing recorded plots retain their previous limits.
 
 Follow metadata can be explicitly limited to the queried entries. This projects the wire
 inventory before encoding, with only the selected struct schemas and their transitive
@@ -982,9 +1020,9 @@ relationships supplied by the native schema owner. Member identities, writer/fin
 index admission and the server's checks on every entry's retained history remain complete.
 The lease and each new frontier acknowledge the scope; the client refuses a missing or
 inconsistent acknowledgement instead of silently accepting full metadata under a small page
-budget. Existing callers retain complete descriptors. The overview inventory is a separate
-operation with its own 4 MiB limit; this projection does not paginate discovery or reduce
-catalog scanning/indexing costs.
+budget. Existing callers retain complete descriptors. Default full inspection retains its
+separate 4 MiB limit; the overview uses bounded inventory pages instead. Follow projection
+does not reduce catalog scanning/indexing costs.
 
 Each working UUID owns its controller, panel, data generation and cancellation. Configuration
 revisions always reach the renderer, but the data key contains only source identity, requirements,

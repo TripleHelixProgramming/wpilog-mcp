@@ -11,6 +11,15 @@ export function recordedPage(asset: (name: string) => string, csp: string, nonce
     <button id="template-open">Open new view</button>${overview ? "" : `<button id="template-replace">Replace this layout…</button><button id="template-save">Save template…</button><button id="template-update">Update selected template…</button>`}
     <button id="template-export">Export selected template…</button><button id="template-import">Import template…</button></details>
     ${overview ? `<section aria-label="Source details"><h2>Source details</h2><dl id="facts"></dl><p id="inventory">Signal inventory: not requested</p></section>
+      <section id="inventory-browser" hidden aria-label="Recording signals"><h2>Recording signals</h2>
+      <p>Search literal names and filter by an exact declared type. Counts describe this snapshot; Inspect reads current member details.</p>
+      <label>Search signal names <input id="inventory-search" type="search" maxlength="256"></label>
+      <label>Exact type <input id="inventory-type" type="text" maxlength="256" placeholder="For example, double or struct:Pose2d"></label>
+      <label><input id="inventory-unavailable" type="checkbox"> Show unavailable declarations only</label><button id="inventory-find">Apply filter</button>
+      <p id="inventory-count" role="status" aria-live="polite"></p><p id="inventory-age"></p><p id="inventory-reason" role="alert"></p>
+      <nav aria-label="Signal pages"><button id="inventory-previous">Previous</button><button id="inventory-next">Next</button><button id="inventory-retry">Refresh signals / Retry</button></nav>
+      <div class="inventory-table" tabindex="0" aria-label="Signal rows"><table><thead><tr><th>Signal</th><th>Declared type</th><th>Samples</th><th>Members</th><th>Details</th></tr></thead><tbody id="inventory-rows"></tbody></table></div>
+      <section aria-label="Selected signal"><h3 id="inventory-selection">No signal selected</h3><div id="inventory-detail"></div></section></section>
       <button id="blank">Blank layout</button><button id="refresh">Refresh views</button>
       <div id="unavailable" role="status"></div><div id="unreadable" role="status" aria-live="polite"></div><div class="view-lists"><section><h2>Saved views</h2><div id="saved"></div></section><section><h2>Unsaved views</h2><div id="drafts"></div></section></div>` : `<nav aria-label="Visualization actions"><button id="overview">Overview</button><button id="plot">Add plot</button><button id="values">Add value table</button><button id="statistics">Add statistics</button><button id="raw">Add raw table</button><button id="save">Save view…</button><button id="duplicate">Duplicate and Open Beside</button><button id="undo">Undo draft</button><button id="redo">Redo draft</button><button id="reset">Reset draft</button></nav>
       <p>Native Split moves this view. Duplicate and Open Beside creates an independent copy.</p>

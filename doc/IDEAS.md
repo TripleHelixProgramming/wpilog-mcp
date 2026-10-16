@@ -667,3 +667,29 @@ Explorer verification: milestone 11 drives real VS Code in CI at the oldest supp
 version and current stable for activation, the shared server, fixture Logs listing and editor
 opening. Rendered plots, interactive organizing flows and agent discovery retain the manual
 checklist in DEVELOPMENT.md.
+
+
+#### Paged Source Overview integration (2026-10-15)
+
+The accepted inventory service and refusal corrections are committed as `2b9409f`. The next
+checkpoint wires bounded discovery into Source Overview: paged rows, exact-type/literal filters,
+fresh selected details, explicit retry, automatic visible expiry refresh and hidden/closed
+cleanup. Live layout controls remain disabled. Native gates use a 20,000-name active recording
+plus rollover and the real five-minute expiry; evidence is in
+`/private/tmp/wpilog-visualization-stage3-overview/validation.md`.
+
+Remaining before completing Stage 3: recording binding/template ownership, live panel integration,
+the configurable aggregate recorded/live decoded display budget and its capabilities, the
+32-lease declaration-burst workload, season-sized catalog scan/hash measurements, and native
+Linux/Windows editor runs. The current inventory accounting is a conservative bounded estimate,
+not a measured process heap or sustained-throughput claim. Inspection of a finalized file opened
+afresh still selects the recorded-file workflow; an already anchored recording can drain/finalize
+under its existing reference. Keep these distinctions in the panel and performance gates.
+
+
+Review 14's overview correction round adds single-owner initialization across native hide/reveal,
+persistent known expiry through failed reopening, and an exclusive unavailable-declarations mode
+that preserves ordinary filters. Evidence is under
+`/private/tmp/wpilog-visualization-stage3-overview-fixes/validation.md`; the correction round is
+uncommitted for review. The Stage 3 panel, combined-budget, performance and other-platform work
+listed above remains deferred to its gates.

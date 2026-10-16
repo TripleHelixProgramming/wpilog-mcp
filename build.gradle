@@ -541,6 +541,7 @@ tasks.register('extensionSmokeFixture', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'org.triplehelix.wpilogmcp.fixtures.ExtensionSmokeFixture'
     args file('build/extension-smoke/fixture/smoke.wpilog').absolutePath
+    doLast { file('build/extension-smoke/classpath.txt').text = sourceSets.test.runtimeClasspath.asPath }
 }
 
 // No editor or robot is needed: the Node broker drives a synthetic writer and the real HTTP routes.

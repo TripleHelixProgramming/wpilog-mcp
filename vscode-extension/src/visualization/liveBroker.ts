@@ -1,3 +1,4 @@
+import { ByteBudget } from "./byteBudget";
 import { FollowTransport, aborted, encodeFollowOpen } from "./followClient";
 import { FollowPage, FollowSource, FollowWindow, FollowSelection, FollowFrontier, FollowError, FollowLease, canonical, freezeJson, page, selectionKey } from "./followProtocol";
 
@@ -13,7 +14,7 @@ export interface FollowConsumer {
   page(delivery: FollowDelivery): Promise<void> | void;
 }
 export interface FollowSubscription { dispose(): void; refresh(): void }
-export interface BrokerOptions { readonly encodedBudgetBytes?: number; readonly consumerTimeoutMs?: number;
+export interface BrokerOptions { readonly encodedBudgetBytes?: number; readonly encodedBudget?: ByteBudget; readonly consumerTimeoutMs?: number;
   readonly retryBaseMs?: number; readonly retryMaxMs?: number; readonly random?: () => number }
 interface Consumer {
   readonly sink: FollowConsumer; readonly identity: ViewIdentity; readonly keys: ReadonlySet<string>;
@@ -21,7 +22,7 @@ interface Consumer {
 }
 interface Job {
   readonly key: string; readonly source: FollowSource; readonly windows: readonly FollowWindow[];
-  readonly consumers: Set<Consumer>; selections?: readonly FollowSelection[]; reserved: boolean;
+  readonly consumers: Set<Consumer>; selections?: readonly FollowSelection[]; reserved: boolean; release?: () => void;
   restart?: { reason: string; code?: string }; controller?: AbortController; task?: Promise<void>;
 }
 function delay(ms: number, signals: readonly AbortSignal[]): Promise<void> {
@@ -42,17 +43,17 @@ export class LiveBroker {
   private readonly jobs = new Set<Job>();
   private readonly pending = new Map<string, Job>();
   private closed = false;
-  private readonly budget: number;
+  private readonly budget: ByteBudget;
   private readonly timeout: number;
   private readonly retryBase: number;
   private readonly retryMax: number;
   private readonly random: () => number;
   constructor(private readonly transport: FollowTransport, options: BrokerOptions = {}) {
-    this.budget = options.encodedBudgetBytes ?? 64 << 20;
+    this.budget = options.encodedBudget ?? new ByteBudget(options.encodedBudgetBytes ?? 64 << 20);
     this.timeout = options.consumerTimeoutMs ?? 5000;
     this.retryBase = options.retryBaseMs ?? 250; this.retryMax = options.retryMaxMs ?? 10000;
     this.random = options.random ?? Math.random;
-    if (![this.budget, this.timeout, this.retryBase, this.retryMax].every(n => Number.isSafeInteger(n) && n > 0)
+    if (![this.budget.maximum, this.timeout, this.retryBase, this.retryMax].every(n => Number.isSafeInteger(n) && n > 0)
       || this.retryMax < this.retryBase || this.timeout > 30000) throw new Error("Invalid follow broker limits");
   }
   subscribe(source: FollowSource, windows: readonly FollowWindow[], selections: readonly FollowSelection[], sink: FollowConsumer): FollowSubscription {
@@ -114,7 +115,8 @@ export class LiveBroker {
   private reserve(job: Job): void {
     // A response plus the previous frontier may coexist. No encoded page history is cached.
     if (job.reserved) return;
-    if (this.resources.reservedBytes + 2 * this.transport.pageBytes > this.budget) throw new FollowError("RESOURCE_LIMIT", "Window follow byte budget is full; close another source or use smaller pages");
+    try { job.release = this.budget.reserve(2 * this.transport.pageBytes); }
+    catch { throw new FollowError("RESOURCE_LIMIT", "Window follow byte budget is full; close another source or use smaller pages"); }
     job.reserved = true;
   }
   private remove(job: Job, c: Consumer): void {
@@ -122,7 +124,7 @@ export class LiveBroker {
     c.stop.abort();
     if (!job.consumers.size) { job.restart = undefined; job.controller?.abort();
       this.unpend(job);
-      if (!job.task) { this.jobs.delete(job); job.reserved = false; } }
+      if (!job.task) { this.jobs.delete(job); job.reserved = false; job.release?.(); job.release = undefined; } }
   }
   private state(job: Job, state: Omit<FollowState, "reset">, only?: Consumer): void {
     for (const c of only ? [only] : [...job.consumers]) {
@@ -147,7 +149,7 @@ export class LiveBroker {
         await this.run(job, job.controller.signal);
       }
     }).finally(() => {
-      job.task = undefined; job.controller = undefined; job.reserved = false;
+      job.task = undefined; job.controller = undefined; job.reserved = false; job.release?.(); job.release = undefined;
       if (!job.consumers.size) this.jobs.delete(job);
     });
   }

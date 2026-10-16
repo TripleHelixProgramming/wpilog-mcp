@@ -9,6 +9,10 @@ import { VisualizationEditorProvider, ViewDocument } from "./editorProvider";
 import { RecoveryJournal } from "./recoveryJournal";
 import { RecordedClient, SourceSummary, StoreChoice } from "./recordedClient";
 import { addPanel, addSignals, Inventory, layoutEdit, LayoutAction, RecordedConfiguration, RecordedView, Compatibility, Binding, TemplateItem, TemplateRef, Signal, SourceRef, ViewGeneration, recordedDataKey, requireRecordedPreview } from "./recordedModel";
+import { InventoryPresentation } from "./inventoryPresentation";
+import { InventoryClient } from "./inventoryClient";
+import { InventoryOverview, OverviewClock } from "./inventoryOverview";
+import { VisualizationBudgets } from "./byteBudget";
 import { recordedPage } from "./recordedPage";
 
 export const OVERVIEW_TYPE = "wpilog-mcp.sourceOverview", VIEW_TYPE = "wpilog-mcp.visualization";
@@ -17,6 +21,7 @@ export interface PreviewHost {
   client(): Promise<McpClient>;
   entries(path: string | undefined, target: string): void;
   grantStore(path: string): Promise<void>;
+  overviewClock?: OverviewClock;
   dialogs?: Pick<typeof vscode.window, "showQuickPick" | "showOpenDialog" | "showInputBox" | "showSaveDialog" | "showWarningMessage">;
 }
 interface ViewPage {
@@ -25,10 +30,14 @@ interface ViewPage {
   serial: Promise<void>; cursor?: number; cursorGeneration: number; valueAbort?: AbortController;
   dataKey?: string; rendering?: Promise<void>; dataSignal?: AbortSignal; bindings?: Map<string, Binding>;
 }
-interface OverviewPage { uri: vscode.Uri; panel: vscode.WebviewPanel; summary?: SourceSummary; ready: boolean; closed: boolean; abort: AbortController; }
+interface OverviewPage {
+  uri: vscode.Uri; panel: vscode.WebviewPanel; summary?: SourceSummary; ready: boolean; closed: boolean;
+  generation: number; initialization?: Promise<void>; abort: AbortController; inventory?: InventoryOverview; delivery?: InventoryPresentation;
+}
 
 /** Preview ownership is per working UUID. Entries never routes through a remembered hidden view. */
 export class RecordedPreview implements vscode.Disposable {
+  readonly budgets = new VisualizationBudgets();
   readonly backend: RecordedClient;
   readonly provider: VisualizationEditorProvider;
   readonly rendered = new Map<string, { plots: number; rows: number; width: number; height: number }>();
@@ -78,7 +87,7 @@ export class RecordedPreview implements vscode.Disposable {
       vscode.window.registerCustomEditorProvider(OVERVIEW_TYPE, {
         openCustomDocument: (uri: vscode.Uri) => ({ uri, dispose() {} }),
         resolveCustomEditor: (doc: vscode.CustomDocument, panel: vscode.WebviewPanel) => this.renderOverview(doc.uri, panel),
-      }, { supportsMultipleEditorsPerDocument: false, webviewOptions: { retainContextWhenHidden: true } }),
+      }, { supportsMultipleEditorsPerDocument: false, webviewOptions: { retainContextWhenHidden: false } }),
       vscode.commands.registerCommand("wpilog-mcp.explorer.openSourceOverview", (item?: vscode.Uri | { resourceUri?: vscode.Uri }) => this.openOverview(item instanceof vscode.Uri ? item : item?.resourceUri)),
       vscode.window.tabGroups.onDidChangeTabs(() => this.targetEntries()),
       vscode.window.tabGroups.onDidChangeTabGroups(() => this.targetEntries()),
@@ -120,30 +129,75 @@ export class RecordedPreview implements vscode.Disposable {
     return recordedPage(name => panel.webview.asWebviewUri(vscode.Uri.joinPath(media, name)).toString(), panel.webview.cspSource, randomBytes(18).toString("hex"), overview);
   }
   private renderOverview(uri: vscode.Uri, panel: vscode.WebviewPanel): void {
-    const page: OverviewPage = { uri, panel, ready: false, closed: false, abort: new AbortController() };
+    const page: OverviewPage = { uri, panel, ready: false, closed: false, generation: 0, abort: new AbortController() };
     this.overviews.set(uri.toString(), page); panel.title = path.basename(uri.fsPath) + " · Overview";
     panel.webview.onDidReceiveMessage(message => { void this.overviewMessage(page, message).catch(error => this.warning(panel, error)); });
-    panel.onDidChangeViewState(() => this.targetEntries());
-    panel.onDidDispose(() => { page.closed = true; page.abort.abort(); this.overviews.delete(uri.toString()); this.targetEntries(); });
+    panel.onDidChangeViewState(() => {
+      if (panel.visible) { if (page.ready) void page.inventory?.show(); }
+      else { this.cancelOverviewInitialization(page); void page.inventory?.hide(); page.delivery?.dispose(); page.delivery = undefined; }
+      this.targetEntries();
+    });
+    panel.onDidDispose(() => { page.closed = true; this.cancelOverviewInitialization(page); page.delivery?.dispose(); void page.inventory?.dispose(); this.overviews.delete(uri.toString()); this.targetEntries(); });
     panel.webview.html = this.pageHtml(panel, true); this.targetEntries();
+  }
+  private delivery(page: OverviewPage): InventoryPresentation {
+    return page.delivery ??= new InventoryPresentation(this.budgets.decoded,
+      (delivery_id, state) => { if (!page.closed) void page.panel.webview.postMessage({ type: "inventoryPage", delivery_id, state }); },
+      reason => { void page.inventory?.hide(); if (!page.closed) this.warning(page.panel, reason); });
+  }
+  private cancelOverviewInitialization(page: OverviewPage): void {
+    page.generation++; page.ready = false; page.abort.abort(); page.initialization = undefined;
+  }
+  /** A recreated renderer joins one initialization per visible generation. Old catalog replies
+   * cannot publish an owner, and summary delivery never opens a full-recording fallback. */
+  private initializeOverview(page: OverviewPage): Promise<void> {
+    if (page.closed || !page.panel.visible) return Promise.resolve();
+    page.ready = true;
+    if (page.initialization) return page.initialization;
+    const generation = page.generation, abort = new AbortController(); page.abort = abort;
+    const current = () => !page.closed && page.panel.visible && generation === page.generation;
+    const task = (async () => {
+      if (!page.summary) {
+        await this.identity(); if (!current()) return;
+        if (this.stateWarning) this.warning(page.panel, this.stateWarning);
+        if (page.uri.scheme !== "file") throw new Error("Remote preview is not available yet; use the existing editor");
+        const summary = await this.backend.identify(page.uri.fsPath, abort.signal);
+        if (!current()) return;
+        page.summary = summary; this.targetEntries();
+      }
+      // Publish the single owner synchronously with its source, before awaiting the renderer.
+      if (page.summary.source_ref.kind === "session" && !page.inventory) {
+        page.inventory = new InventoryOverview(page.summary.source_ref, new InventoryClient(() => this.host.client(), this.budgets.encoded),
+          this.budgets.decoded, state => { if (!page.closed && page.panel.visible) page.delivery?.offer(state); }, this.host.overviewClock);
+      }
+      await page.panel.webview.postMessage({ type: "summary", summary: page.summary });
+      if (!current()) return;
+      if (page.summary.source_ref.kind === "session") {
+        this.delivery(page).offer(page.inventory!.snapshot); void page.inventory!.show();
+      } else {
+        const inventory = await this.backend.describe(page.summary.source_ref, abort.signal);
+        if (!current()) return;
+        void page.panel.webview.postMessage({ type: "inventory", inventory });
+      }
+      if (current()) await this.refreshOverview(page);
+    })().catch(error => { if (current()) throw error; });
+    page.initialization = task;
+    const finished = () => { if (page.initialization === task) page.initialization = undefined; };
+    void task.then(finished, finished);
+    return task;
   }
   private async overviewMessage(page: OverviewPage, message: any): Promise<void> {
     if (page.closed) return;
+    if (message.type === "inventoryRendered") { page.delivery?.acknowledge(String(message.delivery_id)); return; }
     if (message.type === "ready") {
-      page.ready = true;
-      await this.identity();
-      if (this.stateWarning) this.warning(page.panel, this.stateWarning);
-      if (page.uri.scheme !== "file") throw new Error("Remote preview is not available yet; use the existing editor");
-      page.summary = await this.backend.identify(page.uri.fsPath);
-      if (page.closed) return;
-      await page.panel.webview.postMessage({ type: "summary", summary: page.summary });
-      this.targetEntries();
-      // Metadata is already visible while this separate request builds the source index.
-      void this.backend.describe(page.summary.source_ref, page.abort.signal).then(inventory => {
-        if (!page.closed) void page.panel.webview.postMessage({ type: "inventory", inventory });
-      }, error => { if (!page.closed) this.warning(page.panel, `Signal inventory failed: ${error}`); });
-      await this.refreshOverview(page);
-    } else if (message.type === "refresh") await this.refreshOverview(page);
+      await this.initializeOverview(page);
+    } else if (message.type === "refresh") { await this.refreshOverview(page); await page.inventory?.refresh(); }
+    else if (message.type === "inventoryRefresh") {
+      if (page.inventory?.snapshot.hidden && page.panel.visible) await page.inventory.show(); else await page.inventory?.refresh();
+    }
+    else if (message.type === "inventoryFilter") await page.inventory?.filter(String(message.query ?? ""), String(message.exact_type ?? ""), message.unavailable === true);
+    else if (message.type === "inventoryNext" || message.type === "inventoryPrevious") await page.inventory?.navigate(message.type === "inventoryNext" ? 1 : -1, message.inventory_generation);
+    else if (message.type === "inventorySelect") await page.inventory?.select(String(message.name), message.inventory_generation);
     else if (message.type === "templateSearch" || message.type === "templateCheck" || message.type === "applyTemplate" || message.type === "importTemplate" || message.type === "exportTemplate") await this.templateMessage(page, message);
     else if (message.type === "blank" && page.summary) await this.open(await this.backend.create(page.summary.source_ref));
     else if (message.type === "resume") await this.open(await this.backend.read(String(message.view_id)));
@@ -451,5 +505,6 @@ export class RecordedPreview implements vscode.Disposable {
   }
   private warning(panel: vscode.WebviewPanel, error: unknown): void { void panel.webview.postMessage({ type: "warning", message: String(error) }); }
   dispose(): void {
-    this.controlSubscription?.dispose(); for (const id of [...this.pages.keys()]) this.closePage(id); for (const d of this.disposables) d.dispose(); }
+    this.controlSubscription?.dispose(); for (const overview of this.overviews.values()) { overview.closed = true; this.cancelOverviewInitialization(overview); overview.delivery?.dispose(); void overview.inventory?.dispose(); }
+    this.overviews.clear(); for (const id of [...this.pages.keys()]) this.closePage(id); for (const d of this.disposables) d.dispose(); }
 }

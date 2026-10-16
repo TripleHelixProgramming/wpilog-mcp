@@ -7,7 +7,7 @@
   let snapshot, inventory, generation = "", source, visible = true, cursorTimer;
   const charts = new Map(), panels = new Map(), data = new Map(), values = new Map();
   const cursorEvents = new WeakMap(), bindings = new Map(), statistics = new Map(), raw = new Map();
-  let templates = [], selectedTemplate;
+  let templates = [], selectedTemplate, inventoryGeneration = 0, inventoryRetryTimer, inventoryFilterKey;
   let grid, applying = false;
   const send = (type, extra = {}) => api.postMessage({ type, view_id: snapshot?.view_id, revision: snapshot?.revision, generation, ...extra });
   const button = (label, action) => { const b = el("button", label); b.onclick = action; return b; };
@@ -44,6 +44,9 @@
       default: return "No recorded samples";
     }
   }
+  function inventoryFilterControls() {
+    for (const id of ["inventory-search", "inventory-type"]) get(id).disabled = get("inventory-unavailable").checked;
+  }
   if (get("template-find")) get("template-find").onclick = () => send("templateSearch", { query: get("template-search").value });
   if (get("templates")) get("templates").onchange = () => {
     selectedTemplate = templates[Number(get("templates").value)]?.template_ref;
@@ -52,6 +55,12 @@
   for (const [id, type] of [["template-open", "applyTemplate"], ["template-replace", "replaceTemplate"], ["template-save", "saveTemplate"], ["template-update", "updateTemplate"], ["template-export", "exportTemplate"], ["template-import", "importTemplate"]]) if (get(id)) get(id).onclick = () => templateAction(type);
   if (overview) {
     action("blank", "blank"); action("refresh", "refresh");
+    for (const [id, type] of [["inventory-next", "inventoryNext"], ["inventory-previous", "inventoryPrevious"], ["inventory-retry", "inventoryRefresh"]])
+      get(id).onclick = () => send(type, { inventory_generation: inventoryGeneration });
+    const filter = () => send("inventoryFilter", { query: get("inventory-search").value, exact_type: get("inventory-type").value, unavailable: get("inventory-unavailable").checked });
+    get("inventory-unavailable").onchange = inventoryFilterControls;
+    get("inventory-find").onclick = filter;
+    for (const id of ["inventory-search", "inventory-type"]) get(id).onkeydown = event => { if (event.key === "Enter") { event.preventDefault(); filter(); } };
   } else {
     grid = GridStack.init({ column: 12, cellHeight: 64, margin: 6, float: true, animate: false,
       handle: ".panel-header", draggable: { cancel: "input,button,select" } }, get("grid"));
@@ -213,6 +222,57 @@
     }
     if (message.type === "warning") { get("warning").textContent = message.message; return; }
     if (message.type === "summary" && overview) { facts(message.summary); get("status").textContent = "Source details available; signal inventory loading…"; return; }
+    if (message.type === "inventoryPage" && overview) {
+      const s = message.state;
+      const rendered = () => send("inventoryRendered", { delivery_id: message.delivery_id });
+      if (s.generation < inventoryGeneration) { rendered(); return; }
+      inventoryGeneration = s.generation; get("inventory-browser").hidden = false;
+      const filterKey = JSON.stringify(s.filter);
+      if (s.filter && filterKey !== inventoryFilterKey) {
+        for (const [id, value] of [["inventory-search", s.filter.query], ["inventory-type", s.filter.types.join(", ")]])
+          if (document.activeElement !== get(id)) get(id).value = value;
+        if (document.activeElement !== get("inventory-unavailable")) get("inventory-unavailable").checked = s.filter.unavailable;
+        inventoryFilterKey = filterKey;
+      }
+      inventoryFilterControls();
+      const page = s.page, summary = s.summary;
+      get("inventory-count").textContent = page
+        ? `Page ${s.pageNumber ?? 1} · ${page.entries.length} shown of ${page.total_matching.toLocaleString()} ${s.filter?.unavailable ? "unavailable declarations" : "matching names"} · ${summary?.total_entry_names?.toLocaleString() ?? page.total_entry_names?.toLocaleString() ?? "unknown"} total names${page.unavailable_excluded && page.unavailable_entry_names ? ` · ${page.unavailable_entry_names} unavailable declarations excluded` : ""}${!page.entries.length ? s.filter?.unavailable ? ". No unavailable declarations; turn off this mode to search ordinary names." : ". No matches; change or clear the filter." : ""}`
+        : s.hidden ? "Hidden overview released its inventory" : "Opening a bounded inventory…";
+      get("inventory-age").textContent = s.openedAt ? `Snapshot opened ${new Date(s.openedAt).toLocaleTimeString()} · ${s.expired ? "Expired; Retry to refresh" : "Refresh to include newer declarations"}` : "";
+      get("inventory-reason").textContent = s.reason ?? "";
+      if (page) get("inventory-count").textContent += s.filter?.unavailable ? " · Unavailable declarations only; name and type filters are not applied"
+        : ` · Applied search: ${s.filter?.query || "all names"}; type: ${s.filter?.types?.join(", ") || "all types"}`;
+      get("inventory-previous").disabled = s.loading || s.expired || !s.previous;
+      get("inventory-next").disabled = s.loading || s.expired || !s.next;
+      clearTimeout(inventoryRetryTimer);
+      get("inventory-retry").disabled = s.loading || Date.now() < s.retryAt;
+      if (!s.loading && s.retryAt > Date.now()) inventoryRetryTimer = setTimeout(() => { get("inventory-retry").disabled = false; }, Math.min(30000, s.retryAt - Date.now()));
+      get("inventory-find").disabled = !summary || s.hidden || s.expired;
+      get("inventory-rows").replaceChildren(...(page?.entries ?? []).map(r => {
+        const tr = el("tr"), inspect = button(r.name === s.selected ? "Selected" : "Inspect", () => send("inventorySelect", { name: r.name, inventory_generation: inventoryGeneration }));
+        inspect.disabled = s.loading || s.expired || r.unavailable;
+        const cell = el("td"); cell.append(inspect);
+        tr.append(el("td", r.name ?? `${r.display_preview}… (unavailable: ${r.reason})`), el("td", r.conflict ? "Conflicting declarations" : r.type ?? "Unavailable"),
+          el("td", r.sample_count ?? "Not combined"), el("td", String(r.members.length)), cell); return tr;
+      }));
+      get("inventory-selection").textContent = s.selected ? `Selected: ${s.selected}` : "No signal selected";
+      const details = s.details, rows = [];
+      if (details) {
+        rows.push(el("p", `Fresh member details${details.counts_grew_since_inventory ? " · samples have grown since the inventory snapshot" : ""}. No live binding is inferred.`));
+        for (const d of details.descriptors) {
+          const section = el("section"); section.append(el("h4", `Member ${d.member_id}`));
+          for (const [name, e] of Object.entries(d.snapshot.entries)) section.append(el("p", `${name} · ${e.type} · ${d.snapshot.sample_counts[name]} samples`), el("pre", e.metadata ?? "No recorded metadata"));
+          for (const schema of d.snapshot.schemas) section.append(el("p", `Schema: ${schema.name}`), el("pre", schema.schema ?? schema.error ?? "Unavailable"));
+          rows.push(section);
+        }
+        for (const p of details.schema_problems) rows.push(el("p", `${p.name}: ${p.reason}`));
+      } else if (s.selected) rows.push(el("p", "Selection retained; details must be revalidated against the current recording."));
+      get("inventory-detail").replaceChildren(...rows);
+      if (summary) get("inventory").textContent = `${summary.total_entry_names.toLocaleString()} signal names · ${summary.members.length} member(s) · ${summary.conflicting_entry_names ?? 0} conflicting declaration(s) · Recorded bounds ${summary.start_time_sec ?? "unavailable"}–${summary.end_time_sec ?? "unavailable"} s · Duration ${summary.duration_sec ?? "unavailable"} s · Robot timestamps in seconds · ${recordingClock(summary.clock)} · ${summary.truncated || summary.damaged ? "Incomplete or damaged recording; inspect member details" : "Fixed inventory snapshot"}`;
+      get("status").textContent = s.loading ? "Recording signals loading…" : s.reason ? "Recording inspection needs attention" : "Recording inspected · live panels pending";
+      rendered(); return;
+    }
     if (message.type === "inventory") {
       inventory = message.inventory;
       if (overview) {
@@ -269,6 +329,6 @@
     }
     for (const id of panels.keys()) draw(id);
   });
-  window.addEventListener("unload", () => { clearTimeout(cursorTimer); for (const id of [...panels.keys()]) destroyPanel(id); grid?.destroy(false); });
+  window.addEventListener("unload", () => { clearTimeout(cursorTimer); clearTimeout(inventoryRetryTimer); for (const id of [...panels.keys()]) destroyPanel(id); grid?.destroy(false); });
   send("ready");
 })();

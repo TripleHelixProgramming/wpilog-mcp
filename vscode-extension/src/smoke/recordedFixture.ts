@@ -193,6 +193,8 @@ export function activate(context: vscode.ExtensionContext): void {
         await driver.evaluate(overviewSelector, `(() => { [...document.querySelectorAll('#drafts .view-row')].find(r=>r.textContent.includes(${JSON.stringify(a2.view_id.slice(0,8))})).querySelector('button').click(); return true; })()`);
         await until("native Resume reopens same UUID", () => (vscode.window.tabGroups.activeTabGroup.activeTab?.input as vscode.TabInputCustom)?.uri?.toString() === a2Uri.toString());
         await preview.openOverview(vscode.Uri.file(path.join(root, "logs/a.wpilog"))); const previousViews = new Set(preview.provider.documents.keys());
+        // Overview contexts are discarded while hidden; wait for its fresh list before clicking.
+        await until("saved overview button rendered", async () => await driver.evaluate(overviewSelector, "!!document.querySelector('#saved button')") === true);
         await driver.evaluate(overviewSelector, "(document.querySelector('#saved button').click(), true)");
         await until("saved Open new view forks", () => [...preview.provider.documents.keys()].some(k => !previousViews.has(k)));
         checks.push("overview Resume reopens the draft UUID and saved Open new view creates a distinct working UUID");

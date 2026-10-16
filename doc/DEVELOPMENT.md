@@ -479,8 +479,8 @@ must recover and request accounting must unwind. Direct stdio uses the raw line 
 Real writer fixtures interleave appends, declarations, renames, finalization and rollover with a fixed
 traversal. Blocked-admission tests retain reservations until cancellation unwinds and prove
 health, ping and close stay available under mixed HTTP/MCP pressure. These are server service
-checks; native overview paging and the season-sized declaration-burst performance gate remain
-separate work. Generated reference scenarios include the new tools; the published response
+checks. The separate native overview gate below drives paged discovery; the season-sized
+catalog and declaration-burst performance measurements remain separate work. Generated reference scenarios include the new tools; the published response
 reference is regenerated at release, not as a claim of new private-log replay evidence.
 The [checkpoint record](VISUALIZATION_PLAN.md#stage-3-recording-source-inspection-checkpoint-2026-10-15)
 links the local validation evidence.
@@ -561,6 +561,22 @@ The frozen reader-equivalence corpus explicitly records these machine-local visu
 operations as exclusions; `VisualizationConformance` supplies their isolated successful
 state transitions instead of comparing machine-specific IDs across frozen builds.
 Plant their corresponding failures before trusting a changed check.
+
+For bounded recording discovery, run `./gradlew extensionSmokeFixture` and then
+`VSCODE_VERSION=1.101.0 npm run test:inventory-overview` in `vscode-extension` (repeat with the
+current tested editor). The runner creates an active synthetic recording plus a finalized
+rollover with 20,000 distinct names, exceeding the old full-inventory limit. It drives the real
+HTTP owner and native controls through delayed catalog identification across hide/reveal,
+single-owner cleanup, paging, exact filtering, exclusive unavailable mode, fresh details, MCP parity,
+late replies, real capacity refusal/retry, hidden/revealed views and close. It waits through
+the actual five-minute absolute expiry and verifies automatic refresh with the same selected
+name and filter. Allow about six minutes per editor. Each run has private process state and
+writes its requests, assertions, screenshot and results under `build/visualization-stage3-overview/`.
+It does not install an extension or server. Native runs on other operating systems are separate
+evidence; ordinary Node tests exercise cancellation, memory admission, session ownership,
+response limits and renderer acknowledgements without a workbench. The lifecycle tests cover
+both catalog-reply orders, duplicate ready, close during summary delivery and cancelled failure;
+controller-to-renderer tests keep idle-expired rows disabled after failed replacement admission.
 
 ### The data endpoint's streams
 

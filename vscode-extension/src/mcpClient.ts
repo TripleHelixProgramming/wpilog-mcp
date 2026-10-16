@@ -265,20 +265,39 @@ export class McpClient {
   }
 
   /** Narrow local preview adapter; a lost response never replays a mutation automatically. */
-  async visualization<T>(route: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  async visualization<T>(route: string, body?: unknown, signal?: AbortSignal, options: VisualizationRequest = {}): Promise<T> {
     if (!/^\/[a-zA-Z0-9_/-]+$/.test(route)) throw new Error("Invalid visualization route");
-    await this.updating.catch(() => {}); await this.ensureSession();
-    const called = this.sessionId;
-    const send = () => this.exchange(new URL("/visualizations/v1" + route, this.endpoint).toString(),
-      body === undefined ? "GET" : "POST", body, this.sessionId, 600_000, signal, 16 << 20);
-    let reply = await send();
-    if (reply.status === 404 && JSON.parse(reply.body).code === "SESSION_EXPIRED") {
-      if (this.sessionId === called) this.sessionId = undefined;
-      await this.ensureSession(); reply = await send();
-    }
-    const value = JSON.parse(reply.body);
-    if (reply.status !== 200) throw new LocalControlError(`${value.code ?? "PREVIEW_FAILED"}: ${value.error ?? reply.status}`, reply.status, value.code);
-    return value as T;
+    if (options.maxRequestBytes !== undefined && Buffer.byteLength(JSON.stringify(body ?? null)) > options.maxRequestBytes)
+      throw new Error("Visualization request exceeds its byte budget");
+    const controller = new AbortController(), cancel = () => controller.abort(signal?.reason);
+    signal?.addEventListener("abort", cancel, { once: true }); if (signal?.aborted) cancel();
+    const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => controller.abort(new Error("Visualization request deadline exceeded")), options.timeoutMs);
+    const check = () => { if (controller.signal.aborted) throw controller.signal.reason ?? new Error("Request cancelled"); };
+    const operation = async (): Promise<T> => {
+      if (options.session === undefined) { await this.updating.catch(() => {}); check(); await this.ensureSession(); }
+      check(); let called = options.session ?? this.sessionId;
+      const send = () => {
+        check(); options.captureSession?.(called!);
+        return this.exchange(new URL("/visualizations/v1" + route, this.endpoint).toString(),
+          body === undefined ? "GET" : "POST", body, called, options.timeoutMs ?? 600_000, controller.signal, options.maxResponseBytes ?? 16 << 20);
+      };
+      let reply = await send(); check();
+      if (reply.status === 404 && JSON.parse(reply.body).code === "SESSION_EXPIRED") {
+        if (this.sessionId === called) this.sessionId = undefined;
+        if (options.session === undefined) { await this.ensureSession(); check(); called = this.sessionId; reply = await send(); }
+      }
+      check(); const value = JSON.parse(reply.body);
+      if (reply.status !== 200) {
+        if (value.retryable !== undefined && typeof value.retryable !== "boolean") throw new Error("Invalid visualization refusal retryable flag");
+        throw new LocalControlError(`${value.code ?? "PREVIEW_FAILED"}: ${value.error ?? reply.status}`, reply.status, value.code, value.retryable);
+      }
+      return value as T;
+    };
+    let abort!: () => void;
+    const stopped = new Promise<never>((_, reject) => { abort = () => reject(controller.signal.reason ?? new Error("Request cancelled"));
+      controller.signal.addEventListener("abort", abort, { once: true }); if (controller.signal.aborted) abort(); });
+    try { return await Promise.race([operation(), stopped]); }
+    finally { clearTimeout(timer); signal?.removeEventListener("abort", cancel); controller.signal.removeEventListener("abort", abort); }
   }
 
   private async localControl<T>(route: string, method: "GET" | "POST" | "PUT", body?: unknown): Promise<T> {
@@ -410,5 +429,11 @@ class RegistrationError extends Error {
 
 /** A conflict is shown to the person; the client never retries a policy replacement. */
 export class LocalControlError extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
+  constructor(message: string, readonly status: number, readonly code?: string, readonly retryable?: boolean) { super(message); }
+}
+
+/** Inventory handles are session-owned; passing session prohibits automatic rebinding/replay. */
+export interface VisualizationRequest {
+  maxRequestBytes?: number; maxResponseBytes?: number; timeoutMs?: number;
+  session?: string; captureSession?(session: string): void;
 }

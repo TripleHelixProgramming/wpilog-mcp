@@ -5,6 +5,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vm from "node:vm";
 import { addPanel, addSignals, RecordedConfiguration, ViewGeneration } from "../visualization/recordedModel";
+import { InventoryOverview } from "../visualization/inventoryOverview";
+import { InventoryBackend, InventoryHandle } from "../visualization/inventoryClient";
+import { ByteBudget } from "../visualization/byteBudget";
+import { LocalControlError } from "../mcpClient";
+import { recordedPage } from "../visualization/recordedPage";
 const loader = require("node:module"), original = loader._load;
 let RecordedPreview: typeof import("../visualization/recordedPreview").RecordedPreview;
 try { loader._load = (name: string, ...args: any[]) => name === "vscode" ? {} : original(name, ...args); RecordedPreview = require("../visualization/recordedPreview").RecordedPreview; }
@@ -168,4 +173,98 @@ test("painting or resizing never turns a programmatic uPlot cursor update into a
   // uPlot's deferred redraw can reuse its last input event after the paint call returned.
   r.charts[0].cursorHook(); r.flush();
   assert.equal(r.messages.filter(m => m.type === "cursor").length, 1, "deferred programmatic hooks must not replay the last gesture");
+});
+
+test("paged recording inventory replaces its visible rows without enabling live bindings", () => {
+  const r = renderer(true);
+  r.send({ type: "summary", summary: { source_ref: { kind: "session" }, label: "Large recording" } });
+  r.send({ type: "inventoryPage", state: { generation: 1, loading: false, expired: false, selected: "/one", previous: false, next: true,
+    summary: { total_entry_names: 20000, members: [{}, {}], duration_sec: 2, start_time_sec: 1, end_time_sec: 3, damaged: true, clock: { basis: "last_sample" } }, page: { total_matching: 20000, unavailable_excluded: true, unavailable_entry_names: 0,
+      entries: [{ name: "/one", type: "int64", sample_count: "3", row_id: "r1", members: [] }] } } });
+  assert.match(r.get("inventory-count").text(), /20,000/);
+  assert.match(r.get("inventory").text(), /Duration 2 s/);
+  assert.match(r.get("inventory").text(), /Recorded bounds 1.*3 s/);
+  assert.match(r.get("inventory").text(), /Incomplete or damaged/);
+  assert.match(r.get("inventory-rows").text(), /\/one/);
+  assert.equal(r.get("inventory-previous").disabled, true);
+  assert.equal(r.get("inventory-next").disabled, false);
+  assert.equal(r.get("blank").disabled, true);
+  r.send({ type: "inventoryPage", state: { generation: 2, loading: false, expired: false, previous: true, next: false,
+    page: { total_matching: 1, unavailable_excluded: true, unavailable_entry_names: 0, entries: [{ name: "/two", type: "double", sample_count: "2", row_id: "r2", members: [] }] } } });
+  assert.doesNotMatch(r.get("inventory-rows").text(), /\/one/);
+  assert.match(r.get("inventory-rows").text(), /\/two/);
+  (r.get("inventory-next") as any).onclick();
+  assert.equal(r.messages.at(-1).type, "inventoryNext");
+  assert.equal(r.messages.at(-1).inventory_generation, 2);
+});
+
+test("overview filter keys and unavailable previews cannot become inferred names", () => {
+  const r = renderer(true);
+  r.get("inventory-search").value = "literal.*"; r.get("inventory-type").value = "struct:Pose2d";
+  (r.get("inventory-unavailable") as any).checked = true;
+  (r.get("inventory-search") as any).onkeydown({ key: "Enter", preventDefault() {} });
+  assert.deepEqual(JSON.parse(JSON.stringify(r.messages.at(-1))), { type: "inventoryFilter", generation: "", query: "literal.*", exact_type: "struct:Pose2d", unavailable: true });
+  const state = { generation: 5, loading: false, expired: false, previous: false, next: false,
+    page: { total_matching: 1, total_entry_names: 1, unavailable_excluded: false, unavailable_entry_names: 1,
+      entries: [{ unavailable: true, conflict: false, display_preview: "/huge", reason: "Too long", sample_count: null, members: [] }] } };
+  r.send({ type: "inventoryPage", delivery_id: "owner:5", state });
+  assert.match(r.get("inventory-rows").text(), /unavailable: Too long/);
+  const tr = r.get("inventory-rows").children[0]; assert.equal(tr.children.at(-1)?.children[0].disabled, true);
+  assert.equal(r.messages.at(-1).type, "inventoryRendered"); assert.equal(r.messages.at(-1).delivery_id, "owner:5");
+  r.send({ type: "inventoryPage", delivery_id: "owner:4", state: { ...state, generation: 4, page: { ...state.page, entries: [] } } });
+  assert.match(r.get("inventory-rows").text(), /huge/, "obsolete renderer state cannot replace rows");
+  assert.equal(r.messages.at(-1).delivery_id, "owner:4", "discarded deliveries still release their reservation");
+});
+
+test("a recreated overview restores filter controls without overwriting an unapplied edit", () => {
+  const r = renderer(true), state = { generation: 8, loading: false, hidden: false, expired: false,
+    filter: { query: "needle", types: ["int64"], unavailable: true } };
+  r.send({ type: "inventoryPage", state });
+  assert.equal(r.get("inventory-search").value, "needle"); assert.equal(r.get("inventory-type").value, "int64");
+  assert.equal((r.get("inventory-unavailable") as any).checked, true);
+  r.get("inventory-search").value = "typing a new filter";
+  r.send({ type: "inventoryPage", state: { ...state, generation: 9, loading: true } });
+  assert.equal(r.get("inventory-search").value, "typing a new filter");
+});
+
+test("a real expiry followed by refused admission leaves renderer rows readable but actions disabled", async t => {
+  const r = renderer(true), now = Date.now(), source = { kind: "session", session_id: "synthetic" };
+  let invalid = false;
+  const backend: InventoryBackend = {
+    open: async () => { if (invalid) throw new LocalControlError("Capacity refused", 413, "RESOURCE_LIMIT", true);
+      return { summary: { inventory_mode: "paged", inventory_id: "old", server_epoch: "epoch", expires_at: new Date(now + 300000).toISOString(),
+        idle_expiry_ms: 60000, source_ref: source, total_entry_names: 2, conflicting_entry_names: 0, unavailable_entry_names: 0, members: [], clock: {} }, session: "client", client: {} } as unknown as InventoryHandle; },
+    list: async () => { if (invalid) throw new LocalControlError("Idle expired", 410, "INVENTORY_EXPIRED", true);
+      return { entries: [{ name: "/known", row_id: "old-row", type: "int64", sample_count: "3", conflict: false, unavailable: false, members: [] }],
+        returned: 1, total_matching: 2, total_entry_names: 2, unavailable_excluded: true, unavailable_entry_names: 0, complete: false, next_cursor: "next" }; },
+    details: async () => { throw new Error("unexpected detail read"); }, close: async () => {},
+  };
+  const view = new InventoryOverview(source, backend, new ByteBudget(), state => r.send({ type: "inventoryPage", state }),
+    { now: () => now, later: () => ({}), cancel() {} }); t.after(() => view.dispose());
+  await view.show(); invalid = true; await view.navigate(1, view.snapshot.generation);
+  for (let i = 0; i < 10; i++) await new Promise<void>(resolve => setImmediate(resolve));
+  assert.match(r.get("inventory-age").text(), /Expired; Retry/);
+  assert.match(r.get("inventory-reason").text(), /Capacity refused/); assert.match(r.get("inventory-rows").text(), /\/known/);
+  assert.equal(r.get("inventory-next").disabled, true); assert.equal(r.get("inventory-previous").disabled, true);
+  assert.equal(r.get("inventory-find").disabled, true, "expired rows can only be refreshed, not queried again");
+  assert.equal(r.get("inventory-rows").children[0].children.at(-1)!.children[0].disabled, true);
+});
+
+test("unavailable mode is exclusive and restores ordinary filters after switching back", () => {
+  const html = recordedPage(s => s, "csp", "nonce", true), r = renderer(true);
+  assert.match(html, /Show unavailable declarations/); assert.doesNotMatch(html, /Include unavailable/);
+  const state = { generation: 1, loading: false, expired: false, hidden: false, previous: false, next: false,
+    filter: { query: "literal.*", types: ["double"], unavailable: true },
+    page: { entries: [], total_matching: 0, total_entry_names: 20000, unavailable_entry_names: 0, unavailable_excluded: false } };
+  r.send({ type: "inventoryPage", state });
+  assert.equal(r.get("inventory-search").disabled, true); assert.equal(r.get("inventory-type").disabled, true);
+  assert.equal(r.get("inventory-search").value, "literal.*"); assert.equal(r.get("inventory-type").value, "double");
+  assert.match(r.get("inventory-count").text(), /Unavailable declarations only/);
+  assert.match(r.get("inventory-count").text(), /0 shown of 0 unavailable declarations/);
+  assert.match(r.get("inventory-count").text(), /turn off this mode/);
+  assert.doesNotMatch(r.get("inventory-count").text(), /Applied search/);
+  (r.get("inventory-unavailable") as any).checked = false; (r.get("inventory-unavailable") as any).onchange();
+  assert.equal(r.get("inventory-search").disabled, false); assert.equal(r.get("inventory-type").disabled, false);
+  (r.get("inventory-find") as any).onclick();
+  assert.equal(r.messages.at(-1).query, "literal.*"); assert.equal(r.messages.at(-1).exact_type, "double"); assert.equal(r.messages.at(-1).unavailable, false);
 });

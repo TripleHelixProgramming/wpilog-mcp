@@ -92,10 +92,22 @@ cancellation of stale replies. Continuous live views and the aggregate decoded-b
 arrive in Stage 3.
 
 An open manifested recording now has an inspection-only overview with member count, declaration
-conflicts and explicit clock basis. Blank layout and template opening stay disabled there;
-use the existing Explorer for continuous display and reopen the overview for a fresh inventory.
-Recorded-file views keep the workflow above. This source-admission checkpoint does not yet wire
-the shared follow broker into visualization panels.
+conflicts and explicit clock basis. Signal discovery uses bounded pages: enter a literal name
+search or exact declared type, then **Apply filter** (Enter works). **Previous** and **Next**
+replace the rows; counts include the true matching total. **Show unavailable declarations only**
+switches to an exclusive, unsearchable list of bounded previews. Name/type inputs are disabled
+and their filters omitted until that mode is turned off; the ordinary filters are retained.
+**Inspect** reads fresh member counts, metadata and required schemas for the exact selected name.
+**Refresh signals / Retry** replaces the frozen inventory and revalidates the selection; a
+visible overview also refreshes at its five-minute absolute expiry. A failed refresh keeps
+readable old rows with their timestamp and reason, and Retry has a bounded backoff. Known-expired
+rows stay disabled until a replacement page is admitted. Hiding or closing cancels initialization
+and releases the inventory and row buffers; reveal opens a new snapshot with the filter
+and exact-name selection retained. No heartbeat keeps a hidden inventory alive. Older servers
+without paged discovery show an update hint instead of downloading the full recording inventory.
+Blank layout and template opening stay disabled there; use the existing Explorer for continuous
+display. Recorded-file views keep the workflow above. This checkpoint does not yet wire the
+shared follow broker into visualization panels.
 
 Draft gestures are persisted on the local server, with a local recovery journal; drafts do not
 trigger native Save prompts. **Save view…** chooses a labeled writable store, or **Create store…**

@@ -17,3 +17,12 @@ dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; } dt 
 .panel-body { overflow: auto; flex: 1; min-height: 0; padding: 5px; } .panel-note { padding: 2px 8px; margin: 0; }
 table { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: 6px; border-bottom: 1px solid var(--vscode-widget-border, #555); overflow-wrap: anywhere; }
 .time-controls input { width: 9em; } .u-legend { font-size: .9em; } .uplot { color: var(--vscode-foreground); }
+
+button:disabled { opacity: .5; cursor: default; }
+#inventory-browser table { width: 100%; border-collapse: collapse; }
+#inventory-browser th, #inventory-browser td { text-align: left; padding: .35rem; border-bottom: 1px solid var(--vscode-panel-border); overflow-wrap: anywhere; }
+#inventory-browser pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+#inventory-browser label { margin-right: .75rem; }
+#inventory-reason { color: var(--vscode-errorForeground); }
+.inventory-table { max-height: 24rem; overflow: auto; margin: .5rem 0; }
+.inventory-table thead { position: sticky; top: 0; background: var(--vscode-editor-background); }

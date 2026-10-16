@@ -351,15 +351,30 @@ needed. The [extension guide](../vscode-extension/README.md#exploring-logs) has 
     inspection before another edit. An attached Explorer receives the accepted revision without
     a popup. Live following and explicit display handoff remain later stages.
 
-For a currently recording, manifested WPILOG, the preview overview now shows a detached
-recording inventory and explicitly disables Blank layout and live template opening. Reopen the
-overview to inspect a newer prefix; use the existing Explorer for continuous display during
-this checkpoint. Local callers can separately opt into bounded recording discovery with
-`visualization_source_inspect` and `inventory_mode: "paged"`, then list/get/close the inventory
-through the [documented operations](TOOLS.md#visualization_source_entries_list). The overview
-UI still uses full inspection. In its default mode, `visualization_source_inspect` returns the same anchored source and member
-inventory, with clock evidence separate from sample timestamps. This is source admission for
-the upcoming live panels, not completion of the live visualization workflow.
+For a currently recording, manifested WPILOG, **Open Source Overview** shows catalog facts first,
+then the recording summary and at most 256 signal rows. Enter a literal name search and/or an
+exact declared type and press **Apply filter** or Enter. **Previous** and **Next** replace the
+row window; the count states the true matching total. **Show unavailable declarations only**
+switches to bounded previews of names too large to list, with a reason; ordinary rows are excluded
+and those previews cannot be selected. Name/type inputs are disabled in this mode and their
+filters are not sent. Uncheck it and apply to return to the retained ordinary search and type.
+Choose **Inspect** beside a signal for fresh per-member counts, metadata, schemas and problems.
+Conflicting declarations stay explicit; the preview does not infer a compatible live binding.
+
+**Refresh signals / Retry** admits a new snapshot before retiring the old one. Selection stays
+with the exact name in this source and is checked again. A visible overview refreshes itself
+at the five-minute hard expiry; an idle-expiry refusal also reopens it. Failed refreshes show
+a reason and retain the old rows and snapshot timestamp. A known-expired snapshot stays labeled
+expired, with paging, filtering and Inspect disabled, until a replacement page is admitted.
+Retry becomes available after a bounded delay; it does not spin in the background. Hiding or
+closing cancels pending initialization and releases the handle and rows, and reveal opens fresh. A server without paged inventory
+support shows an update hint. Blank layout and live template opening remain disabled; use the
+existing Explorer for continuous display.
+
+The overview calls the same owner as `visualization_source_inspect` with `inventory_mode: "paged"`
+and the [list/get/close operations](TOOLS.md#visualization_source_entries_list). Tool inspection's
+default full mode is unchanged. This is discovery for the upcoming live panels; timestamps
+remain the recorded robot timestamps, separate from the inspection clock evidence.
 
 ## Part II: Running the server
 
