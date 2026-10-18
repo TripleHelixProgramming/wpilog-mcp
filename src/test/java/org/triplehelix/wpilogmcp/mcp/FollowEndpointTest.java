@@ -62,6 +62,25 @@ class FollowEndpointTest {
     logs.release(temp); logs.clearAllowedDirectories(); allowed.forEach(logs::addAllowedDirectory);
   }
   void append(long timestamp, long value) { writer.value(topic, new ValueFrame(1, timestamp, 2, value), 0); }
+  @Test void recordingAnalysisReadsFreshFixedPrefixesDuringAppendAndAfterFinalization() throws Exception {
+    String owner = client(); var input = new JsonObject();
+    input.add("source_ref", JsonParser.parseString(creation()).getAsJsonObject().get("source_ref")); input.addProperty("entry", "NT:/x");
+    var first = json(local(owner, "/visualizations/v1/source/value", input), 200);
+    assertEquals("41", first.getAsJsonObject("value").get("value").getAsString());
+    assertFalse(first.getAsJsonObject("prefix").get("finalized").getAsBoolean());
+    append(1_000_002, 43); append(1_000_001, 45); // Backward physical tail must not replace timestamp-latest.
+    var latest = json(local(owner, "/visualizations/v1/source/value", input), 200);
+    assertEquals("43", latest.getAsJsonObject("value").get("value").getAsString());
+    var stats = json(local(owner, "/visualizations/v1/source/statistics", input), 200);
+    assertEquals(3, stats.get("count").getAsInt()); assertEquals(43, stats.get("mean").getAsDouble()); assertEquals(2, stats.get("std_dev").getAsDouble());
+    assertEquals("1", first.getAsJsonObject("prefix").getAsJsonArray("members").get(0).getAsJsonObject().get("entry_records").getAsString());
+    finalizeRecording(false); logs.release(temp);
+    var finished = json(local(owner, "/visualizations/v1/source/value", input), 200);
+    assertTrue(finished.getAsJsonObject("prefix").get("finalized").getAsBoolean());
+    assertEquals(latest.get("value"), finished.get("value")); assertEquals(latest.get("ordinal"), finished.get("ordinal"));
+    assertEquals(org.triplehelix.wpilogmcp.store.LogStore.contentHash(file), finished.getAsJsonObject("prefix").getAsJsonArray("members").get(0).getAsJsonObject().get("content_sha256").getAsString());
+    assertTrue(logs.release(temp).released());
+  }
   HttpRequest request(String method, String path, String body) {
     return HttpRequest.newBuilder(base.resolve(path)).timeout(Duration.ofSeconds(30))
         .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body)).build();
@@ -84,6 +103,138 @@ class FollowEndpointTest {
   }
   String nextPath(JsonObject lease) { return "/read/v1/follows/" + lease.get("id").getAsString() + "/next"; }
   String nextBody(String cursor, int wait) { return "{\"cursor\":\"" + cursor + "\",\"wait_ms\":" + wait + "}"; }
+
+  JsonObject viewConfiguration(String entry) {
+    var config = org.triplehelix.wpilogmcp.visualization.VisualizationContracts.blank();
+    config.getAsJsonArray("requirements").add(JsonParser.parseString("""
+        {"id":"signal","selector_kind":"entry","entry":"%s","accepted_entry_types":["int64"],
+         "field_path":null,"value_type":"number","unit":null}
+        """.formatted(entry)));
+    config.getAsJsonObject("time").add("live", JsonParser.parseString("{\"mode\":\"fixed\",\"start_sec\":1,\"end_sec\":2}"));
+    return config;
+  }
+  String client() throws Exception {
+    var response = call("POST", "/mcp", """
+        {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26",
+        "capabilities":{},"clientInfo":{"name":"bound-follow-fixture","version":"1"}}}
+        """);
+    assertEquals(200, response.statusCode(), response.body()); return response.headers().firstValue("Mcp-Session-Id").orElseThrow();
+  }
+  HttpResponse<String> local(String client, String path, JsonObject body) throws Exception {
+    return http.send(HttpRequest.newBuilder(base.resolve(path)).timeout(Duration.ofSeconds(30)).header("Mcp-Session-Id", client)
+        .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build(), HttpResponse.BodyHandlers.ofString());
+  }
+  JsonObject createView(String client) throws Exception {
+    var input = new JsonObject(); input.add("source_ref", JsonParser.parseString(creation()).getAsJsonObject().get("source_ref"));
+    input.addProperty("request_id", UUID.randomUUID().toString()); input.add("configuration", viewConfiguration("NT:/x"));
+    return json(local(client, "/visualizations/v1/views", input), 200);
+  }
+  JsonObject boundRequest(JsonObject view) {
+    var out = new JsonObject(); var binding = new JsonObject(); binding.add("view_id", view.get("view_id"));
+    binding.add("expected_revision", view.get("revision")); out.add("view_binding", binding); return out;
+  }
+  @Test void viewFollowPinsRevisionAndServerQueriesWithOneMiBQueriedPages() throws Exception {
+    String client = client(); var view = createView(client); var input = boundRequest(view);
+    var lease = json(local(client, "/read/v1/follows", input), 201);
+    assertEquals("queries", lease.get("frontier_scope").getAsString()); assertEquals(1 << 20, lease.get("max_page_bytes").getAsInt());
+    var binding = lease.getAsJsonObject("view_binding"); assertEquals(view.get("view_id"), binding.get("view_id"));
+    assertEquals(1, binding.get("revision").getAsInt());
+    assertEquals("NT:/x", binding.getAsJsonArray("queries").get(0).getAsJsonObject().get("entry").getAsString());
+    var first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
+    assertEquals(new JsonPrimitive("queries"), first.getAsJsonObject("frontier").get("frontier_scope"));
+    var sample = first.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch").getAsJsonArray("samples").get(0).getAsJsonObject();
+    assertEquals(41, sample.getAsJsonObject("value").get("value").getAsLong()); assertEquals(1_000_001, sample.get("timestamp_us").getAsLong());
+    json(local(client, "/visualizations/v1/views/" + view.get("view_id").getAsString() + "/attach", new JsonObject()), 200);
+    var edit = new JsonObject(); edit.addProperty("revision", 1); edit.add("configuration", viewConfiguration("NT:/missing"));
+    json(local(client, "/visualizations/v1/views/" + view.get("view_id").getAsString(), edit), 200);
+    var stale = json(local(client, "/read/v1/follows", input), 409); assertEquals("REVISION_CONFLICT", stale.get("code").getAsString());
+    append(500_000, 42); // Deltas keep physical ordinals, even outside the historical window.
+    var delta = json(call("POST", nextPath(lease), nextBody(first.get("next_cursor").getAsString(), 0)), 200);
+    assertEquals(42, delta.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch").getAsJsonArray("samples").get(0).getAsJsonObject().getAsJsonObject("value").get("value").getAsLong());
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+  }
+  @Test void viewBindingReadIsRevisionCheckedAndMcpMatchesHttp() throws Exception {
+    String client = client(); var view = createView(client); var body = boundRequest(view).getAsJsonObject("view_binding").deepCopy();
+    var result = json(local(client, "/visualizations/v1/views/" + view.get("view_id").getAsString() + "/bindings", body), 200);
+    assertEquals(view.get("view_id"), result.get("view_id")); assertEquals(1, result.get("revision").getAsInt());
+    assertEquals("compatible", result.getAsJsonObject("compatibility").get("compatibility").getAsString());
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    body.addProperty("api_version", 1);
+    var rpc = new JsonObject(); rpc.addProperty("jsonrpc", "2.0"); rpc.addProperty("id", 2); rpc.addProperty("method", "tools/call");
+    var params = new JsonObject(); params.addProperty("name", "visualization_view_bind"); params.add("arguments", body); rpc.add("params", params);
+    var response = new McpMessageHandler(registry).handleMessage(rpc, null, CallerContext.Authority.STDIO_LOCAL).response();
+    var mcp = JsonParser.parseString(response.getAsJsonObject("result").getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString()).getAsJsonObject();
+    assertEquals("ok", mcp.get("status").getAsString(), mcp.toString()); assertEquals(result, mcp.get("binding"));
+    body.addProperty("expected_revision", 2);
+    assertEquals("REVISION_CONFLICT", json(local(client, "/visualizations/v1/views/" + view.get("view_id").getAsString() + "/bindings", body), 409).get("code").getAsString());
+  }
+
+  @Test void viewFollowRechecksSessionAndGrantsOnRetainedRetries() throws Exception {
+    String client = client(); var view = createView(client);
+    assertEquals(403, call("POST", "/read/v1/follows", boundRequest(view).toString()).statusCode());
+    var lease = json(local(client, "/read/v1/follows", boundRequest(view)), 201);
+    String cursor = lease.get("cursor").getAsString(); json(call("POST", nextPath(lease), nextBody(cursor, 0)), 200);
+    assertEquals(200, http.send(HttpRequest.newBuilder(base.resolve("/mcp")).header("Mcp-Session-Id", client).DELETE().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+    assertEquals(403, call("POST", nextPath(lease), nextBody(cursor, 0)).statusCode());
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+    client = client(); lease = json(local(client, "/read/v1/follows", boundRequest(view)), 201);
+    cursor = lease.get("cursor").getAsString(); json(call("POST", nextPath(lease), nextBody(cursor, 0)), 200);
+    logs.clearAllowedDirectories();
+    assertEquals(403, call("POST", nextPath(lease), nextBody(cursor, 0)).statusCode());
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+  }
+  @Test void viewFollowRefusesQueryOverridesAndBindingChangesButDrainsFinalization() throws Exception {
+    String client = client(); var view = createView(client); var request = boundRequest(view);
+    request.addProperty("max_page_bytes", 4 << 20);
+    assertEquals(400, local(client, "/read/v1/follows", request).statusCode()); request.remove("max_page_bytes");
+    var lease = json(local(client, "/read/v1/follows", request), 201);
+    var first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
+    var properties = new JsonObject(); properties.addProperty("description", "synthetic metadata revision");
+    writer.properties(new org.triplehelix.wpilogmcp.nt4.ControlMessage.Properties(topic.name(), false, properties));
+    var refused = json(call("POST", nextPath(lease), nextBody(first.get("next_cursor").getAsString(), 0)), 409);
+    assertEquals("BINDING_CHANGED", refused.get("code").getAsString()); assertFalse(refused.get("retryable").getAsBoolean());
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+    lease = json(local(client, "/read/v1/follows", request), 201);
+    first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
+    append(1_000_002, 42); finalizeRecording(false);
+    var last = json(call("POST", nextPath(lease), nextBody(first.get("next_cursor").getAsString(), 0)), 200);
+    assertTrue(last.get("ended").getAsBoolean());
+    assertEquals(42, last.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch").getAsJsonArray("samples").get(0).getAsJsonObject().getAsJsonObject("value").get("value").getAsLong());
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+  }
+
+  @Test void viewFollowUsesRecordedClockForLastNWindowAndRetriesSharedSlotPressure() throws Exception {
+    String client = client(); var view = createView(client); var config = viewConfiguration("NT:/x");
+    config.getAsJsonObject("time").add("live", JsonParser.parseString("{\"mode\":\"follow\",\"window_sec\":2}"));
+    view = registry.visualizations().views.update(CallerContext.Authority.STDIO_LOCAL, UUID.fromString(view.get("view_id").getAsString()), 1, config).get();
+    var lease = json(local(client, "/read/v1/follows", boundRequest(view)), 201);
+    var binding = lease.getAsJsonObject("view_binding"); assertEquals("last_sample", binding.getAsJsonObject("clock").get("basis").getAsString());
+    var window = binding.getAsJsonArray("queries").get(0).getAsJsonObject().getAsJsonArray("windows").get(0).getAsJsonObject();
+    assertEquals("-999999", window.get("start_us").getAsString()); assertEquals("1000001", window.get("end_us").getAsString());
+    var first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
+    var field = registry.visualizations().getClass().getDeclaredField("recordingBindings"); field.setAccessible(true); var owner = field.get(registry.visualizations());
+    var slotField = owner.getClass().getDeclaredField("slots"); slotField.setAccessible(true); var slots = (java.util.concurrent.Semaphore) slotField.get(owner);
+    slots.acquire(2); append(1_000_003, 43);
+    try {
+      var refused = json(call("POST", nextPath(lease), nextBody(first.get("next_cursor").getAsString(), 0)), 413);
+      assertTrue(refused.get("retryable").getAsBoolean());
+    } finally { slots.release(2); }
+    var resumed = json(call("POST", nextPath(lease), nextBody(first.get("next_cursor").getAsString(), 0)), 200);
+    var value = resumed.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch").getAsJsonArray("samples").get(0).getAsJsonObject();
+    assertEquals(1, value.get("ordinal").getAsInt()); assertEquals(43, value.getAsJsonObject("value").get("value").getAsInt());
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+  }
+
+  @Test void viewAndRawFollowsShareTheLeaseCap() throws Exception {
+    String client = client(); var view = createView(client); var leases = new ArrayList<JsonObject>();
+    try {
+      leases.add(json(local(client, "/read/v1/follows", boundRequest(view)), 201));
+      for (int i = 1; i < 32; i++) leases.add(create());
+      assertEquals(429, local(client, "/read/v1/follows", boundRequest(view)).statusCode());
+    } finally { for (var lease : leases) assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode()); }
+    var reopened = json(local(client, "/read/v1/follows", boundRequest(view)), 201);
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + reopened.get("id").getAsString(), null).statusCode());
+  }
 
   @ParameterizedTest @ValueSource(ints = {5000, 10000})
   void queriedFrontierBootstrapsLargeTwoMemberRecordingsAtOneMiB(int topics) throws Exception {

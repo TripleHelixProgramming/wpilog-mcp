@@ -29,7 +29,7 @@ test("first Save view leases its chosen store before an empty import; cancel cre
   });
   await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
   t.after(() => { server.closeAllConnections(); server.close(); });
-  const preview: any = Object.create(RecordedPreview.prototype);
+  const preview: any = Object.create(RecordedPreview.prototype); preview.registerWindow = async () => {};
   preview.host = { grantStore: async (p: string) => { assert.equal(p, canonical); await new Promise(resolve => setTimeout(resolve, 25)); granted = true; },
     client: async () => ({ endpoint: `http://127.0.0.1:${(server.address() as any).port}/mcp` }) };
   preview.backend = { destinations: new Map(), call: async () => ({ stores: granted ? [{ store_id: "store", path: canonical, label: "Fixture", writable: true }] : [] }) };
@@ -45,7 +45,7 @@ test("first Save view leases its chosen store before an empty import; cancel cre
 });
 
 test("ephemeral server identity warns that drafts cannot survive a restart", async () => {
-  const preview: any = Object.create(RecordedPreview.prototype);
+  const preview: any = Object.create(RecordedPreview.prototype); preview.registerWindow = async () => {};
   preview.backend = { capabilities: async () => ({ server_instance_id: "owner", working_state: "ephemeral", working_state_reason: "Fixture permission refusal" }) };
   assert.equal(await preview.identity(), "owner");
   assert.match(preview.stateWarning, /restart.*Fixture permission refusal/);

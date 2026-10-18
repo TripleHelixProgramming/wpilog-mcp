@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import type * as vscode from "vscode";
 import type { ServerManager } from "../serverManager";
+import { remoteLogUri } from "../explorer/pitServer";
 
 const disposable = () => ({ dispose() {} });
 let dialogs = 0;
@@ -24,7 +25,7 @@ const host = {
     dispose() {}
   },
   Disposable: class { dispose() {} },
-  workspace: { registerFileSystemProvider: disposable },
+  workspace: { registerFileSystemProvider: disposable, getConfiguration: () => ({ get: (_key: string, fallback: unknown) => fallback }) },
   commands: {
     registerCommand(name: string, action: (...args: any[]) => any) {
       commands.set(name, action); return disposable();
@@ -60,6 +61,53 @@ function fixture(savedGrouping?: unknown) {
     { appendLine() {} } as unknown as vscode.OutputChannel,
     {} as ServerManager, () => ({ name: "http", url: "http://localhost:2363/mcp" }) as any);
 }
+
+function pitUri(url: string): vscode.Uri {
+  const link = remoteLogUri(url, "/shared/capture.wpilog");
+  return { scheme: "wpilog-pit", query: decodeURIComponent(link.slice(link.indexOf("?") + 1)) } as vscode.Uri;
+}
+for (const configured of ["http://pit-b:2363/mcp", "http://pit-a:2363/other/mcp"])
+  test(`pit overview refuses a document from another configured connection: ${configured}`, async () => {
+    const explorer = fixture(), requested: string[] = [];
+    (explorer as any).pitSpec = () => ({ kind: "pit", name: "pit", url: configured });
+    explorer.logs.listing = async spec => { requested.push((spec as { url?: string }).url ?? "local"); return { logs: [] }; };
+    try {
+      const result = await explorer.pitOverview(pitUri("http://pit-a:2363/mcp"));
+      assert.deepEqual(requested, [], "reject the origin before reading another server's catalog");
+      assert.ok("message" in result); assert.match(result.message, /different pit server|changed/i);
+    } finally { explorer.dispose(); }
+  });
+test("pit overview refuses a connection changed while its catalog request was in flight", async () => {
+  const explorer = fixture(), requested: string[] = []; let url = "http://pit-a:2363/mcp";
+  (explorer as any).pitSpec = () => ({ kind: "pit", name: "pit", url });
+  explorer.logs.listing = async spec => { requested.push((spec as { url?: string }).url ?? "local"); url = "http://pit-b:2363/mcp"; return { logs: [] }; };
+  try {
+    const result = await explorer.pitOverview(pitUri("http://pit-a:2363/mcp"));
+    assert.deepEqual(requested, ["http://pit-a:2363/mcp"], "do not resolve local data after the connection changes");
+    assert.ok("message" in result); assert.match(result.message, /different pit server|changed/i);
+  } finally { explorer.dispose(); }
+});
+test("pit overview rechecks the connection after reading the local catalog", async () => {
+  const explorer = fixture(); let url = "http://pit-a:2363/mcp", calls = 0;
+  (explorer as any).pitSpec = () => ({ kind: "pit", name: "pit", url });
+  explorer.logs.listing = async () => { if (++calls === 2) url = "http://pit-b:2363/mcp"; return { logs: [] }; };
+  try {
+    const result = await explorer.pitOverview(pitUri("http://pit-a:2363/mcp"));
+    assert.equal(calls, 2); assert.ok("message" in result); assert.match(result.message, /different pit server|changed/i);
+  } finally { explorer.dispose(); }
+});
+test("pit overview accepts equivalent connection URLs and resolves that origin's mirror copy", async () => {
+  const explorer = fixture(), requested: string[] = [];
+  (explorer as any).pitSpec = () => ({ kind: "pit", name: "pit", url: "http://PIT-A:80/mcp/" });
+  const session = { id: "same", path: "/shared", started_at: "", ended_at: "", start_basis: "log" };
+  const remote = { path: "/shared/capture.wpilog", filename: "capture.wpilog", friendly_name: "source", session };
+  const copy = { ...remote, path: "/mirror/capture.wpilog", session: { ...session, path: "/mirror", origin: "http://pit-a" } };
+  explorer.logs.listing = async spec => { requested.push(spec!.kind); return { logs: [spec!.kind === "pit" ? remote : copy] }; };
+  try {
+    assert.deepEqual(await explorer.pitOverview(pitUri("http://pit-a/mcp")), { path: copy.path });
+    assert.equal(requested.length, 2);
+  } finally { explorer.dispose(); }
+});
 
 test("Entries filter focuses an inline field without opening Quick Input", async () => {
   const explorer = fixture();

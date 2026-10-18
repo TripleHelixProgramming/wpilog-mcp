@@ -28,12 +28,6 @@ public final class StoreCatalog {
   public static final Duration MOVE_NOTICE_LIFETIME = Duration.ofDays(7);
 
   public record StoredFile(Path path, Path manifestPath, Robot robot, Session session, LogFile file) {}
-  /** A session-level match to an open, unhashed capture is not a hashed REV-file association. */
-  public static boolean isRevCompanion(StoredFile candidate, StoredFile anchor) {
-    var match = candidate.file().matching();
-    return candidate.file().kind().equals("revlog") && candidate.manifestPath().equals(anchor.manifestPath())
-        && match != null && match.wpilogSha256() != null && match.wpilogSha256().equals(anchor.file().sha256());
-  }
 
   /** A damaged association stays visible and failed; it must never authorize a new correlation. */
   public static org.triplehelix.wpilogmcp.sync.SyncResult recordedAlignment(StoredFile companion) {
@@ -48,7 +42,9 @@ public final class StoreCatalog {
           org.triplehelix.wpilogmcp.sync.ConfidenceLevel.fromScore(match.confidence()), List.of(),
           org.triplehelix.wpilogmcp.sync.SyncMethod.USER_PROVIDED, "Alignment recorded in the store manifest",
           match.driftRateNanosPerSec(), match.referenceTimeSec());
-      if (recorded.method() == null || recorded.confidenceLevel() == null || recorded.signalPairs() == null
+      // A store records measurements; a combination is derived from them when read, never stored.
+      if (recorded.method() == null || recorded.method() == org.triplehelix.wpilogmcp.sync.SyncMethod.COMBINED
+          || recorded.combination() != null || recorded.confidenceLevel() == null || recorded.signalPairs() == null
           || recorded.explanation() == null || recorded.offsetMicros() != match.offsetMicros()
           || recorded.confidence() != match.confidence() || recorded.driftRateNanosPerSec() != match.driftRateNanosPerSec()
           || recorded.referenceTimeSec() != match.referenceTimeSec()) {
@@ -82,6 +78,28 @@ public final class StoreCatalog {
     public List<StoredFile> allFiles() {
       return java.util.stream.Stream.concat(files.stream(), openCaptures.stream()).toList();
     }
+  }
+
+  /**
+   * Every regular file under {@code root} (a link to one counts, as {@link Files#isRegularFile}
+   * says), sorted. Readers take no lock, so an entry can vanish between the walk listing it and
+   * reading it: a manifest's temporary file does, when it replaces the manifest. A vanished entry
+   * is skipped; any other failure fails the listing.
+   */
+  static List<Path> regularFiles(Path root) throws IOException {
+    var found = new ArrayList<Path>();
+    Files.walkFileTree(root, new java.nio.file.SimpleFileVisitor<>() {
+      @Override public java.nio.file.FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attributes) {
+        if (attributes.isRegularFile() || attributes.isSymbolicLink() && Files.isRegularFile(file)) found.add(file);
+        return java.nio.file.FileVisitResult.CONTINUE;
+      }
+      @Override public java.nio.file.FileVisitResult visitFileFailed(Path file, IOException failure) throws IOException {
+        if (failure instanceof java.nio.file.NoSuchFileException) return java.nio.file.FileVisitResult.CONTINUE;
+        throw failure;
+      }
+    });
+    found.sort(null);
+    return found;
   }
 
   public static boolean isStore(Path directory) {
@@ -277,11 +295,18 @@ public final class StoreCatalog {
     var unmanaged = new ArrayList<Path>();
     if (strays) managed.addAll(StoreTransferInventory.peerFiles(root, io));
     if (strays && header.mirror()) managed.addAll(StoreTransferInventory.mirrorFiles(root, io));
-    if (strays) try (var walk = Files.walk(root)) {
-      for (var path : walk.filter(Files::isRegularFile).sorted().toList()) {
+    if (strays) {
+      for (var path : regularFiles(root)) {
         if (!header.mirror() && path.startsWith(root.resolve("inbox")) || path.equals(root.resolve("store.lock"))
             || path.startsWith(root.resolve("visualizations")) || path.startsWith(root.resolve(".local-ingestion")) || path.startsWith(root.resolve(".rev-reconsideration"))) continue;
-        io.check(path);
+        // Readers take no lock, so a write may be under way: a manifest being replaced, or a file
+        // that vanished since the walk listed it, is not a stray. A crash's leftover still is.
+        String name = path.getFileName().toString();
+        try {
+          if (name.startsWith(".manifest-") && name.endsWith(".tmp")
+              && Files.getLastModifiedTime(path).toInstant().isAfter(Instant.now().minus(Duration.ofMinutes(1)))) continue;
+          io.check(path);
+        } catch (java.nio.file.NoSuchFileException vanished) { continue; }
         if (!managed.contains(path)) unmanaged.add(path);
       }
     }
@@ -366,6 +391,7 @@ public final class StoreCatalog {
       validate(session, parent);
       for (var candidate : session.files()) if (io.resolve(parent, candidate.path()).equals(path)) file = candidate;
       for (var text : session.systemLogs().files()) if (SystemLogFiles.resolve(io, root, parent, session, text).equals(path)) return textPayload(path, text);
+      for (var clock : session.clocks()) if (ClockRecords.resolve(io, parent, clock).equals(path)) return clockPayload(path, clock);
     } else if (parts.getNameCount() >= 3 && parts.getName(0).toString().equals("unassigned")) {
       parent = root.resolve(parts.subpath(0, 2));
       var candidate = io.read(parent.resolve("import.json"), LogFile.class);
@@ -381,6 +407,11 @@ public final class StoreCatalog {
         && io.resolve(parent, session.openCapture().path()).equals(path)
         && "captured".equals(session.openCapture().provenance().kind()) && Files.isRegularFile(path)) return new Payload(path, Files.size(path));
     throw new IOException("File is not in the store catalog");
+  }
+
+  private static Payload clockPayload(Path path, StoreManifest.ClockRecord record) throws IOException {
+    if (!Files.isRegularFile(path) || Files.size(path) != record.sizeBytes()) throw new IOException("Clock record differs from its receipt: " + path);
+    return new Payload(path, record.sizeBytes());
   }
 
   private static Payload textPayload(Path path, SystemLogState.File file) throws IOException {
@@ -430,6 +461,11 @@ public final class StoreCatalog {
       if (text.location() == SystemLogState.Location.SESSION) managed.add(path);
       else shared.add(path);
     }
+    for (var clock : session.clocks()) managed.add(ClockRecords.resolve(io, sessionDir, clock));
+    // A capture's record is written just before its session lists it; it is the store's own file meanwhile.
+    for (var file : session.files()) if (file.provenance() != null && file.provenance().captured()) {
+      managed.add(io.resolve(sessionDir, ClockRecords.path(file.path())));
+    }
     return new SessionInventory(new SessionDirectory(sessionDir, robot, session), files, openCaptures, managed, shared);
   }
 
@@ -446,8 +482,15 @@ public final class StoreCatalog {
     for (var directory : children(merged)) {
       var manifest = io.check(directory.resolve("session.json"));
       if (!Files.isRegularFile(manifest)) continue;
-      validate(io.read(manifest, Session.class), manifest);
-      managed.add(manifest); mergedMetadata(io, directory, managed);
+      var archived = io.read(manifest, Session.class);
+      validate(archived, manifest);
+      managed.add(manifest);
+      // A fragment's clock records moved with it; the merged session lists copies for the new paths.
+      for (var clock : archived.clocks()) {
+        try { managed.add(ClockRecords.resolve(io, directory, clock)); }
+        catch (IOException invalid) { /* An entry that is not a record leaves its file a stray, as it should. */ }
+      }
+      mergedMetadata(io, directory, managed);
     }
   }
 

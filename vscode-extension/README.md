@@ -45,7 +45,7 @@ Registration remains at user scope; a pre-release does not restore project `.mcp
 
 On activation, the extension starts the standalone install's `http` server. VS Code's agents, the explorer, Claude Code, and other local clients share its loaded logs and cache. The launcher starts it on demand and joins it when it is already running; no operating-system service is installed.
 
-Each window registers its User log directories and open projects' directories with the server. These are **leases**: every client can read them while the window's MCP session lives. Settings, key, and folder changes replace the lease without restarting the server. Closing a window releases its lease; another window or a terminal bridge can keep the same directories available. The client re-registers after a daemon restart and keeps its session alive while the window is open.
+Each window registers its User log directories and open projects' directories with the server. These are **leases**: every client can read them while the window's MCP session lives. Settings, key, and folder changes replace the lease without restarting the server. Closing or reloading a window ends its session, waiting up to three seconds, which releases its lease and its views; another window or a terminal bridge can keep the same directories available. A view held by a window that closed without ending its session moves to the window asking for it two minutes later; a window that is hung but still connected keeps its views, and another window can open a copy. The client re-registers after a daemon restart and keeps its session alive while the window is open.
 
 The server's permanent settings live in `~/.wpilog-mcp/servers.yaml`. **VS Code's Settings UI does not read or edit that file.** It supplies the window's directories and team through the lease. Edit YAML for permanent directories, port, cache, or idle policy. The installer creates an absent configuration and preserves an existing one.
 
@@ -81,15 +81,30 @@ signal inventory and completeness; unavailable facts are labeled, never guessed 
 **Blank layout** opens an independent working view. Add a plot, value table, statistics panel or raw table, select signals
 in **Add signals**, and use each panel's **Move, resize or remove panel** controls with Tab/Enter
 or drag its header and resize its edge. Panel titles are editable. Title, size, position and style
-edits keep the current samples; series/range changes start a new data query. The Entries target label names the current view and panel; a click adds to that target, or creates a view from the overview.
+edits keep the current samples; series/range changes and added or removed display copies start a new admission and data query. The Entries target label names the current view and panel; a click adds to that target, or creates a view from the overview.
 
 **Recorded time and cursor** sets a shared time window or reads the last logged value at or
 before a cursor. Equal timestamps choose the last physical record; values are not interpolated.
-Plots use the server's existing Arrow samples or min/max/mean buckets (at most 4,096 points per
-signal); value tables use original typed samples and show their timestamps and skipped-record
-counts. The preview limits a view to 32 series, with no hidden-view data requests and explicit
-cancellation of stale replies. Continuous live views and the aggregate decoded-buffer setting
-arrive in Stage 3.
+Plots use the server's existing Arrow samples or min/max/mean buckets. Their point allowance
+comes from the shared window budget and number of signals and plot copies, up to 65,536 points
+per signal; a larger allowance permits more exact samples before reduction. Value tables use
+original typed samples and show their timestamps and skipped-record counts. The preview limits
+a view to 32 series, with no hidden-view data requests and explicit cancellation of stale replies.
+Hidden recorded views clear retained samples after 30 seconds.
+
+Use **Earlier time** / **Later time** to pan by half a window, or **Zoom in** / **Zoom out**
+to halve/double its width (Tab/Enter works). A horizontal drag in a linked time-series plot
+also selects history. Each gesture saves and re-reads the interval; **Inspect History** shows
+the pinned bounds, and arriving data cannot move them. The explicit time controls apply to the
+whole view; histogram/scatter axes are values, not time. Navigation resumes a paused display.
+For an active recording, **Resume following** restores the visible 1–300-second window choice.
+That choice survives editor restoration as UI state; a newly opened fixed view starts at 30
+seconds. Full recording is available for files and finalized recordings; requesting it after
+finalization reads earlier samples even if the saved policy was already full while following. Historical recording
+plots retain the same 4,096-point limit, with trimming disclosed; narrow the window for detail. A statistics
+window with no finite samples shows a hint and refreshes on the next completed recording
+prefix. New data needs no manual Retry; invalid selectors and resource refusals still do.
+
 
 An open manifested recording now has an inspection-only overview with member count, declaration
 conflicts and explicit clock basis. Signal discovery uses bounded pages: enter a literal name
@@ -105,11 +120,51 @@ rows stay disabled until a replacement page is admitted. Hiding or closing cance
 and releases the inventory and row buffers; reveal opens a new snapshot with the filter
 and exact-name selection retained. No heartbeat keeps a hidden inventory alive. Older servers
 without paged discovery show an update hint instead of downloading the full recording inventory.
-Blank layout and template opening stay disabled there; use the existing Explorer for continuous
-display. Recorded-file views keep the workflow above. This checkpoint does not yet wire the
-shared follow broker into visualization panels. The shared server API can check recording template compatibility across all members and save
-recording-backed layout metadata. Such layouts remain listed with Resume/Open disabled and an
-existing-Explorer hint; API metadata support does not enable live panel rendering.
+**Blank layout**, template opening and Resume/Open now enter the local recording-panel preview.
+Add a plot, value table, statistics, raw, histogram or scatter panel, then use **Recording signals**, **Inspect** and **Add inspected
+signal to target panel**. For a numeric leaf, enter an exact path such as `.translation.x` or
+`[2]` in **Numeric field or array index**, then **Check and add field** (Enter also works).
+The recorded schema is visible under Inspect; the picker does not infer paths. The server
+checks every member before adding it, and a refusal shows the member reason without changing
+the layout. Wildcards and nonnumeric fields are refused. The whole-entry button remains
+separate. Field checks cancel when another gesture replaces the intent or the view hides/closes.
+The server binds the exact working revision and supplies 1 MiB queried follows. Presentation edits retain data; signal/time edits affect only that view. **Pause display**
+keeps acquisition running, while hiding cancels it and clears buffers after 30 seconds. Reveal
+rebootstraps the same recording, and finalization drains and stops polling.
+
+The displayed prefix and recorded clock evidence are explicit. Plots keep 4,096 recent samples
+per selection; trimming, equal-time collapse and non-representable values are disclosed. Value
+tables show the server's timestamp-latest value, or the last original sample at/before an
+explicit cursor, with exact integer text, member and ordinal. **Add statistics** reads original
+samples across members. Active statistics require a 1–300-second window; finalized views can
+use **Full recording** under the server limits. Every answer has expandable **Independent
+analysis prefix** evidence; it may be newer than the plot and is never calculated from plotted
+samples. Automatic refreshes coalesce at most once per second; one analysis runs per window.
+**Pause display** freezes analysis and disables cursor queries while acquisition continues.
+Hide/close cancels reads; hidden retained data clears after 30 seconds. An explained permanent
+refusal stays until **Retry recording** or a changed query; busy admission retries automatically.
+Raw tables keep 256 recent rows with member/ordinal identity and bounded decode diagnostics.
+
+**Add histogram** and **Add scatter** work for files and recordings. Histograms display the
+server's bins with exact edges/counts and per-signal summaries; multiple signals overlay
+independent distributions. Scatter takes two numeric selections, first X then Y; **Swap X and
+Y** changes the persisted order. It shows exact-time pairs and full matched/unpaired counts.
+**First pairs** / **Next pairs** replace a page of at most 256 pairs, reduced by the window
+allowance. Each read has fresh prefix evidence; pages are not accumulated. Automatic refresh
+keeps the current offset, so use First pairs if a changing window leaves it empty. Charts share
+the analysis queue, one-Hz cadence, original-sample semantics and 1–300-second active interval.
+The linked time cursor does not move their value axes. Pause disables chart paging/refresh;
+**Refresh chart / Retry** retries errors without restarting the follow. Tables, diagnostics and
+prefixes remain readable beside the bundled plots.
+Recorded samples, live buffers and paged inventory share one conservative decoded allowance
+per window. Set **WPILog Mcp › Visualization: Decoded Buffer MiB**
+(`wpilog-mcp.visualization.decodedBufferMiB`) from 16 to 1024 MiB, default 64, then reload the
+window. The preview displays the effective allowance and reports it in server capabilities as
+a client-reported fact. Encoded acquisition has a separate fixed 64 MiB allowance. Admission
+refuses before a sample download if it cannot fit; use fewer signals, close another view, or
+increase the setting and reload. These are accounted buffer limits, not a total JavaScript heap
+measurement. Remote sources and the full performance gate remain pending.
+See the [recording-panel workflow](../doc/OPERATIONS.md#52-recording-panel-preview) for limits and remedies.
 
 Draft gestures are persisted on the local server, with a local recovery journal; drafts do not
 trigger native Save prompts. **Save view…** chooses a labeled writable store, or **Create store…**
@@ -155,7 +210,7 @@ no samples and request no popup. Hidden views accept configuration changes witho
 data, then reload their interval on reveal. Older unmanaged fingerprints appear as unavailable
 views rather than disappearing; their configuration remains inspectable through MCP.
 
-This Stage 2b preview is local, recorded WPILOG only. Keep using the existing editor
+This preview supports local recorded WPILOGs and manifested recordings; the full Stage 3 gates remain open. Keep using the existing editor
 for specialized field, console, REV, notebook and Advanced Data workflows. See
 [development checks](../doc/DEVELOPMENT.md#visualization-recorded-preview) for the isolated
 real-service/editor fixture and its remaining platform gates.
@@ -216,7 +271,7 @@ Choose where the organized logs should go:
 
 Then choose a known robot by name and serial, **New robot…**, or **Decide later**. Cancelling any picker submits no import. Names allow letters, digits, dots, hyphens, and underscores, and must be portable filenames. The log's own identity wins when present; without one, Decide later leaves the files under Unassigned. The server imports the batch while the notification shows the phase, file, and completed/total counts. Afterwards it reports imported, present, unassigned, and refused counts; each file's result and the server's reasons go to the **WPILog Analyzer** output channel. A shared serial in two robot directories is reported with both paths for a later explicit merge.
 
-A store's Logs tree shows robots (with their identity basis in the tooltip), dates, sessions with their times and known event/match, then each wpilog and its correlated REV companions. Clicking a REV companion opens its wpilog, where the REV pane shows its signals. **Unassigned**, **Inbox**, and **Unmanaged** come last with import actions; Inbox files show waiting, importing, or refused and its reason. **Assign to Robot…** on an unassigned file moves it into the chosen robot's history through the server. Plain folders keep their event/date groups. A window containing both shows a store node and a directory node; Import on a plain file or directory also lets you choose an existing store or another folder for a new one, and always copies.
+A store's Logs tree shows robots (with their identity basis in the tooltip), dates, sessions with their times and known event/match, then each wpilog with its REV companions. A REV log appears under every log it pairs with: one measured against a capture pairs with the capture and with the robot's own log of that session. Clicking a REV companion opens the wpilog it is listed under, where the REV pane shows its signals on that log's clock. **Unassigned**, **Inbox**, and **Unmanaged** come last with import actions; Inbox files show waiting, importing, or refused and its reason. **Assign to Robot…** on an unassigned file moves it into the chosen robot's history through the server. Plain folders keep their event/date groups. A window containing both shows a store node and a directory node; Import on a plain file or directory also lets you choose an existing store or another folder for a new one, and always copies.
 
 HTTP import sources must be inside the server's configured log directories. For a USB stick or another outside path, copy files into the store's **inbox/**, or use `wpilog-mcp import --robot practice /path/to/usb/logs` with the standalone server's name/configuration as needed. The command publishes a complete inbox batch, carrying the robot choice in `batch.json`; the daemon imports it once it stops growing and writes each outcome in `inbox/imported.log`. See the [standalone import guide](../doc/STANDALONE.md#importing-logs). Refresh the Logs view to see automatic inbox imports.
 

@@ -56,17 +56,30 @@ public final class StoreManifest {
   }
   public record IdentityConflict(String path, String loggedSerial, String deviceSerial) {}
   public record Conflict(String field, String localValue, String peerValue, String peerStoreId) {}
+  /**
+   * A clock record beside a session: the facts a closed capture holds for placing other sources on
+   * robot time, so a copy of the session without the capture still has them. Derived from the
+   * capture, so a store holding the capture can always write it again.
+   */
+  public record ClockRecord(String path, String sha256, long sizeBytes, String capture, String captureSha256,
+      CaptureRecording recording) {
+    /** The capture's recording, so a copy without the capture still knows which robot clock it is on. */
+    public ClockRecord(String path, String sha256, long sizeBytes, String capture, String captureSha256) {
+      this(path, sha256, sizeBytes, capture, captureSha256, null);
+    }
+  }
   public record Session(String id, String startedAt, String endedAt, String startBasis,
       String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
       OpenCapture openCapture, String endReason, DeviceIdentity deviceIdentity, List<IdentityConflict> identityConflicts,
       List<Conflict> conflicts, org.triplehelix.wpilogmcp.capture.CaptureStats captureStats, SystemLogState systemLogs,
-      List<String> mergedSessionIds) {
+      List<String> mergedSessionIds, List<ClockRecord> clocks) {
     public Session {
       identityConflicts = identityConflicts == null ? List.of() : List.copyOf(identityConflicts);
       conflicts = conflicts == null ? List.of() : List.copyOf(conflicts);
       systemLogs = systemLogs == null ? SystemLogState.EMPTY : systemLogs;
       mergedSessionIds = mergedSessionIds == null ? List.of() : mergedSessionIds.stream()
           .filter(alias -> !alias.equals(id)).distinct().toList();
+      clocks = clocks == null ? List.of() : List.copyOf(clocks);
     }
     public boolean names(String sessionId) { return id.equals(sessionId) || mergedSessionIds.contains(sessionId); }
     public Session(String id, String startedAt, String endedAt, String startBasis,
@@ -74,7 +87,7 @@ public final class StoreManifest {
         OpenCapture openCapture, String endReason, DeviceIdentity deviceIdentity, List<IdentityConflict> identityConflicts,
         List<Conflict> conflicts, org.triplehelix.wpilogmcp.capture.CaptureStats captureStats, SystemLogState systemLogs) {
       this(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber, files,
-          openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, systemLogs, List.of());
+          openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, systemLogs, List.of(), List.of());
     }
     public Session(String id, String startedAt, String endedAt, String startBasis,
         String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
@@ -85,7 +98,11 @@ public final class StoreManifest {
     }
     public Session withSystemLogs(SystemLogState value) {
       return new Session(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber, files,
-          openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, value, mergedSessionIds);
+          openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, value, mergedSessionIds, clocks);
+    }
+    public Session withClocks(List<ClockRecord> value) {
+      return new Session(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber, files,
+          openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, systemLogs, mergedSessionIds, value);
     }
     public Session(String id, String startedAt, String endedAt, String startBasis,
         String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
@@ -102,7 +119,7 @@ public final class StoreManifest {
     }
     public Session withFiles(List<LogFile> value) {
       return new Session(id, startedAt, endedAt, startBasis, event, matchType, matchNumber, teamNumber,
-          value, openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, systemLogs, mergedSessionIds);
+          value, openCapture, endReason, deviceIdentity, identityConflicts, conflicts, captureStats, systemLogs, mergedSessionIds, clocks);
     }
     public Session(String id, String startedAt, String endedAt, String startBasis,
         String event, String matchType, Integer matchNumber, Integer teamNumber, List<LogFile> files,
@@ -141,9 +158,20 @@ public final class StoreManifest {
     }
   }
   public record PeerCopy(String storeId, String url, String copiedAt) {}
+  /**
+   * A file's offset as measured against another file of its session. {@code wpilogSha256} names
+   * that file, and is null when it was a capture still recording, which has no hash yet;
+   * {@code recording} names the capture recording it was measured against (null in records written
+   * by 0.10.0-dev4 and earlier, and when the reference was not a capture).
+   */
   public record Matching(String method, String wpilogSha256, long offsetMicros,
       double confidence, double driftRateNanosPerSec, double referenceTimeSec, String identityBasis,
-      org.triplehelix.wpilogmcp.sync.SyncResult synchronization) {
+      org.triplehelix.wpilogmcp.sync.SyncResult synchronization, CaptureRecording recording) {
+    public Matching(String method, String wpilogSha256, long offsetMicros, double confidence,
+        double driftRateNanosPerSec, double referenceTimeSec, String identityBasis,
+        org.triplehelix.wpilogmcp.sync.SyncResult synchronization) {
+      this(method, wpilogSha256, offsetMicros, confidence, driftRateNanosPerSec, referenceTimeSec, identityBasis, synchronization, null);
+    }
     public Matching(String method, String wpilogSha256, long offsetMicros, double confidence,
         double driftRateNanosPerSec, double referenceTimeSec, String identityBasis) {
       this(method, wpilogSha256, offsetMicros, confidence, driftRateNanosPerSec, referenceTimeSec, identityBasis, null);

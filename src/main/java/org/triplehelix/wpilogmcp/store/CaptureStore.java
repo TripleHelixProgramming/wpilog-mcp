@@ -58,6 +58,9 @@ public final class CaptureStore implements CaptureWriter.Observer {
   private final AtomicReference<Pending> pending = new AtomicReference<>();
   private final AtomicBoolean queued = new AtomicBoolean();
   private final AtomicLong writes = new AtomicLong(), submissions = new AtomicLong();
+  /** The session object survives reconnects and rollovers, but a new boot starts its own count. */
+  private record ClosedFiles(CaptureWriter.Session owner, int count) {}
+  private final AtomicReference<ClosedFiles> closedFiles = new AtomicReference<>();
   private volatile CompletableFuture<Void> completion = CompletableFuture.completedFuture(null);
   private long submittedAtUs;
   private final java.util.Map<Path, Session> reopening = new java.util.concurrent.ConcurrentHashMap<>();
@@ -123,7 +126,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
             old.event(), old.matchType(), old.matchNumber(), old.teamNumber(), files,
             new OpenCapture(path.getFileName().toString(), provenance, Files.size(path),
                 previous.minTimestampUs() / 1_000_000.0, previous.maxTimestampUs() / 1_000_000.0), null,
-            old.deviceIdentity(), old.identityConflicts(), old.conflicts(), old.captureStats(), old.systemLogs(), old.mergedSessionIds()));
+            old.deviceIdentity(), old.identityConflicts(), old.conflicts(), old.captureStats(), old.systemLogs(), old.mergedSessionIds(), old.clocks()));
         return path;
       }
       var header = io.read(store.root().resolve("store.json"), Header.class);
@@ -156,7 +159,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
           .filter(f -> files.stream().noneMatch(current -> current.path().equals(f.path()))).forEach(files::add);
       io.write(manifest, new Session(old.id(), old.startedAt(), previous == null ? endedAt.toString() : previous.endedAt(), old.startBasis(),
           old.event(), old.matchType(), old.matchNumber(), old.teamNumber(), List.copyOf(files), null, reason,
-          old.deviceIdentity(), old.identityConflicts(), old.conflicts(), old.captureStats(), old.systemLogs(), old.mergedSessionIds()));
+          old.deviceIdentity(), old.identityConflicts(), old.conflicts(), old.captureStats(), old.systemLogs(), old.mergedSessionIds(), old.clocks()));
       return (Void) null;
     });
     completion = result; return result;
@@ -241,6 +244,13 @@ public final class CaptureStore implements CaptureWriter.Observer {
         if (error == null) next.done().complete(null); else next.done().completeExceptionally(error);
       }
       if (error != null) org.slf4j.LoggerFactory.getLogger(CaptureStore.class).error("Capture manifest update failed", error);
+      // A file that just closed has its hash; its clock record is read off this queue.
+      if (error == null && next != null) {
+        var update = next.update();
+        var before = closedFiles.getAndSet(new ClosedFiles(update.owner(), update.files().size()));
+        int previousCount = before != null && before.owner() == update.owner() ? before.count() : 0;
+        if (!update.open() || update.files().size() > previousCount) store.keepClocks();
+      }
       queued.set(false);
       if (pending.get() != null) dispatch();
     });
@@ -290,7 +300,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
     var session = new Session(old.id(), old.startedAt(), ended,
         old.startBasis(), update.event() == null ? old.event() : update.event(), update.matchType() == null ? old.matchType() : update.matchType(),
         update.matchNumber() == null ? old.matchNumber() : update.matchNumber(), update.teamNumber() == null ? old.teamNumber() : update.teamNumber(),
-        List.copyOf(files), open, update.endReason(), update.identity() == null ? old.deviceIdentity() : update.identity(), identityConflicts, old.conflicts(), update.statistics(), old.systemLogs(), old.mergedSessionIds());
+        List.copyOf(files), open, update.endReason(), update.identity() == null ? old.deviceIdentity() : update.identity(), identityConflicts, old.conflicts(), update.statistics(), old.systemLogs(), old.mergedSessionIds(), old.clocks());
     io.write(path, session); writes.incrementAndGet();
     // Keep the directory stable while its writer can open another rollover file or remap.
     // Creation of a resumed capture is a queue barrier, so it cannot race this close-time move.

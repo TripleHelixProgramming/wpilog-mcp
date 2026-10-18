@@ -1,6 +1,7 @@
-import { ByteBudget } from "./byteBudget";
+import { ByteBudget, decodedBytes } from "./byteBudget";
 import { FollowTransport, aborted, encodeFollowOpen } from "./followClient";
 import { FollowPage, FollowSource, FollowWindow, FollowSelection, FollowFrontier, FollowError, FollowLease, canonical, freezeJson, page, selectionKey } from "./followProtocol";
+import { ViewFollowBinding, ViewFollowRequest, VIEW_PAGE_BYTES, viewRequest } from "./viewFollowProtocol";
 
 export interface ViewIdentity { readonly viewId: string; readonly generation: number; readonly revision: number; readonly queryKey: string }
 export interface FollowDelivery { readonly identity: ViewIdentity; readonly reset: number; readonly page: FollowPage; readonly frontier: FollowFrontier }
@@ -10,18 +11,20 @@ export interface FollowConsumer {
   readonly identity: ViewIdentity;
   current(identity: ViewIdentity): boolean;
   state(state: FollowState): void;
+  binding?(binding: ViewFollowBinding): void;
   /** Resolve only after consuming the immutable page; do not retain it after resolution. */
   page(delivery: FollowDelivery): Promise<void> | void;
 }
 export interface FollowSubscription { dispose(): void; refresh(): void }
-export interface BrokerOptions { readonly encodedBudgetBytes?: number; readonly encodedBudget?: ByteBudget; readonly consumerTimeoutMs?: number;
+export interface BrokerOptions { readonly encodedBudgetBytes?: number; readonly encodedBudget?: ByteBudget; readonly decodedBudget?: ByteBudget; readonly consumerTimeoutMs?: number;
   readonly retryBaseMs?: number; readonly retryMaxMs?: number; readonly random?: () => number }
 interface Consumer {
-  readonly sink: FollowConsumer; readonly identity: ViewIdentity; readonly keys: ReadonlySet<string>;
+  readonly sink: FollowConsumer; readonly identity: ViewIdentity; keys: ReadonlySet<string>;
   readonly selections: readonly FollowSelection[]; readonly stop: AbortController; reset: number;
 }
 interface Job {
   readonly key: string; readonly source: FollowSource; readonly windows: readonly FollowWindow[];
+  readonly view?: ViewFollowRequest;
   readonly consumers: Set<Consumer>; selections?: readonly FollowSelection[]; reserved: boolean; release?: () => void;
   restart?: { reason: string; code?: string }; controller?: AbortController; task?: Promise<void>;
 }
@@ -44,12 +47,14 @@ export class LiveBroker {
   private readonly pending = new Map<string, Job>();
   private closed = false;
   private readonly budget: ByteBudget;
+  private readonly decoded: ByteBudget;
   private readonly timeout: number;
   private readonly retryBase: number;
   private readonly retryMax: number;
   private readonly random: () => number;
   constructor(private readonly transport: FollowTransport, options: BrokerOptions = {}) {
     this.budget = options.encodedBudget ?? new ByteBudget(options.encodedBudgetBytes ?? 64 << 20);
+    this.decoded = options.decodedBudget ?? new ByteBudget();
     this.timeout = options.consumerTimeoutMs ?? 5000;
     this.retryBase = options.retryBaseMs ?? 250; this.retryMax = options.retryMaxMs ?? 10000;
     this.random = options.random ?? Math.random;
@@ -57,10 +62,19 @@ export class LiveBroker {
       || this.retryMax < this.retryBase || this.timeout > 30000) throw new Error("Invalid follow broker limits");
   }
   subscribe(source: FollowSource, windows: readonly FollowWindow[], selections: readonly FollowSelection[], sink: FollowConsumer): FollowSubscription {
+    return this.attach(source, windows, selections, sink);
+  }
+  subscribeView(source: FollowSource, view: ViewFollowRequest, sink: FollowConsumer): FollowSubscription {
+    viewRequest(view);
+    if (!this.transport.openView || this.transport.pageBytes !== VIEW_PAGE_BYTES || this.transport.frontierScope !== "queries") throw new Error("This transport does not support 1 MiB bound view follows");
+    if (sink.identity.viewId !== view.view_id || sink.identity.revision !== view.expected_revision) throw new Error("View consumer identity differs from its admitted revision");
+    return this.attach(source, [], [], sink, Object.freeze({ ...view }));
+  }
+  private attach(source: FollowSource, windows: readonly FollowWindow[], selections: readonly FollowSelection[], sink: FollowConsumer, view?: ViewFollowRequest): FollowSubscription {
     if (this.closed) throw new Error("Follow broker is closed");
     if (source.kind !== "session" || !source.anchor_member?.original_name || !source.anchor_member.recording_started_at
       || !source.origin_store_id || !source.session_id) throw new Error("An anchored recording source is required");
-    if (windows.length > 4096 || selections.length === 0 || selections.length > 256) throw new Error("Follow selection limit");
+    if (windows.length > 4096 || !view && selections.length === 0 || selections.length > 256) throw new Error("Follow selection limit");
     if (this.resources.consumers >= 256) throw new Error("Follow consumer limit");
     const unique = new Map<string, FollowSelection>();
     for (const s of selections) {
@@ -68,24 +82,24 @@ export class LiveBroker {
       unique.set(selectionKey(s), Object.freeze({ entry: s.entry, ...(s.field === undefined ? {} : { field: s.field }) }));
     }
     // Make the identity independent of object property insertion order and caller mutations.
-    const key = canonical({ source, windows });
+    const key = canonical({ source, windows, ...(view ? { view } : {}) });
     if (key.length > 1 << 20) throw new Error("Follow source/window byte limit");
     let consumer: Consumer = { sink, identity: Object.freeze({ ...sink.identity }), keys: new Set(unique.keys()),
       selections: Object.freeze([...unique.values()]), stop: new AbortController(), reset: 0 };
-    let job = this.admit(key, source, windows, consumer, "Opening the selected recording");
+    let job = this.admit(key, source, windows, consumer, "Opening the selected recording", view);
     return { dispose: () => this.remove(job, consumer), refresh: () => {
       if (this.closed || consumer.stop.signal.aborted) return;
       const replacement: Consumer = { ...consumer, stop: new AbortController() };
       // Admission is synchronous and precedes detachment: a refusal preserves this view too.
       // Replacing one of 256 consumers requires byte/job headroom, not a 257th consumer slot.
-      const next = this.admit(key, job.source, job.windows, replacement, "Explicit refresh of the same recording");
+      const next = this.admit(key, job.source, job.windows, replacement, "Explicit refresh of the same recording", view);
       this.remove(job, consumer); job = next; consumer = replacement;
     } };
   }
-  private admit(key: string, source: FollowSource, windows: readonly FollowWindow[], consumer: Consumer, reason: string): Job {
-    encodeFollowOpen(source, consumer.selections, windows, this.transport.pageBytes, this.transport.frontierScope);
+  private admit(key: string, source: FollowSource, windows: readonly FollowWindow[], consumer: Consumer, reason: string, view?: ViewFollowRequest): Job {
+    if (!view) encodeFollowOpen(source, consumer.selections, windows, this.transport.pageBytes, this.transport.frontierScope);
     let job = this.pending.get(key);
-    if (job) {
+    if (job && !view) {
       const union = this.union([...job.consumers, consumer]);
       if (union.length > 256) job = undefined;
       else try { encodeFollowOpen(job.source, union, job.windows, this.transport.pageBytes, this.transport.frontierScope); }
@@ -97,7 +111,7 @@ export class LiveBroker {
     // A valid subscription that cannot fit a pending union can open independently.
     if (!job) {
       if (this.jobs.size >= 32) throw new FollowError("RESOURCE_LIMIT", "Follow job limit reached; close another view before opening or refreshing");
-      job = { key, source: freezeJson(JSON.parse(JSON.stringify(source))), windows: freezeJson(JSON.parse(JSON.stringify(windows))),
+      job = { key, view, source: freezeJson(JSON.parse(JSON.stringify(source))), windows: freezeJson(JSON.parse(JSON.stringify(windows))),
         consumers: new Set(), reserved: false };
     }
     this.reserve(job); this.jobs.add(job); this.pending.set(key, job);
@@ -158,20 +172,45 @@ export class LiveBroker {
   }
   private async run(job: Job, signal: AbortSignal): Promise<void> {
     let lease: FollowLease | undefined, cursor = "", previous: { prefix: string; frontier: FollowFrontier } | undefined, attempt = 0;
+    let releaseLease: (() => void) | undefined, releaseFrontier: (() => void) | undefined;
+    const reserve = (value: unknown) => {
+      try { return this.decoded.reserve(decodedBytes(value)); }
+      catch (error) { throw new FollowError("CLIENT_BUDGET", String(error)); }
+    };
     const selections = job.selections!;
     const keys = new Set(selections.map(selectionKey));
     try {
       this.state(job, { kind: "connecting", reason: "Opening the selected recording" });
       while (!signal.aborted && job.consumers.size) {
         try {
-          if (!lease) { lease = await this.transport.open(job.source, selections, job.windows, signal); cursor = lease.cursor; }
+          if (!lease) {
+            if (job.view) {
+              const opened = await this.transport.openView!(job.source, job.view, signal); lease = opened;
+              releaseLease = reserve(opened);
+              keys.clear(); opened.view_binding.queries.forEach(q => keys.add(selectionKey(q)));
+              for (const c of [...job.consumers]) {
+                c.keys = keys;
+                if (this.current(job, c)) try { c.sink.binding?.(opened.view_binding); }
+                catch (error) { this.state(job, { kind: "error", code: "CONSUMER_FAILED", reason: String(error) }, c); this.remove(job, c); }
+              }
+            } else lease = await this.transport.open(job.source, selections, job.windows, signal);
+            cursor = lease.cursor;
+          }
           if (signal.aborted) break;
           const raw = await this.transport.next(lease, cursor, signal);
           if (signal.aborted) break;
           if (raw === undefined) { attempt = 0; continue; } // 204 is a wait timeout, never EOF.
-          const checked = page(raw, lease, cursor, keys, previous, this.transport.pageBytes);
-          previous = { prefix: checked.page.prefix_id, frontier: checked.frontier };
-          await Promise.all([...job.consumers].map(c => this.deliver(job, c, checked.page, checked.frontier, signal)));
+          const releasePage = reserve(raw);
+          let checked: ReturnType<typeof page>;
+          try {
+            checked = page(raw, lease, cursor, keys, previous, this.transport.pageBytes);
+            if (job.view && !checked.frontier.clock) throw new FollowError("INVALID_RESPONSE", "Recording panels require clock evidence on every prefix; update the server and Retry");
+            if (checked.frontier !== previous?.frontier) {
+              const replacement = reserve(checked.frontier); releaseFrontier?.(); releaseFrontier = replacement;
+            }
+            previous = { prefix: checked.page.prefix_id, frontier: checked.frontier };
+            await Promise.all([...job.consumers].map(c => this.deliver(job, c, checked.page, checked.frontier, signal)));
+          } finally { releasePage(); }
           if (signal.aborted || !job.consumers.size) break;
           cursor = checked.page.next_cursor; attempt = 0;
           const kind = checked.page.ended ? "ended" : !checked.page.frontier_complete
@@ -195,6 +234,7 @@ export class LiveBroker {
     } catch (error) {
       if (!signal.aborted) this.state(job, { kind: "error", code: "CLIENT", reason: String(error) });
     } finally {
+      releaseLease?.(); releaseFrontier?.();
       // This independent request survives cancellation of a waiting next. HTTP cleanup has a 2 s deadline.
       if (lease) try { await this.transport.close(lease); } catch { /* Lost cleanup is bounded by the server's 60 s idle lease. */ }
     }

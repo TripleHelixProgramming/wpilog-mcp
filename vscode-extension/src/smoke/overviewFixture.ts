@@ -86,10 +86,10 @@ export function activate(context: vscode.ExtensionContext): void {
       assert.equal(view.snapshot.page?.entries.length, 256); assert.equal(view.snapshot.page?.entries[0].name, "NT:/signal/00000");
       assert.equal(view.snapshot.page?.entries[0].sample_count, "3");
       assert.equal(await read("document.querySelectorAll('#inventory-rows tr').length"), 256);
-      assert.equal(await read("document.getElementById('blank').disabled"), true);
-      assert.equal(await read("document.getElementById('template-open').disabled"), true);
+      assert.equal(await read("document.getElementById('blank').disabled"), false);
+      assert.equal(await read("document.getElementById('template-open').disabled"), false);
       assert.equal(calls.slice(discoveryStart).filter(c => c.route === "/source/entries/list").length, 1, "no background enumeration");
-      mark("20,000 names across two members open as one 256-row page beyond the legacy cap; live controls remain disabled");
+      mark("20,000 names across two members open as one 256-row page beyond the legacy cap; recording panel actions are available");
       await driver.enter(selector, "#inventory-next"); await until("next page", () => view.snapshot.pageNumber === 2 && !view.snapshot.loading);
       assert.equal(view.snapshot.page?.entries[0].name, "NT:/signal/00256");
       await driver.enter(selector, "#inventory-previous"); await until("previous page", () => view.snapshot.pageNumber === 1 && !view.snapshot.loading);

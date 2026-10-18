@@ -307,7 +307,9 @@ final class ToolArguments {
         case "row_ids" -> args.add(param, com.google.gson.JsonParser.parseString("[\"00000000-0000-4000-8000-000000000001\"]"));
         case "description" -> args.addProperty(param, "Conformance fixture");
         case "configuration_json" -> args.addProperty(param, org.triplehelix.wpilogmcp.visualization.VisualizationContracts.blank().toString());
+        case "x_entry", "y_entry" -> args.addProperty(param, "/Example/Counter");
         case "source_ref" -> args.add(param, com.google.gson.JsonParser.parseString("{\"kind\":\"unmanaged\",\"source_id\":\"00000000-0000-4000-8000-000000000001\"}"));
+        case "entry" -> args.addProperty(param, log == null ? "/Missing/Entry" : pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
         case "template_ref" -> args.add(param, org.triplehelix.wpilogmcp.visualization.TemplateDefinition.reference(null, org.triplehelix.wpilogmcp.visualization.BundledTemplates.all().get(0)));
         case "envelope_json" -> args.addProperty(param, "{}"); // Invalid import exercises the adapter's refusal; the isolated workflow covers success.
         case "compare_path" -> {

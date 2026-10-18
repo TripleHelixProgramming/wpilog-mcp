@@ -229,14 +229,15 @@ public final class StoreReadCatalog implements AutoCloseable {
     return Optional.ofNullable(member);
   }
 
-  /** A mirror retains the originating store's identity; serving location is not identity. */
+  /** A mirror retains the originating store's identity; serving location is not identity. A mirror
+   * whose first contact has not yet named that identity has none, and matches no reference. */
   public static String originId(StoreCatalog.Snapshot store) {
-    return store.header().mirror() && store.header().origin() != null ? store.header().origin().storeId() : store.header().id();
+    return org.triplehelix.wpilogmcp.store.RecordedClocks.origin(store);
   }
 
   /** Recorded visualization references resolve by manifested content, never a similar filename. */
   public StoreFile resolveContent(String originStoreId, String sha256) throws IOException {
-    for (var store : snapshot().stores()) if (originId(store).equals(originStoreId)) {
+    for (var store : snapshot().stores()) if (originStoreId.equals(originId(store))) {
       for (var file : store.allFiles()) if ("wpilog".equals(file.file().kind()) && sha256.equals(file.file().sha256())) {
         security.validate(file.path()); return new StoreFile(store.header().id(), store.root(), file);
       }
@@ -247,7 +248,7 @@ public final class StoreReadCatalog implements AutoCloseable {
   /** A session or alias only nominates candidates. One provenance anchor proves the recording;
    * measured alignment and a shared calendar never widen its rollover membership. */
   public Recording recording(RecordingReference reference) throws IOException {
-    var store = snapshot().stores().stream().filter(s -> originId(s).equals(reference.originStoreId())).toList();
+    var store = snapshot().stores().stream().filter(s -> reference.originStoreId().equals(originId(s))).toList();
     if (store.size() != 1) throw new IOException("SOURCE_UNAVAILABLE: select one configured origin store or mirror for this recording");
     var selected = store.get(0);
     var sessions = selected.sessions().stream().filter(s -> s.session().names(reference.sessionId())).toList();
@@ -328,8 +329,9 @@ public final class StoreReadCatalog implements AutoCloseable {
     } finally { openingSession.set(false); }
   }
 
-  /** REV clocks are transformed only by the durable association with the explicitly named anchor.
-   * Missing, conflicting or corrupt association evidence stays unsynchronized and raw-readable. */
+  /** REV clocks are transformed only by recorded offsets: the companion's own against the named
+   * anchor, or the companion's and the anchor's against one shared reference, combined. Missing,
+   * conflicting or corrupt association evidence stays unsynchronized and raw-readable. */
   public RecordedRevRead openRev(Path companion, Path anchor) throws IOException {
     return openRev(companion, anchor, null);
   }
@@ -338,10 +340,12 @@ public final class StoreReadCatalog implements AutoCloseable {
     var rev = requireMember(companion, inventory); var wpilog = requireMember(anchor, inventory);
     if (!"revlog".equals(rev.facts().file().kind()) || !"wpilog".equals(wpilog.facts().file().kind()))
       throw new IOException("Recorded REV reads require a REV companion and a WPILOG anchor");
-    var alignment = StoreCatalog.isRevCompanion(rev.facts(), wpilog.facts())
-        ? StoreCatalog.recordedAlignment(rev.facts())
-        : SyncResult.failed("No recorded REV association with " + wpilog.facts().path() + " in " + rev.facts().manifestPath());
-    var result = RecordedRevRead.open(rev.facts().path(), roots, alignment, revs, signals);
+    var store = inventory.snapshot().stores().stream().filter(s -> s.root().equals(rev.root())).findFirst();
+    var alignment = store.isEmpty() || !rev.root().equals(wpilog.root()) ? java.util.Optional.<SyncResult>empty()
+        : org.triplehelix.wpilogmcp.store.RecordedClocks.revAlignment(rev.facts(), wpilog.facts(), store.get().allFiles(),
+            org.triplehelix.wpilogmcp.store.RecordedClocks.origin(store.get()));
+    var result = RecordedRevRead.open(rev.facts().path(), roots, alignment.orElseGet(() -> SyncResult.failed(
+        "No recorded REV association with " + wpilog.facts().path() + " in " + rev.facts().manifestPath())), revs, signals);
     if (closed) { result.close(); requireOpen(); }
     return result;
   }

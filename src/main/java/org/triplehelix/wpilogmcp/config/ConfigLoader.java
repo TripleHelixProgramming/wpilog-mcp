@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.regex.Matcher;
@@ -260,7 +261,7 @@ public class ConfigLoader {
    * all others are parsed as JSON.
    */
   private JsonObject parseFile(Path configFile) throws ConfigException {
-    var fileName = configFile.getFileName().toString().toLowerCase();
+    var fileName = configFile.getFileName().toString().toLowerCase(Locale.ROOT);
     if (fileName.endsWith(".yaml") || fileName.endsWith(".yml")) {
       return parseYamlFile(configFile);
     }

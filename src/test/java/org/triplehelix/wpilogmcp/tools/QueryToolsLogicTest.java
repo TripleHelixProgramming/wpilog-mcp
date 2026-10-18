@@ -33,6 +33,23 @@ class QueryToolsLogicTest extends ToolTestBase {
   class SearchEntriesToolTests {
 
     @Test
+    @DisplayName("matches names alike in every default locale")
+    void matchesNamesAlikeInEveryDefaultLocale() throws Exception {
+      // In a Turkish locale "I".toLowerCase() is the dotless "\u0131", so "/IMU" would not contain "imu".
+      var log = new MockLogBuilder().setPath("/test/locale.wpilog")
+          .addNumericEntry("/IMU/Yaw", new double[]{0}, new double[]{0}).build();
+      putLogInCache(log);
+      var previous = java.util.Locale.getDefault();
+      try {
+        java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr-TR"));
+        var args = new JsonObject(); args.addProperty("path", "/test/locale.wpilog"); args.addProperty("pattern", "imu");
+        var result = findTool("search_entries").execute(args).getAsJsonObject();
+        assertEquals("ok", result.get("status").getAsString(), result::toString);
+        assertEquals(1, result.get("match_count").getAsInt(), result::toString);
+      } finally { java.util.Locale.setDefault(previous); }
+    }
+
+    @Test
     @DisplayName("finds entries matching substring")
     void findsEntriesMatchingSubstring() throws Exception {
       var log = new MockLogBuilder()

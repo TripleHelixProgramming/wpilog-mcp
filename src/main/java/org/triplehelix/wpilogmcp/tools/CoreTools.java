@@ -9,6 +9,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.util.Comparator;
 import java.nio.file.Path;
+import java.util.Locale;
 import org.triplehelix.wpilogmcp.store.StoreJson;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.log.LogData;
@@ -87,7 +88,10 @@ public final class CoreTools {
           + "A file beyond the reader size limit, or a REV companion with an invalid recorded alignment, carries read_error instead of disappearing. "
           + "A pulled or imported file kept in its own session carries matching_reason explaining why automatic placement was refused; a calendar-only import explains why no data anchor was available. "
           + "Mirrored session metadata adds origin, complete, growing, last_sync, and age_sec; offline tools read the same local bytes. "
+          + "A mirror holds the logs its origin pulled or was given, not the origin's captures (read those on the origin); growing marks only an unrefreshed copy of an open capture that an earlier version made. "
           + "A serial in the first 2000 records adds robot (serial_number, comments, basis logged) wherever the file is; stores supply device or stated identity when none is logged, session metadata, and revlogs companions; "
+          + "Captured members share session.open; while open, session.open_capture names the absolute path of the member currently being written. "
+          + "a companion's sync_method is its recorded alignment, or COMBINED when its offset and this log's were recorded against one capture; "
           + "For store files only, robot_candidates names serial_number and evidence (kind, value) from import manifests for a unique exact fingerprint; a candidate never assigns a robot. "
           + "inbox lists waiting or importing files (path, size in bytes, stated_robot when supplied by a batch), "
           + "or refused files with their reason; "
@@ -176,7 +180,7 @@ public final class CoreTools {
       var matchTypeArg = getOptString(arguments, "match_type", null);
       org.triplehelix.wpilogmcp.log.LogDirectory.MatchType matchTypeFilter = null;
       if (matchTypeArg != null) {
-        var code = matchTypeArg.strip().toLowerCase();
+        var code = matchTypeArg.strip().toLowerCase(Locale.ROOT);
         // qm/pm/em are the filename codes for q/p/e
         if (code.length() == 2 && code.endsWith("m")) code = code.substring(0, 1);
         matchTypeFilter = org.triplehelix.wpilogmcp.log.LogDirectory.MatchType.fromString(code);
@@ -192,8 +196,8 @@ public final class CoreTools {
       int limit = Math.min(MAX_LIMIT, Math.max(1, getOptInt(arguments, "limit", DEFAULT_LIMIT)));
       var logs = all.stream()
           .filter(l -> nameFilter == null
-              || l.filename().toLowerCase().contains(nameFilter.toLowerCase())
-              || l.friendlyName().toLowerCase().contains(nameFilter.toLowerCase()))
+              || l.filename().toLowerCase(Locale.ROOT).contains(nameFilter.toLowerCase(Locale.ROOT))
+              || l.friendlyName().toLowerCase(Locale.ROOT).contains(nameFilter.toLowerCase(Locale.ROOT)))
           .filter(l -> eventFilter == null || (l.eventName() != null
               && l.eventName().equalsIgnoreCase(eventFilter)))
           .filter(l -> wantedType == null || (l.matchType() != null
@@ -228,12 +232,14 @@ public final class CoreTools {
           var owner = scan.stores().stream().filter(s -> Path.of(log.path()).startsWith(s.root())).findFirst().orElseThrow();
           logObj.addProperty("store", owner.root().toString());
           var revlogs = new JsonArray();
-          owner.files().stream().filter(f -> org.triplehelix.wpilogmcp.store.StoreCatalog.isRevCompanion(f, stored)).forEach(f -> {
+          var members = owner.allFiles().stream().filter(f -> f.manifestPath().equals(stored.manifestPath())).toList();
+          var clocks = org.triplehelix.wpilogmcp.store.RecordedClocks.origin(owner);
+          for (var f : members) org.triplehelix.wpilogmcp.store.RecordedClocks.revAlignment(f, stored, members, clocks).ifPresent(alignment -> {
                 var rev = new JsonObject();
                 rev.addProperty("path", f.path().toString());
                 rev.addProperty("filename", f.path().getFileName().toString());
                 rev.addProperty("size_bytes", f.file().sizeBytes());
-                var alignment = org.triplehelix.wpilogmcp.store.StoreCatalog.recordedAlignment(f);
+                rev.addProperty("sync_method", alignment.method().name());
                 if (!alignment.isSuccessful()) rev.addProperty("read_error", alignment.explanation());
                 revlogs.add(rev);
               });
@@ -246,6 +252,10 @@ public final class CoreTools {
           session.addProperty("start_basis", stored.session().startBasis());
           if ("captured".equals(stored.file().provenance().kind())) {
             session.addProperty("open", stored.session().openCapture() != null);
+            // All rollover members share the session span and liveness; only the manifest
+            // identifies the member that source admission can open as a live recording.
+            if (stored.session().openCapture() != null) session.addProperty("open_capture",
+                stored.manifestPath().getParent().resolve(stored.session().openCapture().path()).normalize().toString());
           }
           if (owner.header().mirror() && owner.header().origin() != null) {
             var origin = owner.header().origin(); var mirrored = origin.sessions().get(stored.session().id());
@@ -439,7 +449,7 @@ public final class CoreTools {
 
       var entriesArray = new JsonArray();
       var sortedEntries = log.entries().values().stream()
-          .filter(e -> pattern == null || e.name().toLowerCase().contains(pattern.toLowerCase()))
+          .filter(e -> pattern == null || e.name().toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT)))
           .sorted(Comparator.comparing(EntryInfo::name))
           .toList();
 

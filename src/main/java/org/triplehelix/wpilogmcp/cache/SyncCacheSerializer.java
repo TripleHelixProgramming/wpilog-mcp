@@ -253,6 +253,8 @@ public class SyncCacheSerializer {
     double confidence = u.unpackDouble();
     ConfidenceLevel level = ConfidenceLevel.valueOf(u.unpackString());
     SyncMethod method = SyncMethod.valueOf(u.unpackString());
+    // Only correlations are cached; a combination is derived from a store's records when read.
+    if (method == SyncMethod.COMBINED) throw new IOException("A cached synchronization cannot be combined");
     String explanation = unpackNullableString(u);
     double driftRate = u.unpackDouble();
     double refTime = u.unpackDouble();

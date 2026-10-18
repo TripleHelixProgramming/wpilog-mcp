@@ -53,13 +53,17 @@ final class FollowEndpoint implements AutoCloseable {
     timer = Executors.newSingleThreadScheduledExecutor(r -> { var t = new Thread(r, "follow-lease-expiry"); t.setDaemon(true); return t; });
     timer.scheduleWithFixedDelay(this::expire, 1, 1, TimeUnit.SECONDS);
   }
-  void handle(HttpExchange exchange) throws IOException {
+  @FunctionalInterface interface ViewAdmission {
+    org.triplehelix.wpilogmcp.visualization.ViewBinding.Prepared prepare(JsonObject request) throws IOException;
+  }
+  void handle(HttpExchange exchange) throws IOException { handle(exchange, null); }
+  void handle(HttpExchange exchange, ViewAdmission views) throws IOException {
     try {
       expire();
       synchronized (leases) { if (closed) throw new Refusal(503, "CLOSED", "Follow admission is closed"); }
       String path = exchange.getRequestURI().getPath(), method = exchange.getRequestMethod();
       if (path.equals(PATH)) {
-        require(method, "POST"); create(exchange, reader.body(exchange)); return;
+        require(method, "POST"); create(exchange, reader.body(exchange), views); return;
       }
       if (!path.startsWith(PATH + "/")) throw new Refusal(404, "NOT_FOUND", "Unknown follow route");
       String[] parts = path.substring(PATH.length() + 1).split("/", -1);
@@ -96,11 +100,18 @@ final class FollowEndpoint implements AutoCloseable {
     catch (ReadWire.WireLimit e) { ReadEndpoint.sendFailure(exchange, 413, "RESOURCE_LIMIT", e.getMessage()); }
     catch (IllegalArgumentException e) { ReadEndpoint.sendFailure(exchange, 400, "INVALID_REQUEST", e.getMessage()); }
     catch (IOException e) {
-      String code = e.getMessage() != null && e.getMessage().startsWith("HISTORY_UNAVAILABLE:") ? "HISTORY_UNAVAILABLE" : "SOURCE_UNAVAILABLE";
+      String message = java.util.Objects.toString(e.getMessage(), "Source unavailable");
+      String code = message.matches("^[A-Z_]+:.*") ? message.substring(0, message.indexOf(':')) : "SOURCE_UNAVAILABLE";
       ReadEndpoint.sendFailure(exchange, 409, code, e.getMessage());
     }
   }
-  private void create(HttpExchange exchange, JsonObject body) throws IOException {
+  private void create(HttpExchange exchange, JsonObject body, ViewAdmission views) throws IOException {
+    if (body.has("view_binding")) {
+      if (!body.keySet().equals(java.util.Set.of("view_binding")) || !body.get("view_binding").isJsonObject())
+        throw new IllegalArgumentException("Name view_binding alone; its query and 1 MiB page policy are server-owned");
+      if (views == null) throw new Refusal(403, "ACCESS_DENIED", "View follow admission requires a trusted local workspace");
+      createView(exchange, body.getAsJsonObject("view_binding"), views); return;
+    }
     if (!body.has("source_ref") || !body.get("source_ref").isJsonObject()) throw new IllegalArgumentException("source_ref must be an object");
     var ref = org.triplehelix.wpilogmcp.visualization.VisualizationContracts.source(body.getAsJsonObject("source_ref"));
     var reference = org.triplehelix.wpilogmcp.visualization.VisualizationContracts.recordingReference(ref);
@@ -141,6 +152,32 @@ final class FollowEndpoint implements AutoCloseable {
       response.addProperty("idle_timeout_sec", idleNanos / 1_000_000_000.0);
       response.addProperty("max_wait_ms", 25000); response.add("source_ref", ref);
       response.addProperty("frontier_scope", scope.wire());
+      try { ReadEndpoint.send(exchange, 201, response); }
+      catch (IOException failure) { synchronized (leases) { leases.remove(id); } published = false; throw failure; }
+    } finally {
+      synchronized (leases) { opening--; }
+      if (!published && engine != null) engine.close();
+    }
+  }
+  private void createView(HttpExchange exchange, JsonObject request, ViewAdmission views) throws IOException {
+    synchronized (leases) {
+      if (leases.size() + opening >= capacity) throw new Refusal(429, "RESOURCE_LIMIT", "Close another follow before opening a new one");
+      opening++;
+    }
+    OrdinalFollow engine = null; String id = null; boolean published = false;
+    try (var prepared = views.prepare(request)) {
+      engine = prepared.open(epoch, budget); id = engine.id();
+      var binding = prepared.describe(); var response = new JsonObject(); response.addProperty("api_version", ReadWire.VERSION);
+      response.addProperty("id", id); response.addProperty("server_epoch", epoch); response.addProperty("cursor", engine.initialCursor());
+      response.addProperty("idle_timeout_sec", idleNanos / 1_000_000_000.0); response.addProperty("max_wait_ms", 25000);
+      response.add("source_ref", binding.get("source_ref")); response.add("view_binding", binding);
+      response.addProperty("frontier_scope", "queries"); response.addProperty("max_page_bytes", org.triplehelix.wpilogmcp.visualization.ViewBinding.PAGE_BYTES);
+      ReadWire.bytes(response, org.triplehelix.wpilogmcp.visualization.ViewBinding.PAGE_BYTES);
+      prepared.checkCurrent();
+      synchronized (leases) {
+        if (closed) throw new Refusal(503, "CLOSED", "Follow admission closed while opening");
+        leases.put(id, new Lease(engine, clock.getAsLong())); published = true;
+      }
       try { ReadEndpoint.send(exchange, 201, response); }
       catch (IOException failure) { synchronized (leases) { leases.remove(id); } published = false; throw failure; }
     } finally {

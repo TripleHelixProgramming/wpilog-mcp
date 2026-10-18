@@ -560,7 +560,7 @@ Paths are the same relative to each store, so a session the agent looked at on t
 
 What it keeps is a scope, not everything: sessions of the last N days (default 14), whole events the user names, and sessions the user pins, from the extension, the local pin endpoints, or a future data browser (IDEAS 9.2). A size cap (default 20 GB) evicts the oldest unpinned sessions first and never a pinned one.
 
-A session that is open on the pit server is mirrored as it grows, through the resume path and the laptop's reload logic, at the mirror's sync interval (default 30 s). A session the pit server renamed or moved under a serial is followed by its id in the manifest, not its path. The mirror runs whenever the pit server answers and stands down quietly when it does not: offline, the listing still answers from the mirror and says how old it is.
+A session that is open on the pit server is mirrored as it grows, through the resume path and the laptop's reload logic, at the mirror's sync interval (default 30 s). *Superseded on 2026-10-17:* the mirror no longer copies the pit's captures, and a laptop records live data from the pit's gateway itself ([consolidated data path](../VISUALIZATION_PLAN.md#consolidated-data-path-owner-decision-2026-10-17)). A session the pit server renamed or moved under a serial is followed by its id in the manifest, not its path. The mirror runs whenever the pit server answers and stands down quietly when it does not: offline, the listing still answers from the mirror and says how old it is.
 
 Deletion inside the mirror is the sync's, under the scope and the cap, and nothing else's. It is the one place in this design where a file is removed without a person asking, and only because the pit server still has it.
 

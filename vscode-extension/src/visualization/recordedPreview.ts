@@ -14,6 +14,19 @@ import { InventoryClient } from "./inventoryClient";
 import { InventoryOverview, OverviewClock } from "./inventoryOverview";
 import { VisualizationBudgets } from "./byteBudget";
 import { recordedPage } from "./recordedPage";
+import { FollowClient } from "./followClient";
+import { FollowLease, FollowSource } from "./followProtocol";
+import { LiveBroker } from "./liveBroker";
+import { LiveView, liveDataKey } from "./liveView";
+import { PitOverview } from "../explorer/pitServer";
+import { ListedLog } from "../explorer/logsTree";
+import { LivePresentation } from "./livePresentation";
+import { RecordedBuffers, recordedPlan } from "./recordedBuffers";
+import { displayCopies, displayMultiplier } from "./recordedModel";
+import { viewBinding } from "./viewFollowProtocol";
+import { AnalysisQueue, LiveAnalysis } from "./liveAnalysis";
+import { recordingSelection, checkRecordingField } from "./recordingSelection";
+import { historyRange, followingWindow } from "./timeNavigation";
 
 export const OVERVIEW_TYPE = "wpilog-mcp.sourceOverview", VIEW_TYPE = "wpilog-mcp.visualization";
 export interface PreviewHost {
@@ -21,6 +34,9 @@ export interface PreviewHost {
   client(): Promise<McpClient>;
   entries(path: string | undefined, target: string): void;
   grantStore(path: string): Promise<void>;
+  /** Where a pit file's overview opens on this laptop, or why it cannot; the listing entry is the
+   * tree item's, which knows the log a REV item is listed under. */
+  pitOverview?(uri: vscode.Uri, listed?: ListedLog): Promise<PitOverview>;
   overviewClock?: OverviewClock;
   dialogs?: Pick<typeof vscode.window, "showQuickPick" | "showOpenDialog" | "showInputBox" | "showSaveDialog" | "showWarningMessage">;
 }
@@ -29,6 +45,9 @@ interface ViewPage {
   inventory?: Inventory; activePanel?: string; ready: boolean; closed: boolean;
   serial: Promise<void>; cursor?: number; cursorGeneration: number; valueAbort?: AbortController;
   dataKey?: string; rendering?: Promise<void>; dataSignal?: AbortSignal; bindings?: Map<string, Binding>;
+  recorded?: RecordedBuffers; hiddenTimer?: NodeJS.Timeout;
+  live?: LiveView; analysis?: LiveAnalysis; recordingInventory?: InventoryOverview; delivery?: InventoryPresentation;
+  selectionSerial?: number; selectionCheck?: AbortController; selectionCancel?: () => void;
 }
 interface OverviewPage {
   uri: vscode.Uri; panel: vscode.WebviewPanel; summary?: SourceSummary; ready: boolean; closed: boolean;
@@ -37,7 +56,7 @@ interface OverviewPage {
 
 /** Preview ownership is per working UUID. Entries never routes through a remembered hidden view. */
 export class RecordedPreview implements vscode.Disposable {
-  readonly budgets = new VisualizationBudgets();
+  readonly budgets: VisualizationBudgets;
   readonly backend: RecordedClient;
   readonly provider: VisualizationEditorProvider;
   readonly rendered = new Map<string, { plots: number; rows: number; width: number; height: number }>();
@@ -50,6 +69,53 @@ export class RecordedPreview implements vscode.Disposable {
   private entriesOwned = false;
   private controlClient?: McpClient;
   private controlSubscription?: { dispose(): void };
+  private broker?: LiveBroker;
+  private readonly analysisQueue = new AnalysisQueue();
+  private readonly followOwners = new WeakMap<FollowLease, FollowClient>();
+  private liveBroker(): LiveBroker {
+    return this.broker ??= new LiveBroker({ pageBytes: 1 << 20, frontierScope: "queries",
+      open: async () => { throw new Error("Recording panels require a bound working view"); },
+      openView: async (source, request, signal) => {
+        const owner = await this.host.client();
+        const client = new FollowClient(owner.endpoint, url => owner.followHeaders(url), 1 << 20, "queries");
+        const lease = await client.openView(source, request, signal); this.followOwners.set(lease, client); return lease;
+      },
+      next: (lease, cursor, signal) => this.followOwners.get(lease)!.next(lease, cursor, signal),
+      close: lease => this.followOwners.get(lease)!.close(lease),
+    }, { encodedBudget: this.budgets.encoded, decodedBudget: this.budgets.decoded });
+  }
+  private analysisFor(page: ViewPage): LiveAnalysis {
+    const key = page.key;
+    return page.analysis ??= new LiveAnalysis(page.document.controller.snapshot as RecordedView, key, this.budgets, this.analysisQueue,
+      (route, body, signal, limit) => this.backend.call(route, body, signal, limit),
+      message => { if (!page.closed) return page.panel.webview.postMessage(message); },
+      error => { if (!page.closed && page.key === key) this.warning(page.panel, error); });
+  }
+  private liveFor(page: ViewPage): LiveView {
+    if (page.live) return page.live;
+    // Each data generation owns its presentation. Late queued renderer messages keep the old
+    // key even after a signal edit; acknowledging them cannot release the new owner's frame.
+    const key = page.key;
+    this.analysisFor(page);
+    const presentation = new LivePresentation(this.budgets.decoded,
+      (delivery_id, frame) => { if (!page.closed) void page.panel.webview.postMessage({ type: "liveFrame", generation: key, delivery_id, frame }); },
+      reason => page.live?.fail(reason), 250, 5000, displayMultiplier(page.document.controller.snapshot.configuration as RecordedConfiguration));
+    page.live = new LiveView(this.liveBroker(), this.budgets.decoded, presentation,
+      async (view, signal) => viewBinding(await this.backend.call(`/views/${view.view_id}/bindings`, { expected_revision: view.revision }, signal),
+        { view_id: view.view_id, expected_revision: view.revision }, view.source_ref as unknown as FollowSource),
+      state => { if (!page.closed) void page.panel.webview.postMessage({ type: "liveState", generation: key, state }); },
+      5000, 30000, page.analysis);
+    if (!page.recordingInventory) {
+      page.delivery = new InventoryPresentation(this.budgets.decoded,
+        (delivery_id, state) => { if (!page.closed) void page.panel.webview.postMessage({ type: "inventoryPage", delivery_id, state }); },
+        reason => { void page.recordingInventory?.hide(); this.warning(page.panel, reason); });
+      page.recordingInventory = new InventoryOverview((page.document.controller.snapshot as RecordedView).source_ref,
+        new InventoryClient(() => this.host.client(), this.budgets.encoded), this.budgets.decoded,
+        state => { if (!page.closed && page.panel.visible) page.delivery?.offer(state); });
+    }
+    void page.recordingInventory.show();
+    return page.live;
+  }
   private dialogs() { return this.host.dialogs ?? vscode.window; }
   private async controls(): Promise<void> {
     const client = await this.host.client(); if (client === this.controlClient) return;
@@ -58,15 +124,21 @@ export class RecordedPreview implements vscode.Disposable {
       for (const page of this.pages.values()) {
         const id = page.document.controller.snapshot.view_id;
         if (event.kind !== "resync_required" && (event.view_id !== id || Number(event.revision) <= page.document.controller.snapshot.revision)) continue;
+        this.cancelSelection(page);
         page.serial = page.serial.then(async () => {
           if (page.closed) return;
+          if (event.kind === "resync_required") await this.registerWindow();
           const incoming = event.kind === "resync_required" ? await this.backend.attach(id) : await this.backend.read(id);
           await page.document.controller.agentChanged(incoming); this.paint(page.document);
+          if (event.kind === "resync_required") page.live?.refresh();
         }).catch(error => this.warning(page.panel, error));
       }
     });
   }
   constructor(private host: PreviewHost) {
+    const configured = vscode.workspace.getConfiguration("wpilog-mcp").get<unknown>("visualization.decodedBufferMiB", 64);
+    try { this.budgets = new VisualizationBudgets(configured); }
+    catch (error) { this.budgets = new VisualizationBudgets(); void vscode.window.showWarningMessage(`${error}. Using 64 MiB until window reload.`); }
     this.backend = new RecordedClient(() => host.client());
     this.provider = new VisualizationEditorProvider(this.backend,
       new RecoveryJournal(path.join((host.context.storageUri ?? host.context.globalStorageUri).fsPath, "visualization-drafts")), {
@@ -88,13 +160,19 @@ export class RecordedPreview implements vscode.Disposable {
         openCustomDocument: (uri: vscode.Uri) => ({ uri, dispose() {} }),
         resolveCustomEditor: (doc: vscode.CustomDocument, panel: vscode.WebviewPanel) => this.renderOverview(doc.uri, panel),
       }, { supportsMultipleEditorsPerDocument: false, webviewOptions: { retainContextWhenHidden: false } }),
-      vscode.commands.registerCommand("wpilog-mcp.explorer.openSourceOverview", (item?: vscode.Uri | { resourceUri?: vscode.Uri }) => this.openOverview(item instanceof vscode.Uri ? item : item?.resourceUri)),
+      vscode.commands.registerCommand("wpilog-mcp.explorer.openSourceOverview", (item?: vscode.Uri | { resourceUri?: vscode.Uri; node?: { log?: ListedLog } }) =>
+        this.openOverview(item instanceof vscode.Uri ? item : item?.resourceUri, item instanceof vscode.Uri ? undefined : item?.node?.log)),
       vscode.window.tabGroups.onDidChangeTabs(() => this.targetEntries()),
       vscode.window.tabGroups.onDidChangeTabGroups(() => this.targetEntries()),
     );
   }
+  private async registerWindow(): Promise<void> {
+    const facts = await this.backend.call<{ decoded_buffer_budget_bytes: number; basis: string }>("/window", { decoded_buffer_budget_bytes: this.budgets.decoded.maximum });
+    if (facts.decoded_buffer_budget_bytes !== this.budgets.decoded.maximum || facts.basis !== "client_reported") throw new Error("Server did not acknowledge this window's decoded allowance; update the server and retry");
+  }
   async identity(): Promise<string> {
     const caps = await this.backend.capabilities(); this.owner = caps.server_instance_id;
+    await this.registerWindow();
     this.stateWarning = caps.working_state === "ephemeral" ? `Drafts will not survive a server restart: ${caps.working_state_reason ?? "durable state is unavailable"}` : undefined;
     if (this.host) await this.controls();
     return this.owner;
@@ -109,7 +187,7 @@ export class RecordedPreview implements vscode.Disposable {
     await vscode.commands.executeCommand("vscode.openWith", uri, VIEW_TYPE, { viewColumn: beside ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active, preview: false });
     return uri;
   }
-  async openOverview(uri?: vscode.Uri): Promise<void> {
+  async openOverview(uri?: vscode.Uri, listed?: ListedLog): Promise<void> {
     if (!uri) {
       const active = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
       if (active instanceof vscode.TabInputCustom || active instanceof vscode.TabInputText) uri = active.uri;
@@ -118,8 +196,21 @@ export class RecordedPreview implements vscode.Disposable {
         const resolved = await this.backend.call<{ path: string }>("/source/resolve", { source_ref: view.source_ref }); uri = vscode.Uri.file(resolved.path);
       }
     }
+    if (uri?.scheme === "wpilog-pit") {
+      // This laptop reads only its own stores: the mirror's copy, or its own recording of the session.
+      const target: PitOverview = this.host.pitOverview ? await this.host.pitOverview(uri, listed)
+        : { message: "This window cannot find this laptop's copy of a pit file.", actions: [] };
+      if ("message" in target) {
+        const chosen = await vscode.window.showInformationMessage(target.message, ...target.actions.map(action => action.title));
+        const action = target.actions.find(a => a.title === chosen);
+        if (action) await vscode.commands.executeCommand(action.command);
+        return;
+      }
+      if (target.note) void vscode.window.showInformationMessage(target.note);
+      uri = vscode.Uri.file(target.path);
+    }
     if (!uri || uri.scheme !== "file" || !uri.path.toLowerCase().endsWith(".wpilog")) {
-      void vscode.window.showInformationMessage("Choose a local recorded WPILOG for the preview. Remote and live views arrive in a later stage."); return;
+      void vscode.window.showInformationMessage("Choose a WPILOG on this laptop for the overview."); return;
     }
     await vscode.commands.executeCommand("vscode.openWith", uri, OVERVIEW_TYPE, { preview: false });
   }
@@ -216,13 +307,31 @@ export class RecordedPreview implements vscode.Disposable {
     this.pages.set(id, page); panel.title = `Visualization ${id.slice(0, 8)}`;
     panel.webview.onDidReceiveMessage(message => {
       if (message.type === "rendered") { if (message.generation === page.key) this.rendered.set(id, message); return; }
-      const task = page.serial.then(() => this.message(page, message));
-      page.serial = task.catch(error => this.warning(panel, error));
+      if (message.type === "recordedRendered") { page.recorded?.acknowledge(String(message.delivery_id)); page.analysis?.acknowledge(String(message.delivery_id)); return; }
+      if (message.type === "liveRendered") { page.live?.presentation.acknowledge(String(message.delivery_id)); return; }
+      if (message.type === "inventoryRendered") { page.delivery?.acknowledge(String(message.delivery_id)); return; }
+      // Cancel immediately, before queued gestures: a slow field check must not save intent
+      // superseded by typing, selection, target, layout or agent changes.
+      const selection = this.cancelSelection(page);
+      const task = page.serial.then(() => this.message(page, message, selection));
+      page.serial = task.catch(error => {
+        if (!page.closed && message.type === "addInventorySignal" && message.field_path !== undefined)
+          void panel.webview.postMessage({ type: "fieldSelection", generation: message.generation, inventory_generation: message.inventory_generation,
+            field_request: message.field_request, field_path: message.field_path, state: "error", reason: String(error) });
+        this.warning(panel, error);
+      });
     });
     panel.onDidChangeViewState(() => {
       void panel.webview.postMessage({ type: "visibility", visible: panel.visible });
-      if (!panel.visible) { page.generation.cancel(); page.valueAbort?.abort(); page.dataKey = undefined; }
-      else if (page.ready) this.paint(document);
+      clearTimeout(page.hiddenTimer);
+      if (!panel.visible) {
+        this.cancelSelection(page);
+        page.valueAbort?.abort(); page.analysis?.hide(); page.live?.hide(); void page.recordingInventory?.hide();
+        if (!page.live) {
+          page.generation.cancel(); page.dataKey = undefined;
+          page.hiddenTimer = setTimeout(() => { void page.recorded?.clear(page.key).catch(error => this.warning(panel, error)); }, 30000);
+        }
+      } else if (page.ready) { this.paint(document); page.analysis?.show(); page.live?.show(); void page.recordingInventory?.show(); }
       this.targetEntries();
     });
     panel.onDidDispose(() => this.closePage(id));
@@ -230,19 +339,22 @@ export class RecordedPreview implements vscode.Disposable {
   }
   private closePage(id: string): void {
     const page = this.pages.get(id); if (!page) return;
-    page.closed = true; page.generation.cancel(); page.valueAbort?.abort(); this.pages.delete(id); this.rendered.delete(id); this.targetEntries();
+    page.closed = true; this.cancelSelection(page); clearTimeout(page.hiddenTimer); page.recorded?.dispose(); page.generation.cancel(); page.valueAbort?.abort(); page.analysis?.dispose(); page.live?.dispose(); page.delivery?.dispose(); void page.recordingInventory?.dispose(); this.pages.delete(id); this.rendered.delete(id); this.targetEntries();
     for (const overview of this.overviews.values()) void this.refreshOverview(overview).catch(() => {});
   }
-  private paint(document: ViewDocument): void {
+  private paint(document: ViewDocument, rebind = false): void {
     const page = this.pages.get(document.controller.snapshot.view_id);
     if (!page?.ready || page.closed) return;
     const snapshot = document.controller.snapshot as RecordedView;
     if (page.panel.visible) {
       try { requireRecordedPreview(snapshot.configuration as RecordedConfiguration); }
       catch (error) { this.warning(page.panel, error); return; }
-      const dataKey = recordedDataKey(snapshot.source_ref, snapshot.configuration as RecordedConfiguration);
+      const recording = snapshot.source_ref.kind === "session";
+      const dataKey = recording ? liveDataKey(snapshot) : recordedDataKey(snapshot.source_ref, snapshot.configuration as RecordedConfiguration);
       let load: { key: string; signal: AbortSignal } | undefined;
       if (page.dataKey !== dataKey) {
+        page.analysis?.dispose(); page.analysis = undefined;
+        page.live?.dispose(); page.live = undefined;
         this.rendered.delete(snapshot.view_id); page.valueAbort?.abort();
         load = page.generation.begin(snapshot.view_id, snapshot.revision);
         page.key = load.key; page.dataKey = dataKey; page.dataSignal = load.signal;
@@ -250,16 +362,22 @@ export class RecordedPreview implements vscode.Disposable {
       // A title, resize, style or checkpoint still publishes its new revision for gesture CAS,
       // while an in-flight answer remains valid for the unchanged query.
       void page.panel.webview.postMessage({ type: "snapshot", generation: page.key, snapshot, warning: [this.stateWarning, document.controller.warning].filter(Boolean).join("\n"),
-        pending: document.controller.pending, title: page.panel.title, label: page.inventory?.label ?? "Loading source…" });
-      if (load) {
+        pending: document.controller.pending, title: page.panel.title, label: recording ? "Anchored recording · local panel preview" : page.inventory?.label ?? "Loading source…", decoded_buffer_budget_bytes: this.budgets?.decoded.maximum });
+      if (recording) this.liveFor(page).update(snapshot, document.controller.pending, rebind);
+      else if (load) {
         const { key, signal } = load;
         page.rendering = this.loadData(page, snapshot, signal).catch(error => { if (page.generation.current(key)) this.warning(page.panel, error); });
       }
     } else void page.panel.webview.postMessage({ type: "warning", message: [this.stateWarning, document.controller.warning].filter(Boolean).join("\n") });
     this.targetEntries();
   }
+  private recordedFor(page: ViewPage): RecordedBuffers {
+    return page.recorded ??= new RecordedBuffers(this.budgets, message => page.panel.webview.postMessage(message));
+  }
   private async loadData(page: ViewPage, view: RecordedView, signal: AbortSignal): Promise<void> {
-    const key = page.key;
+    const key = page.key, buffers = this.recordedFor(page);
+    await buffers.clear(key);
+    if (signal.aborted || !page.generation.current(key)) return;
     if (!page.inventory) page.inventory = await this.backend.describe(view.source_ref, signal);
     if (!page.generation.current(key)) return;
     await page.panel.webview.postMessage({ type: "inventory", inventory: page.inventory }); this.targetEntries();
@@ -271,16 +389,20 @@ export class RecordedPreview implements vscode.Disposable {
     if (!page.generation.current(key)) return;
     page.bindings = new Map(compatibility.bindings.map(b => [b.requirement_id, b]));
     await page.panel.webview.postMessage({ type: "bindings", generation: key, result: compatibility });
+    if (config.panels.some(p => p.type === "histogram" || p.type === "scatter"))
+      this.analysisFor(page).complete({ compatibility, time_policy: config.time.recorded }, true);
     const used = new Set(config.panels.filter(p => p.type === "time_series").flatMap(p => p.series.map(s => s.requirement_id)));
     for (const requirement of config.requirements.filter(r => used.has(r.id))) {
       if (!page.generation.current(key) || !page.panel.visible) return;
       const binding = page.bindings.get(requirement.id); if (binding?.state !== "resolved" || !binding.entry) continue;
       const name = binding.entry + (binding.field_path ?? ""), time = config.time.recorded;
-      const response = await this.data.fetch(client.endpoint, { path: resolved.path, names: [name], maxPoints: 4096,
-        ...(time.mode === "fixed" ? { startTime: time.start_sec, endTime: time.end_sec } : {}) }, signal);
-      await this.backend.call("/source/resolve", { source_ref: view.source_ref }, signal);
-      if (!page.generation.current(key) || !page.panel.visible) return;
-      await page.panel.webview.postMessage({ type: "series", generation: key, requirement_id: requirement.id, name, bytes: response.bytes });
+      const copies = displayCopies(config, requirement.id, "time_series");
+      await buffers.load(`series:${requirement.id}`, key, signal, () => recordedPlan(this.budgets, used.size, copies), async limit => {
+        const response = await this.data.fetch(client.endpoint, { path: resolved.path, names: [name], maxPoints: limit.maxPoints,
+          ...(time.mode === "fixed" ? { startTime: time.start_sec, endTime: time.end_sec } : {}) }, signal, limit.responseBytes);
+        await this.backend.call("/source/resolve", { source_ref: view.source_ref }, signal);
+        return { type: "series", requirement_id: requirement.id, name, bytes: response.bytes };
+      }, () => !page.closed && page.panel.visible && page.generation.current(key));
     }
     for (const type of ["statistics", "raw"] as const) {
       const needed = new Set(config.panels.filter(p => p.type === type).flatMap(p => p.series.map(s => s.requirement_id)));
@@ -292,10 +414,13 @@ export class RecordedPreview implements vscode.Disposable {
     if (page.closed || !page.panel.visible || !page.generation.current(key)) return;
     const binding = page.bindings?.get(requirement); if (binding?.state !== "resolved" || !binding.entry) return;
     const view = page.document.controller.snapshot as RecordedView, time = (view.configuration as RecordedConfiguration).time.recorded;
-    const result = await this.backend.call(`/source/${type}`, { source_ref: view.source_ref, entry: binding.entry,
-      ...(binding.field_path ? { field: binding.field_path } : {}), ...(time.mode === "fixed" ? { start_time: time.start_sec, end_time: time.end_sec } : {}),
-      ...(type === "raw" ? { first_ordinal: first, limit: 256 } : {}) }, signal);
-    if (!page.closed && page.panel.visible && page.generation.current(key)) await page.panel.webview.postMessage({ type, generation: key, requirement_id: requirement, result });
+    await this.recordedFor(page).load(`${type}:${requirement}`, key, signal ?? new AbortController().signal,
+      () => recordedPlan(this.budgets, 1, displayCopies(view.configuration as RecordedConfiguration, requirement, type)), async limit => {
+        const result = await this.backend.call(`/source/${type}`, { source_ref: view.source_ref, entry: binding.entry,
+          ...(binding.field_path ? { field: binding.field_path } : {}), ...(time.mode === "fixed" ? { start_time: time.start_sec, end_time: time.end_sec } : {}),
+          ...(type === "raw" ? { first_ordinal: first, limit: limit.rows } : {}) }, signal, { maxResponseBytes: limit.responseBytes, timeoutMs: 30000 });
+        return { type, requirement_id: requirement, result };
+      }, () => !page.closed && page.panel.visible && page.generation.current(key));
   }
   private async loadValues(page: ViewPage): Promise<void> {
     page.valueAbort?.abort(); const abort = new AbortController(); page.valueAbort = abort;
@@ -305,34 +430,94 @@ export class RecordedPreview implements vscode.Disposable {
     for (const requirement of config.requirements.filter(r => needed.has(r.id))) {
       if (page.closed || !page.panel.visible || generation !== page.cursorGeneration || !page.generation.current(key)) return;
       const binding = page.bindings?.get(requirement.id); if (binding?.state !== "resolved" || !binding.entry) continue;
-      const result = await this.backend.call("/source/value", { source_ref: view.source_ref, entry: binding.entry,
-        ...(binding.field_path ? { field: binding.field_path } : {}), ...(page.cursor === undefined ? {} : { at_sec: page.cursor }) }, abort.signal);
-      if (page.closed || generation !== page.cursorGeneration || !page.generation.current(key)) return;
-      await page.panel.webview.postMessage({ type: "value", generation: key, requirement_id: requirement.id, result });
+      await this.recordedFor(page).load(`value:${requirement.id}`, key, abort.signal, () => recordedPlan(this.budgets, 1, displayCopies(config, requirement.id, "latest")), async limit => {
+        const result = await this.backend.call("/source/value", { source_ref: view.source_ref, entry: binding.entry,
+          ...(binding.field_path ? { field: binding.field_path } : {}), ...(page.cursor === undefined ? {} : { at_sec: page.cursor }) }, abort.signal,
+          { maxResponseBytes: limit.responseBytes, timeoutMs: 30000 });
+        return { type: "value", requirement_id: requirement.id, result };
+      }, () => !page.closed && page.panel.visible && generation === page.cursorGeneration && page.generation.current(key));
     }
   }
-  private async message(page: ViewPage, message: any): Promise<void> {
+  private cancelSelection(page: ViewPage): number {
+    page.selectionCancel?.(); page.selectionCancel = undefined;
+    page.selectionCheck?.abort(); page.selectionCheck = undefined;
+    return page.selectionSerial = (page.selectionSerial ?? 0) + 1;
+  }
+  private async message(page: ViewPage, message: any, selection = page.selectionSerial ?? 0): Promise<void> {
     if (page.closed) return;
     if (message.type === "ready") { page.ready = true; this.provider.ready.add(page.document.uri.toString()); this.paint(page.document); await this.templateList(page.panel); return; }
     if (message.view_id !== page.document.controller.snapshot.view_id || message.generation !== page.key) return;
     const controller = page.document.controller, view = controller.snapshot as RecordedView;
+    if (message.type === "inventoryRefresh") { if (page.recordingInventory?.snapshot.hidden) await page.recordingInventory.show(); else await page.recordingInventory?.refresh(); return; }
+    if (message.type === "inventoryFilter") { await page.recordingInventory?.filter(String(message.query ?? ""), String(message.exact_type ?? ""), message.unavailable === true); return; }
+    if (message.type === "inventoryNext" || message.type === "inventoryPrevious") { await page.recordingInventory?.navigate(message.type === "inventoryNext" ? 1 : -1, message.inventory_generation); return; }
+    if (message.type === "inventorySelect") { await page.recordingInventory?.select(String(message.name), message.inventory_generation); return; }
+    if (message.type === "livePause") { page.analysis?.pause(message.paused === true); page.live?.pause(message.paused === true); return; }
+    if (message.type === "liveRetry") { page.analysis?.refresh(); page.live?.refresh(); return; }
     if (["templateSearch", "templateCheck", "applyTemplate", "replaceTemplate", "saveTemplate", "updateTemplate", "importTemplate", "exportTemplate"].includes(message.type)) { await this.templateMessage(page, message); return; }
-    if (message.type === "rawPage") { await this.loadAnalysis(page, String(message.requirement_id), "raw", Number(message.first_ordinal), page.dataSignal); return; }
+    if (message.type === "analysisRetry") { page.analysis?.refresh(); return; }
+    if (message.type === "scatterPage") { page.analysis?.scatterPage(String(message.panel_id), message.offset); return; }
+    if (message.type === "rawPage") { if (view.source_ref.kind !== "session") await this.loadAnalysis(page, String(message.requirement_id), "raw", Number(message.first_ordinal), page.dataSignal); return; }
     if (message.type === "target") {
       if ((view.configuration as RecordedConfiguration).panels.some(p => p.panel_id === message.panel_id)) page.activePanel = message.panel_id;
       this.targetEntries(); return;
     }
-    if (message.type === "cursor") { page.cursor = message.at; void this.loadValues(page).catch(error => { if (!page.valueAbort?.signal.aborted) this.warning(page.panel, error); }); return; }
-    if (message.type === "overview") { const resolved = await this.backend.call<{ path: string }>("/source/resolve", { source_ref: view.source_ref }); await this.openOverview(vscode.Uri.file(resolved.path)); return; }
+    if (message.type === "cursor") {
+      if (message.at !== undefined && (typeof message.at !== "number" || !Number.isFinite(message.at))) return;
+      if (view.source_ref.kind === "session") { page.analysis?.cursor(message.at); return; }
+      page.cursor = message.at; void this.loadValues(page).catch(error => { if (!page.valueAbort?.signal.aborted) this.warning(page.panel, error); }); return;
+    }
+    if (message.type === "overview") {
+      if (view.source_ref.kind === "session") {
+        const overview = [...this.overviews.values()].find(p => JSON.stringify(p.summary?.source_ref) === JSON.stringify(view.source_ref));
+        if (overview) await this.openOverview(overview.uri); else this.warning(page.panel, "Use Open Source Overview on a member WPILOG to inspect this recording");
+      } else { const resolved = await this.backend.call<{ path: string }>("/source/resolve", { source_ref: view.source_ref }); await this.openOverview(vscode.Uri.file(resolved.path)); }
+      return;
+    }
     if (message.type === "duplicate") { await this.open(await this.backend.create(view.source_ref, view.configuration), true); return; }
     if (message.type === "save") { await this.save(page); return; }
     if (message.type === "undo") { await controller.undoDraft(); this.paint(page.document); return; }
     if (message.type === "redo") { await controller.redoDraft(); this.paint(page.document); return; }
     if (message.revision !== view.revision) throw new Error("The view changed; retry this gesture against the current layout");
     let config = structuredClone(view.configuration) as RecordedConfiguration;
+    let fieldAdded: (() => void) | undefined;
     if (message.type === "addPanel") {
-      if (!["time_series", "latest", "statistics", "raw"].includes(message.panel_type)) throw new Error("Unsupported preview panel");
+      if (!["time_series", "latest", "statistics", "raw", "histogram", "scatter"].includes(message.panel_type)) throw new Error("Unsupported preview panel");
       const id = randomUUID(); config = addPanel(config, id, message.panel_type); page.activePanel = id;
+    } else if (message.type === "scatterSwap") {
+      const panel = config.panels.find(p => p.panel_id === message.panel_id && p.type === "scatter");
+      if (!panel || panel.series.length !== 2) return;
+      panel.series.reverse();
+    } else if (message.type === "addInventorySignal") {
+      const state = page.recordingInventory?.snapshot;
+      const signal = recordingSelection(state, message.inventory_generation, message.field_path);
+      config = addSignals(config, String(message.panel_id), [signal], randomUUID);
+      if (signal.field !== undefined) {
+        if (selection !== (page.selectionSerial ?? 0) || !page.panel.visible) return;
+        const abort = new AbortController(); page.selectionCheck = abort;
+        const key = page.key, revision = view.revision, detail = state!.details!.detail_revision;
+        const current = () => !abort.signal.aborted && !page.closed && page.panel.visible && page.key === key
+          && controller.snapshot.revision === revision && selection === (page.selectionSerial ?? 0)
+          && page.recordingInventory?.snapshot.generation === message.inventory_generation
+          && page.recordingInventory?.snapshot.selected === signal.name && page.recordingInventory?.snapshot.details?.detail_revision === detail
+          && !page.recordingInventory?.snapshot.loading && !page.recordingInventory?.snapshot.expired && !page.recordingInventory?.snapshot.hidden;
+        const publish = (status: string, reason: string) => { if (current()) void page.panel.webview.postMessage({ type: "fieldSelection", generation: key,
+          inventory_generation: message.inventory_generation, field_request: message.field_request, field_path: signal.field, state: status, reason }); };
+        page.selectionCancel = () => publish("cancelled", "Field check cancelled by another gesture; check the current selection again");
+        try {
+          publish("checking", "Checking this exact field across recording members…");
+          const requirement = config.requirements.find(r => r.entry === signal.name && r.field_path === signal.field)!;
+          const reason = await checkRecordingField(this.backend, this.budgets, view.source_ref, config, requirement, abort.signal);
+          if (!current()) return;
+          fieldAdded = () => {
+            if (!page.closed && page.panel.visible && selection === (page.selectionSerial ?? 0))
+              void page.panel.webview.postMessage({ type: "fieldSelection", generation: key, inventory_generation: message.inventory_generation,
+                field_request: message.field_request, field_path: signal.field, state: "added", reason });
+          };
+        } catch (error) { if (!current()) return; publish("error", String(error)); throw error; }
+        finally { if (page.selectionCheck === abort) { page.selectionCheck = undefined; page.selectionCancel = undefined; } }
+      }
+      page.activePanel = message.panel_id;
     } else if (message.type === "addSignals") {
       const names = Array.isArray(message.names) ? message.names : [];
       const signals = names.map((name: unknown) => this.signal(page, String(name)));
@@ -341,13 +526,30 @@ export class RecordedPreview implements vscode.Disposable {
     else if (message.type === "geometry") config.layout.items = message.items;
     else if (message.type === "title") {
       const panel = config.panels.find(p => p.panel_id === message.panel_id); if (!panel) return; panel.title = String(message.title);
-    } else if (message.type === "range") config.time.recorded = { mode: "fixed", start_sec: message.start, end_sec: message.end };
-    else if (message.type === "full") config.time.recorded = { mode: "full" };
+    } else if (message.type === "range" || message.type === "timeNavigate") {
+      if (message.type === "timeNavigate" && typeof message.action !== "string") throw new Error("Name a history navigation action");
+      if (message.panel_id !== undefined && (!config.links.time_range || !config.panels.some(p => p.panel_id === message.panel_id && p.type === "time_series")))
+        throw new Error("Drag a linked time-series plot, or use the view's explicit range controls");
+      const range = historyRange(message.start, message.end, message.type === "timeNavigate" ? message.action : undefined);
+      if (view.source_ref.kind === "session") config.time.live = range;
+      config.time.recorded = range;
+    } else if (message.type === "full") config.time.recorded = { mode: "full" };
+    else if (message.type === "liveFollow") config.time.live = { mode: "follow", window_sec: followingWindow(message.window_sec) };
     else if (message.type === "reset") {
       const answer = await this.dialogs().showWarningMessage("Reset this draft to its initial layout?", { modal: true }, "Reset draft");
       if (answer !== "Reset draft") return; config = view.initial_configuration as RecordedConfiguration;
     } else return;
-    await controller.edit(config, "Edit recorded view"); this.paint(page.document);
+    const live = page.live, analysis = page.analysis;
+    await controller.edit(config, "Edit recorded view"); fieldAdded?.();
+    // Finalization does not change the configuration key: recorded may already be full while
+    // the admitted lease still holds only the former live window. This gesture must re-admit.
+    this.paint(page.document, message.type === "full");
+    // A different query starts fresh owners. Reapplying the same interval keeps them, but is
+    // still an explicit request to display that interval rather than remain paused.
+    if (["range", "timeNavigate", "full", "liveFollow"].includes(message.type)) {
+      if (page.live === live) live?.pause(false);
+      if (page.analysis === analysis) analysis?.pause(false);
+    }
   }
   private signal(page: ViewPage, name: string): Signal {
     const entries = page.inventory?.entries ?? [];
@@ -478,6 +680,8 @@ export class RecordedPreview implements vscode.Disposable {
   /** Called by Entries commands after its generation check; captures the target before awaiting. */
   async routeSignal(name: string): Promise<boolean> {
     const active = this.active(); if (!active) return false;
+    const source = "uri" in active ? active.summary?.source_ref : (active.document.controller.snapshot as RecordedView).source_ref;
+    if (source?.kind === "session") { this.warning(active.panel, "Use Recording signals in the visualization: Inspect the signal, then Add inspected signal"); return true; }
     if ("uri" in active) {
       const summary = active.summary; if (!summary) return true;
       const view = await this.backend.create(summary.source_ref); await this.open(view);
@@ -506,5 +710,5 @@ export class RecordedPreview implements vscode.Disposable {
   private warning(panel: vscode.WebviewPanel, error: unknown): void { void panel.webview.postMessage({ type: "warning", message: String(error) }); }
   dispose(): void {
     this.controlSubscription?.dispose(); for (const overview of this.overviews.values()) { overview.closed = true; this.cancelOverviewInitialization(overview); overview.delivery?.dispose(); void overview.inventory?.dispose(); }
-    this.overviews.clear(); for (const id of [...this.pages.keys()]) this.closePage(id); for (const d of this.disposables) d.dispose(); }
+    this.overviews.clear(); for (const id of [...this.pages.keys()]) this.closePage(id); void this.broker?.dispose(); for (const d of this.disposables) d.dispose(); }
 }

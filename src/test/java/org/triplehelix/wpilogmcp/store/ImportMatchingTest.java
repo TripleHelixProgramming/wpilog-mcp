@@ -109,6 +109,9 @@ class ImportMatchingTest {
     assertEquals("by_correlation", evidence.method());
     assertEquals(-120_000, evidence.offsetMicros(), 2_000);
     assertEquals(anchor.equals("open") ? null : StoreFiles.hash(right), evidence.wpilogSha256());
+    // A capture's recording is its store and its start; the matched anchor is not a capture.
+    assertEquals(anchor.equals("matched") ? null : new CaptureRecording(StoreCatalog.read(root, security).header().id(),
+        WALL.plusSeconds(3600).toString()), evidence.recording());
     assertEquals("serial_and_data", evidence.identityBasis());
     assertNotNull(evidence.synchronization()); assertTrue(evidence.synchronization().strongPairCount() > 0);
     assertEquals(StoreFiles.hash(original), placed.file().sha256()); assertTrue(placed.file().verified());

@@ -266,12 +266,14 @@ class ScopeToolsTest extends FixtureToolTestBase {
     }
 
     @Test
-    @DisplayName("no samples in scope: the error names the scope")
+    @DisplayName("no samples in scope: the no-match reason names the scope")
     void emptyScope() {
-      var error = call("get_statistics", "akit_match", "name", "/SystemStats/BatteryVoltage",
-          "windows", windows(500, 600)).get("error").getAsString();
-      assertTrue(error.startsWith("No numeric data in range"), error);
-      assertTrue(error.contains("scope windows"), error);
+      var result = call("get_statistics", "akit_match", "name", "/SystemStats/BatteryVoltage",
+          "windows", windows(500, 600));
+      assertEquals("no_match", result.get("status").getAsString());
+      var reason = result.get("reason").getAsString();
+      assertTrue(reason.startsWith("No numeric data in range"), reason);
+      assertTrue(reason.contains("scope windows"), reason);
     }
   }
 

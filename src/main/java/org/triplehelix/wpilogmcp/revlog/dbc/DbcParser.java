@@ -5,6 +5,7 @@
 package org.triplehelix.wpilogmcp.revlog.dbc;
 
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -203,7 +204,7 @@ public class DbcParser {
    * frame by setting bit 31 of its ID; the arbitration ID is the low 29 bits.
    */
   private int parseId(String idStr) {
-    long id = idStr.toLowerCase().startsWith("0x") ? Long.parseLong(idStr.substring(2), 16)
+    long id = idStr.toLowerCase(Locale.ROOT).startsWith("0x") ? Long.parseLong(idStr.substring(2), 16)
         : Long.parseLong(idStr);
     return (int) (id & 0x1FFF_FFFFL);
   }

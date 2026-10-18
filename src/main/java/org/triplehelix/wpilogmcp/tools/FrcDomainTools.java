@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -157,6 +158,17 @@ public final class FrcDomainTools {
           .build();
     }
 
+    private static JsonObject brownoutEvent(String type, double timestamp, double voltage, String source) {
+      var event = new JsonObject();
+      event.addProperty("timestamp", timestamp);
+      event.addProperty("type", type);
+      event.addProperty("category", "power");
+      event.addProperty("basis", "voltage_threshold");
+      event.addProperty("voltage", voltage);
+      event.addProperty("source", source);
+      return event;
+    }
+
     @Override
     protected JsonElement executeWithLog(LogData log, JsonObject arguments) throws Exception {
       validateTimeRange(getOptDouble(arguments, "start_time"),
@@ -185,37 +197,14 @@ public final class FrcDomainTools {
       var voltageEntry = battery.chosen();
       if (voltageEntry.isPresent()) {
         var entryName = voltageEntry.get();
-        var values = log.values().get(entryName);
-        boolean inBrownout = false;
-        for (var tv : values) {
-          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-          if (tv.value() instanceof Number num && Double.isFinite(num.doubleValue())) {
-            double voltage = num.doubleValue();
-            // Hysteresis: enter brownout below threshold, exit only above threshold + 0.2V.
-            // Prevents noisy voltage (e.g., loose connectors) from inflating event counts.
-            double hysteresis = 0.2;
-            if (voltage < brownoutThreshold && !inBrownout) {
-              var event = new JsonObject();
-              event.addProperty("timestamp", tv.timestamp());
-              event.addProperty("type", "BROWNOUT_START");
-              event.addProperty("category", "power");
-              event.addProperty("basis", "voltage_threshold");
-              event.addProperty("voltage", voltage);
-              event.addProperty("source", entryName);
-              events.add(event);
-              inBrownout = true;
-            } else if (voltage >= brownoutThreshold + hysteresis && inBrownout) {
-              var event = new JsonObject();
-              event.addProperty("timestamp", tv.timestamp());
-              event.addProperty("type", "BROWNOUT_END");
-              event.addProperty("category", "power");
-              event.addProperty("basis", "voltage_threshold");
-              event.addProperty("voltage", voltage);
-              event.addProperty("source", entryName);
-              events.add(event);
-              inBrownout = false;
-            }
-          }
+        // The crossings power_analysis and predict_battery_health count, with the same hysteresis
+        // (noisy voltage near the threshold is one crossing), over the requested range, both ends in.
+        var range = TimeScope.resolve(log, null, null, startTime, endTime);
+        var crossings = PowerFacts.voltage(log.values().get(entryName), range, brownoutThreshold)
+            .map(PowerFacts.VoltageFacts::crossings).orElse(List.of());
+        for (var crossing : crossings) {
+          events.add(brownoutEvent("BROWNOUT_START", crossing.start(), crossing.startVolts(), entryName));
+          if (!crossing.openAtEnd()) events.add(brownoutEvent("BROWNOUT_END", crossing.end(), crossing.endVolts(), entryName));
         }
       }
 
@@ -514,7 +503,7 @@ public final class FrcDomainTools {
     static final int CANDIDATE_LIMIT = 20;
 
     static boolean underPrefix(String name, String prefix) {
-      return prefix == null || name.toLowerCase().startsWith(prefix.toLowerCase());
+      return prefix == null || name.toLowerCase(Locale.ROOT).startsWith(prefix.toLowerCase(Locale.ROOT));
     }
 
     static boolean isScalarPose(org.triplehelix.wpilogmcp.log.EntryInfo e) {
@@ -755,7 +744,7 @@ public final class FrcDomainTools {
       var struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(e.type());
       var info = log.structSchemas().info(struct);
       if (info.isEmpty()) return isTargetStream(log.values().get(e.name()));
-      var names = info.get().fields().stream().map(f -> f.name().toLowerCase()).toList();
+      var names = info.get().fields().stream().map(f -> f.name().toLowerCase(Locale.ROOT)).toList();
       return names.contains("yaw") && names.contains("pitch");
     }
 
@@ -790,7 +779,7 @@ public final class FrcDomainTools {
       var parent = stream.substring(0, Math.max(0, stream.lastIndexOf('/') + 1));
       return log.entries().values().stream()
           .filter(e -> e.name().startsWith(parent) && e.name().indexOf('/', parent.length()) < 0)
-          .filter(e -> e.name().substring(parent.length()).toLowerCase().contains("latency"))
+          .filter(e -> e.name().substring(parent.length()).toLowerCase(Locale.ROOT).contains("latency"))
           .filter(e -> isNumericType(e.type()))
           .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
           .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).toList();
@@ -1510,7 +1499,7 @@ public final class FrcDomainTools {
         p.addProperty("start", period.start());
         p.addProperty("end", period.end());
         p.addProperty("duration", period.duration());
-        p.addProperty("end_reason", period.endReason().name().toLowerCase());
+        p.addProperty("end_reason", period.endReason().name().toLowerCase(Locale.ROOT));
         chooser.ifPresent(c -> {
           var value = ToolUtils.getValueAtTimeZoh(log.values().get(c), period.start());
           if (value instanceof String routine) p.addProperty("selected_routine", routine);
@@ -1981,16 +1970,16 @@ public final class FrcDomainTools {
 
       // 2. Unknown state detection
       var expectedStates = new java.util.HashSet<String>();
-      if (cycleStartState != null) expectedStates.add(caseSensitive ? cycleStartState : cycleStartState.toLowerCase());
-      if (cycleEndState != null) expectedStates.add(caseSensitive ? cycleEndState : cycleEndState.toLowerCase());
-      if (idleState != null) expectedStates.add(caseSensitive ? idleState : idleState.toLowerCase());
+      if (cycleStartState != null) expectedStates.add(caseSensitive ? cycleStartState : cycleStartState.toLowerCase(Locale.ROOT));
+      if (cycleEndState != null) expectedStates.add(caseSensitive ? cycleEndState : cycleEndState.toLowerCase(Locale.ROOT));
+      if (idleState != null) expectedStates.add(caseSensitive ? idleState : idleState.toLowerCase(Locale.ROOT));
 
       var unknownStates = new java.util.HashSet<String>();
       for (var tv : vals) {
         if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
 
         String state = tv.value().toString();
-        String compareState = caseSensitive ? state : state.toLowerCase();
+        String compareState = caseSensitive ? state : state.toLowerCase(Locale.ROOT);
         if (!expectedStates.isEmpty() && !expectedStates.contains(compareState)) {
           unknownStates.add(state);
         }
@@ -2266,16 +2255,16 @@ public final class FrcDomainTools {
       }
       if (entry != null) {
         var leaf = entry.substring(entry.lastIndexOf('/') + 1);
-        if (leaf.endsWith("MS") || leaf.endsWith("Ms") || leaf.toLowerCase().endsWith("_ms")
-            || leaf.toLowerCase().endsWith("millis")) {
+        if (leaf.endsWith("MS") || leaf.endsWith("Ms") || leaf.toLowerCase(Locale.ROOT).endsWith("_ms")
+            || leaf.toLowerCase(Locale.ROOT).endsWith("millis")) {
           return new Unit(1.0, "ms", "name (" + leaf + ")");
         }
-        if (leaf.endsWith("US") || leaf.endsWith("Us") || leaf.toLowerCase().endsWith("_us")
-            || leaf.toLowerCase().endsWith("micros")) {
+        if (leaf.endsWith("US") || leaf.endsWith("Us") || leaf.toLowerCase(Locale.ROOT).endsWith("_us")
+            || leaf.toLowerCase(Locale.ROOT).endsWith("micros")) {
           return new Unit(0.001, "us", "name (" + leaf + ")");
         }
-        if (leaf.toLowerCase().endsWith("sec") || leaf.toLowerCase().endsWith("seconds")
-            || leaf.toLowerCase().endsWith("_s")) {
+        if (leaf.toLowerCase(Locale.ROOT).endsWith("sec") || leaf.toLowerCase(Locale.ROOT).endsWith("seconds")
+            || leaf.toLowerCase(Locale.ROOT).endsWith("_s")) {
           return new Unit(1000.0, "s", "name (" + leaf + ")");
         }
       }
@@ -2331,7 +2320,7 @@ public final class FrcDomainTools {
         for (var e : log.entries().values()) {
           if (!"string".equals(e.type())) continue;
           for (var tv : log.values().get(e.name())) {
-            if (tv.value() instanceof String text && text.toLowerCase().contains("overrun")) {
+            if (tv.value() instanceof String text && text.toLowerCase(Locale.ROOT).contains("overrun")) {
               overrunMessages++;
             }
           }

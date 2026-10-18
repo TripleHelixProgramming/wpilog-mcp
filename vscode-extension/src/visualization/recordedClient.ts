@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { McpClient } from "../mcpClient";
+import { McpClient, VisualizationRequest } from "../mcpClient";
 import { Backend, Configuration } from "./documentController";
 import { Inventory, RecordedView, SourceRef } from "./recordedModel";
 export interface SourceSummary { source_ref: SourceRef; path: string; label: string; catalog: unknown; inventory_state: string; }
@@ -11,7 +11,7 @@ export interface Capabilities { server_instance_id: string; working_state: strin
 export class RecordedClient implements Backend {
   readonly destinations = new Map<string, SaveChoice>();
   constructor(readonly client: () => Promise<McpClient>) {}
-  async call<T>(route: string, body?: unknown, signal?: AbortSignal): Promise<T> { return (await this.client()).visualization<T>(route, body, signal); }
+  async call<T>(route: string, body?: unknown, signal?: AbortSignal, options?: VisualizationRequest): Promise<T> { return (await this.client()).visualization<T>(route, body, signal, options); }
   capabilities(): Promise<Capabilities> { return this.call("/capabilities"); }
   identify(path: string, signal?: AbortSignal): Promise<SourceSummary> { return this.call("/source", { path }, signal); }
   describe(source_ref: SourceRef, signal?: AbortSignal): Promise<Inventory> { return this.call("/source/describe", { source_ref }, signal); }

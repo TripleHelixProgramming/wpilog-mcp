@@ -133,12 +133,13 @@ public final class RemoteRevRead implements AutoCloseable {
         || alignment.signalPairs() == null || alignment.explanation() == null
         || !Double.isFinite(alignment.confidence()) || alignment.confidence() < 0 || alignment.confidence() > 1
         || !Double.isFinite(alignment.driftRateNanosPerSec()) || !Double.isFinite(alignment.referenceTimeSec())
+        || !org.triplehelix.wpilogmcp.sync.Combination.consistent(alignment.method(), alignment.combination())
         || !(alignment.isSuccessful() ? state.equals("recorded") : state.equals("unsynchronized")))
       throw new IOException("Invalid remote REV association");
     // Gson's mutable lists must not make the supposedly fixed descriptor change after open.
     return new SyncResult(alignment.offsetMicros(), alignment.confidence(), alignment.confidenceLevel(),
         List.copyOf(alignment.signalPairs()), alignment.method(), alignment.explanation(),
-        alignment.driftRateNanosPerSec(), alignment.referenceTimeSec());
+        alignment.driftRateNanosPerSec(), alignment.referenceTimeSec(), alignment.combination());
   }
   public Descriptor descriptor() { return descriptor; }
 

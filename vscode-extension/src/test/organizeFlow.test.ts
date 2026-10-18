@@ -34,7 +34,7 @@ const host = {
     registerFileSystemProvider: disposable,
     getConfiguration: (section: string) => {
       assert.equal(section, "wpilog-mcp");
-      return { inspect: () => ({ globalValue: ui.additional }),
+      return { get: (_key: string, fallback: unknown) => fallback, inspect: () => ({ globalValue: ui.additional }),
         update: async (key: string, value: string[], target: number) => {
           assert.equal(key, "additionalLogDirectories"); assert.equal(target, 1);
           ui.additional = [...value]; ui.updates.push([...value]);

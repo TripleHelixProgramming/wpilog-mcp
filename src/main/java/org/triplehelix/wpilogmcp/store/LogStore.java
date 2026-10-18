@@ -451,6 +451,146 @@ public final class LogStore implements AutoCloseable {
 
   public CaptureStore captures(java.time.Clock clock) { return new CaptureStore(this, logManager, clock); }
 
+  /** Reading a capture is the slow part; one thread does it for every store, off the store queues. */
+  private static final ExecutorService CLOCK_WORKER = Executors.newSingleThreadExecutor(task -> {
+    var thread = new Thread(task, "store-clock-records"); thread.setDaemon(true); return thread;
+  });
+  private final Object clocksLock = new Object();
+  private CompletableFuture<Integer> clocksRunning, clocksQueued;
+  /** A capture whose clock facts could not be read is not read again, for that hash, in this process. */
+  private final Map<String, String> unreadableClocks = new java.util.concurrent.ConcurrentHashMap<>();
+
+  /**
+   * Give every closed capture a current clock record, and drop records whose capture is gone. A
+   * large capture takes seconds to read, so reading happens off the store queue, and each write
+   * takes the queue only to confirm its capture is unchanged. Requests made during a pass share one
+   * pass after it, so none is answered by a pass that began before it. A mirror holds its origin's
+   * records and writes none. Completes with the number of records written.
+   */
+  public CompletableFuture<Integer> keepClocks() {
+    synchronized (clocksLock) {
+      if (clocksRunning == null) { clocksRunning = new CompletableFuture<>(); startClockPass(clocksRunning); return clocksRunning; }
+      if (clocksQueued == null) clocksQueued = new CompletableFuture<>();
+      return clocksQueued;
+    }
+  }
+  /** Completes once the clock record passes running or queued at this call are done, without asking for one. */
+  public CompletableFuture<Void> clocksSettled() {
+    synchronized (clocksLock) {
+      var last = clocksQueued != null ? clocksQueued : clocksRunning;
+      return last == null ? CompletableFuture.completedFuture(null) : last.handle((written, error) -> null);
+    }
+  }
+  private void startClockPass(CompletableFuture<Integer> result) {
+    CLOCK_WORKER.execute(() -> {
+      int written = 0; Throwable failure = null;
+      try { written = keepClocksPass(); }
+      catch (Exception e) { failure = e; }
+      catch (OutOfMemoryError e) { failure = new IOException("Not enough heap to read a capture's clock facts", e); }
+      CompletableFuture<Integer> next;
+      synchronized (clocksLock) { next = clocksQueued; clocksQueued = null; clocksRunning = next; }
+      if (next != null) startClockPass(next);
+      if (failure == null) result.complete(written); else result.completeExceptionally(failure);
+    });
+  }
+  private int keepClocksPass() throws IOException {
+    if (!StoreCatalog.isStore(root)) return 0;
+    var catalog = StoreCatalog.readManaged(root, security);
+    if (catalog.header().mirror()) return 0;
+    var io = new StoreFiles(root, security);
+    int written = 0;
+    for (var held : catalog.sessions()) {
+      var session = held.session();
+      for (var file : session.files()) {
+        if (file.provenance() == null || !file.provenance().captured() || unreadableClocks.containsKey(file.sha256())) continue;
+        var recording = CaptureRecording.of(file.provenance(), catalog.header().id()).orElse(null);
+        var record = session.clocks().stream().filter(r -> r.capture().equals(file.path()) && r.captureSha256().equals(file.sha256())).findFirst();
+        // An entry that does not name its capture's recording predates the field and is written again.
+        if (record.isPresent() && present(io, held.path(), record.get()) && Objects.equals(record.get().recording(), recording)) continue;
+        ClockRecords.Facts facts;
+        try {
+          facts = clockFacts(io.resolve(held.path(), file.path()), file, recording);
+        } catch (IOException e) {
+          unreadableClocks.put(file.sha256(), String.valueOf(e.getMessage()));
+          LoggerFactory.getLogger(LogStore.class).warn("No clock record for {}: {}", file.path(), e.getMessage());
+          continue;
+        }
+        if (awaitClocks(writeClock(held.path(), session.id(), file, facts))) written++;
+      }
+      if (session.clocks().stream().anyMatch(r -> !current(session, r))) awaitClocks(pruneClocks(held.path(), session.id()));
+    }
+    return written;
+  }
+  /** Every finite uptime sample in the capture, read through the decoder the system-log search uses. */
+  private ClockRecords.Facts clockFacts(Path file, LogFile entry, CaptureRecording recording) throws IOException {
+    try (var use = logManager.acquire(file.toString())) {
+      var samples = use.log().values().get(ClockRecords.UPTIME_ENTRY);
+      var pairs = new ArrayList<double[]>();
+      if (samples != null) for (var sample : samples) {
+        if (sample.value() instanceof Number uptime && Double.isFinite(uptime.doubleValue()) && Double.isFinite(sample.timestamp())) {
+          pairs.add(new double[] {uptime.doubleValue(), sample.timestamp()});
+        }
+      }
+      return new ClockRecords.Facts(ClockRecords.FORMAT_VERSION, entry.path(), entry.sha256(), entry.sizeBytes(),
+          recording == null ? null : recording.collectingStoreId(), recording == null ? null : recording.startedAt(),
+          entry.minTimestampSec(), entry.maxTimestampSec(), pairs);
+    }
+  }
+  private static boolean current(Session session, StoreManifest.ClockRecord record) {
+    return session.files().stream().anyMatch(f -> f.path().equals(record.capture()) && f.sha256().equals(record.captureSha256())
+        && f.provenance() != null && f.provenance().captured());
+  }
+  /** Readers check a record's hash; the keeper only needs to know it is there, whole. */
+  private static boolean present(StoreFiles io, Path session, StoreManifest.ClockRecord record) {
+    try { var path = ClockRecords.resolve(io, session, record); return Files.isRegularFile(path) && Files.size(path) == record.sizeBytes(); }
+    catch (IOException e) { return false; }
+  }
+  private CompletableFuture<Boolean> writeClock(Path directory, String sessionId, LogFile file, ClockRecords.Facts facts) {
+    return mutate(io -> {
+      var manifest = io.check(directory.resolve("session.json"));
+      if (!Files.exists(manifest)) return false; // Moved while its capture was read: the next pass finds it.
+      var session = io.read(manifest, Session.class);
+      // A capture resumed or replaced while its facts were read is read again on the next pass.
+      if (!session.id().equals(sessionId) || session.files().stream().noneMatch(f -> f.path().equals(file.path())
+          && f.sha256().equals(file.sha256()) && f.provenance() != null && f.provenance().captured())) return false;
+      String relative = ClockRecords.path(file.path());
+      var target = io.check(io.resolve(directory, relative));
+      Files.createDirectories(target.getParent());
+      io.write(target, facts);
+      var recording = facts.collectingStoreId() == null || facts.recordingStartedAt() == null ? null
+          : new CaptureRecording(facts.collectingStoreId(), facts.recordingStartedAt());
+      var record = new StoreManifest.ClockRecord(relative, StoreFiles.hash(target), Files.size(target), file.path(), file.sha256(), recording);
+      var clocks = new ArrayList<StoreManifest.ClockRecord>();
+      for (var old : session.clocks()) if (!old.capture().equals(file.path())) clocks.add(old);
+      clocks.add(record);
+      io.write(manifest, session.withClocks(clocks)); return true;
+    }, false);
+  }
+  private CompletableFuture<Boolean> pruneClocks(Path directory, String sessionId) {
+    return mutate(io -> {
+      var manifest = io.check(directory.resolve("session.json"));
+      if (!Files.exists(manifest)) return false;
+      var session = io.read(manifest, Session.class);
+      if (!session.id().equals(sessionId)) return false;
+      var kept = new ArrayList<StoreManifest.ClockRecord>();
+      for (var record : session.clocks()) {
+        if (current(session, record)) { kept.add(record); continue; }
+        // A record stays listed until its file is gone, so a failed delete never leaves a stray.
+        try { Files.deleteIfExists(ClockRecords.resolve(io, directory, record)); }
+        catch (IOException e) {
+          LoggerFactory.getLogger(LogStore.class).warn("Stale clock record kept for now: {}", e.getMessage()); kept.add(record);
+        }
+      }
+      if (kept.size() == session.clocks().size()) return false;
+      io.write(manifest, session.withClocks(kept)); return true;
+    }, false);
+  }
+  private static <T> T awaitClocks(CompletableFuture<T> future) throws IOException {
+    try { return future.get(); }
+    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Interrupted keeping clock records", e); }
+    catch (java.util.concurrent.ExecutionException e) { throw new IOException("Clock record write failed: " + e.getCause().getMessage(), e.getCause()); }
+  }
+
   public PullStore pulls(org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity, java.time.Clock clock) {
     return new PullStore(this, logManager, security, identity, clock);
   }
@@ -980,7 +1120,8 @@ public final class LogStore implements AutoCloseable {
           String basis = input.metadata().serialNumber() != null && metadata.serialNumber() != null
               ? "serial_and_data" : "data_alone";
           matches.putIfAbsent(anchor.manifestPath(), new Matching("by_correlation", anchor.file().sha256(),
-              sync.offsetMicros(), sync.confidence(), sync.driftRateNanosPerSec(), sync.referenceTimeSec(), basis, sync));
+              sync.offsetMicros(), sync.confidence(), sync.driftRateNanosPerSec(), sync.referenceTimeSec(), basis, sync,
+              CaptureRecording.of(anchor.file().provenance(), catalog.header.id()).orElse(null)));
         } catch (IOException e) { reasons.add("unreadable anchor " + anchor.path() + ": " + e.getMessage()); }
       }
     }
@@ -1161,7 +1302,7 @@ public final class LogStore implements AutoCloseable {
             if (input.end() != null && input.end().isAfter(end)) end = input.end();
           }
           session = new Session(session.id(), start.toString(), end.toString(), basis,
-              session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats(), session.systemLogs(), session.mergedSessionIds());
+              session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats(), session.systemLogs(), session.mergedSessionIds(), session.clocks());
           io.write(manifest, session);
         }
       } catch (IOException | RuntimeException e) {

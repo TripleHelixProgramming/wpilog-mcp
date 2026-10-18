@@ -12,7 +12,7 @@ export interface Requirement {
   accepted_entry_types: string[]; value_type: "number" | "boolean" | "string" | "raw"; unit: null | { symbol: string; basis: string };
 }
 export interface Panel {
-  panel_id: string; type: "time_series" | "latest" | "statistics" | "raw"; title: string;
+  panel_id: string; type: "time_series" | "latest" | "statistics" | "raw" | "histogram" | "scatter"; title: string;
   series: { requirement_id: string; axis_id: string; color: string }[];
   axes: { axis_id: string; label: string; scale: "linear" | "log"; range: "auto" | { min: number; max: number } }[];
   display: { legend: boolean; line_width: number };
@@ -53,7 +53,8 @@ export function layoutEdit(input: RecordedConfiguration, panelId: string, action
 export function addPanel(input: RecordedConfiguration, id: string, type: Panel["type"]): RecordedConfiguration {
   const config = structuredClone(input);
   if (config.panels.length >= 32 || config.panels.some(p => p.panel_id === id)) throw new Error("Panel limit or duplicate identity");
-  config.panels.push({ panel_id: id, type, title: type === "latest" ? "Recorded values" : type === "statistics" ? "Statistics" : type === "raw" ? "Raw records" : "Time series", series: [],
+  const titles: Record<Panel["type"], string> = { time_series: "Time series", latest: "Recorded values", statistics: "Statistics", raw: "Raw records", histogram: "Histogram", scatter: "Scatter" };
+  config.panels.push({ panel_id: id, type, title: titles[type], series: [],
     axes: [{ axis_id: "y", label: "Logged values", scale: "linear", range: "auto" }], display: { legend: true, line_width: 1.5 } });
   const y = Math.max(0, ...config.layout.items.map(p => p.y + p.h));
   config.layout.items.push({ panel_id: id, x: 0, y, w: 12, h: 5 }); return config;
@@ -62,15 +63,16 @@ export function addSignals(input: RecordedConfiguration, panelId: string, signal
   const config = structuredClone(input), panel = config.panels.find(p => p.panel_id === panelId);
   if (!panel) throw new Error("Choose a panel before adding signals");
   for (const signal of signals) {
-    if (panel.type !== "raw" && !signal.field && !["double", "float", "int64", "boolean", "string"].includes(signal.type)) throw new Error("Select a scalar field in Entries first");
-    if (["time_series", "statistics"].includes(panel.type) && !signal.field && signal.type === "string") throw new Error("Text signals belong in a value table");
+    if (panel.type !== "raw" && !signal.field && !["double", "float", "int64", "boolean", "string"].includes(signal.type)) throw new Error("Select a numeric field or array index first");
+    if (["time_series", "statistics", "histogram", "scatter"].includes(panel.type) && !signal.field && signal.type === "string") throw new Error("Text signals belong in a value table");
     let requirement = config.requirements.find(r => r.entry === signal.name && r.field_path === (signal.field ?? null) && r.accepted_entry_types.includes(signal.type));
     if (!requirement) {
       requirement = { id: id(), selector_kind: "entry", entry: signal.name, field_path: signal.field ?? null,
-        accepted_entry_types: [signal.type], value_type: panel.type === "raw" ? "raw" : signal.field ? "number" : signal.type === "string" ? "string" : signal.type === "boolean" ? "boolean" : "number", unit: null };
+        accepted_entry_types: [signal.type], value_type: signal.field ? "number" : panel.type === "raw" ? "raw" : signal.type === "string" ? "string" : signal.type === "boolean" ? "boolean" : "number", unit: null };
       config.requirements.push(requirement);
     }
     if (!panel.series.some(s => s.requirement_id === requirement!.id)) {
+      if (panel.type === "scatter" && panel.series.length >= 2) throw new Error("Scatter accepts two signals: first X, then Y; use another panel for another pair");
       if (config.panels.reduce((n, p) => n + p.series.length, 0) >= 32) throw new Error("At most 32 series per recorded view");
       panel.series.push({ requirement_id: requirement.id, axis_id: "y", color: ["#66bbee", "#ee8866", "#88cc88", "#cc88dd"][panel.series.length % 4] });
     }
@@ -78,15 +80,29 @@ export function addSignals(input: RecordedConfiguration, panelId: string, signal
   return config;
 }
 
-/** Query identity excludes presentation and revision. Shared requirements are fetched once per use
- * (plot or cursor table), regardless of which panel displays them or where that panel is placed. */
+/** Plots join their selected series; tables repeat rows. Both need admission for every copy. */
+export function displayCopies(config: RecordedConfiguration, requirement: string, type: Panel["type"]): number {
+  return Math.max(1, config.panels.filter(p => p.type === type).reduce((n,p) => {
+    const selected = p.series.filter(s => s.requirement_id === requirement).length;
+    return n + (type === "time_series" && selected ? p.series.length : selected);
+  }, 0));
+}
+/** A live frame shares one reservation, conservatively priced at its largest display fan-out. */
+export function displayMultiplier(config: RecordedConfiguration): number {
+  const types = [...new Set(config.panels.map(p => p.type))];
+  return Math.max(1, ...config.requirements.flatMap(r => types.map(type => displayCopies(config, r.id, type))));
+}
+/** Query identity excludes title, geometry, style and revision. Shared requirements are fetched
+ * once per use; changing display multiplicity re-admits buffers at the new reduction allowance. */
 export function recordedDataKey(source: SourceRef, config: RecordedConfiguration): string {
   const requirements = config.requirements.map(r => ({
     id: r.id, selector_kind: r.selector_kind, entry: r.entry, role: r.role, unit: r.unit, field_path: r.field_path,
     accepted_entry_types: [...r.accepted_entry_types].sort(), value_type: r.value_type,
-    uses: [...new Set(config.panels.filter(p => p.series.some(s => s.requirement_id === r.id)).map(p => p.type))].sort(),
+    uses: [...new Set(config.panels.filter(p => p.series.some(s => s.requirement_id === r.id)).map(p => p.type))].sort()
+      .map(type => ({ type, copies: displayCopies(config, r.id, type) })),
   })).sort((a, b) => a.id.localeCompare(b.id));
-  return JSON.stringify({ source, requirements, time: config.time.recorded });
+  const pairs = config.panels.filter(p => p.type === "scatter").map(p => ({ panel_id: p.panel_id, series: p.series.map(s => s.requirement_id) })).sort((a,b) => a.panel_id.localeCompare(b.panel_id));
+  return JSON.stringify({ source, requirements, pairs, time: config.time.recorded });
 }
 
 /** A reply may render only into the document/query generation that admitted it. */
@@ -106,8 +122,9 @@ export class ViewGeneration {
 
 /** The recorded preview can render this bounded subset of the durable schema. */
 export function requireRecordedPreview(config: RecordedConfiguration): void {
-  if (config.panels.some(p => !["time_series", "latest", "statistics", "raw"].includes(p.type))) throw new Error("This panel needs a later visualization stage");
+  if (config.panels.some(p => !["time_series", "latest", "statistics", "raw", "histogram", "scatter"].includes(p.type))) throw new Error("This panel needs a later visualization stage");
   if (config.panels.reduce((n, p) => n + p.series.length, 0) > 32) throw new Error("At most 32 series per recorded view");
+  if (config.panels.some(p => p.type === "scatter" && p.series.length > 2)) throw new Error("Scatter accepts two signals: first X, then Y; split larger selections into pairs");
 }
 
 export interface Binding { requirement_id: string; state: "resolved" | "unresolved"; entry: string | null; field_path: string | null; reason: string; basis?: string; unit?: { symbol: string | null; basis: string }; warnings: string[]; }

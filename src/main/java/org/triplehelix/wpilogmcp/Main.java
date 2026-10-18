@@ -781,6 +781,8 @@ public class Main {
 
     if (httpMode) {
       var httpTransport = new HttpTransport(toolRegistry, httpPort, httpBind, allowedOrigins, httpPath, configurationName);
+      // The live tools answer from the configured capture or a laptop's live source, whichever is current.
+      org.triplehelix.wpilogmcp.tools.LiveTools.registerFollowing(toolRegistry, httpTransport.liveCapture());
       final org.triplehelix.wpilogmcp.capture.CaptureService capture;
       try {
         // Do not even read a saved policy or grant its paths until this named server opts in.
@@ -800,7 +802,7 @@ public class Main {
         System.exit(1);
         return;
       }
-      if (capture != null) org.triplehelix.wpilogmcp.tools.LiveTools.registerAll(toolRegistry, capture.live());
+      if (capture != null) httpTransport.useConfiguredCapture(capture);
       if (capture != null) httpTransport.setGatewayStatus(capture.live()::gateway);
       httpTransport.configureMetrics(metricsConfig, capture == null ? null : capture.live(),
           () -> new org.triplehelix.wpilogmcp.mcp.MetricsEndpoint.Components(capture == null ? 0 : capture.gatewayClients(), java.util.Map.of()));

@@ -80,11 +80,10 @@ public final class RenderChartTool extends LogRequiringTool {
     }
     for (var label : labels) {
       var signal = NumericSignal.resolve(log, label, null).requireSingleValued("render_chart");
-      var parts = StatisticsTools.finiteWindows(signal, scope, signal.isAngle());
-      var values = StatisticsTools.flatten(parts); measured.add(values);
-      var quality = DataQuality.fromSegments(log, signal.entry(), scope.split(signal.values()));
+      var prepared = ChartData.prepare(log, signal, scope); var parts = prepared.parts();
+      var values = prepared.values(); measured.add(values); var quality = prepared.quality();
       if (worst == null || quality.qualityScore() < worst.qualityScore()) worst = quality;
-      var summary = summary(signal.label(), values, scope, quality); summaries.add(summary);
+      var summary = ChartData.summary(signal.label(), values, scope, quality); summaries.add(summary);
       var item = signal.describe(); item.addProperty("name", signal.label());
       item.addProperty("unit", EntryData.unitFromName(signal.label()));
       item.addProperty("style", quality.sampling() == DataQuality.Sampling.CHANGE_ONLY ? "step_after" : "line");
@@ -171,33 +170,9 @@ public final class RenderChartTool extends LogRequiringTool {
     if (result.isEmpty() || result.size() > 16) throw new IllegalArgumentException("Supply name or entries with 1..16 series");
     return List.copyOf(new LinkedHashSet<>(result));
   }
-  private static JsonObject summary(String name, List<TimestampedValue> values, TimeScope scope, DataQuality quality) {
-    var stats = values.stream().mapToDouble(tv -> toDouble(tv.value())).summaryStatistics();
-    var json = new JsonObject(); json.addProperty("name", name); json.addProperty("count", stats.getCount());
-    json.addProperty("min", values.isEmpty() ? null : stats.getMin()); json.addProperty("max", values.isEmpty() ? null : stats.getMax());
-    json.addProperty("mean", values.isEmpty() ? null : stats.getAverage()); json.add("window", scope.toJson());
-    json.addProperty("non_finite_count", quality.nanFiltered()); json.add("data_quality", quality.toJson()); return json;
-  }
-  static JsonArray histogram(List<TimestampedValue> values) {
-    var out = new JsonArray(); if (values.isEmpty()) return out;
-    var stats = values.stream().mapToDouble(tv -> toDouble(tv.value())).summaryStatistics();
-    int n = stats.getMin() == stats.getMax() ? 1 : Math.min(64, (int) Math.ceil(Math.sqrt(values.size())));
-    double low = n == 1 ? stats.getMin() - 0.5 : stats.getMin(), high = n == 1 ? stats.getMax() + 0.5 : stats.getMax();
-    double step = (high - low) / n; var counts = new int[n];
-    for (var tv : values) counts[Math.min(n - 1, Math.max(0, (int) ((toDouble(tv.value()) - low) / step)))]++;
-    for (int i = 0; i < n; i++) { var bin = new JsonObject(); bin.addProperty("low", low + i * step); bin.addProperty("high", low + (i + 1) * step); bin.addProperty("count", counts[i]); out.add(bin); }
-    return out;
-  }
+  static JsonArray histogram(List<TimestampedValue> values) { return ChartData.histogram(values); }
   private static JsonObject pairs(List<TimestampedValue> x, List<TimestampedValue> y, int offset, int limit) {
-    var points = new JsonArray(); int a = 0, b = 0, count = 0;
-    while (a < x.size() && b < y.size()) {
-      var first = x.get(a); var second = y.get(b);
-      if (first.timestamp() < second.timestamp()) a++;
-      else if (first.timestamp() > second.timestamp()) b++;
-      else { if (count >= offset && count - offset < limit) { var point = new JsonArray(); point.add(toDouble(first.value())); point.add(toDouble(second.value())); point.add(first.timestamp()); points.add(point); } count++; a++; b++; }
-    }
-    var out = new JsonObject(); ResultContract.addLimitedList(out, "points", points, Math.max(0, count - offset), limit);
-    out.addProperty("matched", count); out.addProperty("unpaired_x", x.size() - count); out.addProperty("unpaired_y", y.size() - count); return out;
+    return ChartData.pairs(x, y, offset, limit);
   }
   private static JsonArray phases(MatchTimeline timeline, TimeScope scope) {
     var result = new JsonArray();

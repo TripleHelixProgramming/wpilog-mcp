@@ -10,10 +10,15 @@ as `14eff73`, and the accepted catalog-retry fix and review-9 disposition as `0f
 recording-source inspection is accepted by review 10 and committed as `ffc1f63`. Queried-frontier
 metadata is accepted by review 11 and committed as `7a8b656`, retaining 1 MiB panel pages.
 Review 12 accepts the bounded inventory design with amendments. Its shared verified-hash
-prerequisite is committed as `6d204a4`. The current checkpoint implements the shared paged
-inventory service; the overview adapter and declaration-burst performance workloads remain
-pending. The renderer remains recorded-only. Close cancellation
-remains unverified on the manual dialog, Linux/Windows native runs are outstanding, and Save As
+prerequisite is committed as `6d204a4`; the paged overview as `f567d62`, recording compatibility
+as `4178768`, and view admission as `75c787c`. The local Stage 3 continuation checkpoint integrates
+revision-bound local recording panels, shared window budgets, server latest/cursor/statistics
+reads, explicit numeric field selection, bounded source histogram/scatter operations and panels,
+and historical time navigation. Review 18 accepted them with one finding, a session-ID disclosure,
+corrected locally as recorded in its disposition below. Remote
+routing was built uncommitted and is now set aside: the consolidated data path decided at the end
+of this document replaces it. The workload/platform gates remain pending. Close cancellation remains unverified
+on the manual dialog, Linux/Windows native runs are outstanding, and Save As
 uses the specified refusal fallback. No publication or version change is part of this work.
 
 
@@ -692,7 +697,7 @@ Stage 2b adapters must preserve raw definition bytes until strict duplicate-key 
 
 Mutations require an idempotency request ID and expected revision where an object exists. Persist receipts so lost responses and MCP session retries do not create duplicate objects. Never automatically retry an edit against a newer revision.
 
-Explorer registers a session-bound client/window identity, workspace-folder names, a short window label, supported capabilities, and attachment inventory through the locally admitted service. Window labels do not expose filesystem paths. Opening targets a view and an eligible client, never an "active log." `client_id` may be omitted only when exactly one eligible window exists; zero yields no display with a supported URI, and multiple yield `AMBIGUOUS_CLIENT` plus IDs and readable labels. An explicit but unavailable client never falls back to another. Creation, requested display, and acknowledged opening are separate results.
+Explorer registers a session-bound client/window identity, workspace-folder names, a short window label, supported capabilities, and attachment inventory through the locally admitted service. Window labels do not expose filesystem paths. The `client_id` is the opaque window ID that capabilities already report, never the transport session ID; the server maps it back to its session (review 18 disposition). Opening targets a view and an eligible client, never an "active log." `client_id` may be omitted only when exactly one eligible window exists; zero yields no display with a supported URI, and multiple yield `AMBIGUOUS_CLIENT` plus IDs and readable labels. An explicit but unavailable client never falls back to another. Creation, requested display, and acknowledged opening are separate results.
 
 The control channel is **negotiated MCP server-to-client notifications**, separate from long-poll telemetry. Advertise a namespaced experimental visualization-notification capability. Send view-revision-changed, display-requested, and resync-required notifications through the session's existing HTTP `GET /mcp` SSE stream; add the equivalent serialized notification sink to direct stdio. Include server epoch, event sequence, affected view/revision, request ID, and intended client where applicable; never include sample buffers. Scope events to authorized registered clients/attachments. Notifications invalidate cached definitions; revisioned tool reads supply authoritative configuration.
 
@@ -1880,10 +1885,916 @@ the anchored source and configuration, without selecting another recording. Capa
 `recording_views: true` while `live` stays false. The editor's live controls and single-file data
 routes remain gated; no native follow is opened by create, clone, save or reopen.
 
-This checkpoint remains uncommitted for review. Evidence is in
-`/private/tmp/wpilog-visualization-stage3-view-admission/validation.md`. Next are revision-bound
-binding/follow admission and the panel controller using immutable 1 MiB queried jobs. Combined
+This checkpoint is committed as `75c787c`, accepted by review 17. Evidence is in
+`/private/tmp/wpilog-visualization-stage3-view-admission/validation.md`.
+The next binding/follow checkpoint is described below. Combined
 decoded budgets, clock/frontier display, remote routing, declaration bursts, season-sized and
 sustained-performance workloads remain the existing Stage 3 gates. Review 15's repeated-result
 encoding cost and bounded last-value scan, and review 16's older documentation/class-name debt,
 remain explicit follow-up notes; no performance or native-platform claim is added here.
+
+
+### Stage 3 revision-bound view follow checkpoint (2026-10-16)
+
+Review 17 accepted view admission and reproduced its evidence. Its two usage notes remain true:
+create and compatibility share two slots, so a controller should sequence them, and retrying an
+existing create still re-admits the source. The accepted 20-file tree is committed as `75c787c`.
+
+The next server checkpoint adds a revision-pinned binding read over HTTP and MCP and an opt-in
+view form of native follow creation. One shared owner snapshots the requested working revision,
+resolves its configuration on a fresh admitted prefix, derives exact queries and the bootstrap
+interval, and checks the revision again. A binding read closes the prefix; follow creation
+transfers it directly into the existing ordinal engine. It does not make a check/create pair
+or trust a client-supplied query, source, or compatibility verdict. The lease response labels
+its view and revision; later working edits do not rewrite that lease.
+
+View follows always negotiate queried metadata and 1 MiB pages, with at most 32 distinct
+resolved entry/field selections. Duplicates share queries and unresolved requirements remain
+visible. Zero selections or missing following-clock evidence cannot open a lease. Fixed
+ranges use exact microseconds; following uses the admitted robot estimate or recorded-sample
+fallback from the shared clock facts. This is initial-window admission, not continuous display
+edge or held-clock behavior. Finalization drains the already opened query; a new finalized
+admission uses the layout's recorded time policy.
+
+Each changed prefix rechecks the originally selected requirements under shared compatibility
+bounds. Changed evidence returns `BINDING_CHANGED` rather than retargeting. Newly usable
+placeholders need a new binding/job and cannot expand an uninterrupted peer's query. The
+controller's automatic bounded-cadence rechecks and immutable broker job adaptation are next.
+Cached page retries recheck session and grants; lost create replies still fall under the existing
+60-second idle expiry. The API keeps `live: false`; editor opening and panels remain disabled.
+
+Evidence: `/private/tmp/wpilog-visualization-stage3-bound-follows/validation.md`. This checkpoint
+remains uncommitted for review. Panel integration, configurable combined decoded budgets,
+follow/inspect/pause and held clocks, remote routing, native platform runs, the 32-lease
+declaration-burst workload and season-sized performance gate remain outstanding. Per-prefix
+compatibility cost and contention must be measured in that gate. No sustained-throughput or
+native-editor claim is made here.
+
+
+### Stage 3 local recording-panel checkpoint (2026-10-16)
+
+The owner requested more implementation before the revision-bound handoff review. The server
+checkpoint above and this extension remain one uncommitted review tree on `75c787c`. The local
+editor now opens recording layouts, binds the working revision directly through a 1 MiB queried
+follow and publishes completed selected frontiers to plots, exact delivered-value tables and
+bounded raw rows. Source Overview and the in-view picker use paged inventory; adding requires a
+fresh, unambiguous inspected row. Presentation revisions retain acquisition; selectors/time
+replace only that view. Pause freezes display while acquisition continues, hide cancels work,
+30 seconds hidden clears buffers, reveal reboots the same source, and finalization ends polling.
+
+The server supplies clock evidence on each view-follow prefix; legacy raw follow bytes remain
+unchanged. Missing time estimates hold a previous robot edge without using wall/receipt time.
+The host explicitly accounts parsed pages, retained frontiers, live model buffers, the last
+complete prefix, an in-flight renderer frame and its acknowledged display in the same fixed
+64 MiB decoded allowance as inventory. The separate encoded allowance remains 64 MiB. Updates
+coalesce at 4 Hz and a five-second missing acknowledgement stops acquisition for that view.
+These are conservative accounting bounds, not process-heap or sustained-performance measurements.
+
+This is a first panel checkpoint, not the complete Stage 3 gate. Plot retention is 4,096 recent
+samples per selection with disclosed trimming/equal-time collapse; raw retention is 256 rows
+and 32 recent problem details with the full problem count. At this earlier checkpoint tables deliberately reported the last
+physically delivered native record, not timestamp-based cursor/latest semantics across members.
+Recording statistics/cursor analysis, histogram/scatter, interactive panning/zooming into history,
+scalar-field selection in the new picker, remote routing, transport-health/latency instrumentation,
+configured combined recorded/live sample budgets and attached-window capability reporting remain
+separate required work. So do declaration-burst/32-lease, season-sized store and sustained-load
+gates, native Linux/Windows, the manual Close-cancellation click and native Save As.
+
+The native fixture uses the product path with 20,000 topics and two members: paged selection,
+automatic append display, exact unsafe integer text, title edit without reacquisition, pause,
+independent peer close, hide/reveal, finalization and zero retained budgets after close. The
+oldest and current cached editors are covered. Focused failing-first and plant evidence, final
+build counts and exact file hashes are indexed under
+`/private/tmp/wpilog-visualization-stage3-panel-follow/validation.md`; the preceding server-only
+checkpoint retains its own original evidence rather than having its hashes rewritten.
+
+
+### Stage 3 shared window-buffer continuation (2026-10-16)
+
+The owner requested the next checkpoint without committing the combined tree above. One window
+now owns the configurable decoded allowance across recorded samples, live panels and paged
+inventory. `wpilog-mcp.visualization.decodedBufferMiB` accepts integer 16–1024 MiB, default 64.
+The implementation decision is reload-only: an active window retains its original allowance,
+rather than shrinking beneath already retained data. Its preview reports the allowance and
+registers it with the session; capabilities report the default/range and effective attached-window
+facts, labeled client-reported rather than server allocations. Session removal/restart removes
+these reports. Encoded acquisition retains its separate 64 MiB allowance.
+
+Recorded sample requests reserve response/transit and conservative decoded/plot-copy headroom
+before I/O, use server reduction sized to that allowance (up to 65,536 points), and keep decoded
+charges through acknowledged replacement or clearing. A new request takes at most a quarter-window
+share divided among selected signals; wide/repeated layouts can refuse rather than evict peers.
+Display copies are counted across and within panels. Changed copy counts re-admit the view;
+title/geometry/style edits still retain data. Live frames conservatively use their largest
+display-copy multiplier. Hidden recorded views clear after 30 seconds. Renderer clearing removes table DOM as well as plots
+before acknowledgement, including while hidden; a stalled renderer retains charges and stops
+admission after five seconds until close. Configuration/control metadata, legacy full descriptors
+and server caches are not covered by the sample allowance, and this is no total-heap claim.
+
+This completes the configurable-accounting implementation prerequisite, not the Stage 3 resource
+gate. Evidence is indexed in `/private/tmp/wpilog-visualization-stage3-window-budget/validation.md`,
+including failing-first tests, plants, full checks and isolated editors with recorded/live views
+open together at default and changed allowances. The previous checkpoints retain their historical
+evidence/hashes. Recording-aware cursor/statistics, remaining panel types and history interaction,
+remote routing, declaration bursts, season-sized stores, sustained memory/throughput, native
+Linux/Windows, manual Close cancellation and native Save As remain open.
+
+### Stage 3 recording-analysis continuation (2026-10-16)
+
+The next server prerequisite is implemented on the same uncommitted panel/budget tree.
+`visualization_source_value` and `visualization_source_statistics` share the existing HTTP
+value/statistics operations. Anchored recordings admit one fresh prefix through the compatibility
+owner, with every present member agreeing on declaration, metadata and selected schema. Absent
+members remain explicit. This admission is independent of a follow's displayed frontier; the
+response names its own member writer/hash/boundary and entry counts. It does not introduce a
+second recording-membership rule, numerical implementation or analysis cache.
+
+Latest and cursor values compare integer timestamps, then original member ID in Java string
+order, then physical ordinal, greatest first. They never interpolate or hold a previous value
+in place of a logged missing field. Statistics include every original matching sample, including
+duplicate/backward timestamps, and use the existing field/angle, double-precision arithmetic,
+quality, directive and non-finite-result owners. The shared tool remains responsible for angle
+unwrapping; the recording adapter supplies stable chronological history. Problems retain member
+and byte-offset provenance, a full count and at most 100 details.
+Relative statistics windows use the shared time-scope resolver on the admitted robot estimate
+(no earlier than the last recorded timestamp), falling back to that timestamp without an estimate.
+Bounds resolve before retention, are reported in inputs, and cannot combine with absolute bounds.
+
+Admission permits two analyses without queueing. Each call has a cooperative ten-second budget,
+1,048,576 visited records (excluded times count), 262,144 retained statistics samples, a
+conservative 32 MiB retained-value estimate, a 64 KiB record payload cap and a 1 MiB operation-JSON
+cap before the MCP envelope.
+The estimate excludes shared indexes and arithmetic scratch space. Limit failures do not become
+partial statistics; occupied slots carry the shared retryable refusal and one-second delay.
+Cancellation/deadline checks run around admission, batches, calculation and result construction,
+without claiming a forced interruption of filesystem I/O or a single calculation. Final grants,
+session liveness and finalized boundaries are checked again; every exit releases its prefix,
+cursors and slot. Generated live-writer tests append during admission and verify that the first
+answer remains on the original prefix, then check a fresh call and finalization separately.
+
+Evidence, failing-first runs, deliberate regressions, final checks and file hashes are under
+`/private/tmp/wpilog-visualization-stage3-recording-analysis/validation.md`. The source tools'
+conformance corpus uses independently computed values; HTTP/MCP parity and resource refusals
+are exercised against the real local transport. This is a server checkpoint, not the completed
+Stage 3 gate. At this server checkpoint, connecting these operations to recording
+value/statistics panels remained next; the continuation below implements it. Histogram/scatter, historical navigation, scalar-field
+picking, remote routing, restart/control integration, declaration-burst/season-sized/sustained
+resource gates and native Linux/Windows remain open. Native Save As and the manual Close
+cancellation check also remain open. No commit, release or performance claim is part of this
+continuation.
+
+
+### Stage 3 recording-analysis panel continuation (2026-10-16)
+
+The local recording preview now connects value/cursor and statistics panels to the shared
+fresh-prefix operations. It no longer substitutes physical delivery order for timestamp-latest
+or refuses a statistics panel. A statistics-only layout acquires the same server binding/clock
+evidence. Binding-owned exact entry/field selections feed each request; there is no client
+role resolution or arithmetic over plotted buffers. Expandable evidence explicitly identifies
+an independent analysis prefix, with member boundaries, inputs and problems. It can be newer
+than the plot frontier; no atomic cross-panel or cross-requirement snapshot is claimed.
+
+The window admits one analysis at a time with a FIFO of at most 32 waiting views. Each used
+requirement is fetched once per kind with all visible copies charged. Complete follow prefixes
+coalesce automatic refresh into at most one round per second. Cursor messages replace prior
+pending cursor work without recomputing statistics. Requests have a 15-second client deadline
+and a response cap sized by the window allowance, no greater than 1 MiB. Renderer delivery
+uses the existing five-second acknowledgement barrier; old data stays charged until replacement
+or clear is acknowledged. This scheduling does not join follow acquisition or evict peers.
+
+Data-generation changes replace the owner; per-kind tokens reject late replies on cursor,
+pause, hide, invalidation or close even if cancellation loses a race. Presentation-only
+revisions reuse the unchanged query and do not refetch. Pause freezes analysis, disables
+cursor queries and leaves acquisition running. Hide cancels immediately and clears retained
+analysis after 30 seconds; reveal awaits fresh completed binding evidence. Active statistics
+require 1–300-second windows and pass relative durations to the server clock resolver. Finalized
+views use their recorded interval, including Full, under the existing server limits. Busy
+admission retries at the bounded cadence; permanent refusal waits for Retry or a changed query.
+
+Evidence, failing-first runs, deliberate plants and final file hashes are indexed in
+`/private/tmp/wpilog-visualization-stage3-panel-analysis/validation.md`. The native fixture uses
+20,000 synthetic topics and two members, with backward physical timestamps, exact unsafe integer
+text, independent cursor and numerical expectations, presentation-edit request counts,
+pause/hide/peer cleanup and finalization at default and changed window allowances.
+
+At this checkpoint, histogram/scatter, historical pan/zoom and scalar-field picking, remote routing,
+combined restart/control coverage and transport health, declaration-burst/32-lease,
+season-sized store and sustained resource gates, native Linux/Windows, manual Close cancellation
+and native Save As. The feature remains an explicit local preview with `live: false`; this
+continuation makes no release or sustained-performance claim.
+
+
+Native reliability follow-up: one run with the deliberately omitted cursor argument timed out
+at the earlier peer-close check: a plot/raw table advanced while its value table stayed behind.
+That occurrence has no established cause; it is not claimed fixed or established as a defect
+on the restored implementation. The final unmodified panel workflow passed three times on
+1.101.0 and once on 1.141.0, including independent-peer closure. Owner/queue state and request
+traces now accompany the fixture's diagnostics. Retain the failed-run evidence and investigate
+any recurrence before adopting this expanded workflow as a CI gate; do not turn this into a
+blanket retry in the fixture. The evidence folder records the exact run and later repetitions.
+
+
+### Stage 3 explicit recording field selection continuation (2026-10-16)
+
+The owner requested the next checkpoint without a commit. The in-panel recording picker now
+accepts a literal numeric field path or array index beside the inspected signal, with an inline
+**Check and add field** action and Enter-key equivalent. It reuses the existing compatibility
+operation with one requirement, then applies the ordinary revisioned layout edit. The user
+reads the recorded schemas in Inspect and names the path; this checkpoint does not add a
+schema-derived suggestion list or a second field parser. Whole-entry selection stays separate.
+
+Compatibility checks every admitted member. A resolved response must preserve source, exact
+entry, field, declared type and requirement identity. Malformed paths, wildcards, missing
+numeric evidence, unavailable schemas and member conflicts do not mutate the view; the inline
+reason names the member evidence. Raw field panels use the same numeric requirement as plots,
+value and statistics panels. The bound follow still rechecks source and compatibility after
+this admission, so the check is not a durable permission grant.
+
+A field check is cancelled when another gesture arrives, before the serial document queue,
+and on hide, close or an agent notification. An uncancellable response is discarded if view
+revision, data generation, inventory generation, selected name or detail revision changed.
+Checks have a 15-second client deadline, 64 KiB request cap, no automatic retry and a response
+cap no larger than 1 MiB, reduced to 256 KiB for a 16 MiB window. Shared encoded and decoded
+allowances are reserved before I/O and released after the check; no peer is interrupted.
+
+The native fixture preserves its 20,000 names and two members while adding nested custom
+schemas and arrays. It checks exact latest values 14 and 18, refuses invalid selections without
+a revision, and uses original projected values [2, 8, 14] to prove count 3, mean 8 and sample
+deviation 6 across plot/value/statistics/raw uses. The older single-file workflow is retained.
+Failing-first results, plants, builds and exact file hashes are in
+`/private/tmp/wpilog-visualization-stage3-field-selection/validation.md`.
+
+Stage 3 remains open for histogram/scatter, historical pan/zoom, configured remote routing,
+combined restart/control coverage, transport health and latency, the 32-lease declaration-burst
+workload, season-sized stores and sustained resource/heap/throughput measurements. Native
+Linux/Windows, manual Close cancellation and Save As remain outstanding. The earlier isolated
+peer-close stall remains an explicit investigation note; this continuation makes no claim to
+have diagnosed it. The preview remains local, explicit and `live: false`.
+
+
+### Stage 3 source chart analysis continuation (2026-10-16)
+
+The owner requested the next stage without committing the preceding tree. Shared HTTP/MCP
+histogram and scatter operations now prepare the remaining panel types. They accept exact entry
+and optional field selectors for a file or anchored recording, retain a bounded original-sample
+history and reuse the existing image chart's binning, one-to-one timestamp pairing, angle and
+quality rules. There is no browser arithmetic or image-generation detour.
+
+Both scatter axes share one admitted prefix. Each unique entry is read once; equal times retain
+member-ID then physical order. Scatter pages are bounded to 1–4096 pairs (default 256), while
+matched/unpaired totals and summaries cover the full interval. The operation returns prefix
+proof so a caller cannot mistake pages from different appends for one snapshot. Every page
+call is fresh; no new lease, cache or cursor protocol is introduced. Empty results are no_match
+with a hint; decode failures, fixed ceilings and retryable two-slot pressure remain explicit.
+
+Active source charts require a requested 1–300-second interval; a young recording may contribute
+less data. Finalized recordings and individual files allow full duration within resource bounds.
+The per-call ceilings reuse the existing analysis limits: 1,048,576 visits, 262,144 retained
+samples across unique selected entries, 32 MiB estimated values, 64 KiB payloads, 100 problem
+details, 1 MiB operation JSON and cooperative ten-second work. Source grants, boundaries and
+session liveness are rechecked before publication. Two dedicated chart slots do not join store
+or recorder work. Index and arithmetic scratch memory are not claimed as the retained-value
+budget or a full heap measurement.
+
+The numerical owner uses binary64 seconds. These operations refuse native timestamps that
+cannot round-trip exactly to microseconds in its supported range, rather than falsely matching
+distinct native times. They also refuse histogram edges that are not distinct finite numbers.
+A future wider representation belongs to the shared arithmetic owner. No chart policy or panel
+schema is added in this checkpoint. Panel controls, one-Hz scheduling and native-editor
+validation follow this shared service prerequisite, alongside the remaining history, remote,
+recovery and performance gates. `live: false` stays unchanged. Evidence is recorded under
+`/private/tmp/wpilog-visualization-stage3-chart-analysis/validation.md`.
+
+
+### Stage 3 chart-panel continuation (2026-10-16)
+
+The next checkpoint connects Add histogram and Add scatter for local files and anchored
+recordings. It reuses the source operations above and the existing window analysis queue,
+acknowledged display budgets and at-most-one-Hz scheduler. There is no new numerical owner,
+server route, persisted schema, external asset or follower protocol. The existing editor stays
+the default and the capability remains `live: false` while the full Stage 3 gates are pending.
+
+Histograms overlay independently binned numeric selections, with exact edges/counts in an
+accessible table. Scatter requires two numeric selections in explicit order (X, then Y), with
+Swap X and Y as a revisioned gesture. More than two selections refuse with a split-pair remedy;
+incomplete and unresolved pairs stay visible as placeholders. Exact pairing, angle preparation,
+non-finite filtering, summaries and data quality belong to the shared server chart owner.
+
+A chart read carries its inputs, complete matched/unpaired totals, diagnostics and independent
+prefix evidence. The renderer validates no numerical hypothesis: it draws the admitted bins
+and pairs and makes the original measurement tables available. Only time-series plots join the
+linked time cursor. Scatter pages contain at most 256 pairs, reduced by the window allowance,
+and replace each other. Every page call proves a fresh prefix. Automatic refresh retains the
+view-local offset; First pairs resets it when a changing rolling window leaves an empty page.
+A retained multi-page chart snapshot remains deferred.
+
+Files and recordings share one queue. Each unique histogram requirement and each ordered
+scatter pair is read once per round, with repeated displays charged. Admission reserves
+encoded/decoded buffers before I/O, caps requests at 64 KiB and results at at most 1 MiB, and
+bounds requests at 15 seconds plus the five-second renderer acknowledgement. Complete prefixes
+coalesce; a cursor edit does not recompute distributions or pairs. Pause cancels work and freezes
+charts, hide cancels immediately and clears retained displays after 30 seconds, reveal re-admits,
+and close releases reservations. Query/per-kind epochs reject stale replies, including an old
+scatter page. Retryable pressure retries at the cadence; permanent refusals require Refresh
+chart / Retry or a changed query. Peers continue uninterrupted.
+
+Evidence is under `/private/tmp/wpilog-visualization-stage3-chart-panels/validation.md`.
+The native gate includes exact bins/pairs across two members, a separately written 600-point
+file, replacement paging, axis swap, presentation reuse, pause/resume during a backward append and hide/reveal on both cached editors. The drawing gate checks actual scatter arcs and histogram axes, beyond measurement tables.
+The remaining work is historical interaction, configured remote routing, combined restart/control
+coverage, transport health/latency, the 32-lease declaration burst, season-sized inventory/hash
+scans and sustained heap/resource/throughput measurement. Native Linux/Windows, manual Close
+cancellation and Save As remain open; the earlier isolated peer-close stall remains undiagnosed.
+
+
+### Stage 3 historical time navigation continuation (2026-10-16)
+
+The next local checkpoint connects the existing fixed-range readers to time-series drag zoom
+and persistent keyboard-accessible Earlier time, Later time, Zoom in and Zoom out controls.
+A gesture persists a microsecond-rounded robot-clock interval through the working-view revision,
+sets both live and finalized policies for a recording, and re-admits that view's selected
+interval. It does not merely clip an old rolling buffer. Pan moves half a window; zoom changes
+its width by two about its midpoint. No source-time bounds or wall-clock values are guessed.
+Invalid, reversed, non-finite or unrepresentable intervals refuse before editing. View and
+query generations reject late gestures. A completed drag needs time-range linking; the explicit
+view controls work even when plot linking is off. Histogram/scatter axes remain value axes.
+
+Inspect History labels the fixed interval. Incoming samples, including late timestamps within
+it, update the bounded display without moving the axis. Navigation resumes a paused display;
+Resume following restores the chosen 1–300-second rolling window while the recording is active.
+That choice is retained as small per-editor UI state while fixed; a separately opened fixed
+view defaults to 30 seconds and exposes the choice explicitly. No saved-view schema changes.
+Files use existing server-reduced Arrow queries; recordings rebootstrap with the existing
+revision-bound 1 MiB follows. Recording plots still retain at most 4,096 recently delivered
+points per selection and raw tables 256 rows. A dense historical recording interval is therefore
+an explicitly trimmed display, not a full min/max reduction; use a narrower range. Shared
+buffer admission, aborts, generation checks and independent peer jobs remain the owners.
+
+The native gate must recover old samples beyond a rolling buffer, persist an actual uPlot drag,
+exercise keyboard pan/zoom, retain a fixed range during a backward append, restore following,
+and compare file-window results with an independently written synthetic log on both cached
+editor versions. Evidence: `/private/tmp/wpilog-visualization-stage3-history/validation.md`.
+Recording-history reduction, configured remote routing, health/latency instrumentation,
+recovery and the sustained resource/performance workloads remain Stage 3 work; this checkpoint
+does not advertise the completed live capability or retire the existing editor.
+
+
+The local historical-navigation gate passed: 4,056 Java tests (85 skipped), three real-server
+broker cases and 795 Node tests (three skipped). Each cached editor, 1.101.0 and 1.141.0, passed
+30 recording-panel checks and the 13-check recorded workflow. Thirty final regression cases
+failed against the previous product files; the native old-code run stopped at the missing zoom
+control. Thirty-nine focused and two native plants were caught and restored. The native fixture
+uses exact sample/microsecond oracles and the actual plot's pixel width for drag bounds; its
+final screenshots use one editor group so the controls and historical samples are visible.
+All work remains local and uncommitted on `75c787c`; the preceding checkpoint evidence remains
+unchanged. Stage 3 is still incomplete for the deferred work above.
+
+
+### Stage 3 review 18 disposition (2026-10-16)
+
+Review 18 accepted the nine checkpoints above with one finding: capabilities listed every attached
+window's `client_id`, which was its `Mcp-Session-Id`. A second local client could present that ID
+and use the first window's inventory handles, attachments, view follows and quotas; the reviewer
+listed another session's paged inventory this way. The correction found the same value in every
+working-view reply as well: `attached_client_id` in view reads and lists, Source Overview summaries
+and mutation results, over both HTTP and MCP.
+
+The fix makes one contract decision explicit, because Stage 4 targeting builds on it:
+
+- A transport session ID is a bearer credential and appears in no visualization reply, the
+  caller's own included. Ownership, attachments, inventory handles, view follows and per-session
+  quotas stay keyed by the session itself; no admission rule changed.
+- A window's public identity, `client_id`, is an opaque window ID: an HMAC-SHA256 of the session
+  under a random per-workspace secret, truncated to 128 bits and written `window-` plus 32 hex
+  digits. One session has one window ID in capabilities, the `/window` reply and every view's
+  `attached_client_id`, so a caller can still see which window holds a view. The ID is not
+  accepted as a session and cannot be reversed without the secret. It changes at restart, when
+  sessions and attachments end anyway.
+- Capabilities are caller-scoped through the shared owner for both adapters. `current_session`
+  marks the caller's own row, rows sort by window ID so their order reveals nothing about sessions,
+  and the HTTP reply no longer echoes the caller's session as a top-level `client_id`. Direct stdio
+  has no window, so it sees no marked row.
+- Stage 4's client listing and display requests use this `client_id`. The readable window labels
+  planned for Stage 4 are separate display text, which is why this identifier is called an ID.
+- Retry receipts store the public projection. A receipt written by an earlier local development
+  run can still hold a session ID from that process; the ID ended with the process and grants
+  nothing, so receipts are not rewritten.
+
+Two places outside the reply surface still hold live session IDs and are left for the owner:
+the standalone server log records each session ID at creation and removal, in a file that other
+local accounts can read under the usual umask, and while a view is attached its working-state file
+records the attaching session, which recovery clears at restart. Neither is reachable through MCP or the
+visualization routes. Restricting those files to their owner, or logging the window ID instead,
+would close them; the log is released behavior, so either change needs its own decision. The
+ideas list records the proposal.
+
+Evidence: `/private/tmp/wpilog-visualization-stage3-session-labels/validation.md`. The two-session
+regression failed on the old code with 14 causes, seven routes disclosing the first session's ID
+among them, and the borrowed ID listed the first session's inventory with HTTP 200. Ten planted
+regressions were caught and restored. No remote routing, health, recovery or performance work is
+part of this correction.
+
+
+### Stage 3 configured remote routing: design and owner decisions (2026-10-16)
+
+This records what inspection of the current tree found, the design, and the owner's decisions.
+Routing itself is not implemented yet; the proxy-trust correction below is.
+
+**What exists.** A window knows one remote: `wpilog-mcp.pitServerUrl`. Its proxy credential stays
+in VS Code secret storage by origin and is leased, in memory and Basic only, to the local server
+for that window's session. Two local outbound clients already use the lease, the mirror's store
+reads and the `/pit-mcp` bridge; both refuse redirects and keep a path prefix. The verified mirror
+is a local store that answers to the pit's `origin_store_id`, so finalized pit files already open
+in the preview through it. A network-bound pit serves `/read/v1` (catalog, snapshots, queries,
+raw follows), store reads, `/data/entries` and the MCP analysis tools without authentication, and
+refuses every visualization route and view-bound follow. The local visualization owners read only
+local managed prefixes: recording summaries, writer-identity checks and the robot-clock estimate
+all come from a capture on the same server. The reader library's remote client has no callers,
+no credential injection and no path prefix; there is no Java follow client. Neither the server
+nor the extension has a connection registry or `connection_id`.
+
+**Proposed routing.**
+
+1. The extension keeps talking only to its local server. The local server routes by
+   `origin_store_id`: a local store or mirror that holds verified copies serves finalized content
+   first; an open recording, or content no local store holds, goes to a configured remote.
+   Configured remotes are exactly the origins learned from trusted local configuration, namely
+   the window's pit registration and `servers.yaml` `mirror.origin`. No request names a URL. A
+   source no configured remote serves is `SOURCE_UNAVAILABLE` with the reason, and an origin two
+   remotes claim refuses until one is chosen. With one pit configured no `connection_id` is
+   needed; it stays out of durable references in any case.
+2. The pit answers source questions itself. A fixed read-only subset of the visualization source
+   operations becomes available to network callers: paged recording inventories, compatibility of
+   a supplied configuration, value, statistics, histogram, scatter and raw pages, and a new
+   configuration-bound follow form. In that form the pit binds the supplied configuration, derives
+   its queries and clock, and rechecks every prefix exactly as a view-bound follow does. Views,
+   templates, saves, window reports, identification by path and every mutation stay loopback-only.
+   These requests read only the pit's permanently configured stores, as raw follows already do.
+   Recorded-file plots reuse the pit's existing reduced reads.
+3. The local server relays. It holds one pit MCP session per local session, attaches the leased
+   credential for that origin only, refuses redirects, keeps the configured path prefix and bounds
+   relayed replies by the local limits. A follow for a remote view is a local lease relaying a
+   configuration-bound pit follow, tagged with the local view and revision; pages and cursors pass
+   through unchanged, so retries stay byte-identical. Local revision checks, attachments and
+   quotas do not change.
+4. An older pit, a pit without the subset, or a refused credential gives an explicit capability or
+   access error with its remedy, never another source. The mirror never stands in for an open
+   recording; an opened follow stays on its serving location until it ends.
+
+**Why the pit answers.** Under the alternative the local server pulls samples over `/read/v1` and
+runs the analyses itself. A statistics panel for 32 signals at 50 Hz over the 300-second live
+limit reads 480,000 samples, roughly 19 MB of typed NDJSON at about 40 bytes each, on every
+refresh; that takes seconds on an event's shared Wi-Fi, where the answer from the pit is a few
+kilobytes. The robot-clock estimate also exists only on the pit, so the alternative still needs a
+new clock field on raw follows, plus remote versions of the recording summary and writer checks.
+
+**Pre-existing security findings.**
+
+- Local trust was computed from the TCP peer alone. The pit guide's nginx example proxies to
+  `127.0.0.1:2363` with the pit bound to loopback, so any request that passed the proxy login
+  without an `Origin` header was a trusted local caller: directory leases, pit forwarding, mirror
+  and sync controls, server-path imports, local ingestion and every visualization route.
+  Corrected locally before routing work, as the owner chose: every loopback-only route refuses a
+  request carrying a header that proxies add, MCP treats it as untrusted, and the documented
+  nginx block sets `X-Forwarded-For`. A proxy that adds no such header still cannot be told from a
+  local client, so existing proxy configurations need the line. Evidence:
+  `/private/tmp/wpilog-visualization-stage3-proxy-trust/validation.md`.
+- `/read/v1/catalog` serializes whole store headers, including peer URLs and the robot
+  address-to-serial map that the `/store` routes deliberately omit. Verified by reading the code,
+  not by a test, and not yet changed.
+
+**Staging if approved.** First the registry, relay transport, capability negotiation, Source
+Overview for pit items and recorded-file panels; then remote inventories, analyses and
+configuration-bound follows; then the health and latency work already planned. Each stage keeps
+the failing-first, plant and native gates.
+
+**Owner decisions (2026-10-16).** The pit answers and the local server relays, with the pit
+exposing the read-only source subset above to network callers. The proxy-trust finding is fixed
+first. Finalized content prefers the verified local mirror and uses the pit only when no local
+store holds a complete verified copy. Native runs for the review-18 fixture change were approved
+and passed on both cached editors.
+
+
+### Stage 3 configured remote routing: recorded-file server checkpoint (2026-10-16)
+
+This is the server half of the first remote stage approved above; the extension half (Source
+Overview for pit items, and the editor reading remote plots through the series relay) is next.
+No recording is routed yet.
+
+- **Configured remotes.** The mirror's live origin (from `servers.yaml` or the loopback mirror
+  control) and every pit endpoint a window leased with its credential. Each is normalized to a base
+  that keeps its proxy prefix; a leased endpoint must end in `/mcp`. Duplicates collapse. A pit with
+  neither a mirror nor a credential is not a configured remote; enabling either makes it one.
+- **Routing.** One workspace owner serves HTTP and MCP. A local store or verified mirror copy
+  answers first. Only on a local `SOURCE_UNAVAILABLE` for a recorded reference does the one
+  configured remote whose published descriptor lists that origin store answer; the reply carries
+  `serving` with the remote's origin and the local reason. A remote that cannot be asked is reported
+  in the refusal, two remotes claiming one origin refuse, and a refused login is 403. A recording on
+  a remote is refused by name. `/source/resolve` returns a null path with `serving`, `/source/series`
+  streams a file's plot data from either location, and `/source/remote` turns a remote server path
+  into its reference through that remote's own `/read/v1/catalog`.
+- **Published subset.** A caller that is not local, from the network or forwarded by a proxy, may
+  use only `GET /published` and the POST source routes for full descriptions, supplied-configuration
+  checks, values, statistics, histograms, scatter, raw pages and series. It needs a live session;
+  the requests read only permanently configured stores, refuse unmanaged references, and use their
+  own admission slots. `GET /published` lists the operations, limits and served stores.
+- **Relay.** One remote MCP session per local session, created outside any lock, at most 256 per
+  remote, and closed off the session-removal lock when the local session ends. The leased Basic
+  credential goes only to its origin, redirects are refused, replies are bounded (2 MiB for
+  analyses, 8 MiB for descriptions, 64 MiB for a catalog, 512 MiB for a relayed series), and a
+  remote's refusal keeps its status, code and `retryable` flag.
+
+Found and corrected on the way: a freshly configured mirror that had not yet contacted its origin
+has no origin store id, and the unreleased catalog lookups threw an internal error on it instead of
+treating it as matching nothing. A mirror test hit it intermittently, depending on when the store
+door first saw the new folder.
+
+Evidence: `/private/tmp/wpilog-visualization-stage3-remote-recorded/validation.md`. The two new
+end-to-end suites run a real pit in a child JVM behind a test reverse proxy that requires a Basic
+login, serves under a prefix and adds `X-Forwarded-For`, matching the pit guide's deployment. All
+four new tests failed on the code before this checkpoint; seventeen plants were caught.
+
+Not measured: catalog size and identify latency on a season-sized pit store (each identify fetches
+that remote's whole catalog, bounded at 64 MiB); relay latency on a real LAN; behaviour behind a
+real nginx. The series relay has no ETag reuse. Remote recordings, remote paged inventories and the
+health, recovery and performance gates remain open, as does the `/read/v1/catalog` header
+disclosure recorded above.
+
+
+### Stage 3 configured remote routing: editor checkpoint (2026-10-16)
+
+The extension half of the first remote stage. **Open Source Overview (Preview)** is offered on
+pit log items. The overview identifies a pit item by the pit's own path through `/source/remote`
+and describes it through the routed owner, so the extension never sees a remote path as a local
+file. Review 19 found one exception, corrected in its disposition below: Entries handed the pit's
+path to this laptop's entry listing. A working view of a remote file reads its plots through `/source/series`, which the local
+server serves locally or relays, with the same window reservations, point limits and byte bounds
+as a local read; values, statistics, charts and raw pages already route on the server. With a
+remote view active, **Open Source Overview** explains that its overview opens from its Logs root;
+this checkpoint claimed the view's own Overview button did too, which the native run below
+disproved and corrected.
+
+The client gained byte replies for visualization routes, with the same session-expiry retry and
+refusal codes as JSON replies. A reply over its byte budget that arrived whole before the cut is
+now refused; before, it resolved with the text collected so far and failed as a JSON parse error,
+and the new byte path would have returned a truncated series.
+
+Evidence: `/private/tmp/wpilog-visualization-stage3-remote-editor/validation.md`. Three new Node
+tests failed on the extension code before this checkpoint; a manifest test covers the menu; six
+plants were caught.
+
+### Stage 3 configured remote routing: native editor run (2026-10-16)
+
+With the owner's go-ahead, the recorded runner gained a remote mode: a pit in its own process with
+one finished file in a configured store, behind a proxy that asks for a synthetic login, serves
+under `/pit` and marks every request forwarded; the built server as the laptop's, with no logs; and
+a real editor that leases the login, opens the pit file's link in Source Overview and builds a
+working view. The plot's 200 samples, the latest and cursor values, the statistics and the first
+raw rows are checked against the formula the pit fixture wrote. Afterward the runner requires every
+request the pit saw to carry the login and be answered, only published routes, and the remote
+session's end. VS Code 1.101.0 and 1.141.0 pass.
+
+The first runs found four defects, each now fixed with a regression that failed first:
+
+- **Pit links, released in 0.10.0-dev1 to dev4.** VS Code decodes a link's query once when it
+  parses it and encodes its `=` and `&` when it prints it; the Explorer and this preview read the
+  printed form, so neither found the server or path. Readers now take the query VS Code keeps, and
+  each value is encoded twice. A Node model of VS Code's decoding tests awkward paths and a link
+  saved in the old form; the native run checks the same paths through the editor's own URI.
+- **Remote overview size.** The remote summary lacked the file size, so the overview's size row
+  would have read "undefined bytes"; it now carries the catalog's size for the hashed content.
+- **Overview button.** A remote view's button passed the null path to a file URI and failed; it now
+  explains, like the command, that the overview opens from the remote's root in Logs.
+- **Remote session end.** A session's end dropped its credential lease before the relay's
+  background DELETE read it, so a proxied pit refused the DELETE and kept the session until its idle
+  expiry. Remote sessions now end first, and the DELETE carries the login taken when it is queued.
+
+Evidence: `/private/tmp/wpilog-visualization-stage3-remote-native/validation.md`. Not covered: the
+overview's source line still reads "local preview" for a remote file and does not name the remote
+that served it; the Explorer's own pit editor was not opened natively; remote recordings, health
+and latency, and the performance gates remain open.
+
+
+### Stage 3 review 19 disposition (2026-10-17)
+
+Review 19 accepted the session-label and proxy-trust checkpoints and asked for fixes in the three
+remote checkpoints. Its six findings reproduce on the uncommitted tree; two reach further than it
+reported, and its proposed fix for the first would not have worked. Its verification notes describe
+evidence the checkpoint folders do not hold, such as plant names and counts and native results, so
+this disposition rests on its probes and on new tests rather than on those notes. The owner chose to
+fix every finding, to show a note in Entries for remote files, to bound reply bodies in time as
+well, and to rerun the native fixture afterward.
+
+- **Cut-off series.** A relayed series ended as a complete reply both when the remote cut it off
+  and when it passed the 512 MiB cap. The JDK server writes the chunked terminator whenever the
+  exchange closes, from the handler and from the streaming worker's own cleanup, so closing the
+  exchange, the review's suggestion, ends the reply normally too. The relay now sets the worker's
+  interrupt flag, the mechanism the stall watchdog already uses, so the next write closes the socket
+  and the reader sees a failed read. The plot and the data pane also refuse an Arrow stream without
+  its end marker, which the reader reports rather than throws; both shipped in 0.10.0-dev1 to dev4.
+- **Entries.** A remote overview or view handed the pit's path to this laptop's entry listing, which
+  refused it or, had the same path existed here, would have listed another file. Entries now shows
+  a note for a remote file and lists nothing; remote listing can come with remote paged
+  inventories in stage (b).
+- **Remote reply shapes.** A pit mirror store that has not learned its origin sends a null origin in
+  its published descriptor and its catalog. The laptop read both with unchecked accessors, so while
+  such a store existed every routed request through that remote failed with 400 "JsonNull", not only
+  identification. Remote replies are now read defensively: such a store serves nothing yet, a
+  descriptor or catalog the laptop cannot read makes that remote unanswered with
+  `SOURCE_UNAVAILABLE` naming it, identification follows the local rule that only a WPILOG is a
+  recorded source, and `/source/remote` refuses fields other than `path`.
+- **Refusals.** Only a series' first-attempt 404 went through the refusal path; other refusals passed
+  through without `remote`, and a proxy's HTML page was relayed as the reply. Every non-200 series
+  reply now takes the JSON routes' path, and a 200 must carry the series type asked for. A remote
+  session that expires again just after the relay replaced it is now a retryable 503
+  `SOURCE_UNAVAILABLE`: the editor reads `SESSION_EXPIRED` as its own session ending and would have
+  reconnected a healthy window.
+- **Session ends.** A window that ended while its remote session was still opening skipped the
+  DELETE, and a call in flight at the end could retry into a new remote session that nothing would
+  end. The DELETE now waits for a session still opening, with the login taken at the end, and an
+  ended window is remembered long enough that no call it still had in flight opens another.
+- **Descriptor cache and ports.** A cached descriptor was reused after the login changed; it is now
+  used only with the login that fetched it. A written default port made one pit two remotes; ports
+  are now normalized as the credential lease normalizes them.
+- **Reply silences, added by the owner.** The 30-second request timeout ends when a reply's headers
+  arrive, so a remote that went quiet mid-body held a server worker until TCP gave up. Every remote
+  body is now read under a 30-second deadline on progress; a slow reply that keeps arriving still
+  completes.
+
+Not changed: the local series route ends its reply the same way if its writer fails partway. No
+input is known to do that, and the plot and the data pane now refuse a cut Arrow stream from either
+route. Remote listing in Entries, the overview's "local preview" label for a remote file, remote
+recordings, health and latency, recovery and the performance gates remain open.
+
+Evidence: `/private/tmp/wpilog-visualization-stage3-review19/validation.md`.
+
+
+### Consolidated data path (owner decision, 2026-10-17)
+
+Status: decided by the owner on 2026-10-17, decision 4 and its design approved the same day.
+Steps 1 to 7 below are done. This replaces
+the configured remote routing decided on 2026-10-16 ("the pit answers, the laptop relays"), which
+the owner set aside uncommitted.
+
+**The rule.** A window reads only its own laptop's server, and that server reads only its own
+stores. Two independent processes keep those stores current: a capture that records live
+NetworkTables from the pit's read-only gateway, and the mirror, which copies the robot logs the
+pit pulled or was given, with the clock facts the pit measured for them. No visualization request
+crosses machines.
+
+**Why.** The checkpoint evidence folders record 31 product timing defects fixed across Stages 1
+to 3: 21 ordering races and 10 missing bounds or starvation cases. Fifteen passed their
+checkpoint's own tests and were found later by a review, a probe or a native run. Most share one
+shape: something a session or window owns ends while work on it is still in flight. The relay
+added a remote session per window per pit, and four of those races. Under this rule the traffic
+between machines carries no per-window state. NetworkTables is a subscription stream that
+resynchronizes after a reconnect, and the mirror is a repeatable copy checked by content hash.
+
+**What already exists.**
+
+- A capture can record from any NT4 server: `capture.robot` takes an explicit `host` and `port`.
+- The pit's gateway serves NT4 on port 5810, mirrors exact topic names, types and properties,
+  forwards the robot's timestamps and answers time sync with the robot's clock, so a laptop's
+  recording uses the robot's timeline. It ignores client writes and disconnects a slow subscriber
+  without affecting the others.
+- The mirror copies whole sessions chosen by age and robot, on passes 30 seconds apart by default,
+  with hashes verified.
+- One server may hold both a `capture` and a `mirror` block, in different folders.
+- The overview, paged inventories, follows, values, statistics and charts already work on local
+  stores, including a recording that is still growing.
+
+**Decisions.**
+
+1. **The live source is a runtime control**, like the mirror's: a loopback-only route the
+   extension sets from its pit settings. By default it captures from the pit's host on gateway
+   port 5810 into a laptop folder kept apart from the mirror folder. `servers.yaml` keeps working
+   for a server configured by hand.
+2. **The mirror copies every finished file except the pit's own captures**: the logs the pit
+   pulled from robots and the logs uploaded to it by hand, with their system text. It never copies
+   a capture, finished or still recording. A laptop records its own live data, and the clock facts
+   a capture holds travel separately (decision 4). A mirrored session lists only the files the
+   mirror holds, and the code that kept a growing capture current every pass goes. The mirror
+   shipped in 0.10.0-dev1 to dev4 copying every file of a session; the owner chose to keep those
+   copies of captures, unrefreshed, until their session ages out. History: the owner first decided
+   pulled logs only. Building it showed that the pit aligns every log it pulls for a session to its
+   capture of that session. A version that also copied finished captures was then built on two
+   recorded answers, both the recommended defaults, that the owner did not intend; it is being
+   undone. The owner then added uploads, and asked for the clock facts to reach laptops instead of
+   the captures.
+3. **The gateway's open port is accepted.** It has no login; laptops reach it on the team's
+   private network, and live data through an authenticated proxy is not planned.
+4. **Clock facts travel with the session** (approved): the pit writes the uptime pairs it measures
+   into a small record for each capture file, the mirror copies those records, and readers combine
+   offsets measured against the same capture. The design follows.
+
+#### Clock facts travel with the session (approved, 2026-10-17)
+
+**Goal.** A laptop places kernel lines and REV data on the match's clock from its mirror alone,
+without the pit's captures, and gives the same times the pit gives for the same request.
+
+**What a laptop lacks.** Every source ends up on the roboRIO's FPGA clock, robot time. The robot's
+log, the pit's capture and a laptop's own recording are written in it. Three facts measured on the
+pit place the other sources:
+
+- **Uptime pairs.** Kernel lines are stamped in seconds since the kernel booted. Every 2 seconds by
+  default, the pit reads `/proc/uptime` over SSH and stamps the reading with robot time at the
+  moment it sent the command, so the SSH round trip bounds the error. Kernel lines are placed by
+  interpolating between these pairs, never beyond them. The pairs exist only as samples inside
+  the capture.
+- **Recorded offsets.** When the pit pulls a robot log or a REV log into a session that has a
+  capture, it measures the file's offset against the capture by cross-correlation (with drift, for
+  a REV log) and records it in the session record. The mirror already copies those records, but a
+  reader uses an offset only together with the file it was measured against.
+- **The reference.** An offset measured after the capture closed names the capture by its hash.
+  One measured while the capture was still recording names nothing, because a capture has no hash
+  until it closes; a REV log measured that way pairs with nothing today, even on the pit.
+
+**1. A clock record for each capture file.**
+
+- When a capture file closes, at rollover, at the end of a recording or in recovery after a crash,
+  the pit writes a small record beside it: every uptime pair recorded in that file with its round
+  trip, the file's hash, its recording (the store that first collected it and the capture's
+  start), and its span in robot time.
+- The record is a file the session record lists, like a system text receipt (path, hash, size),
+  as its own kind: not a log, and not searchable text. Keeping the pairs out of the session record
+  matters because a long practice boot adds about 1,800 pairs an hour, roughly 50 KB as JSON, and
+  session records are read on every catalog scan; clock records are read only by searches.
+- The pairs are the capture's own samples, not thinned, so the pit and a laptop compute the same
+  kernel times.
+- Captures already in a store get records from a background pass on the pit, which reads only the
+  uptime entry of each closed capture that has none.
+- A capture file still recording has no record. On the pit its kernel lines are timed from the open
+  file as today; on a laptop they get times once the file closes or rolls over (1 GiB by default).
+
+**2. The mirror copies clock records** with the session's system text: verified by hash, counted
+toward the cap, and evicted with the session. Peer sync copies none. A server that records into a
+store writes records for every capture the store holds, peer copies included, at its start; a
+store no server records into has none, and its own searches read the captures.
+
+**3. Readers use clock records.** Kernel pairs come from the session's clock records, and from a
+capture file only where no record covers it. A record's span joins the session's time bounds, so a
+kernel line inside the capture's span but outside the robot log's is placed alike with or without
+the capture. The system-log search takes any log of the session as its path, not only the capture.
+
+**4. Offsets meet at their reference.** Two files of one session whose recorded offsets name the
+same reference are aligned with each other by combining the two offsets, drift included: exact
+arithmetic on two measurements, with no new correlation, whether or not the reference file is on
+that machine.
+
+- The reference is a capture file, by its hash, or a capture recording. A new pull measured against
+  a capture still recording also records that recording. An older record without it is accepted
+  only when the session's clock records show a single recording, and is otherwise refused with
+  that reason.
+- REV logs then pair with the robot's own log, on laptops and on the pit, where today they pair only
+  with the capture; REV logs measured while the capture was recording pair as well.
+- A combined alignment names both measurements and their reference. Its confidence is the lower of
+  the two, and its error at most their sum; the REV tools and session reads report it as combined.
+- Session reads follow the same rule.
+
+**Unchanged.** The pit still measures pulled files against its capture, nothing asks the pit
+anything while reading, and the laptop's own recording stays a separate source.
+
+**Still imperfect.**
+
+- Kernel lines from before a boot's first uptime sample stay untimed, as on the pit.
+- A session whose only log is the pit's capture gives the mirror nothing to copy, so its system
+  text stays on the pit.
+- On a laptop, kernel times for a boot still being recorded wait for its capture file to close.
+
+**Format.** Additive fields in store format 1, which older servers ignore. The REV disk cache holds
+only correlations run when reading files outside a store, so it is expected to need no new format.
+
+**Tests.** A clock record holds exactly the capture's uptime samples, as the independent WPILOG
+reader reads them. A session mirrored without its capture gives the pit's kernel times line for
+line. A REV log with a clock offset and drift set by the fixture, beside a robot log a few
+milliseconds off the capture, has its samples placed at times computed independently. Two
+recordings and an offset that names neither are refused. Records for existing captures are
+written once, and rerunning the pass changes nothing. Each rule has a plant.
+
+**What follows from them.**
+
+- **Records of a match.** A laptop's NetworkTables record is its own capture, with gaps wherever its
+  network dropped. The robot's own logs arrive through the mirror once the pit has pulled them.
+  They remain separate sources.
+- **Pit items in Logs.** Open Source Overview on a pit file opens the mirror's copy, or says that
+  the mirror has not copied it yet and shows its progress. A pit capture is not on the laptop: the
+  overview says so, and the laptop's own capture of that session, if any, opens from its own store.
+- **Removed.** The pit's published subset for other machines; the laptop's relay with its remote
+  sessions, remote identification and series relay; the remote overview path in the editor; the
+  mirror's growing-capture path; and Stage 3's planned remote recordings. The relay checkpoints
+  stay in their evidence folders (`…-stage3-remote-recorded/`, `…-remote-editor/`,
+  `…-remote-native/`, `…-review19/`).
+- **Kept from the uncommitted tree.** The nine live-panel checkpoints accepted by review 18; the
+  session-label and proxy-trust fixes; the pit-link fix for links shipped in 0.10.0-dev1 to dev4;
+  the plot and data pane's end-marker check; and the client's over-budget fix.
+- **Fixed either way.** Closing or reloading a window can lose its session DELETE, which leaves its
+  views attached, and a reopened window refused, for up to an hour. The extension should wait,
+  within a bound, for its sessions to end at deactivation. An attachment could also expire minutes
+  after its window's heartbeats stop, rather than with the hour-long session.
+- **Network.** Each laptop receives the robot's whole NetworkTables stream; capture exclusion and
+  thinning reduce it.
+
+**Lessons carried into the remaining work.** The timing defects above suggest four rules:
+
+- Every object a session or window owns ends in one order: stop admitting new work, cancel or drain
+  what is in flight, then release. Liveness is checked again at the moment of commit.
+- A decision made before an asynchronous wait is checked again before it takes effect.
+- Cancellation closes connections where it can. Where a pooled worker must be interrupted, the
+  interrupt is cleared before the worker is reused.
+- Native fixtures wait for acknowledgements, not fixed deadlines, and tests bind port 0 and read
+  the bound port back instead of choosing a free port in advance.
+
+**Order of work.** Each step has its own evidence folder, failing-first regressions and plants.
+
+1. Set the relay aside: rebuild the tree from the proxy-trust checkpoint's final files, re-apply
+   the kept fixes with their tests, and rerun the full Java and extension suites. Done:
+   `/private/tmp/wpilog-visualization-stage3-relay-aside/validation.md`.
+2. The live-source control and the laptop capture of the pit gateway. Done: loopback-only
+   `/store/live` routes, refused when `servers.yaml` configures capture, never sharing the
+   mirror's folder; the live tools follow the current capture; the extension sets it from
+   `wpilog-mcp.live.*`. Evidence: `/private/tmp/wpilog-visualization-stage3-live-source/validation.md`.
+3. The mirror rule of decision 2: every finished file except the pit's captures, and the copies of
+   captures from 0.10.0-dev1 to dev4 kept until they age out. Done:
+   `/private/tmp/wpilog-visualization-stage3-mirror-rule/validation.md`. (The superseded version
+   that also copied finished captures: `…-stage3-mirror-pulled/`.)
+4. Clock records: written when a capture file closes and by the background pass, listed in the
+   session record, carried by the door and the mirror, and read by the system-log search. Peer sync
+   carries none (see part 2 above). Done:
+   `/private/tmp/wpilog-visualization-stage3-clock-records/validation.md`.
+5. Offsets meet at their reference: REV pairing and session reads, and new pulls recording the
+   recording they were measured against. Done: the REV tools, the log listing, REV reads and
+   session reads share one rule; pulls and imports against a capture, and clock record entries,
+   name the capture's recording. A REV log is listed under each log it pairs with, so on the pit
+   under both the capture and the robot's own log (owner's decision, 2026-10-17). Evidence:
+   `/private/tmp/wpilog-visualization-stage3-reference-offsets/validation.md`.
+6. The overview for pit items and the laptop's own captures. Done: a pit file's overview opens
+   the mirror's copy, or for the pit's capture this laptop's own recording of that session (same
+   robot, longest overlap), or says why there is none with the mirror's progress. Evidence:
+   `/private/tmp/wpilog-visualization-stage3-pit-overview/validation.md`.
+7. The window-close leak. Done: a closing window waits up to three seconds for its sessions to
+   end, after refusing new requests, and another window takes a view whose owner's session has
+   gone two minutes without activity (approved 2026-10-17). An open control stream counts as
+   activity, so a hung window that is still connected keeps its views; the owner kept this over
+   the proposal's "four missed 30-second pings" (2026-10-17). Evidence:
+   `/private/tmp/wpilog-visualization-stage3-window-close/validation.md`.
+
+
+### Stage 3 history and pit-overview review corrections (2026-10-17)
+
+The review reproduced three regressions in the unreleased preview. Full recording now
+re-admits a finalized recording even when its saved recorded policy was already full; a
+rolling lease cannot supply the earlier samples merely by republishing its final frame.
+Presentation-only edits continue to reuse their acquisition, and peer views are unchanged.
+
+Captured listings now name `session.open_capture` from the store manifest. All rollover
+members share `session.open` and the session span, so filename order cannot identify the
+writer. The laptop overview resolves the matching session to this current member, respecting
+local path comparison and store/session identity. A missing current member refuses with a
+refresh/update remedy instead of opening a closed member.
+
+A pit document's connection must match the configured connection, including its proxy path,
+before the catalog is read. The lookup checks again after each asynchronous catalog read;
+a changed connection refuses with a restore-configuration or open-current-log remedy.
+Equivalent normalized URLs still resolve the correct origin's mirror copy.
+
+Evidence, failing-first runs, mutation checks and validation are recorded in
+`/private/tmp/wpilog-visualization-stage3-review-navigation/validation.md`. The broader
+Stage 3 resource and lifecycle gates remain pending. No commit or publication is made.
+
+### Stage 3 statistics, configuration and clock-record review corrections (2026-10-17)
+
+Three reproduced regressions are corrected without advancing the remaining Stage 3 gates.
+The shared statistics calculation now distinguishes a valid numeric window without finite
+samples from an invalid request: `no_match` carries count zero, inputs, quality and a hint,
+with no invented mean. Recording results keep their prefix proof, and HTTP and MCP agree.
+The live panel keeps this result eligible for refresh on a new completed prefix; permanent
+refusals still require Retry or a changed query.
+
+Activation and subsequent live/mirror settings changes use one queue through registration
+and the entire server configuration operation, including stopping the old capture. This
+prevents this window's requests from competing for the shared server configuration guard.
+A failure is reported and does not poison later queued changes.
+
+Clock-record scheduling tracks the last successful closed-file count together with its
+capture session. New sessions start at zero; neither an earlier session's rollovers nor
+a same-wall-clock start can suppress their first closed-file records. The worker remains
+asynchronous and outside the NT4 loop.
+
+Failing-first regressions, deliberate plants and final validation are recorded in
+`/private/tmp/wpilog-visualization-stage3-review-refresh/validation.md`. The broader
+resource, platform and lifecycle gates remain pending.
+
+### Stage 3 local checkpoint and focused review (2026-10-17)
+
+The owner approved a focused re-check of the three corrections above and a local checkpoint
+commit of the accumulated implementation. The re-check found no new blocker: empty numeric
+windows keep their evidence and refresh eligibility, complete live/mirror configuration
+operations share one queue, and clock-record watermarks belong to their capture session,
+including a coalesced first rollover. The correction tests and documentation checks were rerun;
+the full build, broker, extension, native-editor and available Mac harness results remain
+applicable to the unchanged implementation. Local notes and review files stay untracked.
+
+Evidence and the committed file manifest are under
+`/private/tmp/wpilog-visualization-stage3-checkpoint-commit/validation.md`. This checkpoint does
+not complete Stage 3: health and recovery, recording-history reduction, workload/performance
+and platform gates remain. No push, tag, version change or release is part of this checkpoint.

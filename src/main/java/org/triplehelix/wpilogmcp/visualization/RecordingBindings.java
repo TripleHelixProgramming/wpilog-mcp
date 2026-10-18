@@ -29,10 +29,50 @@ final class RecordingBindings {
     out.addProperty("max_evidence_record_bytes", BindingEvidence.RECORD_BYTES); out.addProperty("max_role_candidates", 128);
     out.addProperty("max_result_bytes", 1 << 20); out.addProperty("cooperative_work_budget_ms", 10_000); return out;
   }
+  record Bound(RecordedSources.Admission admission, JsonObject result) implements AutoCloseable {
+    @Override public void close() throws IOException { admission.close(); }
+  }
   JsonObject check(JsonObject source, JsonObject configuration) throws IOException {
+    try (var bound = admit(source, configuration)) { return bound.result(); }
+  }
+  Bound admit(JsonObject source, JsonObject configuration) throws IOException {
+    return admit(source, configuration, () -> admission.open(source));
+  }
+  @FunctionalInterface interface Open { RecordedSources.Admission open() throws IOException; }
+  Bound admit(JsonObject source, JsonObject configuration, Open open) throws IOException {
+    return admit(source, ignored -> configuration, open);
+  }
+  /** Exact data reads use the same declaration/schema agreement as view bindings, on one
+   * admission. Accepted types come from that prefix; this never chooses a preferred member. */
+  record Selection(String entry, String field) {}
+  Bound admitExact(JsonObject source, String entry, String field) throws IOException {
+    return admitExact(source, List.of(new Selection(entry, field)));
+  }
+  Bound admitExact(JsonObject source, List<Selection> selections) throws IOException {
+    return admit(source, admitted -> {
+      var configuration = VisualizationContracts.blank(); int index = 0;
+      for (var selection : selections) {
+        var types = new TreeSet<String>();
+        for (var member : admitted.prefix().members()) {
+          var info = member.snapshot().entries().get(selection.entry()); if (info != null) types.add(info.type());
+        }
+        if (types.isEmpty()) throw new IllegalArgumentException("Exact entry is missing from every source member: " + selection.entry());
+        var requirement = new JsonObject();
+        requirement.addProperty("id", "analysis" + index++); requirement.addProperty("selector_kind", "entry"); requirement.addProperty("entry", selection.entry());
+        var accepted = new JsonArray(); types.forEach(accepted::add); requirement.add("accepted_entry_types", accepted);
+        requirement.addProperty("field_path", selection.field()); requirement.addProperty("value_type", selection.field() == null ? "raw" : "number"); requirement.add("unit", JsonNull.INSTANCE);
+        configuration.getAsJsonArray("requirements").add(requirement);
+      }
+      return configuration;
+    }, () -> admission.open(source));
+  }
+  private Bound admit(JsonObject source, java.util.function.Function<RecordedSources.Admission, JsonObject> requested, Open open) throws IOException {
     if (!slots.tryAcquire()) throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT, "Two recording compatibility checks are in progress; retry after one finishes", true);
     var budget = new BindingEvidence.Budget();
-    try (var admission = this.admission.open(source)) {
+    RecordedSources.Admission admission = null; boolean transferred = false;
+    try {
+      admission = open.open();
+      var configuration = requested.apply(admission);
       var prefix = admission.prefix(); int occurrences = 0;
       for (var member : prefix.members()) {
         budget.check(); occurrences = Math.addExact(occurrences, member.snapshot().entries().size());
@@ -77,16 +117,22 @@ final class RecordingBindings {
         if (chosen != null && problems.isEmpty()) {
           combined.addProperty("state", "resolved"); combined.addProperty("entry", selected);
           combined.add("declared_type", chosen.get("declared_type")); combined.add("unit", chosen.get("unit"));
+          var proof = new JsonObject(); proof.addProperty("declaration", declaration);
+          var definitions = new JsonObject(); schemas.forEach(definitions::addProperty); proof.add("schemas", definitions);
+          combined.addProperty("evidence_identity", DetachedInventory.digest(proof.toString()));
           combined.addProperty("reason", "Present members agree; absent members remain explicit"); resolved++;
         } else combined.addProperty("reason", "Recording evidence is missing, incompatible or conflicting; inspect member reasons");
         combined.addProperty("basis", "Shared resolver checked every admitted member's complete native entry set");
       }
       result.addProperty("compatibility", resolved == bindings.size() ? "compatible" : resolved == 0 ? "incompatible" : "partial");
       result.addProperty("evidence_records_visited", budget.records); result.addProperty("evidence_payload_bytes", budget.bytes);
-      budget.check(); admission.check(); bounded(result); return result;
+      budget.check(); admission.check(); bounded(result); var bound = new Bound(admission, result); transferred = true; return bound;
     } catch (UncheckedIOException failure) { throw failure.getCause(); }
     catch (BindingLimit | ReadWire.WireLimit failure) { throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT, failure.getMessage()); }
-    finally { slots.release(); }
+    finally {
+      try { if (!transferred && admission != null) admission.close(); }
+      finally { slots.release(); }
+    }
   }
   private static void checkSchemas(StructSchemas schemas, String type, Map<String, String> prior, JsonArray problems,
       JsonArray warnings, String member, BindingEvidence.Budget budget) {

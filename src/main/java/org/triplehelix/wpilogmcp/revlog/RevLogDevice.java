@@ -4,6 +4,7 @@
  */
 package org.triplehelix.wpilogmcp.revlog;
 
+import java.util.Locale;
 /**
  * Metadata about a REV motor controller device discovered in a .revlog file.
  *
@@ -57,7 +58,7 @@ public record RevLogDevice(
       if (!word.isEmpty()) {
         result.append(Character.toUpperCase(word.charAt(0)));
         if (word.length() > 1) {
-          result.append(word.substring(1).toLowerCase());
+          result.append(word.substring(1).toLowerCase(Locale.ROOT));
         }
       }
     }

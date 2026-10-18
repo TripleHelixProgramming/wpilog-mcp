@@ -370,10 +370,36 @@ offset; legacy receipts remain valid without that additive field. Existing files
 reclassified or moved by a later import. Store format remains 1.
 
 REV companions likewise require unique strong correlation within 250 ms of zero through the existing
-synchronizer. Their manifest retains offset, drift, confidence and the matching WPILOG hash;
-ambiguous or unmatched REV files wait unassigned. This admission rule does not constrain ordinary
-analysis of loose REV logs on other clocks or rewrite existing store associations. Sync cache format
-11 accompanied this import rule and invalidated the interpretations cached before it.
+synchronizer. Their manifest retains offset, drift, confidence and the reference it was measured
+against: the matching WPILOG's hash, and for a capture its recording, since a capture still
+recording has no hash yet. Ambiguous or unmatched REV files wait unassigned. This admission rule
+does not constrain ordinary analysis of loose REV logs on other clocks or rewrite existing store
+associations. Sync cache format 11 accompanied this import rule and invalidated the interpretations
+cached before it.
+
+#### Offsets meet at their reference
+
+A store measures a file once, against the session's capture, when it places the file; readers
+never correlate store files again. That measurement is a fact about two files, so it can align
+only files that lead to the same reference. Two files measured against one capture (a capture
+file, or any file of its recording, since a recording's files share the robot's clock) are aligned
+with each other by composing their two affine mappings, one of them inverted: exact arithmetic,
+drift included. This is what lets a laptop's mirror, which holds no captures, place a REV log on
+the robot log's clock as the pit does, and it pairs REV logs measured while the capture was still
+recording, which once paired with nothing for want of a hash. A session's clock records name each
+capture's recording, so a copy without the capture still knows which recording a capture's hash
+belongs to.
+
+A combination is reported as one, with each measurement and the reference it rests on: no more
+confident than its least confident measurement, with an error of at most the sum of theirs. A
+measurement both sides share cancels (a file measured against the anchor itself keeps its own
+measurement), and a lone forward chain stays as recorded. An offset recorded by 0.10.0-dev4 or
+earlier against a capture still recording names neither a file nor a recording. It is read as the
+session's recording only when every fact that names a recording (captures, clock records, other
+offsets) names the same one: peer sync can put recordings of different boots in one session, and
+choosing one by calendar would put a REV log on the wrong boot's clock. Otherwise the file stays
+unsynchronized and says why. A combination is derived when read, never stored: a manifest or a
+cached synchronization that claims one is refused.
 
 #### One writer
 
@@ -516,7 +542,7 @@ constructed, and competing opens get `BUSY`. File IO and closes remain outside m
 a retained-index bound, not a total heap quota, and one cold index can exceed it before refusal.
 Unproven files are excluded with reasons, and identical hashes are not read twice.
 
-Session windows are mapped backwards through the recorded alignment chain before the shared
+Session windows are mapped backwards through the recorded alignment steps before the shared
 cursor's binary search. Exact offset subtraction preserves large integer timestamps. Drift
 inversion rounds outwards, allowing for each floating operation and integer rounding in the
 forward mapping; final inclusion still uses that original forward mapping. Overlapping inverse
@@ -664,7 +690,7 @@ A loaded log costs:
 
 - The mapped file, outside the Java heap. The operating system pages it in as it is read and can drop those pages again at any time.
 - 4 bytes per record for offsets in an ordinary file; 8 for an entry whose addresses extend past 2 GiB, plus the entry table. Arrays are compacted after scanning; offsets are never individually boxed. A crossing record temporarily costs its record size on the heap.
-- Decoded values, up to the log's budget. Each entry in a log's value cache is weighed by an estimate of its decoded size. The budget is 60% of the maximum heap divided by the number of logs already in memory when the log is loaded, and at least 128 MB. When it is full, the cache drops the entries used least recently and least often, and they are decoded again when asked for.
+- Decoded values, up to the log's budget. Each entry in a log's value cache is weighed by an estimate of its decoded size. The budget is 60% of the maximum heap divided by the number of logs in memory, and at least 128 MB; it is set again for every loaded log whenever a log is loaded or unloaded. A budget fixed at load time let the first two logs each claim 60% of the heap, and kept the share an unload freed. When it is full, the cache drops the entries used least recently and least often, and they are decoded again when asked for.
 
 Loaded logs are kept in a cache:
 
@@ -672,7 +698,7 @@ Loaded logs are kept in a cache:
 - When less than 15% of the maximum heap is free after a garbage collection, the least recently used log is unloaded and the heap collected again, until the measure recovers. The collection matters: the heap's used figure counts garbage, and what an unloaded log held is garbage until it is collected, so a measure taken without one sees no change and goes on to unload every log. The check runs on every load and every 5 minutes, and forces no collection when the heap is not under pressure.
 - Before a log larger than the free heap is loaded, other logs are unloaded in the same way, until that much is free.
 
-The value budgets are estimates, and they are not rebalanced as more logs load, so together they can exceed the heap. The heap-pressure check is what keeps the total within it. A log unloaded while a call is still reading it stays usable for that call: its value cache is emptied, later reads decode without caching, and the mapping is released when the last acquired use closes. The log-reading tool base retains through result annotations, the data endpoint through the stream, and background synchronization through its actual completion, even if its future was cancelled. A bare cache view carries no such lifetime guarantee; code that reads values acquires a use.
+The value budgets are estimates, and the 128 MB floor lets several loaded logs together exceed 60% of the heap. The heap-pressure check is what keeps the total within it. A log unloaded while a call is still reading it stays usable for that call: its value cache is emptied, later reads decode without caching, and the mapping is released when the last acquired use closes. The log-reading tool base retains through result annotations, the data endpoint through the stream, and background synchronization through its actual completion, even if its future was cancelled. A bare cache view carries no such lifetime guarantee; code that reads values acquires a use.
 
 If a call still runs out of memory, it returns an error that suggests a narrower time window or a larger heap, and the server keeps serving other calls.
 
@@ -844,12 +870,26 @@ Deleted views do not pin source locators. Expiry or eviction ends their retry gu
 A malformed or unknown working record moves intact to `quarantine/<uuid>/` under the state
 directory with a warning; valid records still load. Quarantine is outside the active-state quota
 and is retained for manual inspection. A failed quarantine move retains the original and fails
-recovery. Detached records carry a 30-day recovery expiry; attachments currently last until
-explicit detach, session expiry/removal or restart. The removal callback coalesces session IDs
+recovery. Detached records carry a 30-day recovery expiry; attachments last until explicit
+detach, session expiry/removal or restart, or until another window asks for the view after the
+owner's session has gone two minutes without activity. A request is activity, and a window pings
+every 30 seconds; so is the server's write to the window's open control stream, about once a
+second. A view therefore moves from a window whose connection is gone, but not from a window that
+is hung with its connection open: that window keeps its views, and another window can open a copy.
+A window closed or reloaded without ending its session used to hold its views for the hour the
+session lives, and a reopened window was refused them. The silence check reads the owner's last activity
+without refreshing it, so asking cannot keep a window alive; the owner, if it returns, no longer
+owns the view. A closing window waits up to three seconds for its sessions to end, which releases
+its views at once in the ordinary case. The removal callback coalesces session IDs
 and only enqueues cleanup; it performs no I/O under the session map lock. Admitted jobs drain
 coalesced releases even when the queue is full. An attachment rechecks session liveness on the
 state queue, so expiry while queued cannot resurrect a dead client. A late old-session release
-cannot detach its replacement. Shutdown stops admission,
+cannot detach its replacement. The session ID is a bearer credential for everything the session
+owns: attachments, window reports, inventory handles, view follows and per-session quotas. Replies
+therefore name a window only by an opaque window ID, a keyed digest of its session under a secret
+that never leaves the workspace, so a client can see which window holds a view without being able
+to act as that window. Capabilities once listed session IDs, and a second local client read
+another window's inventory with one. Shutdown stops admission,
 allows queued operations to drain, and waits at most two seconds; a daemon cleanup task retains
 the state lock until that drain completes. `VisualizationWorkspace`, owned once by the registry,
 is the application boundary for HTTP and the named MCP adapters. `RecordedSources` retains a
@@ -892,7 +932,11 @@ is excluded from unmanaged-file discovery; older readers can still list it as st
 
 Caller authority is a separate immutable request value. Stdio explicitly grants trusted-local
 authority. HTTP derives it from the actual loopback listener, loopback peer, and Origin for each
-single or batch call. An omitted context is untrusted. The handler clears authority and session
+single or batch call, and withholds it from any request carrying a header that proxies add. A
+reverse proxy on the same machine connects from loopback too: the pit guide's nginx example once
+made everyone past its login a local caller, able to lease directories, import by server path and
+drive sync, mirror and visualization controls. Every loopback-only route applies the same rule,
+and a forwarding header can only withdraw trust. An omitted context is untrusted. The handler clears authority and session
 state in `finally`; queued mutations receive the captured value rather than reading a later
 thread-local. No new acquisition connection or telemetry pipeline is introduced.
 
@@ -935,6 +979,22 @@ same bounded admission owner with no requirements, then release the prefix befor
 working-state write. The configuration is intent, not a cached binding or grant; subsequent
 compatibility and follow work must recheck source access. Missing signals do not prevent saving
 a layout, and unavailable sources do not destroy previously persisted metadata.
+
+Revision-bound binding snapshots working state before source work, resolves on one fresh prefix,
+then checks the revision again. No metadata queue or lock is held across source admission.
+The detached plan closes its prefix. Follow admission transfers that same prefix to bootstrap,
+checks the revision again before publication, and retains only selected intent and compact
+signatures, not the detached answer or full layout. A revision check is the admission point;
+a later edit does not retarget an already opened follow. Clients must reject pages for an old
+working revision and explicitly replace their subscription.
+
+Each subsequent prefix rechecks the pinned selections through the same bounded compatibility
+owner. Changed selected names, types, metadata, units or schema identities refuse continuation;
+newly usable placeholders never expand an existing query. This currently charges compatibility
+work per changed prefix, including its witness scans. Its sustained cost and contention belong
+in the remaining performance gate; unchanged long polls keep the existing publication wait.
+Cached retries recheck the opening session and source access. Fixed 1 MiB queried pages share
+the existing lease and encoded-byte budgets; no unbounded binding-token registry is added.
 
 Recording compatibility borrows every admitted member and delegates selectors, roles, units
 and numeric projection rules to the existing shared owners. Complete entry sets decide roles;
@@ -1026,11 +1086,15 @@ filters in this mode. It never merges two inventories or searches shortened name
 
 Encoded inventory requests reserve twice their 1 MiB reply cap from the same 64 MiB acquisition
 budget owner used by follow jobs. The window separately accounts retained inventory JSON,
-host/webview copies and outstanding renderer delivery against 64 MiB, using conservative object
-and string estimates rather than claiming an exact JavaScript heap bound. Admission refuses
-before retaining or delivering excess rows. This inspection checkpoint does not connect live
-panels. The planned configurable combined recorded/live display budget and its performance
-gate remain part of panel integration; existing recorded plots retain their previous limits.
+host/webview copies and outstanding renderer delivery against the configured decoded allowance:
+64 MiB by default, 16–1024 MiB per window. This uses conservative object and string estimates,
+not an exact JavaScript heap bound. Recording panels share it for parsed broker pages, retained
+frontiers, display buffers, the last complete prefix and renderer copies; recorded-file sample
+buffers share the same owner. Admission never evicts another view. A setting change takes effect
+only after window reload, so lowering it cannot silently undercount existing buffers. The server
+reports the default/range and client-reported window facts through capabilities, under opaque
+window IDs with the caller's own row marked; these facts grant no authority and reserve no server
+memory.
 
 Follow metadata can be explicitly limited to the queried entries. This projects the wire
 inventory before encoding, with only the selected struct schemas and their transitive
@@ -1044,16 +1108,30 @@ does not reduce catalog scanning/indexing costs.
 
 Each working UUID owns its controller, panel, data generation and cancellation. Configuration
 revisions always reach the renderer, but the data key contains only source identity, requirements,
-series use and recorded range. Title, geometry, style and checkpoint edits preserve current buffers
+series use, display-copy counts and recorded range. Title, geometry, style and checkpoint edits preserve current buffers
 and in-flight answers. Query changes, hide and disposal abort obsolete requests. A reply is accepted
 only for its exact UUID/query generation; another view's resources remain live. Entries derives its
 target from the current native tab and selected panel and serializes additions with that view's
 other gestures. Hidden legacy editors cannot regain Entries through a late listing reply.
 Bundled GridStack owns layout presentation; server configuration remains authoritative. The
-preview requests at most 4,096 plot points and 32 series per view, sequentially, with a 1 MiB
-encoded-response cap and no host response cache. Each renderer retains only its current query's
-series and values across presentation edits. The configurable aggregate decoded budget and shared
-live display integration remain Stage 3; this preview makes no one-hour live or 1 GiB performance claim.
+preview requests at most 32 series per view, sequentially, with no host response cache. Before
+sample I/O it reserves encoded response/transit bytes and a conservative decoded expansion
+including plot and table copies. Adding or removing repeated displays re-admits that view;
+live frame reservations use the largest display-copy count. Available headroom sets the server's reduction request, up to 65,536
+points and a 4 MiB response; raw tables request at most 256 rows. A new recorded query initially
+uses at most a quarter-window share divided among its series. This is admission headroom, not a
+guarantee that any 32 selections fit. A smaller allowance or more copies causes earlier bucketing
+or an explained refusal before download.
+
+Renderer delivery is serialized and bounded. Acknowledgement releases wire/transit charges and
+transfers sample ownership to the displayed slot. A replacement holds both old and new charges
+until acknowledged; clearing first destroys plots and removes table contents, including while
+hidden. Hidden views clear after 30 seconds. A five-second missing acknowledgement stops further
+admission and keeps charges until close; late replies cannot regain a closed view's resources.
+Each renderer retains only its current query's series and values across presentation edits.
+The allowance covers these sample buffers and paged recording inventory, not every configuration,
+control/legacy source descriptor, server cache or allocation in the JavaScript runtime. Sustained
+heap/resource measurements remain a gate; this preview makes no one-hour live or 1 GiB performance claim.
 
 The first Stage 3 gate adds `read/server/OrdinalFollow`, a continuation engine over
 the existing `ReadSnapshot` and `SampleCursors`, now exposed through native HTTP follow leases.
@@ -1150,9 +1228,110 @@ the old subscription; local admission failure leaves the requesting view and its
 This requires spare job/byte capacity even when the old subscription has no peers. Reset
 numbers belong to each subscription and increase across refreshes; stale callbacks from the
 old binding cannot deliver or acknowledge work for its replacement. No history cache or
-bootstrap handoff is involved. Panels will request 1 MiB pages; the protocol maximum and
-adapter default remain 4 MiB. The real-server fixture exercises both page sizes; live panels
-are not wired yet.
+bootstrap handoff is involved. Recording panels request 1 MiB queried pages; the protocol maximum
+and raw adapter default remain 4 MiB. A bound panel sends only the working view UUID/revision,
+uses the existing MCP session and consumes the server-selected plan. Different working views
+have independent leases; a presentation-only revision retains its acquisition generation.
+A selector/time edit, retry or hide/reveal releases that view's subscription before its replacement;
+peers remain uninterrupted. This panel replacement can refuse without a new subscription.
+
+Time navigation persists fixed robot-clock bounds at microsecond precision through the same
+working revision and query identity. Drag selection applies only to linked time-series plots;
+explicit pan/zoom controls apply to the view. File requests use the existing reduction budget,
+and recordings rebootstrap the requested interval through the same bound follow. Inspect History
+keeps the axis fixed as later prefixes arrive. Resume following returns to the editor's chosen
+window (kept in restored UI state while the saved policy is fixed); a newly opened fixed view
+starts with 30 seconds. Navigation exits display pause. No history cache or alternate numerical
+owner is introduced. Recording plots still retain only 4,096 recently delivered points per
+selection, so long historical windows are explicitly trimmed, not complete min/max reductions.
+
+Panel models retain bounded native rows and a separate numeric display projection. Plot/raw panels
+publish a completed selected frontier together, including its per-prefix recorded-clock facts.
+A missing time estimate holds an earlier valid robot edge; receipt time never changes the axis.
+Table values retain exact tags; plotting unsafe integers creates gaps. Timestamp sorting and
+equal-time plot collapse do not alter raw physical order or become statistics/cursor inputs.
+Value/statistics/chart panels use independent server reads under the same window buffer owner. One
+analysis is active per window, with a FIFO of at most 32 waiting views and no wait on the
+acquisition path. Complete prefixes coalesce refreshes into at most one round per second; only
+the newest pending cursor is retained. Each used requirement is read once per panel kind, with
+all display copies charged. Identical ordered scatter pairs share one read and charge each
+display copy. Active statistics and charts use 1–300-second windows; trailing bounds resolve
+on the server's newly admitted clock. Finalized views use their recorded interval, including Full.
+The 15-second request deadline and five-second renderer-acknowledgement deadline bound a queue
+turn. Data-generation and per-kind tokens reject late replies even if cancellation loses a race.
+Presentation-only revisions retain the same query; selector/time/source or multiplicity changes
+replace its owner before I/O. Pause cancels analysis and freezes its display while follow
+acquisition continues. Hide cancels immediately, then clears acknowledged retained data after
+30 seconds; reveal waits for fresh completed binding evidence. Close releases all ownership.
+Permanent refusals remain visible until Retry or a new query; transient admission refusals
+retry at the same bounded cadence. Independent result prefixes, quality and problems remain
+inspectable, and no value, statistic, histogram or scatter pair is inferred from delivered plot samples.
+
+Recording field selection supplies a literal path to the same cross-member compatibility
+operation as templates and agents. The browser neither parses schemas nor tests values for
+numeric shape. A temporary configuration checks only the newly selected requirement, so an
+unrelated unresolved requirement does not veto it. The working layout is mutated only after
+fresh server evidence agrees on exact name, declared type and field. The subsequent bound
+follow independently rechecks that evidence. Raw field panels also use a numeric requirement,
+which can be shared with plots and analysis tables.
+
+The picker cancels at gesture receipt before waiting on the document's serial mutation queue.
+Hide, close and agent notifications cancel too. A delayed reply must still match the view
+revision, query, inventory generation, detail revision and selected name before it can edit.
+A check has a 15-second client deadline, 64 KiB request cap and response cap of the smaller of
+1 MiB or one sixty-fourth of the configured decoded allowance. Before I/O it reserves twice
+that cap from encoded acquisition and sixteen times it from the shared decoded allowance;
+parsed evidence exceeding that accounting reservation refuses. No evidence is retained after
+the check, no peer is evicted, and busy admission requires an explicit retry. These are
+conservative accounting limits, not a process-heap measurement.
+
+Recording analysis admits one fresh prefix through the same compatibility owner, with exact
+entry intent and agreement across member declarations, metadata and selected schema closure.
+It visits native records in physical order without a second timestamp index. Latest/cursor
+selection shares the recorded-value comparison; ties across members use original member ID in
+Java string order, then physical ordinal. Statistics retain a bounded history and sort it
+stably by integer timestamp before passing it to the existing field/angle, arithmetic, quality
+and directive owner. Plot buffers and reduced samples never feed that owner. Results name their
+member boundaries and counts; this fresh read need not match a follow's displayed frontier.
+Relative statistics windows use the shared time-scope resolver on the admitted clock before
+sample retention. The resolved bounds and clock evidence accompany the answer.
+
+Two nonqueued analysis slots isolate concurrent materializations. The per-call bounds are
+1,048,576 visited records (including excluded timestamps), 262,144 retained statistics samples,
+a conservative 32 MiB value estimate using the native wire expansion walk, 64 KiB per payload,
+100 diagnostic details and 1 MiB of operation JSON before the MCP envelope. Every failure closes its cursors and prefix and
+returns the slot. The ten-second work budget and cancellation are cooperative at admission,
+batch and calculation boundaries; filesystem I/O and an individual calculation are not forcibly
+interrupted. Shared indexes and arithmetic scratch space are outside the retained-value estimate.
+No store queue, metadata queue or recorder loop performs this work. Access, session liveness
+and finalized boundaries are rechecked before publication, with no retained analysis cache.
+
+Source histogram/scatter reads use a separate two-slot bounded owner for both files and
+anchored recordings. It admits both scatter axes together through the same declaration/schema
+proof, reads each unique entry once and retains only the requested interval. Stable integer-time
+ordering precedes the shared image-chart numerical routines; unrepresentable numeric-second
+timestamps refuse rather than merging different native timestamps. Each selected entry keeps
+its own schema context, so two fields do not borrow a different member's schema. The shared
+binning, pairing, field, angle and quality rules have one implementation. Results disclose
+full match/unpaired counts even when the scatter drawing is paged. Every page is a fresh read,
+not a retained cursor: callers must compare prefix evidence before combining pages. The same
+record/sample/value/payload/result ceilings and cooperative ten-second budget bound chart work;
+no recorder or metadata queue waits for it. Histogram/scatter panels use these operations through
+the same window analysis scheduler for files and recordings, at most one round per second.
+Request and response bounds are reserved before I/O. Shape and selection identity are validated
+before handing results to the renderer; the renderer owns only drawing and accessible tables.
+Scatter offsets are transient presentation state. Paging invalidates older replies and replaces
+the displayed page; it never joins measurements from different prefixes. Ordered axis selection
+belongs to the persisted layout, participates in query identity and cannot be inferred from names.
+The linked time cursor applies only to time-series axes. Both new panels use bundled uPlot and
+the same acknowledgement barrier for plots, tables and diagnostic text.
+
+One outstanding frame and one acknowledged display remain charged until replacement or close;
+updates coalesce at 250 ms and a five-second acknowledgement deadline stops acquisition for an
+unresponsive renderer. Hide cancels follow work immediately, clears buffers after 30 seconds,
+and reveal bootstraps the same source. Delayed frames carry their original data generation and
+owner-specific acknowledgement. Missing required declarations are checked at most once per five
+seconds, sequentially after follow admission; a blank layout starts no data or binding polling.
 
 `FollowClient` borrows the existing origin-scoped credential provider. It never follows redirects
 or accepts credentials embedded in URLs. The adapter and subscription admission share the exact
@@ -1194,10 +1373,9 @@ There is no encoded history cache or per-consumer frame copy. Parsed frames limi
 the negotiated page byte budget in nodes, counting primitives, and 96 levels of nesting. Every JSON
 node requires at least one encoded byte, so the traversal bound admits every byte-bounded page
 within that depth, including full pages of tagged arrays. These are acquisition bounds, **not** an aggregate JavaScript heap or display
-budget. Configured remote visualization routing, live editor/clock states, the decoded-buffer
-setting and accounting for recorded buffers/webview copies, and measured display/resource workloads
-remain Stage 3 work. The broker is exercised through the real server fixture and is not yet wired
-into the recorded editor.
+budget. The local panel preview now connects the broker to the shared decoded-buffer owner
+described above. Configured remote routing, recording-history reduction and measured
+display/resource workloads remain Stage 3 work.
 
 
 ## Known Limits

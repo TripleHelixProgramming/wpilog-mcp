@@ -623,6 +623,10 @@ class PullStoreTest {
       var stored = placed(entry);
       assertEquals(session, stored.session().id()); assertNotNull(stored.session().openCapture());
       assertEquals("by_correlation", stored.file().matching().method()); assertNull(stored.file().matching().wpilogSha256());
+      // The capture has no hash while it records, so the offset names the recording it was measured against.
+      var recording = CaptureRecording.of(stored.session().openCapture().provenance(), StoreCatalog.read(root, security).header().id());
+      assertTrue(recording.isPresent());
+      assertEquals(recording.get(), stored.file().matching().recording());
       var conflict = new IdentityConflict(stored.file().path(), "SYNTHETIC-A", "SYNTHETIC-B");
       assertEquals(List.of(conflict), stored.session().identityConflicts());
       writer.value(topic, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 71_000_000, 1, 0.5), 0);

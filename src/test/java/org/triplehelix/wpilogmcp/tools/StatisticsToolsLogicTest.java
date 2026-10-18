@@ -305,8 +305,8 @@ class StatisticsToolsLogicTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("returns error when all values are NaN")
-    void returnsErrorForAllNaNValues() throws Exception {
+    @DisplayName("reports no match when all values are NaN")
+    void reportsNoMatchForAllNaNValues() throws Exception {
       var log = new MockLogBuilder()
           .setPath("/test/stats_allnan.wpilog")
           .addNumericEntry("/Test/Values",
@@ -324,10 +324,12 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertFalse(resultObj.get("success").getAsBoolean(),
-          "Should fail when all values are NaN");
-      assertTrue(resultObj.get("error").getAsString().contains("No numeric data in range"),
-          "Error should mention 'No numeric data in range'");
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertEquals(0, resultObj.get("count").getAsInt());
+      assertFalse(resultObj.has("mean"));
+      assertEquals(4, resultObj.getAsJsonObject("data_quality").get("nan_filtered").getAsInt());
+      assertTrue(resultObj.get("reason").getAsString().contains("No numeric data in range"));
+      assertTrue(resultObj.has("looked_for")); assertTrue(resultObj.has("hint"));
     }
   }
 

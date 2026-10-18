@@ -77,6 +77,302 @@ class VisualizationEndpointTest {
     return call("/views", body);
   }
   String route(JsonObject view) { return "/views/" + view.get("view_id").getAsString(); }
+  /** The workspace's public ID for a session's window; ownership itself stays with the session. */
+  String windowId(String owner) throws Exception { return registry.visualizations().views.windowIds().forSession(owner); }
+
+  @Test void windowBudgetsAreReportedSeparatelyAndExpireWithTheirSession() throws Exception {
+    var caps = call("/capabilities", null);
+    assertTrue(caps.has("decoded_buffer_budget"), "Publish the client allowance contract");
+    var budget = caps.getAsJsonObject("decoded_buffer_budget");
+    assertEquals(64L << 20, budget.get("default_bytes").getAsLong());
+    assertEquals(16L << 20, budget.get("minimum_bytes").getAsLong());
+    assertEquals(1024L << 20, budget.get("maximum_bytes").getAsLong());
+    assertTrue(caps.getAsJsonArray("attached_windows").isEmpty());
+    var request = new JsonObject(); request.addProperty("decoded_buffer_budget_bytes", 16L << 20);
+    var own = call("/window", request);
+    assertEquals(windowId(session), own.get("client_id").getAsString());
+    assertTrue(own.get("current_session").getAsBoolean());
+    assertEquals("client_reported", own.get("basis").getAsString());
+    assertEquals(16L << 20, own.get("decoded_buffer_budget_bytes").getAsLong());
+    String first = session; session = connect(); request.addProperty("decoded_buffer_budget_bytes", 128L << 20);
+    var second = call("/window", request);
+    var windows = call("/capabilities", null).getAsJsonArray("attached_windows");
+    assertEquals(2, windows.size());
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var args = new JsonObject(); args.addProperty("api_version", 1);
+    assertEquals(windows, tool("visualization_capabilities_get", args).getAsJsonObject("capabilities").get("attached_windows"));
+    http.send(HttpRequest.newBuilder(URI.create(base()+"/mcp")).header("Mcp-Session-Id",first).DELETE().build(), HttpResponse.BodyHandlers.ofString());
+    windows = call("/capabilities", null).getAsJsonArray("attached_windows");
+    assertEquals(1, windows.size()); assertEquals(second, windows.get(0));
+    assertEquals(404, raw("/window", request.toString(), first, null).statusCode());
+    server.stop(); launch(); assertTrue(call("/capabilities", null).getAsJsonArray("attached_windows").isEmpty());
+  }
+
+  /** Review 18: a session ID is a bearer credential for every session-bound handle and quota.
+   * Reports may say which window holds what, but must give another client nothing it could present
+   * as that session. The reviewer listed a peer's paged inventory with an ID read from capabilities. */
+  @Test void peerReportsNeverDiscloseASessionIdThatActsAsThatSession() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("peer-recording"), 4);
+    String first = session;
+    var allowance = new JsonObject(); allowance.addProperty("decoded_buffer_budget_bytes", 64L << 20);
+    var firstWindow = call("/window", allowance);
+    var view = create(source(fixture("peer", 1))); var attached = call(route(view) + "/attach", new JsonObject());
+    var open = object("source_ref", recording.reference); open.addProperty("inventory_mode", "paged");
+    var opened = call("/source/describe", open); var inventory = object("inventory_id", opened.get("inventory_id"));
+    var selfReplies = new LinkedHashMap<String, String>(); // the first session's replies to itself
+    selfReplies.put("POST /window", firstWindow.toString()); selfReplies.put("POST /views/<id>/attach", attached.toString());
+    selfReplies.put("POST /source/describe", opened.toString());
+    assertEquals(200, raw("/source/entries/list", inventory.toString(), first, null).statusCode());
+
+    session = connect(); // another window, or an agent connected over HTTP
+    var secondWindow = call("/window", allowance);
+    var args = new JsonObject(); args.addProperty("api_version", 1);
+    var viewArgs = obj("view_id", view.get("view_id").getAsString()); viewArgs.addProperty("api_version", 1);
+    var edit = viewArgs.deepCopy(); edit.addProperty("expected_revision", 1); edit.addProperty("request_id", UUID.randomUUID().toString());
+    edit.addProperty("configuration_json", VisualizationContracts.blank().toString());
+    var replies = new LinkedHashMap<String, String>();
+    replies.put("GET /capabilities", raw("/capabilities", null, session, null).body());
+    replies.put("POST /window", secondWindow.toString());
+    replies.put("GET /views/<id>", raw(route(view), null, session, null).body());
+    replies.put("POST /source/views", raw("/source/views", object("source_ref", view.get("source_ref")).toString(), session, null).body());
+    replies.put("visualization_capabilities_get", tool("visualization_capabilities_get", args).toString());
+    replies.put("visualization_view_get", tool("visualization_view_get", viewArgs).toString());
+    replies.put("visualization_view_list", tool("visualization_view_list", args).toString());
+    replies.put("visualization_view_update", tool("visualization_view_update", edit).toString());
+    // Every window identifier the second client was given must fail as a session header.
+    var caps = JsonParser.parseString(replies.get("GET /capabilities")).getAsJsonObject();
+    var identifiers = new LinkedHashSet<String>();
+    caps.getAsJsonArray("attached_windows").forEach(w -> identifiers.add(w.getAsJsonObject().get("client_id").getAsString()));
+    var seen = JsonParser.parseString(replies.get("GET /views/<id>")).getAsJsonObject().get("attached_client_id");
+    if (seen != null && !seen.isJsonNull()) identifiers.add(seen.getAsString());
+    var checks = new ArrayList<org.junit.jupiter.api.function.Executable>();
+    replies.forEach((name, body) -> checks.add(() -> assertFalse(body.contains(first), name + " discloses the first session's ID: " + body)));
+    for (var id : identifiers) checks.add(() -> assertEquals(404, raw("/source/entries/list", inventory.toString(), id, null).statusCode(),
+        "reported window identifier " + id + " lists the first session's inventory"));
+    // Not even a caller's own session ID is echoed: a reply can be logged or pasted elsewhere.
+    replies.forEach((name, body) -> checks.add(() -> assertFalse(body.contains(session), name + " echoes the caller's own session ID")));
+    selfReplies.forEach((name, body) -> checks.add(() -> assertFalse(body.contains(first), "first " + name + " echoes the caller's own session ID")));
+    assertAll(checks);
+
+    // Window IDs still say which window holds what, and the caller can recognize its own window.
+    var windows = caps.getAsJsonArray("attached_windows"); assertEquals(2, windows.size());
+    var own = windows.asList().stream().map(JsonElement::getAsJsonObject).filter(w -> w.get("current_session").getAsBoolean()).toList();
+    var peer = windows.asList().stream().map(JsonElement::getAsJsonObject).filter(w -> !w.get("current_session").getAsBoolean()).toList();
+    assertEquals(1, own.size()); assertEquals(1, peer.size());
+    assertEquals(secondWindow.get("client_id"), own.get(0).get("client_id"));
+    assertTrue(secondWindow.get("current_session").getAsBoolean());
+    assertEquals(firstWindow.get("client_id"), peer.get(0).get("client_id"), "a window keeps its ID for its session");
+    assertEquals(peer.get(0).get("client_id"), seen, "a view attachment names the window by the same ID");
+    assertEquals(windows, JsonParser.parseString(replies.get("visualization_capabilities_get")).getAsJsonObject()
+        .getAsJsonObject("capabilities").get("attached_windows"), "HTTP and MCP share the caller-scoped report");
+    assertFalse(caps.has("client_id"), "capabilities do not echo a transport session");
+    // Ownership is still bound to the transport session, never to a window ID.
+    assertEquals(403, raw("/source/entries/list", inventory.toString(), session, null).statusCode());
+    assertEquals(409, raw(route(view) + "/attach", "{}", session, null).statusCode());
+    assertEquals(200, raw("/source/entries/list", inventory.toString(), first, null).statusCode());
+    var firstView = raw("/capabilities", null, first, null).body();
+    assertFalse(firstView.contains(session), "the first window cannot read the second session either");
+    assertTrue(JsonParser.parseString(firstView).getAsJsonObject().getAsJsonArray("attached_windows").asList().stream()
+        .anyMatch(w -> w.getAsJsonObject().get("current_session").getAsBoolean() && w.getAsJsonObject().get("client_id").equals(firstWindow.get("client_id"))));
+    assertTrue(LogManager.getInstance().release(recording.root).released());
+  }
+
+  @Test void windowBudgetRegistrationRejectsSpoofingAndInvalidAllowances() throws Exception {
+    for (var value : List.of("0", "16777215", "1073741825", "16777216.5", "\"67108864\"", "null", "true")) {
+      var response = raw("/window", "{\"decoded_buffer_budget_bytes\":"+value+"}", session, null);
+      assertEquals(400, response.statusCode(), response.body());
+    }
+    assertEquals(400, raw("/window", "{\"decoded_buffer_budget_bytes\":67108864,\"client_id\":\"other\"}", session, null).statusCode());
+    assertEquals(403, raw("/window", "{\"decoded_buffer_budget_bytes\":67108864}", session, "https://untrusted.invalid").statusCode());
+    assertTrue(call("/capabilities", null).getAsJsonArray("attached_windows").isEmpty());
+  }
+
+  @Test void chartHistogramUsesOriginalSamplesWithHttpMcpParityForFilesAndRecordings() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var file = source(fixture("histogram", 1));
+    var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("histogram-recording"), 2);
+    recording.rewrite(0, w -> { int id = w.start("/value", "double", "", 0);
+      w.append(id, 2_000_000, WpilogWriter.encodeDouble(4)); w.append(id, 1_000_000, WpilogWriter.encodeDouble(2)); });
+    recording.rewrite(1, w -> { int id = w.start("/value", "double", "", 0); w.append(id, 2_000_000, WpilogWriter.encodeDouble(6)); });
+    call("/stores", null);
+    for (var ref : List.of(file, recording.reference)) {
+      var args = object("source_ref", ref); args.addProperty("api_version", 1); args.addProperty("entry", "/value");
+      var result = call("/source/histogram", args);
+      assertEquals(JsonParser.parseString("[{\"low\":2,\"high\":4,\"count\":1},{\"low\":4,\"high\":6,\"count\":2}]"), result.get("bins"));
+      assertEquals(3, result.getAsJsonObject("summary").get("count").getAsInt());
+      assertEquals(4, result.getAsJsonObject("summary").get("mean").getAsDouble());
+      assertEquals(result, tool("visualization_source_histogram", args).get("histogram"));
+      assertEquals(ref, result.getAsJsonObject("inputs").get("source_ref"));
+      assertTrue(result.has("prefix")); assertTrue(result.has("data_quality"));
+    }
+  }
+
+  @Test void chartScatterPairsExactTimestampsOnceAndPagesWithoutChangingTotals() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var file = temp.resolve("scatter.wpilog");
+    try (var w = new WpilogWriter(file, "")) {
+      int x = w.start("/x", "double", "", 0), y = w.start("/y", "double", "", 0);
+      for (var a : new long[][] {{2,4},{1,2},{2,6},{3,8}}) w.append(x,a[0]*1_000_000,WpilogWriter.encodeDouble(a[1]));
+      for (var a : new long[][] {{2,40},{1,20},{2,60},{2,70},{4,90}}) w.append(y,a[0]*1_000_000,WpilogWriter.encodeDouble(a[1]));
+    }
+    var args = object("source_ref", source(file)); args.addProperty("api_version",1); args.addProperty("x_entry","/x"); args.addProperty("y_entry","/y"); args.addProperty("limit",2);
+    var first = call("/source/scatter",args);
+    assertEquals(JsonParser.parseString("[[2,20,1],[4,40,2]]"), first.get("points"));
+    assertEquals(3,first.get("matched").getAsInt()); assertEquals(1,first.get("unpaired_x").getAsInt()); assertEquals(2,first.get("unpaired_y").getAsInt());
+    assertEquals(2,first.get("next_offset").getAsInt()); assertFalse(first.get("complete").getAsBoolean());
+    var limits = first.getAsJsonObject("limits").getAsJsonObject("points"); assertEquals(3,limits.get("total").getAsInt()); assertEquals(2,limits.get("returned").getAsInt());
+    assertEquals(first,tool("visualization_source_scatter",args).get("scatter"));
+    args.addProperty("offset",2); var second=call("/source/scatter",args);
+    assertEquals(JsonParser.parseString("[[6,60,2]]"),second.get("points")); assertTrue(second.get("complete").getAsBoolean());
+    assertEquals(3,second.get("matched").getAsInt());
+  }
+
+  @Test void chartRefusalsAndNoMatchAreExplainedOnBothAdapters() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var file=source(fixture("charts-empty",1)); var args=object("source_ref",file);args.addProperty("api_version",1);args.addProperty("entry","/value");args.addProperty("start_time",20);args.addProperty("end_time",21);
+    var empty=call("/source/histogram",args);assertEquals("no_match",empty.get("status").getAsString());assertTrue(empty.has("looked_for"));assertTrue(empty.has("hint"));
+    assertEquals("no_match",tool("visualization_source_histogram",args).get("status").getAsString());
+    for (var value:List.of("0","4097","1.5","\"2\"","true")) {
+      var scatter=object("source_ref",file);scatter.addProperty("api_version",1);scatter.addProperty("x_entry","/value");scatter.addProperty("y_entry","/value");scatter.add("limit",JsonParser.parseString(value));
+      assertEquals(400,raw("/source/scatter",scatter.toString(),session,null).statusCode());
+      assertEquals("error",tool("visualization_source_scatter",scatter).get("status").getAsString());
+    }
+    args.remove("start_time");args.remove("end_time");args.addProperty("unexpected",true);
+    assertEquals(400,raw("/source/histogram",args.toString(),session,null).statusCode());
+    assertEquals(403,raw("/source/histogram",args.toString(),session,"https://untrusted.invalid").statusCode());
+    var missing = raw("/source/histogram",args.toString(),null,null);
+    assertEquals(400,missing.statusCode()); assertTrue(missing.body().contains("MISSING_SESSION"));
+  }
+
+  @Test void chartPressureAndPermanentLimitsHaveTypedAdapterParity() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var args=object("source_ref",source(fixture("chart-pressure",1)));args.addProperty("entry","/value");args.addProperty("api_version",1);
+    var ownerField=VisualizationWorkspace.class.getDeclaredField("sourceCharts");ownerField.setAccessible(true);var owner=ownerField.get(registry.visualizations());
+    var slotField=owner.getClass().getDeclaredField("slots");slotField.setAccessible(true);var slots=(java.util.concurrent.Semaphore)slotField.get(owner);slots.acquire(2);
+    try {
+      var response=raw("/source/histogram",args.toString(),session,null);assertEquals(413,response.statusCode());var refusal=JsonParser.parseString(response.body()).getAsJsonObject();
+      assertEquals("RESOURCE_LIMIT",refusal.get("code").getAsString());assertTrue(refusal.get("retryable").getAsBoolean());assertEquals(1000,refusal.get("retry_after_ms").getAsInt());
+      var mcp=tool("visualization_source_histogram",args);assertEquals(refusal.get("code"),mcp.get("code"));assertTrue(mcp.get("retryable").getAsBoolean());assertEquals(1000,mcp.get("retry_after_ms").getAsInt());
+      assertTrue(call("/capabilities",null).get("source_charts").getAsBoolean());
+    } finally {slots.release(2);}
+    assertEquals(3,call("/source/histogram",args).getAsJsonObject("summary").get("count").getAsInt());
+    var file=temp.resolve("chart-large.wpilog");try(var w=new WpilogWriter(file,"")){int n=w.start("/n","double[]","",0);w.append(n,1,new byte[80_000]);}
+    args=object("source_ref",source(file));args.addProperty("entry","/n");args.addProperty("field","[0]");args.addProperty("api_version",1);
+    var response=raw("/source/histogram",args.toString(),session,null);assertEquals(413,response.statusCode());var refusal=JsonParser.parseString(response.body()).getAsJsonObject();
+    assertFalse(refusal.get("retryable").getAsBoolean());assertFalse(refusal.has("retry_after_ms"));
+    var mcp=tool("visualization_source_histogram",args);assertFalse(mcp.get("retryable").getAsBoolean());assertFalse(mcp.has("retry_after_ms"));
+  }
+
+  @Test void chartProjectionUsesExplicitFieldsEvenWhenAnEntryShadowsTheCombinedName() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var recording=new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("chart-fields"),2);
+    for (int i=0;i<2;i++) { final int member=i;recording.rewrite(i,w->{
+      int a=w.start("/a","double[]","",0),shadow=w.start("/a[0]","double","",0);
+      w.append(a,(member+1)*1_000_000,WpilogWriter.encodeDouble(2+member*4));
+      w.append(shadow,(member+1)*1_000_000,WpilogWriter.encodeDouble(100));
+    }); }
+    var args=object("source_ref",recording.reference);args.addProperty("api_version",1);args.addProperty("x_entry","/a");args.addProperty("x_field","[0]");args.addProperty("y_entry","/a[0]");call("/stores",null);
+    var result=call("/source/scatter",args);
+    assertEquals(JsonParser.parseString("[[2,100,1],[6,100,2]]"),result.get("points"));
+    assertEquals(result,tool("visualization_source_scatter",args).get("scatter"));
+    assertEquals(2,result.getAsJsonObject("prefix").getAsJsonArray("members").size());
+  }
+
+  @Test void recordingValueAndStatisticsHaveHttpMcpParityAndExactAnswers() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var fixture = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("analysis"), 4);
+    var args = object("source_ref", fixture.reference); args.addProperty("entry", "/signal/00000"); args.addProperty("api_version", 1);
+    var value = call("/source/value", args);
+    assertEquals(value, tool("visualization_source_value", args).get("value"));
+    assertEquals("1", value.getAsJsonObject("value").get("value").getAsString());
+    assertEquals("rollover.wpilog", value.get("member_id").getAsString());
+    var stats = call("/source/statistics", args);
+    assertEquals(stats, tool("visualization_source_statistics", args).get("statistics"));
+    assertEquals(3, stats.get("count").getAsInt()); assertEquals(1.0 / 3, stats.get("mean").getAsDouble(), 1e-12);
+    assertEquals(Math.sqrt(1.0 / 3), stats.get("std_dev").getAsDouble(), 1e-12);
+    assertTrue(call("/capabilities", null).get("recording_analysis").getAsBoolean());
+    assertEquals(2, call("/capabilities", null).getAsJsonObject("recording_analysis_limits").get("max_concurrent_reads").getAsInt());
+  }
+
+  @Test void analysisToolsUseNoMatchAndPartialAndPreserveTheSingleFilePath() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var args = object("source_ref", source(fixture("analysis-single", 1))); args.addProperty("api_version", 1); args.addProperty("entry", "/value");
+    assertEquals(call("/source/value", args), tool("visualization_source_value", args).get("value"));
+    assertEquals(call("/source/statistics", args), tool("visualization_source_statistics", args).get("statistics"));
+    args.addProperty("at_sec", -1); var empty = tool("visualization_source_value", args);
+    assertEquals("no_match", empty.get("status").getAsString()); assertTrue(empty.has("looked_for")); assertTrue(empty.has("hint"));
+    var f = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("analysis-bad"), 4);
+    f.rewrite(0, w -> { int id = w.start("/n", "double", "", 0); w.append(id, 0, new byte[]{1}); w.append(id, 1, WpilogWriter.encodeDouble(2)); });
+    call("/stores", null);
+    args = object("source_ref", f.reference); args.addProperty("api_version", 1); args.addProperty("entry", "/n");
+    for (var name : List.of("visualization_source_value", "visualization_source_statistics")) {
+      var result = tool(name, args); assertEquals("partial", result.get("status").getAsString(), result.toString()); assertTrue(result.has("skipped"));
+      assertEquals(f.reference, result.getAsJsonObject("inputs").get("source_ref"));
+    }
+  }
+
+  @Test void emptyStatisticsHaveHttpMcpParityAndKeepTheirPrefixProof() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("empty-statistics"), 4);
+    for (var source : List.of(source(fixture("empty-statistics-file", 1)), recording.reference)) {
+      var args = object("source_ref", source); args.addProperty("api_version", 1);
+      args.addProperty("entry", source.get("kind").getAsString().equals("session") ? "/signal/00000" : "/value");
+      args.addProperty("start_time", 500); args.addProperty("end_time", 600);
+      var empty = call("/source/statistics", args);
+      assertEquals("no_match", empty.get("status").getAsString());
+      assertEquals(0, empty.get("count").getAsInt()); assertFalse(empty.has("mean"));
+      if (source.get("kind").getAsString().equals("session")) {
+        assertEquals(source, empty.getAsJsonObject("inputs").get("source_ref")); assertTrue(empty.has("prefix"));
+      }
+      var mcp = tool("visualization_source_statistics", args);
+      assertEquals("no_match", mcp.get("status").getAsString());
+      assertEquals(source, mcp.getAsJsonObject("inputs").get("source_ref"));
+      assertEquals(empty, mcp.get("statistics"));
+      assertTrue(mcp.has("looked_for")); assertTrue(mcp.has("hint"));
+    }
+  }
+
+  @Test void relativeStatisticsKeepHttpMcpParityForFilesAndRecordings() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var file = source(fixture("relative-analysis", 1));
+    var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("relative-recording"), 4);
+    recording.rewrite(0, w -> { int id = w.start("/value", "double", "", 0);
+      w.append(id, 2_000_000, WpilogWriter.encodeDouble(4));
+      w.append(id, 1_000_000, WpilogWriter.encodeDouble(2)); w.append(id, 2_000_000, WpilogWriter.encodeDouble(6)); });
+    recording.rewrite(1, w -> { int id = w.start("/other", "double", "", 0); w.append(id, 2_000_000, WpilogWriter.encodeDouble(8)); });
+    call("/stores", null);
+    for (var source : List.of(file, recording.reference)) {
+      var args = object("source_ref", source); args.addProperty("entry", "/value"); args.addProperty("api_version", 1); args.addProperty("last_seconds", .5);
+      var result = call("/source/statistics", args);
+      assertEquals(2, result.get("count").getAsInt()); assertEquals(5, result.get("mean").getAsDouble());
+      assertEquals(1.5, result.getAsJsonObject("inputs").getAsJsonObject("window").get("start").getAsDouble());
+      assertEquals(result, tool("visualization_source_statistics", args).get("statistics"));
+    }
+  }
+
+  @Test void analysisPressureHasTypedAdapterParityAndPermanentLimitsHaveNoDelay() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var fixture = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("analysis-pressure"), 2);
+    var request = object("source_ref", fixture.reference); request.addProperty("entry", "/signal/00000"); request.addProperty("api_version", 1);
+    var field = VisualizationWorkspace.class.getDeclaredField("recordingAnalysis"); field.setAccessible(true); var owner = field.get(registry.visualizations());
+    var sf = owner.getClass().getDeclaredField("slots"); sf.setAccessible(true); var slots = (java.util.concurrent.Semaphore) sf.get(owner); slots.acquire(2);
+    try {
+      for (String operation : List.of("value", "statistics")) {
+        var response = raw("/source/" + operation, request.toString(), session, null); assertEquals(413, response.statusCode());
+        var httpError = JsonParser.parseString(response.body()).getAsJsonObject(); var mcpError = tool("visualization_source_" + operation, request);
+        for (String key : List.of("code", "error", "retryable", "retry_after_ms")) assertEquals(httpError.get(key), mcpError.get(key));
+        assertTrue(httpError.get("retryable").getAsBoolean()); assertEquals(1000, httpError.get("retry_after_ms").getAsInt());
+      }
+    } finally { slots.release(2); }
+    fixture.rewrite(0, w -> { int id = w.start("/big", "raw", "", 0); w.append(id, 1, new byte[(64 << 10) + 1]); });
+    request.addProperty("entry", "/big");
+    var refused = raw("/source/value", request.toString(), session, null); assertEquals(413, refused.statusCode());
+    var result = tool("visualization_source_value", request); assertEquals("RESOURCE_LIMIT", result.get("code").getAsString());
+    assertFalse(result.get("retryable").getAsBoolean()); assertFalse(result.has("retry_after_ms"));
+    var single = raw("/source/raw", request.toString(), session, null); assertEquals(409, single.statusCode());
+    assertTrue(single.body().contains("recording-aware"), single.body());
+  }
 
   @Test void twoViewsOfAAndOneOfBKeepIndependentConfigurationsAndRecover() throws Exception {
     var a = source(fixture("a", 1)); var b = source(fixture("b", 10));
@@ -104,12 +400,29 @@ class VisualizationEndpointTest {
     // DELETE uses exactly the same removal callback as idle expiry.
     var deleted = http.send(HttpRequest.newBuilder(URI.create(base() + "/mcp")).header("Mcp-Session-Id", old).DELETE().build(), HttpResponse.BodyHandlers.ofString());
     assertEquals(200, deleted.statusCode());
-    assertEquals(session, call(route(a) + "/attach", new JsonObject()).get("attached_client_id").getAsString());
-    assertEquals(session, call(route(b), null).get("attached_client_id").getAsString());
+    assertEquals(windowId(session), call(route(a) + "/attach", new JsonObject()).get("attached_client_id").getAsString());
+    assertEquals(windowId(session), call(route(b), null).get("attached_client_id").getAsString());
     server.expireSessions(Duration.ZERO);
     String expired = session; session = connect();
     assertEquals(404, raw(route(a) + "/attach", "{}", expired, null).statusCode());
-    assertEquals(session, call(route(a) + "/attach", new JsonObject()).get("attached_client_id").getAsString());
+    assertEquals(windowId(session), call(route(a) + "/attach", new JsonObject()).get("attached_client_id").getAsString());
+  }
+
+  @Test void aWindowSilentForTwoMinutesLosesItsViewToAnotherWindow() throws Exception {
+    var view = create(source(fixture("silent", 1)));
+    call(route(view) + "/attach", new JsonObject());
+    String first = session; var attachedAt = java.time.Instant.now();
+    // Real time passes, so a check that wrongly refreshed the first window would restart its silence.
+    Thread.sleep(1500);
+    session = connect();
+    assertEquals(409, raw(route(view) + "/attach", "{}", session, null).statusCode(), "the first window answered moments ago");
+    server.visualizationNow(() -> attachedAt.plus(Duration.ofSeconds(119)));
+    assertEquals(409, raw(route(view) + "/attach", "{}", session, null).statusCode(), "silent for less than two minutes");
+    server.visualizationNow(() -> attachedAt.plus(Duration.ofSeconds(121)));
+    assertEquals(windowId(session), call(route(view) + "/attach", new JsonObject()).get("attached_client_id").getAsString());
+    // The first window, if it comes back, owns the view no more.
+    var detach = raw(route(view) + "/detach", "{}", first, null);
+    assertEquals(409, detach.statusCode(), detach.body()); assertTrue(detach.body().contains("VIEW_ATTACHED"), detach.body());
   }
 
   @Test void admissionAndRawJsonNeverTrustASpoofedClient() throws Exception {
@@ -348,7 +661,7 @@ class VisualizationEndpointTest {
     create.addProperty("api_version", 1); create.addProperty("configuration_json", create.remove("configuration").toString());
     var toolView = tool("visualization_view_create", create); assertEquals(view, toolView.get("view"), "Both adapters share the creation receipt");
     assertTrue(call("/capabilities", null).get("recording_views").getAsBoolean());
-    assertEquals(409, raw("/source/value", object("source_ref", fixture.reference).toString(), session, null).statusCode(), "Single-file reads must not choose one recording member");
+    assertEquals(400, raw("/source/value", object("source_ref", fixture.reference).toString(), session, null).statusCode(), "Recording analysis requires an exact entry");
     LogManager.getInstance().clearAllowedDirectories(); LogManager.getInstance().addAllowedDirectory(Files.createDirectory(temp.resolve("withdrawn")));
     assertNotEquals(200, raw("/templates/check", request.toString(), session, null).statusCode());
     assertEquals("error", tool("visualization_template_check", request).get("status").getAsString());

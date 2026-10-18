@@ -59,7 +59,14 @@ export class DataPane {
     const request = this.requests.get(message.requestId); if (!request) return false;
     this.requests.delete(message.requestId);
     if (message.type === "dataError") request.reject(new Error(message.message));
-    else { try { request.resolve(ArrowStream.read(message.bytes)); } catch (error) { request.reject(error); } }
+    else {
+      try {
+        const stream = ArrowStream.read(message.bytes);
+        // A stream cut at a batch boundary parses; only its end marker says the rows are all there.
+        if (!stream.complete) throw new Error("the data ended before its end marker; try again");
+        request.resolve(stream);
+      } catch (error) { request.reject(error); }
+    }
     return true;
   }
 }

@@ -6,6 +6,7 @@ package org.triplehelix.wpilogmcp.tools;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import java.util.Locale;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.LogData;
@@ -236,7 +237,7 @@ public abstract class ToolBase implements McpServer.Tool {
     if (values == null) {
       // Provide suggestions for similar entry names
       var suggestions = log.entries().keySet().stream()
-          .filter(n -> n.toLowerCase().contains(name.toLowerCase()))
+          .filter(n -> n.toLowerCase(Locale.ROOT).contains(name.toLowerCase(Locale.ROOT)))
           .limit(5)
           .toList();
 

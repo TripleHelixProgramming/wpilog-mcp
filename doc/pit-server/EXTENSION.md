@@ -18,6 +18,16 @@ It carries no authentication and belongs on the private network; the HTTP proxy 
 protect it. Writes are ignored. Checking a real dashboard or AdvantageScope against a robot
 remains the user's manual step.
 
+This laptop also records live data from that gateway when a pit URL is set. The local server
+connects to the gateway on the pit's host, port 5810 by default, and records its NetworkTables
+into a folder under the extension's storage, kept apart from the mirror's. Live views and the
+live tools then read this laptop's own files. The recording has the robot's timestamps, with
+gaps wherever this laptop's network dropped. The pit server must have its gateway enabled and
+reachable on the team's network. The Output channel reports the live source's state each time it
+is set. Turn it off with `wpilog-mcp.live.enabled`. Changing the pit URL, live settings or
+mirror settings queues the complete local configuration operations, including stopping the old
+capture. Startup uses that same queue; a later change waits for the earlier operation to finish.
+
 The Logs view gains **This laptop** and **Pit server** roots. Pit sessions are newest first,
 with the robot, event/match, open state, and whether the mirror holds them. Opening one uses
 its exact path through the pit server. **Follow live session** polls once a second: the window
@@ -28,9 +38,26 @@ off restores ordinary browsing. No viewer connects to the robot.
 The mirror starts by default when a URL is set. The local Java server copies the last 14 days,
 plus whole named events and pinned sessions, under a 20 GB payload cap. Pins are never evicted;
 a copy missing from the origin is retained and reported even if that exceeds the cap. Resuming
-checks the held prefix first. Open captures refresh every 30 seconds; closed copies have the
-same verified bytes and recorded REV alignment as the origin. The mirror is read-only to
-imports and is never offered for organizing.
+checks the held prefix first. The mirror copies the logs the pit pulled or was given, not its
+captures: this laptop records live data itself. Copies have the same verified bytes as the origin.
+The mirror is read-only to imports and is never offered for organizing.
+
+**Open Source Overview** on a pit file reads only this laptop's files. A file the pit pulled or
+was given opens from the mirror's copy; before the mirror has copied it, a message says so with
+the mirror's progress (files and bytes remaining, or the last synchronization and why it may
+not have copied the file) and offers **Mirror Status** or **Pin Session…**. The pit's capture
+stays on the pit: its overview opens this laptop's own recording of that session, a capture in
+one of this laptop's stores of the same robot whose session overlaps the pit's (the longest
+overlap when there are several), or says there is none. A capture the mirror copied in
+0.10.0-dev1 to dev4 opens as that copy, labeled as no longer refreshed. On a REV log the overview
+is that of the log it is listed under.
+
+For a recording still open on the laptop, the overview uses the current member named by its
+store manifest, including after file rollovers. If that member is missing from the listing,
+refresh Logs; update the local server if its listing does not report `session.open_capture`.
+An editor left open from a different pit connection refuses before using the configured pit's
+catalog. Restore `wpilog-mcp.pitServerUrl` to that editor's server, or open a log from the
+currently configured pit. A connection change during lookup also refuses.
 
 The status bar shows **Mirror synchronized**, the remaining file count and size, or **Mirror
 offline** with the last-sync age. Click it for the mirror actions. When the pit server is
@@ -115,7 +142,10 @@ and the explorer retain the record between scrapes.
 | `wpilog-mcp.mirror.maxSizeGb` | Payload cap, decimal GB | `20` |
 | `wpilog-mcp.mirror.robots` | Serial filter; empty includes all | none |
 | `wpilog-mcp.mirror.events` | Exact event names to keep beyond the window | none |
-| `wpilog-mcp.mirror.intervalSec` | Seconds between attempts, including growing files | `30` |
+| `wpilog-mcp.mirror.intervalSec` | Seconds between attempts | `30` |
+| `wpilog-mcp.live.enabled` | Record the pit gateway's NetworkTables on this laptop when a pit URL is set | on with URL |
+| `wpilog-mcp.live.folder` | Absolute folder for live recordings, apart from the mirror's | extension storage `/live` |
+| `wpilog-mcp.live.gatewayPort` | The pit gateway's port, on the pit's host | `5810` |
 
 ## Terminal use with VS Code closed
 

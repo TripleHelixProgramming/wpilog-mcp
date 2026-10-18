@@ -236,7 +236,34 @@ public final class ConformanceChecks {
     return true;
   }
 
+  /** Every {@code limits} in the result, at the top and on nested objects that page a list of their
+   * own (a chart series' points, a session's costs), matches the list it describes. */
   static boolean limitsConsistent(JsonObject obj) {
+    return limitsHere(obj) && nestedLimitsConsistent(obj);
+  }
+  private static boolean nestedLimitsConsistent(JsonObject obj) {
+    for (var entry : obj.entrySet()) if (!entry.getKey().equals("limits") && !nestedLimitsConsistent(entry.getValue())) return false;
+    return true;
+  }
+  private static boolean nestedLimitsConsistent(com.google.gson.JsonElement value) {
+    if (value.isJsonObject()) {
+      var nested = value.getAsJsonObject();
+      return (!pages(nested) || limitsHere(nested)) && nestedLimitsConsistent(nested);
+    }
+    if (value.isJsonArray()) for (var item : value.getAsJsonArray()) if (!nestedLimitsConsistent(item)) return false;
+    return true;
+  }
+  /** Whether a nested {@code limits} pages lists as the result contract writes it. Other objects may
+   * use the name for their own caps: a paged inventory reports the server's under it. */
+  private static boolean pages(JsonObject obj) {
+    var limits = obj.get("limits");
+    if (limits == null || !limits.isJsonObject() || limits.getAsJsonObject().size() == 0) return false;
+    for (var entry : limits.getAsJsonObject().entrySet()) {
+      if (!entry.getValue().isJsonObject() || !entry.getValue().getAsJsonObject().has("returned")) return false;
+    }
+    return true;
+  }
+  private static boolean limitsHere(JsonObject obj) {
     var limits = obj.get("limits");
     if (limits == null) return true;
     if (!limits.isJsonObject()) return false;

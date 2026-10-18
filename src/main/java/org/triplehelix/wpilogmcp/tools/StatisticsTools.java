@@ -69,6 +69,7 @@ public final class StatisticsTools {
       return "BUILT-IN statistics: Get min, max, mean, median, std_dev, percentiles for a numeric entry "
           + "or field. NEVER compute these manually—always use this tool! "
           + "Supports optional time range filtering (start_time, end_time). "
+          + "No finite samples in the selected scope returns no_match with count 0 and a hint. "
           + "Includes data quality metrics and sample size for confidence assessment."
           + NumericSignal.PATH_HELP + " A [*] path pools every element (count is values, "
           + "records_in_window is records). For an angle, min/max/mean/percentiles are of the "
@@ -100,26 +101,32 @@ public final class StatisticsTools {
       var scope = TimeScope.fromArguments(log, null, arguments);
 
       var values = signal.values();
+      var segments = scope.split(values);
       // Angles: statistics of the continuous angle within each window (a [*] pool has no order)
       boolean unwrap = signal.isAngle() && !signal.multiValued();
-      var rawWindows = finiteWindows(signal, scope, false);
-      var measuredWindows = unwrap ? finiteWindows(signal, scope, true) : rawWindows;
+      var rawWindows = finiteWindows(signal, segments, false);
+      var measuredWindows = unwrap ? finiteWindows(signal, segments, true) : rawWindows;
       var numericFiltered = flatten(rawWindows);
       var measured = flatten(measuredWindows);
       // Quality is scored on every sample in scope, before non-finite values are dropped, so
       // NaN is counted and the timing classification is of the series as logged
-      var quality = DataQuality.fromSegments(log, signal.entry(), scope.split(signal.values()));
+      var quality = DataQuality.fromSegments(log, signal.entry(), segments);
       var data = measured.stream()
           .mapToDouble(tv -> toDouble(tv.value()))
           .toArray();
 
       if (data.length == 0) {
-        throw new IllegalArgumentException("No numeric data in range: no finite samples of " + name
+        // An empty or all-nonfinite window is data absence, not an invalid selector. In a live
+        // view the next completed prefix can contain samples without any configuration change.
+        return ResponseBuilder.noMatch("No numeric data in range: no finite samples of " + name
             + scopeText(scope) + " (" + values.size() + " value(s) in the log, "
             + scope.filter(values).size() + " in scope"
             + (signal.recordsWithoutValue() > 0 ? "; " + signal.recordsWithoutValue() + " of "
                 + signal.recordCount() + " records hold no value at " + signal.path() : "")
-            + ")");
+            + ")")
+            .lookedFor(List.of(name)).hint("No finite samples in this scope; widen the interval or wait for new samples")
+            .addProperty("name", name).addProperty("count", 0)
+            .addInputSignal("entry", signal).addInputScope(scope).addDataQuality(quality).build();
       }
 
       var stats = java.util.Arrays.stream(data).summaryStatistics();
@@ -362,8 +369,14 @@ public final class StatisticsTools {
    */
   static List<List<org.triplehelix.wpilogmcp.log.TimestampedValue>> finiteWindows(
       NumericSignal signal, TimeScope scope, boolean unwrap) {
+    return finiteWindows(signal, scope.split(signal.values()), unwrap);
+  }
+
+  /** The finite samples of each already split window, unwrapped when asked. */
+  static List<List<org.triplehelix.wpilogmcp.log.TimestampedValue>> finiteWindows(
+      NumericSignal signal, List<List<org.triplehelix.wpilogmcp.log.TimestampedValue>> windows, boolean unwrap) {
     var out = new ArrayList<List<org.triplehelix.wpilogmcp.log.TimestampedValue>>();
-    for (var window : scope.split(signal.values())) {
+    for (var window : windows) {
       var finite = window.stream().filter(StatisticsTools::isFinite).toList();
       out.add(unwrap ? signal.unwrap(finite) : finite);
     }

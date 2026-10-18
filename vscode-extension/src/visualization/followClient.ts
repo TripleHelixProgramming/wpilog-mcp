@@ -3,6 +3,7 @@ import * as https from "node:https";
 import { TextDecoder } from "node:util";
 import { HttpHeaders, noHeaders } from "../pitCredential";
 import { FOLLOW_PAGE_BYTES, FollowError, FollowFrontierScope, FollowLease, FollowSelection, FollowSource, FollowWindow, lease, object, protocol, readFrontierScope } from "./followProtocol";
+import { ViewFollowRequest, ViewFollowLease, VIEW_PAGE_BYTES, viewBinding, viewRequest } from "./viewFollowProtocol";
 
 export { FOLLOW_PAGE_BYTES } from "./followProtocol";
 export const FOLLOW_REQUEST_BYTES = 64 << 10;
@@ -28,6 +29,7 @@ export interface FollowTransport {
   readonly pageBytes: number;
   readonly frontierScope?: FollowFrontierScope;
   open(source: FollowSource, selections: readonly FollowSelection[], windows: readonly FollowWindow[], signal: AbortSignal): Promise<FollowLease>;
+  openView?(source: FollowSource, view: ViewFollowRequest, signal: AbortSignal): Promise<ViewFollowLease>;
   next(lease: FollowLease, cursor: string, signal: AbortSignal): Promise<unknown | undefined>;
   close(lease: FollowLease): Promise<void>;
 }
@@ -68,6 +70,18 @@ export class FollowClient implements FollowTransport {
   }
   async next(lease: FollowLease, cursor: string, signal: AbortSignal): Promise<unknown | undefined> {
     return this.request("POST", `/${encodeURIComponent(lease.id)}/next`, encodeRequest({ cursor, wait_ms: 25000 }), signal, 200);
+  }
+  async openView(source: FollowSource, view: ViewFollowRequest, signal: AbortSignal): Promise<ViewFollowLease> {
+    viewRequest(view);
+    if (this.pageBytes !== VIEW_PAGE_BYTES || this.frontierScope !== "queries") throw new Error("Recording views require 1 MiB queried follows");
+    const response = object(await this.request("POST", "", encodeRequest({ view_binding: view }), signal, 201));
+    const created = lease(response, source);
+    try {
+      if (response.frontier_scope !== "queries" || response.max_page_bytes !== VIEW_PAGE_BYTES) protocol("View follow policy was not negotiated");
+      const binding = viewBinding(response.view_binding, view, source);
+      if (!binding.follow_ready) protocol("Server opened a view without ready bindings");
+      return Object.freeze({ ...created, frontier_scope: "queries", view_binding: binding });
+    } catch (error) { try { await this.close(created); } catch { /* Idle expiry bounds lost cleanup. */ } throw error; }
   }
   async close(lease: FollowLease): Promise<void> {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 2000);

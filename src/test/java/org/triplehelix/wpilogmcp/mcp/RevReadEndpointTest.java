@@ -157,6 +157,57 @@ class RevReadEndpointTest {
     }
   }
 
+  @Test void remoteRevCarriesACombinedAlignmentWithItsMeasurements() throws Exception {
+    var mirror = org.triplehelix.wpilogmcp.fixtures.MirroredOffsets.write(temp.resolve("mirror"), "laptop",
+        org.triplehelix.wpilogmcp.fixtures.MirroredOffsets.REV_WHILE_RECORDING, null,
+        List.of(org.triplehelix.wpilogmcp.fixtures.MirroredOffsets.RECORDING));
+    try (var access = LogAccess.local(List.of(temp));
+         var endpoint = new ReadEndpoint(access, () -> new StoreReadCatalog(List.of(mirror.root())))) {
+      var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+      server.createContext(ReadEndpoint.PATH, endpoint::handle); server.start();
+      var base = URI.create("http://127.0.0.1:" + server.getAddress().getPort());
+      try (var read = RemoteRevRead.open(base, mirror.rev().toString(), mirror.robot().toString(), "SparkMax_3/AppliedOutput", "fpga")) {
+        var alignment = read.descriptor().alignment();
+        assertEquals(org.triplehelix.wpilogmcp.sync.SyncMethod.COMBINED, alignment.method());
+        assertEquals(List.of(org.triplehelix.wpilogmcp.fixtures.MirroredOffsets.REV, org.triplehelix.wpilogmcp.fixtures.MirroredOffsets.ROBOT),
+            alignment.combination().measurements().stream().map(m -> m.file()).toList());
+        assertEquals(55.0, alignment.combination().maxErrorMs());
+        var values = new java.util.ArrayList<org.triplehelix.wpilogmcp.log.TimestampedValue>();
+        while (!read.complete()) values.addAll(read.next());
+        long[] times = org.triplehelix.wpilogmcp.fixtures.MirroredOffsets.REV_TIMES_US;
+        assertEquals(times.length, values.size());
+        for (int i = 0; i < values.size(); i++) {
+          double expected = org.triplehelix.wpilogmcp.fixtures.MirroredOffsets.onRobotLog(
+              org.triplehelix.wpilogmcp.fixtures.MirroredOffsets.onCapture(times[i] / 1e6));
+          assertEquals(expected, values.get(i).timestamp(), 1e-6);
+        }
+      } finally { server.stop(0); }
+    }
+  }
+
+  @Test void remoteRevRefusesACombinationThatDoesNotNameItsMeasurements() throws Exception {
+    var combined = new org.triplehelix.wpilogmcp.sync.SyncResult(1_000, 0.9, org.triplehelix.wpilogmcp.sync.ConfidenceLevel.HIGH, List.of(),
+        org.triplehelix.wpilogmcp.sync.SyncMethod.COMBINED, "crafted", 0, 0);
+    var measured = new org.triplehelix.wpilogmcp.sync.SyncResult(1_000, 0.9, org.triplehelix.wpilogmcp.sync.ConfidenceLevel.HIGH, List.of(),
+        org.triplehelix.wpilogmcp.sync.SyncMethod.CROSS_CORRELATION, "crafted", 0, 0,
+        new org.triplehelix.wpilogmcp.sync.Combination("capture.wpilog", List.of()));
+    for (var alignment : List.of(combined, measured)) {
+      var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+      server.createContext("/read/v1/rev/query", exchange -> {
+        exchange.getRequestBody().readAllBytes();
+        var header = header(0); header.addProperty("state", "recorded"); header.add("alignment", ReadWire.JSON.toJsonTree(alignment));
+        byte[] bytes = (header + "\n{\"kind\":\"end\",\"status\":\"ok\"}\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(200, bytes.length); exchange.getResponseBody().write(bytes); exchange.close();
+      });
+      server.start();
+      try {
+        var failure = assertThrows(java.io.IOException.class, () -> RemoteRevRead.open(
+            URI.create("http://127.0.0.1:" + server.getAddress().getPort()), "rev", "anchor", "signal", "raw"));
+        assertTrue(failure.getMessage().contains("Invalid remote REV association"), failure.getMessage());
+      } finally { server.stop(0); }
+    }
+  }
+
   private static JsonObject header(int count) {
     var header = new JsonObject(); header.addProperty("kind", "rev"); header.addProperty("api_version", 1);
     header.addProperty("path", "fixture.revlog"); header.addProperty("signal", "signal"); header.addProperty("clock", "raw");

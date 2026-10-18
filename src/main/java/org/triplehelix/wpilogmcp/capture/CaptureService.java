@@ -26,6 +26,8 @@ public final class CaptureService implements AutoCloseable {
   private final org.triplehelix.wpilogmcp.store.LogStore store;
   private final AutoCloseable observation;
   public LiveCapture live() { return live; }
+  /** The store this capture records into. */
+  public java.nio.file.Path folder() { return store.root(); }
   private final org.triplehelix.wpilogmcp.capture.pull.PullCoordinator pull;
   private final org.triplehelix.wpilogmcp.capture.context.ContextProviders providers;
   private final org.triplehelix.wpilogmcp.store.CaptureStore placement;
@@ -115,6 +117,8 @@ public final class CaptureService implements AutoCloseable {
     if (gateway != null) gateway.start();
     starting = placement.recoverAsync().thenCompose(ignored -> store.refreshStatus()).thenRun(() -> {
       if (!stopping.get()) { watchdog.start(); if (providers != null) providers.start(); client.start(); if (pull != null) pull.start(); }
+      // Captures closed before this start, and those recovery just closed, get their clock records.
+      if (!stopping.get()) store.keepClocks();
     }).whenComplete((ignored, error) -> {
       if (error != null) org.slf4j.LoggerFactory.getLogger(CaptureService.class)
           .error("Capture startup failed (store recovery); NT4 capture has not started", error);

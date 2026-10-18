@@ -33,7 +33,17 @@ final class VisualizationEndpoint implements AutoCloseable {
     this.sessions = sessions; this.identity = registry.serverIdentity(); workspace = registry.visualizations();
     views = workspace.views; sources = workspace.sources;
   }
-  void release(String session) { views.releaseClient(UUID.fromString(session)); workspace.notifications.release(session); workspace.inventories.releaseSession(session); }
+  /** A window pings every 30 seconds. One silent for four pings has most likely closed or reloaded
+   * without ending its session, and another window may take its views: before this, a lost session
+   * ending kept them for the hour the session lives. */
+  static final java.time.Duration SILENT_WINDOW = java.time.Duration.ofMinutes(2);
+  /** The time silence is measured against; tests move it. */
+  volatile java.util.function.Supplier<java.time.Instant> now = java.time.Instant::now;
+  private boolean silent(UUID client) {
+    // Without touching the session: asking about a window must not keep it alive.
+    return sessions.lastActivity(client.toString()).map(last -> !last.plus(SILENT_WINDOW).isAfter(now.get())).orElse(true);
+  }
+  void release(String session) { workspace.windows.release(session); views.releaseClient(UUID.fromString(session)); workspace.notifications.release(session); workspace.inventories.releaseSession(session); }
   ControlNotifications notifications() { return workspace.notifications; }
   @Override public void close() { workspace.close(); }
 
@@ -63,7 +73,12 @@ final class VisualizationEndpoint implements AutoCloseable {
       if (!get && !inventoryAdmitted && InventoryRequests.httpRead(exchange.getRequestURI().getPath())) throw InventoryRequests.busy();
       JsonObject result;
       if (route.equals("/capabilities") && get) {
-        result = workspace.capabilities(); result.addProperty("client_id", session);
+        result = workspace.capabilities(session);
+      } else if (route.equals("/window") && !get) {
+        long bytes = WindowBudgets.validate(body); var admitted = new AtomicReference<JsonObject>();
+        if (!sessions.update(session, ignored -> admitted.set(workspace.windows.register(session, bytes))))
+          throw new IOException("SESSION_EXPIRED: reconnect before reporting the window allowance");
+        result = admitted.get();
       } else if (route.equals("/stores") && get) result = workspace.stores();
       else if (route.equals("/source") && !get) result = sources.identify(authority, Path.of(text(body, "path")));
       else if (route.equals("/source/describe") && !get) result = workspace.describe(inventoryClient, body.getAsJsonObject("source_ref"), body);
@@ -80,9 +95,11 @@ final class VisualizationEndpoint implements AutoCloseable {
       else if (route.equals("/templates/import-preview") && !get) result = workspace.importPreview(body);
       else if (route.equals("/templates/import") && !get) result = workspace.importTemplate(authority, body);
       else if (route.equals("/templates/export") && !get) result = workspace.exportTemplate(body);
-      else if (route.equals("/source/statistics") && !get) result = workspace.statistics(body);
+      else if (route.equals("/source/histogram") && !get) result = workspace.histogram(body, owner::active);
+      else if (route.equals("/source/scatter") && !get) result = workspace.scatter(body, owner::active);
+      else if (route.equals("/source/statistics") && !get) result = workspace.statistics(body, owner::active);
       else if (route.equals("/source/raw") && !get) result = workspace.raw(body);
-      else if (route.equals("/source/value") && !get) result = workspace.value(body);
+      else if (route.equals("/source/value") && !get) result = workspace.value(body, owner::active);
       else if (route.equals("/source/views") && !get) result = workspace.sourceViews(body.getAsJsonObject("source_ref"));
       else if (route.equals("/views") && !get) {
         result = workspace.create(authority, body);
@@ -96,10 +113,14 @@ final class VisualizationEndpoint implements AutoCloseable {
         else if (action.equals("attach") && !get) {
           // Ordering with removal is atomic, but the callback only enqueues, never waits on I/O.
           var future = new AtomicReference<CompletableFuture<JsonObject>>();
-          if (!sessions.update(session, ignored -> future.set(views.attach(authority, view, client, () -> sessions.getSession(session) != null))))
+          if (!sessions.update(session, ignored -> future.set(views.attach(authority, view, client, () -> sessions.getSession(session) != null, this::silent))))
             throw new IOException("SESSION_EXPIRED: session expired before attachment");
           result = future.get().get();
         } else if (action.equals("detach") && !get) result = views.detach(authority, view, client).get();
+        else if (action.equals("bindings") && !get) {
+          if (body.has("view_id") && !view.toString().equals(text(body, "view_id"))) throw new IllegalArgumentException("Route and body view IDs differ");
+          body.addProperty("view_id", view.toString()); result = workspace.bindView(authority, body);
+        }
         else if (action.equals("describe") && !get) result = sources.describe(current.getAsJsonObject("source_ref"));
         else if (action.isEmpty() && !get) result = views.updateAttached(authority, view, revision(body), body.getAsJsonObject("configuration"), client).get();
         else if (action.equals("save") && !get) result = workspace.save(authority, client, view, current, body);

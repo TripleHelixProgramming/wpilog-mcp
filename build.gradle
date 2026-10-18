@@ -321,11 +321,11 @@ def readerOwners = [
     'log/RobotCandidates', 'log/LogData', 'log/subsystems/EntryDecoder', 'log/subsystems/BinaryReader',
     'log/subsystems/SecurityValidator', 'config/ClientLeases',
     'store/StoreCatalog', 'store/StoreManifest', 'store/StoreFiles', 'store/FileNameEncoding', 'store/CaptureRecording',
-    'store/SystemLogState', 'store/SystemLogFiles', 'store/SystemLogIndex',
+    'store/SystemLogState', 'store/SystemLogFiles', 'store/SystemLogIndex', 'store/ClockRecords', 'store/RecordedClocks',
     'store/StoreTransferInventory', 'capture/CaptureLease', 'capture/CaptureStats',
     'capture/TopicCost', 'capture/context/DeviceIdentity', 'capture/context/ProviderStatus',
     'capture/pull/KernelLines', 'capture/pull/SystemLogTime',
-    'sync/SyncResult', 'sync/SignalPair', 'sync/ConfidenceLevel', 'sync/SyncMethod', 'sync/PullManifest', 'sync/RemoteFiles'
+    'sync/SyncResult', 'sync/SignalPair', 'sync/ConfidenceLevel', 'sync/SyncMethod', 'sync/Combination', 'sync/PullManifest', 'sync/RemoteFiles'
 ]
 def readerIncludes = ['edu/wpi/first/util/datalog/DataLogAccess*',
     'org/triplehelix/wpilogmcp/read/**', 'org/triplehelix/wpilogmcp/data/**',

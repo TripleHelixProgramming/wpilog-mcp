@@ -106,7 +106,7 @@ class VisualizationServiceTest {
       while (!queue.getQueue().isEmpty()) Thread.yield();
       var replacement = UUID.randomUUID(); service.attach(LOCAL, view, replacement).get();
       service.releaseClient(old);
-      assertEquals(replacement.toString(), service.attach(LOCAL, view, replacement).get().get("attached_client_id").getAsString());
+      assertEquals(service.windowIds().forSession(replacement.toString()), service.attach(LOCAL, view, replacement).get().get("attached_client_id").getAsString());
     }
   }
 
@@ -215,6 +215,42 @@ class VisualizationServiceTest {
       var saved = service.checkpoint(LOCAL, key, 2, ref).get();
       assertFalse(saved.get("has_unsaved_changes").getAsBoolean());
       assertFalse(service.detach(LOCAL, key, client).get().get("detached_expires_at").isJsonNull());
+    }
+  }
+
+  @Test void aWindowThatStoppedAnsweringLosesItsViewOnlyWhenAnotherWindowAsks() throws Exception {
+    try (var service = new VisualizationService(ServerIdentity.ephemeral())) {
+      var view = service.create(LOCAL, UUID.randomUUID(), source(), VisualizationContracts.blank()).get();
+      var key = id(view); var first = UUID.randomUUID(); var second = UUID.randomUUID();
+      service.attach(LOCAL, key, first).get();
+      var refused = assertThrows(ExecutionException.class, () -> service.attach(LOCAL, key, second, () -> true, owner -> false).get());
+      assertTrue(refused.getCause().getMessage().contains("VIEW_ATTACHED"));
+      var asked = new java.util.ArrayList<UUID>();
+      var moved = service.attach(LOCAL, key, second, () -> true, owner -> { asked.add(owner); return true; }).get();
+      assertEquals(java.util.List.of(first), asked, "only the owning window is judged");
+      assertEquals(service.windowIds().forSession(second.toString()), moved.get("attached_client_id").getAsString());
+      assertTrue(moved.get("detached_expires_at").isJsonNull());
+      // The window that stopped answering, if it comes back, no longer owns the view.
+      var lost = assertThrows(ExecutionException.class, () -> service.detach(LOCAL, key, first).get());
+      assertTrue(lost.getCause().getMessage().contains("VIEW_ATTACHED"));
+      // A window attaching again to its own view is never judged.
+      asked.clear();
+      service.attach(LOCAL, key, second, () -> true, owner -> { asked.add(owner); return true; }).get(10, java.util.concurrent.TimeUnit.SECONDS);
+      assertEquals(java.util.List.of(), asked, "a window's own attachment is not judged");
+    }
+  }
+
+  @Test void anErrorInAQueuedOperationAnswersItsCallerAndTheQueueGoesOn() throws Exception {
+    try (var service = new VisualizationService(ServerIdentity.ephemeral())) {
+      var view = service.create(LOCAL, UUID.randomUUID(), source(), VisualizationContracts.blank()).get();
+      var key = id(view); service.attach(LOCAL, key, UUID.randomUUID()).get();
+      // Before, only an Exception answered: this left the future unfinished and its HTTP worker waiting.
+      var failure = assertThrows(ExecutionException.class, () -> service.attach(LOCAL, key, UUID.randomUUID(), () -> true,
+          owner -> { throw new StackOverflowError("fixture"); }).get(10, java.util.concurrent.TimeUnit.SECONDS));
+      assertInstanceOf(StackOverflowError.class, failure.getCause());
+      assertEquals(1, service.list(source()).size());
+      assertNotNull(service.attach(LOCAL, key, UUID.randomUUID(), () -> true, owner -> false).handle((ok, error) -> error).get(10, java.util.concurrent.TimeUnit.SECONDS),
+          "the queue still runs operations after the error");
     }
   }
 

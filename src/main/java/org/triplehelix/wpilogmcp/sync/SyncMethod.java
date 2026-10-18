@@ -29,6 +29,13 @@ public enum SyncMethod {
   USER_PROVIDED("User-provided offset"),
 
   /**
+   * Derived from offsets recorded when each file was measured against one reference, a capture
+   * file or recording: exact arithmetic on those measurements, with no correlation between the
+   * files themselves. The result's combination names the measurements and the reference.
+   */
+  COMBINED("Combined from recorded offsets measured against one reference"),
+
+  /**
    * Synchronization failed - no reliable offset could be determined.
    */
   FAILED("Synchronization failed");

@@ -24,6 +24,7 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Pattern;
 import org.triplehelix.wpilogmcp.Version;
@@ -220,7 +221,7 @@ public final class InstallCommand {
         throw new IOException("Install must run from a JAR: java -jar <jar> install");
       }
       return install(source, Version.VERSION, options,
-          System.getProperty("os.name", "").toLowerCase().startsWith("windows"), System.getenv("PATH"));
+          System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows"), System.getenv("PATH"));
     } catch (URISyntaxException e) {
       throw new IOException("Cannot locate the running JAR", e);
     }

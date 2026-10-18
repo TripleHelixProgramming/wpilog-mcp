@@ -262,8 +262,11 @@ is not in the log; the team's wiring map is.
 
 1. `list_revlog_signals` with the wpilog's `path`: devices, signals, units, and each REV log's
    synchronization status. The REV log is found beside the wpilog and put on its clock by
-   correlating signals both logs record.
-2. `sync_status`, or `wait_for_sync` right after loading: the confidence, offset and drift. If
+   correlating signals both logs record. In a store, the offsets recorded when the files were
+   placed are used instead, and a REV log measured against the same capture as the wpilog shows
+   `sync_method` `COMBINED`.
+2. `sync_status`, or `wait_for_sync` right after loading: the confidence, offset and drift, and
+   for a combination the measurements it rests on and `max_error_ms`. If
    the accuracy is coarser than the interval you care about, the ordering of a REV event and a
    wpilog event cannot be determined. When you know the offset from a distinctive event in
    both logs, `set_revlog_offset` with `offset_ms` sets it by hand.
@@ -375,19 +378,159 @@ a reason and retain the old rows and snapshot timestamp. A known-expired snapsho
 expired, with paging, filtering and Inspect disabled, until a replacement page is admitted.
 Retry becomes available after a bounded delay; it does not spin in the background. Hiding or
 closing cancels pending initialization and releases the handle and rows, and reveal opens fresh. A server without paged inventory
-support shows an update hint. Blank layout and live template opening remain disabled; use the
-existing Explorer for continuous display. An agent can prepare a recording layout with
+support shows an update hint. **Blank layout**, templates and Resume/Open now enter the local recording-panel preview. An agent can prepare a recording layout with
 `visualization_view_create` using the anchored source and a configuration or pinned template,
 then use the existing view edit/save tools. This stores intent even when requirements are still
 unresolved. Saved reopen and clone recheck the source; previously stored metadata remains
-recoverable if it is unavailable. Recording layouts appear in the overview with Resume/Open
-disabled and an explanation until live panels are available. Creation does not start acquisition
-or a follow, and the stored identity is retained after finalization.
+recoverable if it is unavailable. Creating layout metadata alone does not start acquisition; opening a visible panel with selected signals does. The stored identity is retained after finalization.
+
+To inspect a recording layout's current bindings, call `visualization_view_bind` with its
+view ID and current revision, for example
+`{"api_version":1,"view_id":"the-working-UUID","expected_revision":1}`. Expect exact selected
+names, unresolved requirements with reasons, clock evidence and `binding.follow_ready`. If the revision conflicts, read
+the current view and decide against that configuration; do not silently retry on a newer edit.
+Custom local readers can open the [revision-bound follow](READ_API.md#following-a-recording-view)
+directly. The editor uses this same admission, without a separate compatibility lookup racing the open.
 
 The overview calls the same owner as `visualization_source_inspect` with `inventory_mode: "paged"`
 and the [list/get/close operations](TOOLS.md#visualization_source_entries_list). Tool inspection's
-default full mode is unchanged. This is discovery for the upcoming live panels; timestamps
+default full mode is unchanged. Recording panels reuse bounded discovery; timestamps
 remain the recorded robot timestamps, separate from the inspection clock evidence.
+
+#### 5.2 Recording-panel preview
+
+Open Source Overview on a locally configured recording member and choose **Blank layout**.
+Add a plot, value table, statistics panel or raw table, then open **Recording signals**. Search, **Inspect** the
+exact signal, choose the target panel, and **Add inspected signal to target panel**. Expired,
+conflicting or unavailable rows cannot be added. The picker handles large inventories one
+page at a time; it does not download all topics. For a numeric struct field or array element,
+enter its exact path in **Numeric field or array index**, for example `.translation.x`, `[2]`,
+or `[1].speed`, then choose **Check and add field** (or press Enter in that field). Use the
+recorded schema shown by Inspect; no field names or indexes are inferred. The server checks
+all admitted members before the layout changes. A refused path, missing numeric evidence or
+conflicting schema leaves the layout unchanged and shows the member reason beside the input.
+Wildcards and nonnumeric fields are refused. **Add inspected signal to target panel** still
+selects the whole entry. Reuse a field in plot, value, statistics and raw panels; they share
+one exact requirement. Changing the input, selection, target or view, hiding, or closing cancels
+an outstanding check. Capacity refusals need an explicit retry. Entries-sidebar routing into a
+recording gives the in-panel picker remedy.
+
+The initial interval follows the last 30 seconds in the recording clock. **Earlier time** and
+**Later time** move by half the displayed window; **Zoom in** and **Zoom out** halve or double
+its width about the center. These buttons support Tab/Enter. Drag horizontally in a time-series
+plot to select an interval when time-range linking is enabled. Each gesture enters **Inspect
+History**, saves the interval and reads that interval again. **Recorded time and cursor** /
+**Apply range** also accepts explicit bounds; both Start and End are required. The controls
+apply to all panels in this view. Histogram/scatter value axes do not accept time gestures.
+Incoming data, including late records, cannot move a fixed interval. Navigation resumes a
+paused display. **Resume following** returns to the visible 1–300-second window choice while
+active; that choice survives editor restoration as UI state. A newly opened fixed view starts
+with a 30-second choice. The fixed interval itself is part of the saved configuration and is
+retained after finalization. **Full recording** becomes available after finalization. It starts
+a fresh read of the recording even when the saved recorded policy was already full, so samples
+outside the former following window are fetched too, under the display limits below.
+The clock line
+names the displayed completed prefix, its right edge and its evidence. An interrupted time
+estimate holds the previous robot edge; otherwise the last sample is used. Neither sample
+positions nor the right edge use this laptop's wall clock. A prefix can take several pages;
+plot/raw panels publish it together after its selected entries are consumed.
+
+**Pause display** freezes the visible frame and cancels pending analysis while acquisition and recording continue; **Resume
+display** shows the newest completed prefix. A title, geometry or style edit reuses acquisition.
+A signal/time edit replaces only that view's follow. **Duplicate and Open Beside** has an
+independent lease, so closing or changing one does not restart the other. Hide cancels data
+work immediately and clears its retained buffers after 30 seconds; reveal bootstraps the same
+recording. Finalization drains it and ends polling. **Retry recording** reopens that same source.
+
+Plots retain at most 4,096 recently delivered samples per selected signal, with explicit trimming counts.
+Historical recording intervals keep that same limit; they are not complete min/max reductions.
+Narrow the interval for detail. Recorded files instead use server reduction when their point
+allowance requires it.
+They sort for display and collapse equal timestamps to the last delivered point; these points
+are never analysis input. Unsafe integers and non-finite numbers are plot gaps. Value tables
+show the server's **latest by timestamp** with exact integer text, member and ordinal. Use
+**Recorded time and cursor**, enter robot time and **Read at cursor** to read the last original
+sample at/before that time; **Latest recorded values** returns to the timestamp maximum. Pause disables these
+cursor controls until resumed. Raw tables retain 256 recent
+rows per selection with member and ordinal identity, including duplicate/backward timestamps.
+Decode problems carry a total and up to 32 recent ordinal diagnostics; their time may be unknown.
+**Add statistics** uses all original samples across members in the selected interval. While
+recording, choose a 1–300-second Follow window or fixed Start/End interval; a wider active
+statistics interval gives an explicit remedy. After finalization **Full recording** is allowed
+under the server's record/sample/memory limits. Expand **Independent analysis prefix** beside
+a value or statistic to inspect its member boundaries, inputs and decode problems. These fresh
+reads may be newer than the plot frontier; the UI never presents them as one atomic frame.
+Automatic refreshes coalesce to at most one round per second, with one analysis active per
+window and at most 32 views waiting. A cursor replaces older pending cursor work without
+recomputing statistics. Hiding cancels reads; reveal waits for a fresh completed binding. Busy
+server admission retries automatically. A numeric window with no finite samples displays a
+hint and refreshes automatically when another prefix completes; no manual Retry is needed.
+Other refusals stay visible until **Retry recording**
+or a changed query; reduce the interval/selection or free buffer space as the reason directs.
+
+For the same answer through MCP, pass the inspected `source_ref` and exact `entry` to
+`visualization_source_value` (`api_version: 1`, optional inclusive `at_sec`) or
+`visualization_source_statistics` (optional inclusive `start_time`/`end_time`), with scalar
+`field` when needed. The value reports the timestamp, member and physical ordinal; statistics
+report all original samples in the admitted range, quality and decode problems. Both admit a
+fresh recording prefix, which may be newer than the displayed frame. Equal timestamps choose
+the greatest original member ID then physical ordinal; they are all counted in statistics.
+Inspect `prefix`, `inputs` and `problems`, and respect an explained resource refusal rather
+than treating it as no data. A null cursor value is no interpolation or earlier-value fallback.
+The [standalone reference](STANDALONE.md#recorded-visualization-preview) lists the bounds.
+
+For distribution or pair data through an agent, first obtain the `source_ref` with
+`visualization_source_inspect`. Call `visualization_source_histogram` with `api_version: 1`,
+that reference and an exact `entry`; supply `field` separately for a numeric field or array
+index. Expect bin boundaries/counts, a full-interval summary and independent prefix evidence.
+For scatter, call `visualization_source_scatter` with exact `x_entry` and `y_entry` (optional
+`x_field`/`y_field`). Expect only exact-time pairs, plus matched and unpaired counts. A limited
+page also reports `next_offset`, `complete` and the true match total. Inspect the prefix before
+combining successive pages while a recording grows, because each call reads a fresh prefix.
+Use `last_seconds` 1–300 or an explicit 1–300-second interval on an active recording. Refusals
+name a remedy; retryable slot pressure includes a one-second delay.
+
+In a file or recording layout, choose **Add histogram** or **Add scatter**, select that target
+panel, then add numeric signals through the same picker. A histogram accepts several signals;
+each has its own server bins, overlaid with a legend and an **Exact server measurements** table
+of bin edges and counts. Scatter accepts two signals in selection order: first X, then Y.
+The panel labels both axes; **Swap X and Y** persists the reversed pair. Incomplete or unresolved
+pairs remain placeholders, and text/composite roots require a numeric field or another panel.
+
+Scatter shows only exact-time one-to-one pairs; duplicate times remain separate. The panel
+reports full matched/unpaired totals and a bounded page of at most 256 pairs (less when the
+window allowance requires it). **Next pairs** and **First pairs** replace the page, reading a
+fresh prefix each time. They do not accumulate one frozen snapshot. Automatic refresh retains
+the current offset, which can become empty as a rolling window changes; **First pairs** returns
+to zero. The exact table includes original robot-time seconds beside X and Y. Chart axes are
+values and do not participate in the linked time cursor.
+
+Both charts use the server's original samples and show their numerical rule, quality, diagnostics
+and **Independent analysis prefix**. They share the window analysis queue and at-most-one
+refresh round per second with recording values/statistics. Active intervals are 1–300 seconds; finalized
+recordings and files allow Full under server limits. Presentation edits keep the result; axis,
+selector or interval changes re-admit it. **Pause display** freezes recording charts and disables
+paging/refresh until resumed. Hide cancels work, reveal reads fresh evidence, and close releases
+buffers. **Refresh chart / Retry** retries an explained refusal without restarting acquisition.
+
+Recorded-file samples, recording panels and paged inventory share one decoded-buffer allowance
+per window. In Settings, change `wpilog-mcp.visualization.decodedBufferMiB` (an integer from 16
+to 1024 MiB, default 64), then run **Developer: Reload Window**. The preview shows the effective
+allowance; `visualization_capabilities_get` reports the default/range and each attached window's
+client-reported allowance under an opaque window ID, with `current_session` marking your own. Changing Settings alone does not resize an active window's budget.
+Encoded acquisition remains separately capped at 64 MiB. Recorded plots ask the server for a
+budget-sized reduction, up to 65,536 points per signal; signal count and repeated plot/table copies reduce
+that allowance. Adding or removing repeated displays re-admits that view at its new allowance. Increasing it can retain more exact samples before bucketing. Live plots retain
+their 4,096-sample limit.
+
+Exhaustion refuses further work before downloading samples, with a reason. Use fewer signals,
+close another view and Retry, or increase the setting and reload. Hidden samples clear after
+30 seconds; replacement and clearing release their charge only after the renderer acknowledges
+that its plots and table contents were replaced. Live updates coalesce at four per second. A
+renderer that fails to acknowledge within five seconds stops further delivery for that view;
+close/reopen releases its charged display. These conservative buffer estimates do not bound
+all process memory, control metadata or server caches. Remote recording sources and the full
+Stage 3 performance gate remain pending.
 
 ## Part II: Running the server
 

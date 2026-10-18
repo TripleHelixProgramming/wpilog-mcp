@@ -144,8 +144,9 @@ final class PowerFacts {
   /** Volts a crossing must recover above the threshold to end (noisy voltage is one crossing). */
   static final double HYSTERESIS = 0.2;
 
-  /** An interval the battery voltage spent below the threshold (with hysteresis). */
-  record Crossing(double start, double end, double minVolts, boolean openAtEnd) {
+  /** An interval the battery voltage spent below the threshold (with hysteresis): the voltage of
+   * its first sample, and of the sample that ended it (null while it is open at the scope's end). */
+  record Crossing(double start, double end, double minVolts, boolean openAtEnd, double startVolts, Double endVolts) {
     double duration() {
       return end - start;
     }
@@ -200,7 +201,7 @@ final class PowerFacts {
     var segments = scope.split(values);
     for (int window = 0; window < segments.size(); window++) {
       Double openedAt = null;
-      double openMin = Double.MAX_VALUE;
+      double openMin = Double.MAX_VALUE, openVolts = Double.NaN;
       for (var tv : segments.get(window)) {
         if (!(tv.value() instanceof Number num) || !Double.isFinite(num.doubleValue())) continue;
         double v = num.doubleValue();
@@ -216,16 +217,17 @@ final class PowerFacts {
         if (openedAt == null && v < threshold) {
           openedAt = t;
           openMin = v;
+          openVolts = v;
         } else if (openedAt != null) {
           openMin = Math.min(openMin, v);
           if (v >= threshold + HYSTERESIS) {
-            crossings.add(new Crossing(openedAt, t, openMin, false));
+            crossings.add(new Crossing(openedAt, t, openMin, false, openVolts, v));
             openedAt = null;
           }
         }
       }
       // A held low voltage ends at this scope boundary, never at a later window's recovery.
-      if (openedAt != null) crossings.add(new Crossing(openedAt, scope.windows().get(window).end(), openMin, true));
+      if (openedAt != null) crossings.add(new Crossing(openedAt, scope.windows().get(window).end(), openMin, true, openVolts, null));
     }
     if (n == 0) return Optional.empty();
     return Optional.of(new VoltageFacts(n, min, minTime, max, sum / n, below, crossings));

@@ -39,7 +39,37 @@ final class VisualizationConformance {
     try {
       var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(root.resolve("recording-store"), 4);
       run.call("capabilities_get", args(), "capabilities");
+      // The ordinary stdio corpus has no editor window. Exercise the populated owner too;
+      // endpoint tests separately prove that only the admitted session can register this fact.
+      String window = UUID.randomUUID().toString();
+      run.registry.visualizations().windows.register(window, 16777216);
+      var reported = run.call("capabilities_get", args(), "capabilities").getAsJsonArray("attached_windows");
+      var allowance = reported.get(0).getAsJsonObject();
+      if (reported.toString().contains(window)) throw new AssertionError("Capabilities must not disclose a window's session ID");
+      if (!allowance.get("client_id").getAsString().equals(run.registry.visualizations().views.windowIds().forSession(window))
+          || allowance.get("current_session").getAsBoolean()
+          || allowance.get("decoded_buffer_budget_bytes").getAsLong() != 16777216
+          || !allowance.get("basis").getAsString().equals("client_reported"))
+        throw new AssertionError("Capabilities must retain the reported window allowance under its window ID; stdio has no window");
+      run.registry.visualizations().windows.release(window);
       var inspect = args(); inspect.addProperty("path", fixture.toString()); var source = run.call("source_inspect", inspect, "source").getAsJsonObject("source_ref");
+      var analysis = args(); analysis.add("source_ref", recording.reference); analysis.addProperty("entry", "/signal/00000");
+      var value = run.call("source_value", analysis, "value");
+      if (!value.getAsJsonObject("value").get("value").getAsString().equals("1")) throw new AssertionError("Recording cursor oracle");
+      var statistics = run.call("source_statistics", analysis, "statistics");
+      if (statistics.get("count").getAsInt() != 3 || Math.abs(statistics.get("mean").getAsDouble() - 1.0 / 3) > 1e-12)
+        throw new AssertionError("Recording statistics oracle");
+      var emptyWindow = analysis.deepCopy(); emptyWindow.addProperty("start_time", 500); emptyWindow.addProperty("end_time", 600);
+      var emptyStatistics = run.call("source_statistics", emptyWindow, "statistics", "no_match");
+      if (emptyStatistics.get("count").getAsInt() != 0 || emptyStatistics.has("mean")
+          || !emptyStatistics.has("looked_for") || !emptyStatistics.has("hint") || !emptyStatistics.has("prefix"))
+        throw new AssertionError("Empty recording statistics retain evidence without inventing measurements");
+      var histogram = run.call("source_histogram", analysis, "histogram");
+      if (histogram.getAsJsonArray("bins").get(0).getAsJsonObject().get("count").getAsInt() != 2) throw new AssertionError("Histogram original count oracle");
+      var scatterArgs = args(); scatterArgs.add("source_ref", recording.reference); scatterArgs.addProperty("x_entry", "/signal/00000"); scatterArgs.addProperty("y_entry", "/signal/00000");
+      var scatter = run.call("source_scatter", scatterArgs, "scatter");
+      if (scatter.get("matched").getAsInt() != 3 || scatter.get("unpaired_x").getAsInt() != 0) throw new AssertionError("Scatter exact pairing oracle");
+      analysis.addProperty("at_sec", -1); run.call("source_value", analysis, "value", "no_match");
       var paged = args(); paged.add("source_ref", recording.reference); paged.addProperty("inventory_mode", "paged");
       var inventory = run.call("source_inspect", paged, "source").getAsJsonObject("inventory");
       var listing = args(); listing.add("inventory_id", inventory.get("inventory_id"));
@@ -68,6 +98,19 @@ final class VisualizationConformance {
       var save = mutation(); save.add("view_id", view.get("view_id")); save.add("expected_revision", view.get("revision")); save.addProperty("store_id", store.description().id()); save.addProperty("title", "Conformance view"); view = run.call("view_save", save, "view");
       var discard = mutation(); discard.add("view_id", view.get("view_id")); discard.add("expected_revision", view.get("revision")); run.call("view_discard", discard, "view");
       var delete = mutation(); delete.add("view_id", copied.get("view_id")); delete.add("expected_revision", copied.get("revision")); run.call("view_delete", delete, "view");
+      var recordedViewArgs = mutation(); recordedViewArgs.add("source_ref", recording.reference);
+      var recordingConfig = VisualizationContracts.blank();
+      recordingConfig.getAsJsonArray("requirements").add(JsonParser.parseString("""
+          {"id":"signal","selector_kind":"entry","entry":"/signal/00000","accepted_entry_types":["int64"],
+           "field_path":null,"value_type":"number","unit":null}
+          """));
+      recordedViewArgs.addProperty("configuration_json", recordingConfig.toString());
+      var recordedView = run.call("view_create", recordedViewArgs, "view"); var bindingArgs = args();
+      bindingArgs.add("view_id", recordedView.get("view_id")); bindingArgs.add("expected_revision", recordedView.get("revision"));
+      run.call("view_bind", bindingArgs, "binding");
+      recordedViewArgs.addProperty("request_id", UUID.randomUUID().toString()); recordedViewArgs.addProperty("configuration_json", VisualizationContracts.blank().toString());
+      recordedView = run.call("view_create", recordedViewArgs, "view"); bindingArgs.add("view_id", recordedView.get("view_id"));
+      run.call("view_bind", bindingArgs, "binding", "no_match");
       var expected = run.registry.getToolNames().stream().filter(n -> n.startsWith("visualization_")).collect(java.util.stream.Collectors.toSet());
       var exercised = run.calls.stream().map(ToolConformanceTest.Call::tool).collect(java.util.stream.Collectors.toSet());
       if (!expected.equals(exercised)) throw new AssertionError("Every visualization operation needs an isolated success case: " + expected + " vs " + exercised);

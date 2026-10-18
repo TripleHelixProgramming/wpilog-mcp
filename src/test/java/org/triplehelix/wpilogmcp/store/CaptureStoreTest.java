@@ -347,6 +347,71 @@ class CaptureStoreTest {
     } finally { manager.release(directory); }
   }
 
+  @ParameterizedTest @ValueSource(booleans = {false, true})
+  void eachSessionStartsItsOwnRolloverClockWatermark(boolean coalescedOpen) throws Exception {
+    var security = new SecurityValidator(); security.addAllowedDirectory(directory);
+    var manager = LogManager.getInstance();
+    try (var stores = new StoreRegistry(security, manager)) {
+      var store = stores.store(directory.resolve("clock-watermarks")); var placement = store.captures(WALL);
+      var loop = new ManualScheduler();
+      var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex(placement, manager, 0);
+      var release = new java.util.concurrent.CountDownLatch(1);
+      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index, 256)) {
+        connect(writer, loop, 10_000_000, 0);
+        for (int i = 0; writer.session().files().size() < 9; i++) {
+          assertTrue(i < 500, "Fixture must roll ten files");
+          writer.value(VALUE, new ValueFrame(1, 10_000_000 + i, 2, (long) i), i);
+        }
+        writer.disconnected(); settleClocks(store, placement);
+        var previous = writer.session();
+        assertEquals(10, previous.files().size());
+        var first = StoreCatalog.read(store.root(), security).sessions().get(0).session();
+        assertEquals(10, first.clocks().size());
+        // A regressed robot clock opens a new Session, even though the wall clock is unchanged.
+        if (coalescedOpen) {
+          writer.connected(RobotAddress.uri("127.0.0.1", 5810, "test"), "networktables.first.wpi.edu");
+          writer.timeSync(1_000_000, 0); writer.announce(VALUE);
+          // Creation precedes this task; its opened/rollover updates all wait behind it.
+          // The store must recognize the new session even if it never observes count zero.
+          var entered = new java.util.concurrent.CountDownLatch(1);
+          store.captureAsync(io -> {
+            entered.countDown();
+            try { if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) throw new java.io.IOException("Fixture store hold timed out"); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new java.io.IOException(e); }
+            return null;
+          });
+          assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS)); loop.until(writer::ready);
+        } else connect(writer, loop, 1_000_000, 0);
+        assertNotSame(previous, writer.session());
+        for (int rolled = 1, i = 0; rolled <= 3; rolled++) {
+          while (writer.session().files().size() < rolled) {
+            assertTrue(i < 200, "Fixture must roll the new session");
+            writer.value(VALUE, new ValueFrame(1, 1_000_000 + i, 2, (long) i), i++);
+          }
+          release.countDown();
+          settleClocks(store, placement);
+          var active = StoreCatalog.read(store.root(), security).openCaptures().get(0);
+          assertEquals(rolled, active.session().files().size());
+          assertEquals(rolled, active.session().clocks().size(),
+              "Every closed file gets its clock record while the new session is still open");
+          for (var record : active.session().clocks()) {
+            var file = active.session().files().stream().filter(f -> f.path().equals(record.capture())).findFirst().orElseThrow();
+            assertEquals(file.sha256(), record.captureSha256());
+            assertTrue(Files.isRegularFile(active.path().getParent().resolve(record.path())));
+          }
+        }
+        assertEquals(10, StoreCatalog.read(store.root(), security).sessions().stream()
+            .filter(s -> s.session().id().equals(first.id())).findFirst().orElseThrow().session().clocks().size());
+      } finally { release.countDown(); settleClocks(store, placement); }
+    }
+  }
+
+  private static void settleClocks(LogStore store, CaptureStore placement) throws Exception {
+    placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+    store.capture(io -> null); // Drain the completion callback before observing the clock worker.
+    store.clocksSettled().get(10, java.util.concurrent.TimeUnit.SECONDS);
+  }
+
   @Test void schemaSeedsGiveEachRolledFileItsOwnRangeInTheManifestAndTools() throws Exception {
     var security = new SecurityValidator(); security.addAllowedDirectory(directory);
     var manager = LogManager.getInstance();

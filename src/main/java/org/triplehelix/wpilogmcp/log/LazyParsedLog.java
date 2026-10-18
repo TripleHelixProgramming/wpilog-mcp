@@ -84,6 +84,11 @@ public class LazyParsedLog implements LogData, AutoCloseable {
    * The manager owns this mapping until eviction and the last in-flight use have both ended.
    * Construction failures close it too: a failed scan must not keep a Windows file immovable.
    */
+  /** Moves the decoded-value budget as the logs loaded beside this one come and go. */
+  void setValueBudget(long bytes) { valueCache.policy().eviction().ifPresent(eviction -> eviction.setMaximum(bytes)); }
+  /** The decoded-value budget in bytes. */
+  long valueBudget() { return valueCache.policy().eviction().map(eviction -> eviction.getMaximum()).orElseThrow(); }
+
   static LazyParsedLog open(Path path, long maxCacheWeightBytes) throws IOException {
     return open(path, maxCacheWeightBytes, null);
   }

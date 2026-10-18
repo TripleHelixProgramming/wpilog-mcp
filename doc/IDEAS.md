@@ -465,6 +465,16 @@ The stop-token file has no explicit Windows ACL. Decide and enforce an owner-onl
 there, as POSIX permissions already do on other platforms, and verify it with a second Windows
 account. Do not assume the parent directory's inherited ACL makes the token private.
 
+### Session IDs Outside Replies
+
+An MCP session ID acts as that session for everything it owns, so visualization replies name
+windows by opaque window IDs instead. Two copies remain outside the reply surface. The server log
+records every session ID at creation and removal, and the standalone `http.log` is created under
+the usual umask, readable by other local accounts. While a working view is attached, its state
+file records the attaching session until detach or restart. Decide whether to log a window ID or
+a short keyed digest instead and to create logs and visualization state owner-only, then verify
+both with a second local account. The log line is released behavior.
+
 ---
 
 ## 9. File access and visualization
@@ -497,10 +507,11 @@ identity/history refusal. The first-gate review is settled in the engine: oversi
 produce explicit ordinal gaps, frontiers travel once per prefix, and pages pack several entries
 under global limits. The server integration now provides session merge aliases and anchored
 membership, native follow routes, lease expiry, dedicated long polling, exact retry admission,
-final hashes and idle mapping release. The shared broker core now has real-server coverage; configured remote routing and
-automatic panel updates, display/clock states, histogram/scatter and latency instrumentation
-remain to be integrated and validated. The decoded-buffer setting (64 MiB default), aggregate
-recorded/live budgets, remote admission and large-log/live performance gates remain Stage 3.
+final hashes and idle mapping release. The shared broker core now has real-server coverage. Automatic panel updates, display/clock
+states, histogram/scatter and historical navigation have local preview checkpoints. The
+64 MiB default decoded-buffer setting and aggregate recorded/live accounting are implemented;
+configured remote admission, latency instrumentation and large-log/live performance gates
+remain Stage 3 work.
 Explicit display requests, client selection and default-editor retirement remain Stage 4.
 The preview's field projection is numeric only; richer typed projections remain with the
 existing editor until the shared reader/renderer contract supports them. Template/working
@@ -678,7 +689,7 @@ cleanup. Live layout controls remain disabled. Native gates use a 20,000-name ac
 plus rollover and the real five-minute expiry; evidence is in
 `/private/tmp/wpilog-visualization-stage3-overview/validation.md`.
 
-Remaining before completing Stage 3: binding/follow admission, live panel integration,
+Remaining before completing Stage 3: broker/panel integration for admitted view follows,
 the configurable aggregate recorded/live decoded display budget and its capabilities, the
 32-lease declaration-burst workload, season-sized catalog scan/hash measurements, and native
 Linux/Windows editor runs. The current inventory accounting is a conservative bounded estimate,
@@ -703,8 +714,8 @@ reasons and declaration/schema conflicts without creating a view or follow. The 
 committed as `4178768`, accepted by reviews 15 and 16; evidence is under
 `/private/tmp/wpilog-visualization-stage3-bindings/validation.md`.
 Recording-view metadata creation is implemented in the follow-up below. Remaining binding work
-is revalidation when a follow is admitted;
-then live panels, shared display budgets and the Stage 3 workload/performance gates above.
+is now implemented by the revision-bound follow checkpoint below;
+remaining work includes live panels, shared display budgets and the Stage 3 workload/performance gates above.
 Cold hash/OS-read duration can outlast the cooperative compatibility work budget, and large
 value-dependent searches can refuse; measure these costs on season-sized stores before making
 latency claims or changing limits. Native Linux/Windows and the earlier manual Close/Save As
@@ -723,5 +734,85 @@ panel wiring. Evidence: `/private/tmp/wpilog-visualization-stage3-view-admission
 Review 15's repeated result-encoding cost near the 1 MiB cap remains to be measured/improved;
 the latest-value evidence scan intentionally refuses beyond its stated history budget. Review
 16's older class names in architecture prose and differing historical ledger formats are style
-follow-ups, not changes to accepted behavior. Revision-bound binding/follow admission, live
-panels, combined budgets, clocks, remote routing and all workload/platform gates remain open.
+follow-ups, not changes to accepted behavior. Review 17 accepted this metadata checkpoint,
+committed as `75c787c`. The next server checkpoint supplies revision-bound binding/follow
+admission; evidence is in `/private/tmp/wpilog-visualization-stage3-bound-follows/validation.md`.
+Live panels, automatic unresolved-requirement rechecks, broker adaptation to immutable view
+bindings, combined budgets, display clocks and remote routing remain open. Measure the added
+per-prefix compatibility work and two-slot contention alongside the 32-lease declaration burst
+and season-sized store scan/hash workload. All native platform and manual gates remain open.
+
+
+#### Recording panel continuation (2026-10-16)
+
+The local preview now consumes revision-bound follows and paged in-view selection, with
+completed-frontier plots, ordinal raw rows, pause and lifecycle cleanup, plus independent
+server-read latest/cursor/statistics panels.
+This supersedes the earlier disabled-panel notes above; evidence is under
+`/private/tmp/wpilog-visualization-stage3-panel-follow/validation.md`.
+
+The recording-aware latest/cursor/statistics server operation now exists across members, through
+HTTP/MCP with bounded fresh-prefix admission and shared numerical rules; evidence is under
+`/private/tmp/wpilog-visualization-stage3-recording-analysis/validation.md`. Panel integration now
+uses coalesced requests, per-kind/data-generation guards, shared buffer accounting, pause/hide
+cleanup and explicit independent prefix evidence; see
+`/private/tmp/wpilog-visualization-stage3-panel-analysis/validation.md`. Presentation-only
+revisions preserve the query. Keep Stage 3 open for pan/zoom
+history, remote sources and latency/health instrumentation. The inline recording picker now accepts explicit numeric field paths and array indexes after server compatibility checks; it does not enumerate suggested paths. The next
+continuation implemented shared recorded/live/inventory buffer admission, a 16–1024 MiB setting
+(default 64, applied after reload) and client-reported attached-window capabilities; evidence is
+under `/private/tmp/wpilog-visualization-stage3-window-budget/validation.md`. Measure actual heap
+against those conservative estimates with both default and changed settings. Control/legacy
+source descriptors and server caches are outside this sample allowance. Live plots still disclose
+their 4,096-sample retention; neither budget is a claim that every long window is exact. Run the 32-lease declaration burst, season-sized inventory
+scan/hash and sustained-throughput/resource gates before claiming full live support. Native
+Linux/Windows, manual Close cancellation and Save As remain outstanding.
+
+
+Recording-analysis panel fixture follow-up (2026-10-16): one intentionally cursor-broken native
+run stalled at peer-close before the cursor assertion. The restored implementation passed four
+final runs across both editors; no cause or fix is claimed for that isolated occurrence. Keep
+its diagnostics plus the new owner/queue/request traces under
+`/private/tmp/wpilog-visualization-stage3-panel-analysis/` and investigate a recurrence before CI
+adoption, without masking it with a blanket retry. Linux/Windows native and sustained-load
+gates remain separate work.
+
+
+Recording field selection continuation (2026-10-16): explicit typed paths now work in the
+paged picker, with member-qualified refusals and stale-intent cancellation. Evidence is in
+`/private/tmp/wpilog-visualization-stage3-field-selection/validation.md`. Schema-derived path
+suggestions remain a usability option: implement them in the shared server owner, with bounded
+array evidence, rather than duplicating schema interpretation in the extension. This does not
+complete the remaining Stage 3 panel, history, remote, recovery or performance gates above.
+
+
+Source chart analysis continuation (2026-10-16): bounded histogram/scatter operations now share
+the existing image-chart numerical owner for files and anchored recordings. The HTTP/MCP
+contracts, native-writer proof and regression evidence live under
+`/private/tmp/wpilog-visualization-stage3-chart-analysis/validation.md`. The chart-panel continuation now wires histogram and
+scatter controls through the existing window queue, at most one update per second, acknowledged
+buffer accounting and pause/hide/close cancellation. Native checks cover both source kinds; see
+`/private/tmp/wpilog-visualization-stage3-chart-panels/validation.md`.
+Do not compute either from plot buffers. Retained scatter paging for a live prefix is a possible
+future improvement; today each call is fresh and callers compare prefix evidence. Numeric
+seconds that cannot retain native microseconds, and unrepresentable histogram edges, currently
+refuse. Larger-range numerical representations need shared arithmetic work before lifting those
+limits. The other Stage 3 navigation, remote, recovery, platform and performance gates remain.
+
+
+Chart-panel drawing follow-up: the new preview explicitly supplies per-series point bounds to
+the bundled mode-2 plot and ranges histogram axes over full bin edges from a zero count baseline.
+The older chart-link pane uses the library defaults that caused invisible points and clipped bins
+in the new prototype. Audit its drawing natively before changing it; its measurement specification
+was not at fault, and this checkpoint does not claim a native test or fix for that older pane.
+
+
+Historical-navigation continuation (2026-10-16): the local preview now connects time-series drag
+zoom and keyboard pan/zoom to revisioned interval reads, with Inspect History and Resume
+following. Evidence is in `/private/tmp/wpilog-visualization-stage3-history/validation.md`.
+Dense recording history still keeps only 4,096 recently delivered points per selection; it is
+not a complete min/max representation. Add shared server reduction for anchored historical
+prefixes before claiming complete long-window plots. The fixed saved policy has no following
+window field; the current editor remembers its resume choice in VS Code UI state, while a new
+fixed-view fork defaults to 30 seconds. Remote routing, acquisition health/latency, unavailable
+source recovery, Linux/Windows native runs and sustained performance remain open.

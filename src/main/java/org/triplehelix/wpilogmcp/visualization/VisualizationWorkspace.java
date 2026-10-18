@@ -19,20 +19,30 @@ import org.triplehelix.wpilogmcp.mcp.CallerContext.Authority;
  * binding, persistence, save/checkpoint ordering, or numerical policy. */
 public final class VisualizationWorkspace implements AutoCloseable {
   public final VisualizationService views;
+  public final WindowBudgets windows;
   public final ControlNotifications notifications = new ControlNotifications();
   public final RecordedSources sources;
   public final RecordingInventories inventories;
   private final RecordingBindings recordingBindings;
+  private final ViewBinding viewBindings;
+  private final RecordingAnalysis recordingAnalysis;
+  private final SourceCharts sourceCharts;
   private final ServerIdentity identity;
   private final LogManager logs;
   private final StoreDoor door;
   public VisualizationWorkspace(ServerIdentity identity, LogManager logs) throws IOException {
     this.identity = identity; this.logs = logs; door = new StoreDoor(logs::getAllowedDirectories);
-    views = new VisualizationService(identity); views.onChanged(notifications::changed); sources = new RecordedSources(logs, views, door);
-    inventories = new RecordingInventories(sources); recordingBindings = new RecordingBindings(sources);
+    views = new VisualizationService(identity); views.onChanged(notifications::changed); windows = new WindowBudgets(views.windowIds());
+    sources = new RecordedSources(logs, views, door);
+    inventories = new RecordingInventories(sources); recordingBindings = new RecordingBindings(sources); viewBindings = new ViewBinding(views, recordingBindings);
+    recordingAnalysis = new RecordingAnalysis(recordingBindings); sourceCharts = new SourceCharts(sources);
   }
   public void close() { inventories.close(); views.close(); try { sources.close(); } catch (IOException e) { throw new java.io.UncheckedIOException(e); } }
-  public JsonObject capabilities() {
+  /** For a caller without a transport session, such as direct stdio. */
+  public JsonObject capabilities() { return capabilities(null); }
+  /** Both adapters pass the caller's transport session so its own window is marked; no session
+   * ID, the caller's or a peer's, appears in the report. */
+  public JsonObject capabilities(String session) {
     var result = identity.describe(); result.addProperty("stage", "reusable-recorded-preview");
     result.add("blank_configuration", VisualizationContracts.blank()); result.add("schema", VisualizationContracts.schema());
     result.addProperty("max_working_views", VisualizationService.MAX_DOCUMENTS);
@@ -40,17 +50,29 @@ public final class VisualizationWorkspace implements AutoCloseable {
     result.addProperty("max_deleted_view_receipts", VisualizationService.MAX_TOMBSTONES);
     result.addProperty("max_deleted_view_metadata_bytes", VisualizationService.MAX_TOMBSTONE_BYTES);
     result.addProperty("deleted_view_lifetime_hours", VisualizationService.TOMBSTONE_LIFETIME.toHours());
-    result.addProperty("max_plot_points", 4096); result.addProperty("max_visible_series", 32);
+    result.add("decoded_buffer_budget", WindowBudgets.limits()); result.add("attached_windows", windows.describe(session));
+    result.addProperty("max_plot_points", 65536); result.addProperty("max_live_plot_points", 4096); result.addProperty("max_visible_series", 32);
     result.addProperty("max_raw_page_records", 4096); result.addProperty("max_raw_page_bytes", 1048576);
     result.addProperty("max_template_receipts", 64); result.addProperty("max_template_metadata_bytes", 1048576);
     result.addProperty("recording_bindings", true); result.add("recording_binding_limits", RecordingBindings.limits());
-    result.addProperty("recording_views", true);
+    result.addProperty("recording_views", true); result.addProperty("recording_view_follow", true);
+    result.addProperty("source_charts", true); result.add("source_chart_limits", SourceCharts.capabilities());
+    result.addProperty("recording_analysis", true); result.add("recording_analysis_limits", RecordingAnalysis.capabilities());
     result.addProperty("live", false); result.addProperty("live_source_inspection", true);
     result.addProperty("max_recording_inventory_bytes", RecordingInventory.MAX_BYTES);
     result.addProperty("recording_inventory_paging", true); result.add("recording_inventory_limits", inventories.capabilities());
     result.addProperty("templates", true); result.add("roles", VisualizationBindings.roles());
     result.add("declared_types", JsonParser.parseString("[\"boolean\",\"int64\",\"float\",\"double\",\"string\",\"json\",\"raw\",\"boolean[]\",\"int64[]\",\"float[]\",\"double[]\",\"string[]\",\"struct:Name\",\"struct:Name[]\",\"structarray:Name\"]"));
     return result;
+  }
+  public ViewBinding.Prepared prepareViewFollow(Authority caller, JsonObject request, java.util.function.BooleanSupplier alive) throws IOException {
+    caller.requireLocal();
+    if (!request.keySet().stream().allMatch(k -> Set.of("api_version", "view_id", "expected_revision").contains(k)))
+      throw new IllegalArgumentException("View binding accepts only view_id and expected_revision");
+    return viewBindings.prepare(uuid(request, "view_id"), TemplateDefinition.revision(request, "expected_revision", false), alive);
+  }
+  public JsonObject bindView(Authority caller, JsonObject request) throws IOException {
+    try (var prepared = prepareViewFollow(caller, request, () -> true)) { return prepared.describe(); }
   }
   public JsonObject getView(JsonObject request) throws IOException { return views.get(uuid(request, "view_id")); }
   public JsonObject listViews(JsonObject request) throws IOException {
@@ -208,9 +230,15 @@ public final class VisualizationWorkspace implements AutoCloseable {
     return new TemplateMetadata(logs.stores().store(store.root()), store.description().id()).importDefinition(authority, uuid(request, "request_id"), text(request, "envelope_json"),
         request.has("mode") ? text(request, "mode") : "copy", request.has("expected_revision") ? TemplateDefinition.revision(request, "expected_revision", false) : null).get();
   }
+  public JsonObject histogram(JsonObject request, java.util.function.BooleanSupplier alive) throws Exception { return sourceCharts.read(request, false, alive); }
+  public JsonObject scatter(JsonObject request, java.util.function.BooleanSupplier alive) throws Exception { return sourceCharts.read(request, true, alive); }
   public JsonObject statistics(JsonObject request) throws Exception {
+    return statistics(request, () -> true);
+  }
+  public JsonObject statistics(JsonObject request, java.util.function.BooleanSupplier alive) throws Exception {
+    if (request.getAsJsonObject("source_ref").get("kind").getAsString().equals("session")) return recordingAnalysis.statistics(request, alive);
     var source = request.getAsJsonObject("source_ref"); var args = new JsonObject(); args.addProperty("path", sources.resolve(source).toString()); args.addProperty("name", text(request, "entry"));
-    for (var key : List.of("field", "start_time", "end_time")) if (request.has(key)) args.add(key, request.get(key));
+    for (var key : List.of("field", "start_time", "end_time", "last_seconds")) if (request.has(key)) args.add(key, request.get(key));
     var result = VisualizationBindings.statistics(args); sources.resolve(source); return result;
   }
   public JsonObject raw(JsonObject request) throws IOException {
@@ -316,6 +344,10 @@ public final class VisualizationWorkspace implements AutoCloseable {
     return VisualizationMetadata.read(store, id);
   }
   public JsonObject value(JsonObject request) throws IOException {
+    return value(request, () -> true);
+  }
+  public JsonObject value(JsonObject request, java.util.function.BooleanSupplier alive) throws IOException {
+    if (request.getAsJsonObject("source_ref").get("kind").getAsString().equals("session")) return recordingAnalysis.value(request, alive);
     try (var snapshot = sources.open(request.getAsJsonObject("source_ref"))) {
       Long at = null;
       if (request.has("at_sec")) {

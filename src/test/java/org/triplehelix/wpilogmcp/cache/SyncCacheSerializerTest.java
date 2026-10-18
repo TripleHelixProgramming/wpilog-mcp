@@ -179,6 +179,14 @@ class SyncCacheSerializerTest {
       assertNull(serializer.read(file));
     }
 
+    @Test @DisplayName("a cached combination is refused") void combination() throws IOException {
+      // The cache holds correlations only: a combination is derived from a store's records when read
+      var claimed = new SyncResult(12345678L, 0.92, ConfidenceLevel.HIGH, List.of(), SyncMethod.COMBINED, "crafted", 0, 0);
+      Path file = tempDir.resolve("combined.msgpack");
+      serializer.write(new CachedSyncEntry(createTestRevLog(), claimed, "a", "b", 0L), file);
+      assertNull(serializer.read(file));
+    }
+
     @Test @DisplayName("tampered CRC returns null") void tamperedCrc() throws IOException {
       var entry = new CachedSyncEntry(createTestRevLog(), createTestSyncResult(), "a", "b", 0L);
       Path file = tempDir.resolve("tampered.msgpack");

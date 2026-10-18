@@ -155,7 +155,22 @@ public class HttpTransport {
     metricsEndpoint = new MetricsEndpoint(config, capture, components);
   }
   private final StoreImportEndpoint importEndpoint = new StoreImportEndpoint(stores, storeDoor);
-  private final MirrorEndpoint mirrorEndpoint = new MirrorEndpoint(stores);
+  /** One guard for the mirror's and the live source's controls, which each refuse the other's folder. */
+  private final java.util.concurrent.atomic.AtomicBoolean localControls = new java.util.concurrent.atomic.AtomicBoolean();
+  /** The guard both local controls take, so a test can hold it as a change in progress would. */
+  java.util.concurrent.atomic.AtomicBoolean localControlsGuard() { return localControls; }
+  private final MirrorEndpoint mirrorEndpoint = new MirrorEndpoint(stores, () -> this.liveSourceEndpoint.folder(), localControls);
+  /** The capture the live tools answer from: the one servers.yaml configured, or a laptop's live
+   * source set at run time, or none. */
+  private final java.util.concurrent.atomic.AtomicReference<org.triplehelix.wpilogmcp.capture.LiveCapture> liveCapture =
+      new java.util.concurrent.atomic.AtomicReference<>();
+  private final LiveSourceEndpoint liveSourceEndpoint = new LiveSourceEndpoint(
+      org.triplehelix.wpilogmcp.log.LogManager.getInstance(), liveCapture, mirrorEndpoint::folder, localControls);
+  /** What the live tools read at each call. */
+  public java.util.function.Supplier<org.triplehelix.wpilogmcp.capture.LiveCapture> liveCapture() { return liveCapture::get; }
+  /** A capture configured in servers.yaml: the live tools read it, and the live source control
+   * reports it but cannot replace it. */
+  public void useConfiguredCapture(org.triplehelix.wpilogmcp.capture.CaptureService capture) { liveSourceEndpoint.useConfigured(capture); }
   private final StoreSyncEndpoint syncEndpoint = new StoreSyncEndpoint(stores,
       new org.triplehelix.wpilogmcp.store.StoreDoor(() -> storeDirectories != null ? storeDirectories
           : org.triplehelix.wpilogmcp.log.LogManager.getInstance().getAllowedDirectories()),
@@ -227,6 +242,9 @@ public class HttpTransport {
 
   private void handleLocalIngestion(HttpExchange exchange) throws IOException {
     var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (forwarded(exchange)) {
+      LocalIngestionEndpoint.error(exchange, 403, "ACCESS_DENIED", "Data store setup requires a direct loopback connection; " + FORWARDED); return;
+    }
     if (origin != null && !isAllowedOrigin(origin)
         || !server.getAddress().getAddress().isLoopbackAddress()
         || !exchange.getRemoteAddress().getAddress().isLoopbackAddress()) {
@@ -239,7 +257,10 @@ public class HttpTransport {
   private void handleVisualization(HttpExchange exchange) throws IOException { handleVisualization(exchange, true); }
   private void handleVisualization(HttpExchange exchange, boolean inventoryAdmitted) throws IOException {
     var origin = exchange.getRequestHeaders().getFirst("Origin");
-    var authority = CallerContext.http(server.getAddress().getAddress(), exchange.getRemoteAddress().getAddress(), origin == null || isAllowedOrigin(origin));
+    if (forwarded(exchange)) {
+      LocalIngestionEndpoint.error(exchange, 403, "ACCESS_DENIED", "Visualization preview requires a direct loopback connection; " + FORWARDED); return;
+    }
+    var authority = CallerContext.http(server.getAddress().getAddress(), exchange.getRemoteAddress().getAddress(), origin == null || isAllowedOrigin(origin), forwarded(exchange));
     if (authority == CallerContext.Authority.UNTRUSTED) {
       LocalIngestionEndpoint.error(exchange, 403, "ACCESS_DENIED", "Visualization preview requires loopback and an allowed Origin"); return;
     }
@@ -286,6 +307,7 @@ public class HttpTransport {
     server.createContext(LocalIngestionEndpoint.PATH, storeStreaming.handle(counted(this::handleLocalIngestion)));
     server.createContext(StoreSyncEndpoint.PATH, counted(this::handleSync));
     server.createContext(MirrorEndpoint.PATH, counted(this::handleMirror));
+    server.createContext(LiveSourceEndpoint.PATH, counted(this::handleLiveSource));
     // Direct handoff grows beyond four workers as soon as they are busy. A waiting queue
     // would keep health behind four streaming data/store responses until that queue filled.
     httpExecutor = new ThreadPoolExecutor(4, 32, 60, TimeUnit.SECONDS,
@@ -380,6 +402,7 @@ public class HttpTransport {
       return;
     }
     mirrorEndpoint.close();
+    liveSourceEndpoint.close();
     followEndpoint.close();
     readEndpoint.close();
     if (localIngestion != null) { localIngestion.close(); stores.clearLocalIngestion(localIngestion); }
@@ -545,7 +568,7 @@ public class HttpTransport {
   private CallerContext.Authority callerAuthority(HttpExchange exchange) {
     var origin = exchange.getRequestHeaders().getFirst("Origin");
     return CallerContext.http(server.getAddress().getAddress(), exchange.getRemoteAddress().getAddress(),
-        origin == null || isAllowedOrigin(origin));
+        origin == null || isAllowedOrigin(origin), forwarded(exchange));
   }
 
   private void handleSinglePost(HttpExchange exchange, JsonObject message, InventoryRequests.Admission admission) throws IOException {
@@ -808,6 +831,10 @@ public class HttpTransport {
       sendError(exchange, 403, "Registration requires a server bound to loopback");
       return;
     }
+    if (forwarded(exchange) || !isLoopback(exchange.getRemoteAddress())) {
+      sendError(exchange, 403, "Registration requires a direct loopback connection; " + FORWARDED);
+      return;
+    }
     noteMcpActivity();
     registration.handle(exchange);
   }
@@ -818,9 +845,15 @@ public class HttpTransport {
     if (origin != null && !isAllowedOrigin(origin) || !server.getAddress().getAddress().isLoopbackAddress()) {
       sendError(exchange, 403, "Pit credential forwarding requires loopback and an allowed Origin"); return;
     }
+    if (forwarded(exchange) || !isLoopback(exchange.getRemoteAddress())) {
+      sendError(exchange, 403, "Pit credential forwarding requires a direct loopback connection; " + FORWARDED); return;
+    }
     noteMcpActivity();
     PitMcpEndpoint.handle(exchange);
   }
+
+  /** The time a window's silence is measured against, for tests. */
+  void visualizationNow(java.util.function.Supplier<java.time.Instant> now) { visualization.now = now; }
 
   /** The scheduler and transport tests use the same session expiry path. */
   int expireSessions(Duration maximumIdle) {
@@ -850,7 +883,14 @@ public class HttpTransport {
     if (origin != null && !isAllowedOrigin(origin)) {
       sendError(exchange, 403, "Forbidden: invalid origin"); return;
     }
-    followEndpoint.handle(exchange);
+    followEndpoint.handle(exchange, body -> {
+      if (forwarded(exchange)) throw new java.nio.file.AccessDeniedException("View follow requires a direct loopback connection; " + FORWARDED);
+      var authority = callerAuthority(exchange); authority.requireLocal();
+      String id = exchange.getRequestHeaders().getFirst("Mcp-Session-Id");
+      var session = id == null ? null : sessionManager.getSession(id);
+      if (session == null) throw new java.nio.file.AccessDeniedException("View follow requires an active Mcp-Session-Id; reconnect before binding");
+      return toolRegistry.visualizations().prepareViewFollow(authority, body, session::active);
+    });
   }
 
   /** The import write surface has exactly the same Origin gate as MCP and data reads. */
@@ -862,6 +902,9 @@ public class HttpTransport {
     }
     boolean bytes = exchange.getRequestURI().getPath().equals(StoreImportEndpoint.PATH)
         && "application/octet-stream".equals(exchange.getRequestHeaders().getFirst("Content-Type"));
+    if (exchange.getRequestMethod().equals("POST") && !bytes && forwarded(exchange)) {
+      sendError(exchange, 403, "Server-path imports and assignments require a direct loopback connection; " + FORWARDED + "; upload file bytes instead"); return;
+    }
     if (exchange.getRequestMethod().equals("POST") && !bytes
         && !exchange.getRemoteAddress().getAddress().isLoopbackAddress()) {
       sendError(exchange, 403, "Server-path imports and assignments require a loopback connection; upload file bytes instead"); return;
@@ -890,6 +933,9 @@ public class HttpTransport {
     if (origin != null && !isAllowedOrigin(origin)) {
       sendError(exchange, 403, "Forbidden: invalid origin"); return;
     }
+    if (forwarded(exchange)) {
+      sendError(exchange, 403, "Store sync jobs require a direct loopback connection; " + FORWARDED); return;
+    }
     if (!exchange.getRemoteAddress().getAddress().isLoopbackAddress()) {
       sendError(exchange, 403, "Store sync jobs require a loopback connection"); return;
     }
@@ -906,10 +952,27 @@ public class HttpTransport {
     if (origin != null && !isAllowedOrigin(origin)) {
       sendError(exchange, 403, "Forbidden: invalid origin"); return;
     }
+    if (forwarded(exchange)) {
+      sendError(exchange, 403, "Mirror controls require a direct loopback connection; " + FORWARDED); return;
+    }
     if (!exchange.getRemoteAddress().getAddress().isLoopbackAddress()) {
       sendError(exchange, 403, "Mirror controls require a loopback connection"); return;
     }
     noteMcpActivity(); mirrorEndpoint.handle(exchange);
+  }
+
+  private void handleLiveSource(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) {
+      sendError(exchange, 403, "Forbidden: invalid origin"); return;
+    }
+    if (forwarded(exchange)) {
+      sendError(exchange, 403, "Live source controls require a direct loopback connection; " + FORWARDED); return;
+    }
+    if (!exchange.getRemoteAddress().getAddress().isLoopbackAddress()) {
+      sendError(exchange, 403, "Live source controls require a loopback connection"); return;
+    }
+    noteMcpActivity(); liveSourceEndpoint.handle(exchange);
   }
 
   /** The size cap of a data response, in bytes (see {@link DataEndpoint}). */
@@ -974,6 +1037,10 @@ public class HttpTransport {
       sendError(exchange, 403, "Stop requests are accepted only from this machine");
       return;
     }
+    if (forwarded(exchange)) {
+      sendError(exchange, 403, "Stop requests require a direct loopback connection; " + FORWARDED);
+      return;
+    }
     var presented = exchange.getRequestHeaders().getFirst(STOP_TOKEN_HEADER);
     if (presented == null || !MessageDigest.isEqual(
         presented.getBytes(StandardCharsets.UTF_8), token.getBytes(StandardCharsets.UTF_8))) {
@@ -988,6 +1055,20 @@ public class HttpTransport {
     var stopper = new Thread(onStop, "stop-request");
     stopper.setDaemon(false);
     stopper.start();
+  }
+
+  /** A same-host reverse proxy reaches a loopback listener from a loopback peer, so the pit
+   * guide's nginx block once made everyone past its login a local caller: directory leases, pit
+   * forwarding, server-path imports, sync and mirror controls, local ingestion, the visualization
+   * routes and stop. A request carrying a header that proxies add is therefore never local at any
+   * of those gates. The header only withdraws trust. A proxy that adds none of them cannot be told
+   * from a local client, which is why the documented proxy block sets one. */
+  static final java.util.List<String> FORWARDING_HEADERS = java.util.List.of(
+      "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Via");
+  static final String FORWARDED = "requests forwarded by a proxy are not local";
+  static boolean forwarded(HttpExchange exchange) {
+    var headers = exchange.getRequestHeaders();
+    return FORWARDING_HEADERS.stream().anyMatch(headers::containsKey);
   }
 
   /** Whether a connection comes from this machine: the loopback interface, by address. */

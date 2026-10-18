@@ -141,21 +141,30 @@ This does not prove sample history: the managed reader and follow continuation r
 writer, ordinal and finalized-hash checks. Cache reuse still checks all stamps strictly, so later
 growth refreshes the observed size.
 
-Use `openWpilog(path)` for a manifested WPILOG. `openRev(companion, anchor)` uses only the companion's
-recorded association with that WPILOG and its recorded offset, drift and confidence. It does not
-run correlation, change alignment or write a synchronization cache. `rawValues(signal)` keeps the
-REV clock; `values(signal)` applies the recorded mapping. Missing or corrupt proof leaves the
-companion raw-readable with an `UNSYNCHRONIZED` state and reason; a converted read is refused.
+Use `openWpilog(path)` for a manifested WPILOG. `openRev(companion, anchor)` uses only recorded
+offsets, each with its drift and confidence: the companion's own against that WPILOG, or, when the
+companion and the WPILOG were each measured against one reference, the two combined. A reference
+is a file by its hash, or a capture recording for an offset measured while the capture was still
+recording; the files of one recording share the robot's clock, and a session's clock records name
+the recording of each capture, so a mirror without the captures still finds the reference. A
+combined alignment's method is `COMBINED`, its `combination` names the reference and each
+measurement, its confidence is the lower of theirs, and its error is at most the sum of theirs.
+It does not run correlation, change alignment or write a synchronization cache. `rawValues(signal)`
+keeps the REV clock; `values(signal)` applies the recorded mapping. Missing or corrupt proof leaves
+the companion raw-readable with an `UNSYNCHRONIZED` state and reason; a converted read is refused.
 Mirrors use their recorded facts unchanged. System text remains text with its own receipts and
 clock basis; it is not silently combined into telemetry entries.
 
 `openSession(storeId, sessionId, anchorPath, Overlap.REJECT)` creates a time-ordered union on
 an explicitly chosen WPILOG clock. It includes rollover files from the anchor's recording run and
-files with a recorded alignment chain to that clock. A recording run requires `captured` provenance,
-the same recorded original start time and the same collecting store (preserved through peer copies
-and mirrors). Session membership alone is insufficient: peer sync can consolidate independently
-recorded sessions. An older session-level alignment without an anchor hash applies only when the
-manifest has one captured recording clock. Files without proof are listed in `excludedSources`,
+files whose recorded offsets lead to the anchor's reference, by the rule `openRev` follows: a
+file's recorded steps toward the anchor apply as recorded, and a file and an anchor measured
+against one reference are combined into one `COMBINED` step. A recording run requires `captured`
+provenance, the same recorded original start time and the same collecting store (preserved through
+peer copies and mirrors). Session membership alone is insufficient: peer sync can consolidate
+independently recorded sessions. An older session-level alignment that names neither a file nor a
+recording applies only when the session's captures, clock records and other offsets show exactly
+one recording; otherwise the file is excluded with that reason. Files without proof are listed in `excludedSources`,
 not given a zero offset. Identical SHA-256 files are included once. Overlapping recordings of an entry are
 refused unless `KEEP_ALL` explicitly keeps both, and conflicting types, metadata or schemas are
 refused. Each raw sample retains its source path and original timestamp beside its mapped time.
@@ -398,7 +407,7 @@ legacy full metadata. A client requesting projection must check the create echo 
 and each subsequent frontier before use. The extension adapter retires a created lease after a
 missing, malformed or conflicting scope acknowledgement, with bounded cleanup and an explicit
 error. An old server may ignore the request field, so the request alone is not negotiation.
-The adapter retains 4 MiB/full-metadata defaults for existing callers; panel integration will
+The adapter retains 4 MiB/full-metadata defaults for existing callers; recording panels
 explicitly choose 1 MiB/queries. Scope bytes count toward the 64 KiB request cap before broker
 admission. Response, depth and traversal limits remain unchanged.
 
@@ -504,3 +513,59 @@ and binary-boundary primitives; legacy tools retain their established double-sec
 The interface does not infer signals, join entries by guessed timestamps, recalculate REV alignment
 or perform MCP analyses. Publishing the reader as a Maven artifact or adding a release asset is a
 separate release decision; building the local JAR does neither.
+
+
+### Following a recording view
+
+A trusted local reader with an active `Mcp-Session-Id` may instead POST this body to
+`/read/v1/follows`:
+
+```json
+{"view_binding":{"view_id":"33333333-3333-4333-8333-333333333333","expected_revision":1}}
+```
+
+Use an existing working recording view, not the example UUID. `view_binding` is exclusive:
+source, queries, windows and page limits come from the pinned configuration and cannot be
+supplied alongside it. This form always uses 4,096 visited records, 1 MiB pages and
+`frontier_scope: "queries"`; it shares the raw route's 32 leases, 64 MiB encoded budget,
+long-poll workers, timeout, terminal acknowledgement and DELETE behavior. Raw source/query
+requests remain unchanged and do not require a visualization session.
+
+The server resolves all requirements from one admitted prefix and hands that same prefix to
+bootstrap. It checks the expected revision before and after admission and before publishing
+its lease. A revision change observed at any check returns `REVISION_CONFLICT`; the last check
+is the admission point, so edits after it do not invalidate the tagged old revision. Missing/deleted metadata returns
+`VIEW_UNAVAILABLE`. Up to 32 distinct resolved entry/field selections are admitted; duplicates
+share a query, and missing/conflicting requirements remain explicit in the result. No resolved
+selection returns `NO_RESOLVED_BINDINGS`; missing clock evidence for a following interval
+returns `CLOCK_UNAVAILABLE`. Both are 409 refusals; inspect or rebind the view rather than
+retrying its unchanged request in a tight loop. Temporary compatibility pressure is retryable
+413 and preserves a submitted continuation cursor. Source/member limits remain non-retryable.
+
+The 201 response adds `max_page_bytes` and `view_binding`: `api_version`, `view_id`, `revision`,
+`source_ref`, `compatibility`, `clock`, `time_policy`, `queries`, `follow_ready`, `reason`,
+`frontier_scope`, and `max_page_bytes`. The whole response fits 1 MiB; excessive binding
+metadata refuses. For a live source the initial interval uses `time.live`; a newly opened
+finalized source uses `time.recorded`. A fixed interval is converted to inclusive integer
+microseconds without clamping. Following uses the admitted clock's right edge and `window_sec`,
+never wall or receipt time. Empty clock evidence does not mean full history. As on raw follows,
+bootstrap filters that interval and deltas retain all subsequent physical ordinals.
+
+After admission, edits do not mutate this follow. Keep the returned view/revision tag with every
+client delivery and replace stale subscriptions. Each subsequent prefix checks the pinned
+requirements; changed selected names, metadata, types, units or transitive schemas return 409
+`BINDING_CHANGED`. New declarations do not silently add queries. A new binding is required;
+other leases continue. Source grants and the opening session are checked even on cached retries.
+A session expiry closes admission to that lease; DELETE remains available. If creation loses
+its response, the existing 60-second idle expiry bounds cleanup.
+
+For detached evidence only, use `POST /visualizations/v1/views/<view-id>/bindings` with
+`expected_revision`, or `visualization_view_bind` with `view_id`, `expected_revision` and
+`api_version: 1`. Those do not open a follow. A controller can create a follow directly and
+avoid a redundant compatibility check. The editor's recording panels remain gated.
+
+View-bound follow frontiers additionally include `clock`, using the same recorded estimate,
+last-sample, right-edge and waiting fields as the binding plan. It describes each newly admitted
+prefix, including finalization; continuation pages reuse that prefix's frontier. Raw follows
+retain their existing wire shape and do not acquire this optional clock field. Clients must not
+substitute receipt time for the reported clock evidence.

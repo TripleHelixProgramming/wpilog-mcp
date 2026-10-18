@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import org.triplehelix.wpilogmcp.capture.CaptureStats;
 import org.triplehelix.wpilogmcp.capture.LiveCapture;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
@@ -19,11 +20,15 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.store.CaptureStore;
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 
-/** Publication facts are queried in memory; a tool cannot put the NT4 loop behind store I/O. */
+/** Publication facts are queried in memory; a tool cannot put the NT4 loop behind store I/O. The
+ * capture can change while the server runs, when a laptop's live source is set or stopped, so each
+ * call reads it once and answers from that one capture. */
 public final class LiveTools {
   private LiveTools() {}
-  public static void registerAll(ToolRegistry registry, LiveCapture live) {
-    registry.setCurrentSession(() -> org.triplehelix.wpilogmcp.mcp.CurrentSessionResource.read(live));
+  public static void registerAll(ToolRegistry registry, LiveCapture live) { registerFollowing(registry, () -> live); }
+  /** Registers tools that answer from whichever capture the supplier holds at each call. */
+  public static void registerFollowing(ToolRegistry registry, Supplier<LiveCapture> live) {
+    registry.setCurrentSession(() -> org.triplehelix.wpilogmcp.mcp.CurrentSessionResource.read(live.get()));
     registry.registerTool(new ListSessions(live, registry::isManaged));
     registry.registerTool(new GetLatestValues(live));
     registry.registerTool(new WaitForChange(live));
@@ -33,21 +38,22 @@ public final class LiveTools {
       + "NT: capture names are accepted. Binary values (including structs) are raw signed-byte arrays; "
       + "use the ordinary log tools to decode structs. Raw NaN and infinities are strings.";
   private abstract static class LiveTool extends ToolBase {
-    final LiveCapture live;
-    LiveTool(LiveCapture live) { this.live = live; }
+    private final Supplier<LiveCapture> source;
+    LiveTool(Supplier<LiveCapture> source) { this.source = source; }
     @Override protected final JsonElement executeInternal(JsonObject arguments) throws Exception {
+      var live = source.get();
       var current = live == null ? null : live.current();
       JsonObject result;
-      try { result = read(arguments, current).build(); }
+      try { result = read(arguments, live, current).build(); }
       catch (IllegalArgumentException e) { result = ResponseBuilder.error(e.getMessage()).build(); }
       var inputs = new JsonObject();
-      inputs.addProperty("session", location(current).path());
+      inputs.addProperty("session", location(live, current).path());
       result.add("inputs", inputs);
       return result;
     }
-    abstract ResponseBuilder read(JsonObject arguments, CaptureStore.Status current) throws Exception;
+    abstract ResponseBuilder read(JsonObject arguments, LiveCapture live, CaptureStore.Status current) throws Exception;
     private record Location(String path, String endedAt) {}
-    private Location location(CaptureStore.Status current) {
+    private static Location location(LiveCapture live, CaptureStore.Status current) {
       if (current != null) return new Location(live.resolve(current.path()).toString(), current.endedAt() == null ? null : current.endedAt().toString());
       if (live != null) for (var view : live.sessions()) {
         var capture = view.session().files().stream().filter(f -> "captured".equals(f.provenance().kind())).findFirst();
@@ -55,8 +61,8 @@ public final class LiveTools {
       }
       return new Location(null, null);
     }
-    ResponseBuilder inactive(CaptureStore.Status current) {
-      var last = location(current);
+    static ResponseBuilder inactive(LiveCapture live, CaptureStore.Status current) {
+      var last = location(live, current);
       return ResponseBuilder.notApplicable(live == null ? "Capture is not enabled" : "No capture session is open")
           .addProperty("last_session", last.path()).addProperty("ended_at", last.endedAt());
     }
@@ -64,8 +70,8 @@ public final class LiveTools {
 
   static final class ListSessions extends LiveTool {
     private final java.util.function.BooleanSupplier managed;
-    ListSessions(LiveCapture live) { this(live, () -> false); }
-    ListSessions(LiveCapture live, java.util.function.BooleanSupplier managed) { super(live); this.managed = managed; }
+    ListSessions(LiveCapture live) { this(() -> live, () -> false); }
+    ListSessions(Supplier<LiveCapture> live, java.util.function.BooleanSupplier managed) { super(live); this.managed = managed; }
     @Override public String name() { return "list_sessions"; }
     @Override public String description() {
       return "List current and recent store sessions, newest first, without scanning logs. Returns sessions[] "
@@ -88,16 +94,16 @@ public final class LiveTools {
     @Override public JsonObject inputSchema() {
       return new SchemaBuilder().addIntegerProperty("limit", "Newest sessions to return, 1 to 100 (default 20)", false, 20).build();
     }
-    @Override ResponseBuilder read(JsonObject arguments, CaptureStore.Status current) {
+    @Override ResponseBuilder read(JsonObject arguments, LiveCapture live, CaptureStore.Status current) {
       int limit = getOptWhole(arguments, "limit", 20);
       if (limit < 1 || limit > 100) throw new IllegalArgumentException("limit must be an integer from 1 to 100");
-      if (live == null) return inactive(current).addProperty("managed", managed.getAsBoolean()).addData("gateway", org.triplehelix.wpilogmcp.nt4.server.GatewayStatus.DISABLED.json());
+      if (live == null) return inactive(live, current).addProperty("managed", managed.getAsBoolean()).addData("gateway", org.triplehelix.wpilogmcp.nt4.server.GatewayStatus.DISABLED.json());
       var sessions = live.sessions(); var rows = new JsonArray();
-      for (var session : sessions.stream().limit(limit).toList()) rows.add(row(session, current));
+      for (var session : sessions.stream().limit(limit).toList()) rows.add(row(live, session, current));
       return (sessions.isEmpty() ? ResponseBuilder.notApplicable("No capture or imported session has been recorded") : ResponseBuilder.success())
           .addLimitedList("sessions", rows, sessions.size(), limit).addProperty("managed", managed.getAsBoolean()).addData("gateway", live.gateway().json());
     }
-    private JsonObject row(LiveCapture.SessionView view, CaptureStore.Status current) {
+    private static JsonObject row(LiveCapture live, LiveCapture.SessionView view, CaptureStore.Status current) {
       var session = view.session(); var row = new JsonObject();
       // An import can widen the session's calendar window and replace its clock basis.
       // The writer's path, including store move aliases, still identifies that same session.
@@ -157,7 +163,8 @@ public final class LiveTools {
   }
 
   static final class GetLatestValues extends LiveTool {
-    GetLatestValues(LiveCapture live) { super(live); }
+    GetLatestValues(LiveCapture live) { this(() -> live); }
+    GetLatestValues(Supplier<LiveCapture> live) { super(live); }
     @Override public String name() { return "get_latest_values"; }
     @Override public String description() {
       return "Read named entries from the capture client's concurrent latest-value table. Returns values[] "
@@ -170,7 +177,7 @@ public final class LiveTools {
       var item = new JsonObject(); item.addProperty("type", "string");
       return new SchemaBuilder().addArrayProperty("entries", "NT4 topic names or NT: capture names; 1 to 2000 names", item, true).build();
     }
-    @Override ResponseBuilder read(JsonObject arguments, CaptureStore.Status current) {
+    @Override ResponseBuilder read(JsonObject arguments, LiveCapture live, CaptureStore.Status current) {
       if (!arguments.has("entries") || !arguments.get("entries").isJsonArray()) throw new IllegalArgumentException("entries must be an array of names");
       var entries = arguments.getAsJsonArray("entries");
       if (entries.isEmpty() || entries.size() > 2000) throw new IllegalArgumentException("entries must contain 1 to 2000 names");
@@ -179,7 +186,7 @@ public final class LiveTools {
         if (!entry.isJsonPrimitive() || !entry.getAsJsonPrimitive().isString() || entry.getAsString().isBlank()) throw new IllegalArgumentException("entries must contain nonempty strings");
         names.add(entry.getAsString());
       }
-      if (current == null || !current.open()) return inactive(current);
+      if (current == null || !current.open()) return inactive(live, current);
       var latest = live.latest(); var topics = live.topics(); Double now = live.robotNowUs();
       return currentValues(names, latest, topics, now, live.providerSources());
     }
@@ -210,7 +217,8 @@ public final class LiveTools {
   }
 
   static final class WaitForChange extends LiveTool {
-    WaitForChange(LiveCapture live) { super(live); }
+    WaitForChange(LiveCapture live) { this(() -> live); }
+    WaitForChange(Supplier<LiveCapture> live) { super(live); }
     @Override public String name() { return "wait_for_change"; }
     @Override public String description() {
       return "Wait for the first publication received after this call installs its waiter, even if its value "
@@ -224,14 +232,14 @@ public final class LiveTools {
       return new SchemaBuilder().addProperty("entry", "string", "One NT4 topic name or NT: capture name", true)
           .addIntegerProperty("timeout_ms", "Wait duration in milliseconds, nonnegative; capped at 30000", false, 5000).build();
     }
-    @Override ResponseBuilder read(JsonObject arguments, CaptureStore.Status current) throws Exception {
+    @Override ResponseBuilder read(JsonObject arguments, LiveCapture live, CaptureStore.Status current) throws Exception {
       var supplied = arguments.get("entry");
       if (supplied == null || !supplied.isJsonPrimitive() || !supplied.getAsJsonPrimitive().isString() || supplied.getAsString().isBlank()) throw new IllegalArgumentException("entry must be a nonempty string");
       String name = getRequiredString(arguments, "entry");
       int timeout = getOptWhole(arguments, "timeout_ms", 5000);
       if (timeout < 0) throw new IllegalArgumentException("timeout_ms must be a nonnegative integer");
       timeout = Math.min(timeout, 30000);
-      if (current == null || !current.open()) return inactive(current);
+      if (current == null || !current.open()) return inactive(live, current);
       String topic = live.topic(name);
       if (!live.topics().containsKey(topic)) return ResponseBuilder.noMatch("The topic is not announced")
           .lookedFor(List.of(name)).hint("Use a currently announced NT4 name or its NT: capture name");

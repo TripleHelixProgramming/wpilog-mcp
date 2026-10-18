@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.cache;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -80,7 +81,7 @@ public class CacheDirectory {
 
   /** Resolve without creating directories, so tests never touch the user's default cache. */
   Path resolveOsDefault() {
-    String os = System.getProperty("os.name", "").toLowerCase();
+    String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
     String home = System.getProperty("user.home");
 
     if (os.contains("mac")) {

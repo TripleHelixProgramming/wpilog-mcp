@@ -39,7 +39,7 @@ export interface ListedLog {
   store?: string;
   robot?: ListedRobot;
   session?: { id: string; path: string; started_at: string; ended_at: string; start_basis: string;
-    open?: boolean; origin?: string; complete?: boolean; growing?: boolean; last_sync?: string; age_sec?: number };
+    open?: boolean; open_capture?: string; origin?: string; complete?: boolean; growing?: boolean; last_sync?: string; age_sec?: number };
   revlogs?: { path: string; filename: string; size_bytes?: number }[];
   kind?: "wpilog" | "revlog";
   wpilog?: string;

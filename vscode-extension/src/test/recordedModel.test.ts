@@ -30,7 +30,7 @@ test("removing one panel retains requirements used by another, then drops unused
 test("signal types and per-view resource bounds refuse rather than silently coerce or trim", () => {
   let config = addPanel(blank(), "a", "time_series");
   assert.throws(() => addSignals(config, "a", [{ ...signal, type: "string" }], () => "r1"), /value table/);
-  assert.throws(() => addSignals(config, "a", [{ ...signal, type: "struct:Thing" }], () => "r1"), /scalar field/);
+  assert.throws(() => addSignals(config, "a", [{ ...signal, type: "struct:Thing" }], () => "r1"), /numeric field or array index/);
   let id = 0; config = addSignals(config, "a", Array.from({ length: 32 }, (_, i) => ({ ...signal, name: String(i) })), () => `r${id++}`);
   assert.throws(() => addSignals(config, "a", [signal], () => "r33"), /32 series/);
   assert.equal(config.requirements.length, 32);
@@ -49,8 +49,32 @@ test("a recovered definition cannot bypass recorded preview resource admission",
   config.panels[0].series = Array.from({ length: 33 }, (_, i) => ({ requirement_id: String(i), axis_id: "y", color: "#ffffff" }));
   assert.throws(() => requireRecordedPreview(config), /32 series/);
   config.panels[0].series.pop(); requireRecordedPreview(config);
-  (config.panels[0] as any).type = "histogram";
+  (config.panels[0] as any).type = "field2d";
   assert.throws(() => requireRecordedPreview(config), /later visualization stage/);
+});
+
+test("histogram and scatter are numeric panels with explicit ordered scatter axes", () => {
+  for (const type of ["histogram", "scatter"]) {
+    const config = addPanel(blank(), "p", type as any);
+    assert.doesNotThrow(() => requireRecordedPreview(config));
+    assert.equal(config.panels[0].title, type === "histogram" ? "Histogram" : "Scatter");
+    assert.throws(() => addSignals(config, "p", [{ ...signal, type: "string" }], () => "r"), /value table/);
+  }
+  let id = 0;
+  const pair = addSignals(addPanel(blank(), "p", "scatter" as any), "p", [signal, { ...signal, name: "/y" }], () => `r${id++}`);
+  assert.deepEqual(pair.panels[0].series.map(s => s.requirement_id), ["r0", "r1"]);
+  assert.throws(() => addSignals(pair, "p", [{ ...signal, name: "/z" }], () => "r2"), /two.*X.*Y/);
+  pair.panels[0].series.push({ ...pair.panels[0].series[0] });
+  assert.throws(() => requireRecordedPreview(pair), /two.*X.*Y/);
+});
+test("scatter query identity includes ordered pairs and excludes titles and geometry", () => {
+  const { recordedDataKey } = require("../visualization/recordedModel");
+  let id = 0;
+  const config = addSignals(addPanel(blank(), "p", "scatter" as any), "p", [signal, { ...signal, name: "/y" }], () => `r${id++}`);
+  const source = { kind: "unmanaged", source_id: "s" }, before = recordedDataKey(source, config);
+  config.panels[0].title = "Phase portrait"; config.layout.items[0].w = 6;
+  assert.equal(recordedDataKey(source, config), before);
+  config.panels[0].series.reverse(); assert.notEqual(recordedDataKey(source, config), before);
 });
 
 test("recorded reuse admits statistics and bounded raw panels without enabling later panels", () => {

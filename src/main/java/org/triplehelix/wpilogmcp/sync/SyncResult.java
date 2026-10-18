@@ -34,6 +34,8 @@ import java.util.List;
  * @param referenceTimeSec The revlog timestamp (in seconds) at which offsetMicros
  *        is most accurate. For drift-compensated results, offset accuracy
  *        degrades with distance from this point.
+ * @param combination For a {@link SyncMethod#COMBINED} result, the recorded measurements it was
+ *        derived from and the reference they share; null otherwise
  * @since 0.5.0
  */
 public record SyncResult(
@@ -44,7 +46,16 @@ public record SyncResult(
     SyncMethod method,
     String explanation,
     double driftRateNanosPerSec,
-    double referenceTimeSec) {
+    double referenceTimeSec,
+    Combination combination) {
+
+  /** A result measured or set directly, not combined from others. */
+  public SyncResult(long offsetMicros, double confidence, ConfidenceLevel confidenceLevel,
+      List<SignalPairResult> signalPairs, SyncMethod method, String explanation,
+      double driftRateNanosPerSec, double referenceTimeSec) {
+    this(offsetMicros, confidence, confidenceLevel, signalPairs, method, explanation,
+        driftRateNanosPerSec, referenceTimeSec, null);
+  }
 
   /**
    * Creates a SyncResult with automatic confidence level determination.
@@ -121,11 +132,16 @@ public record SyncResult(
   }
 
   /**
-   * Gets the estimated timing accuracy in milliseconds.
+   * Gets the estimated timing accuracy in milliseconds: the confidence level's range, or for a
+   * combination the most it can be off, the sum of its measurements' bounds.
    *
-   * @return The accuracy range string (e.g., "1-5", "5-50")
+   * @return The accuracy range string (e.g., "1-5", "5-50", "up to 10")
    */
   public String estimatedAccuracyMs() {
+    if (combination != null) {
+      double bound = combination.maxErrorMs();
+      return Double.isFinite(bound) ? "up to " + Combination.milliseconds(bound) : "unknown";
+    }
     return confidenceLevel.getAccuracyMs();
   }
 

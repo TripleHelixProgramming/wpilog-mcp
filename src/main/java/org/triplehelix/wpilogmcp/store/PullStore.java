@@ -381,8 +381,11 @@ public final class PullStore implements FileTransfer.Local {
         Files.createDirectories(target.getParent()); io.check(target);
         moveReserved(io, source, target, false);
         var files = new ArrayList<>(session.files());
+        // A capture still recording has no hash yet, so its recording names the clock this was measured on.
+        var recording = match == null ? null : CaptureRecording.of(match.candidate().file().provenance(),
+            io.read(store.root().resolve("store.json"), Header.class).id()).orElse(null);
         Matching evidence = match == null ? null : new Matching("by_correlation", match.candidate().file().sha256(),
-            match.result().offsetMicros(), match.result().confidence(), match.result().driftRateNanosPerSec(), match.result().referenceTimeSec(), match.basis(), match.result());
+            match.result().offsetMicros(), match.result().confidence(), match.result().driftRateNanosPerSec(), match.result().referenceTimeSec(), match.basis(), match.result(), recording);
         files.add(new LogFile(StoreFiles.relative(sessionPath.getParent(), target), input.hash(), input.size(), input.kind(),
             new Provenance("pulled", entry.remoteName(), entry.remoteName().substring(entry.remoteName().lastIndexOf('/') + 1), clock.instant().toString(), true, identity.serialNumber()),
             true, input.min(), input.max(), input.start() == null ? session.startedAt() : input.start().toString(),
@@ -397,7 +400,7 @@ public final class PullStore implements FileTransfer.Local {
 
   private static Session copy(Session s, List<LogFile> files, List<IdentityConflict> conflicts) {
     return new Session(s.id(), s.startedAt(), s.endedAt(), s.startBasis(), s.event(), s.matchType(), s.matchNumber(), s.teamNumber(),
-        files, s.openCapture(), s.endReason(), s.deviceIdentity(), conflicts, s.conflicts(), s.captureStats(), s.systemLogs(), s.mergedSessionIds());
+        files, s.openCapture(), s.endReason(), s.deviceIdentity(), conflicts, s.conflicts(), s.captureStats(), s.systemLogs(), s.mergedSessionIds(), s.clocks());
   }
   /** The caller reserved and drained this source outside the queue. Only its own session changes. */
   private String moveReserved(StoreFiles io, Path from, Path target, boolean retain) throws IOException {

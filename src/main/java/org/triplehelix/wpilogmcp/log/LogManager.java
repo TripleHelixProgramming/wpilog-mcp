@@ -255,6 +255,7 @@ public class LogManager {
           logger.debug("Cancelled sync for evicted log: {}", evictedPath);
         }
       }
+      rebalanceValueBudgets();
     });
 
     // Schedule periodic idle eviction every 5 minutes
@@ -565,7 +566,7 @@ public class LogManager {
       // requested. The mapping must outlive both its cache entry and any in-flight uses.
       LogData log;
       try {
-        long perLogBudgetBytes = getPerLogCacheBudgetBytes();
+        long perLogBudgetBytes = valueBudget(lazyLogs().size() + 1);
         log = LazyParsedLog.open(filePath, perLogBudgetBytes, snapshot.grewFrom(previousSnapshot) ? previousScan : null);
       } catch (LogFileException e) {
         // Not a log at all (empty, zeros, another format): the eager parser would only say
@@ -593,6 +594,7 @@ public class LogManager {
         loaded.put(normalizedPath, new Loaded(log, snapshot));
         if (!synchronize) nativeSyncPending.add(log);
         logCache.put(normalizedPath, log);
+        rebalanceValueBudgets();
         logger.debug(
             "Loaded log with {} entries spanning {} seconds",
             log.entryCount(), String.format("%.2f", log.duration()));
@@ -1403,26 +1405,41 @@ public class LogManager {
   /** Wider tolerance when using file modification time as fallback (minutes). */
   private static final int REVLOG_MTIME_TOLERANCE_MINUTES = 30;
 
-  /** Recorded store alignments are facts about these bytes; offline readers must not correlate them again. */
-  private Map<Path, SyncResult> recordedStoreOffsets(LogData wpilog, List<RevLogFileInfo> candidates) {
+  /**
+   * Recorded store alignments are facts about these bytes; offline readers must not correlate them
+   * again. Every candidate of a store log gets a result, so none falls through to a correlation:
+   * one the manifest no longer pairs (it changed since the candidates were found) is unsynchronized.
+   */
+  Map<Path, SyncResult> recordedStoreOffsets(LogData wpilog, List<RevLogFileInfo> candidates) {
     var root = StoreCatalog.containing(Path.of(wpilog.path()));
     if (root.isEmpty()) return Map.of();
+    var result = new HashMap<Path, SyncResult>();
     try {
       var catalog = StoreCatalog.readManaged(root.get(), securityValidator);
-      var path = Path.of(wpilog.path()).toRealPath();
-      var source = catalog.files().stream().filter(f -> f.path().equals(path)).findFirst();
-      if (source.isEmpty()) return Map.of();
-      var result = new HashMap<Path, SyncResult>();
-      for (var companion : catalog.files()) if (StoreCatalog.isRevCompanion(companion, source.get())) {
-        result.put(companion.path(), StoreCatalog.recordedAlignment(companion));
-      }
-      return Map.copyOf(result);
+      storeCompanions(catalog, Path.of(wpilog.path()).toRealPath()).forEach((file, alignment) -> result.put(file.path(), alignment));
     } catch (IOException e) {
       // A broken recorded association is not permission to guess a new one, especially offline.
       String reason = "Cannot read recorded alignments from " + root.get() + ": " + e.getMessage();
       logger.warn("{}", reason);
       return candidates.stream().collect(java.util.stream.Collectors.toMap(RevLogFileInfo::path, c -> SyncResult.failed(reason)));
     }
+    for (var candidate : candidates) result.putIfAbsent(candidate.path(),
+        SyncResult.failed("The store's manifest no longer pairs this REV log with " + Path.of(wpilog.path()).getFileName()));
+    return Map.copyOf(result);
+  }
+
+  /** A store log's REV companions: the REV logs whose recorded offsets meet the log's at one reference. */
+  private static Map<StoreCatalog.StoredFile, SyncResult> storeCompanions(StoreCatalog.Snapshot catalog, Path log) {
+    var source = catalog.allFiles().stream().filter(f -> f.path().equals(log)).findFirst();
+    if (source.isEmpty() || source.get().session() == null) return Map.of();
+    var session = catalog.allFiles().stream().filter(f -> f.manifestPath().equals(source.get().manifestPath())).toList();
+    var origin = org.triplehelix.wpilogmcp.store.RecordedClocks.origin(catalog);
+    var result = new java.util.LinkedHashMap<StoreCatalog.StoredFile, SyncResult>();
+    for (var companion : session) {
+      org.triplehelix.wpilogmcp.store.RecordedClocks.revAlignment(companion, source.get(), session, origin)
+          .ifPresent(alignment -> result.put(companion, alignment));
+    }
+    return result;
   }
 
   /**
@@ -1446,11 +1463,7 @@ public class LogManager {
     if (storeRoot.isPresent()) {
       try {
         var store = StoreCatalog.read(storeRoot.get(), securityValidator);
-        var real = Path.of(wpilog.path()).toRealPath();
-        var source = store.files().stream().filter(f -> f.path().equals(real)).findFirst();
-        if (source.isEmpty() || source.get().session() == null) return List.of();
-        return store.files().stream()
-            .filter(f -> StoreCatalog.isRevCompanion(f, source.get()))
+        return storeCompanions(store, Path.of(wpilog.path()).toRealPath()).keySet().stream()
             .map(f -> LogDirectory.getInstance().extractRevLogInfo(f.path())).toList();
       } catch (IOException e) {
         logger.warn("Cannot read store REV associations: {}", e.getMessage());
@@ -1539,12 +1552,20 @@ public class LogManager {
    * Computes the Caffeine per-log cache budget based on available heap.
    * Uses 60% of max heap as total budget, divided across cached logs (minimum 128 MB per log).
    */
-  private long getPerLogCacheBudgetBytes() {
-    long maxHeap = Runtime.getRuntime().maxMemory();
-    long totalBudget = (long) (maxHeap * 0.6);
-    int logCount = Math.max(1, logCache.getAllEntries().size());
-    long perLog = Math.max(128L * 1024 * 1024, totalBudget / logCount);
-    return perLog;
+  /** Decoded values may use 60% of the heap, shared equally by the loaded lazy logs, and at least
+   * 128 MiB each so one log still decodes efficiently; whole logs are evicted under heap pressure. */
+  static long valueBudget(int logs) {
+    long totalBudget = (long) (Runtime.getRuntime().maxMemory() * 0.6);
+    return Math.max(128L * 1024 * 1024, totalBudget / Math.max(1, logs));
+  }
+  private List<LazyParsedLog> lazyLogs() {
+    return logCache.getAllEntries().values().stream().filter(LazyParsedLog.class::isInstance).map(LazyParsedLog.class::cast).toList();
+  }
+  /** A budget fixed when a log loaded let the first two logs each claim 60% of the heap, and kept a
+   * share a later unload freed; every loaded log's share follows the count instead. */
+  private void rebalanceValueBudgets() {
+    var lazy = lazyLogs(); long share = valueBudget(lazy.size());
+    for (var log : lazy) log.setValueBudget(share);
   }
 
   /**

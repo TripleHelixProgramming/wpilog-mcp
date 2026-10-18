@@ -20,8 +20,8 @@ final class SystemLogClocks {
   private final List<Pair> kernel = new ArrayList<>(), wall = new ArrayList<>();
   private final double start, end;
   SystemLogClocks(double start, double end) { this.start = start; this.end = end; }
-  void add(LogData log, java.util.function.DoubleUnaryOperator robotTime, boolean includeWall) {
-    var uptime = log.values().get("/Daemon/roboRIO/uptime_sec");
+  void add(LogData log, java.util.function.DoubleUnaryOperator robotTime, boolean includeWall, boolean includeKernel) {
+    var uptime = includeKernel ? log.values().get("/Daemon/roboRIO/uptime_sec") : null;
     if (uptime != null) for (var value : uptime) if (value.value() instanceof Number number && Double.isFinite(number.doubleValue())) {
       kernel.add(new Pair(number.doubleValue(), robotTime.applyAsDouble(value.timestamp())));
     }
@@ -29,6 +29,8 @@ final class SystemLogClocks {
       wall.add(new Pair(reading.epochMicros() / 1e6, robotTime.applyAsDouble(reading.logTime())));
     }
   }
+  /** A clock record's pairs, already in the robot time of the capture it was read from. */
+  void addKernel(java.util.List<double[]> pairs) { for (var pair : pairs) kernel.add(new Pair(pair[0], pair[1])); }
   boolean hasWall() { return !wall.isEmpty(); }
   void sort() { kernel.sort(Comparator.comparingDouble(Pair::source)); wall.sort(Comparator.comparingDouble(Pair::source)); }
   Mapped map(String line, String format) {

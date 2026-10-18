@@ -130,7 +130,7 @@ public final class RecordedSources implements AutoCloseable {
         return path;
       }
     }
-    if (!ref.get("kind").getAsString().equals("unmanaged")) throw new IOException("SOURCE_UNAVAILABLE: a recording requires ordinal follow, not a single-file data route; live panel integration is pending");
+    if (!ref.get("kind").getAsString().equals("unmanaged")) throw new IOException("SOURCE_UNAVAILABLE: this single-file route cannot choose a recording member; use recording-aware value/statistics reads or ordinal follow");
     var locator = views.sourceLocator(UUID.fromString(ref.get("source_id").getAsString()));
     var path = logs.validateSourcePath(Path.of(locator.get("path").getAsString()));
     if (!locator.get("fingerprint").equals(fingerprint(path))) throw new IOException("SOURCE_UNAVAILABLE: the recorded file changed; open its new overview");
@@ -150,7 +150,10 @@ public final class RecordedSources implements AutoCloseable {
     } catch (IOException | RuntimeException e) { snapshot.close(); throw e; }
   }
   public record Admission(org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Prefix prefix,
-      CatalogRecordingSource.Access access) implements AutoCloseable {
+      CatalogRecordingSource.Access access, org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Source continuation) implements AutoCloseable {
+    public Admission(org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Prefix prefix, CatalogRecordingSource.Access access) {
+      this(prefix, access, null);
+    }
     /** A compatibility result cannot span replacement of a finalized member. Growing writer
      * prefixes have no file boundary and remain the immutable prefix admitted at open. */
     public void check() throws IOException {
@@ -163,12 +166,23 @@ public final class RecordedSources implements AutoCloseable {
     }
     @Override public void close() throws IOException { prefix.close(); }
   }
+  /** Chart reads use the same fixed-prefix admission for an anchored recording or one file.
+   * The synthetic single-member wrapper is internal; no recording identity is claimed for it. */
+  Admission admitChart(JsonObject source) throws IOException {
+    if (VisualizationContracts.source(source).get("kind").getAsString().equals("session")) return admitRecording(source);
+    var snapshot = open(source);
+    try {
+      var member = new org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Member("file", 0, snapshot);
+      var prefix = new org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Prefix("single-file", 0, true, List.of(member));
+      return new Admission(prefix, () -> resolve(source));
+    } catch (RuntimeException failure) { snapshot.close(); throw failure; }
+  }
   public Admission admitRecording(JsonObject source) throws IOException {
     var ref = VisualizationContracts.source(source);
     if (!ref.get("kind").getAsString().equals("session")) throw new IllegalArgumentException("Paged inventory requires an anchored recording source_ref");
     var recording = new CatalogRecordingSource(logs, this::catalog, VisualizationContracts.recordingReference(ref), verified);
     var prefix = recording.open();
-    try { return new Admission(prefix, recording.access()); }
+    try { return new Admission(prefix, recording.access(), recording); }
     catch (RuntimeException failure) { prefix.close(); throw failure; }
   }
   public JsonObject describe(JsonObject source) throws IOException {

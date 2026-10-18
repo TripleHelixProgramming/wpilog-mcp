@@ -185,3 +185,21 @@ for (const action of ["evict", "clear"] as const) {
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 }
+
+test("a recorded request's admitted response limit overrides the general client cap", async () => {
+  const fake=await fakeEndpoint();
+  try {
+    fake.body=new Uint8Array(8192);const client=new DataClient(0,0);
+    await assert.rejects((client.fetch as any)(fake.mcpUrl,{path:"/fixture",names:["/A"]},undefined,1024),/byte limit/);
+    assert.equal(client.size,0);
+  } finally { await fake.close(); }
+});
+
+test("a cached response cannot bypass a later smaller admitted response cap", async () => {
+  const fake=await fakeEndpoint();
+  try {
+    fake.body=new Uint8Array(8192);const client=new DataClient(),request={path:"/fixture",names:["/A"]};
+    await client.fetch(fake.mcpUrl,request);
+    await assert.rejects(client.fetch(fake.mcpUrl,request,undefined,1024),/byte limit/);
+  } finally { await fake.close(); }
+});

@@ -616,7 +616,7 @@ wpilog-mcp start http
 
 The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. `GET /health` answers as soon as the server is up, with the server's version, configuration `name`, process ID, `managed` ownership, `server_instance_id`, and `working_state`. `name` is null for HTTP started with the unnamed legacy flags; stdio has no health route.
 
-<a id="recorded-visualization-preview"></a>
+### Recorded visualization preview
 
 Named servers persist their local visualization owner identity in
 `~/.wpilog-mcp/state/visualizations/<config-key>/server.json`. The key is SHA-256 of the real
@@ -632,13 +632,26 @@ This identity creates no log store or ingestion policy. The explicit recorded pr
 check and a live `Mcp-Session-Id`. Network-bound servers refuse these routes even to a local peer.
 The `visualization_*` MCP tools share the same application owner and require trusted local
 transport authority (direct stdio or loopback HTTP). The HTTP preview adapter uses GET for `/capabilities`, `/stores`
-and `/views/<uuid>`; POST supplies `/source`, `/source/describe`, `/source/resolve`,
+and `/views/<uuid>`; POST supplies `/window`, `/source`, `/source/describe`, `/source/resolve`,
 `/source/value`, `/source/views`, `/views`, `/views/<uuid>`, `/views/<uuid>/attach`,
 `/views/<uuid>/detach`, `/views/<uuid>/describe`, `/views/<uuid>/save` and `/saved/open`.
-POST also supplies `/source/statistics`, `/source/raw`, and `/templates/list`, `/templates/get`,
+POST also supplies `/source/statistics`, `/source/histogram`, `/source/scatter`, `/source/raw`, and `/templates/list`, `/templates/get`,
 `/templates/check`, `/templates/create`, `/templates/update`, `/templates/import-preview`,
 `/templates/import`, `/templates/export`. The import preview is read-only; mutation rechecks
 under the store lock. MCP schemas and results are listed in [TOOLS.md](TOOLS.md).
+`POST /window` reports the opening window's `decoded_buffer_budget_bytes`, an integer whole
+MiB from 16 to 1024. Identity comes from the live transport session; no caller-supplied identity
+is accepted. The reply and capabilities label the allowance `basis: client_reported`: it is
+neither a server allocation nor an access grant. At most 256 windows are registered, with
+removal on session close/expiry and no persistence across restart. Capabilities expose
+`decoded_buffer_budget` (default 64 MiB, range, setting and reload requirement) and
+`attached_windows` (`client_id`, `current_session`, `decoded_buffer_budget_bytes`, `basis`). The extension reports
+again on connection/control resynchronization. Settings changes require a window reload.
+A session ID is a credential: presenting it acts as that window for its attachments, inventory
+handles, view follows and quotas. No visualization reply contains one, the caller's own included.
+`client_id` is an opaque ID for a window, fixed for its session while the server runs, and a
+working view's `attached_client_id` names its window by the same ID. It is not accepted as a
+session. `current_session` marks the caller's own window; the `/window` reply is that row.
 Requests preserve raw JSON for strict duplicate-key/schema validation; configuration mutations
 use expected revisions and session ownership. Working drafts detach on session removal/expiry
 and expire after 30 days. Save writes `visualizations/saved-views/<uuid>.json` through the store's
@@ -659,18 +672,22 @@ pressure prunes other unreferenced locators before refusing new ones. Recent ide
 coexist before a draft is created. Reopening an unchanged file in Source Overview restores its
 deterministic locator, including for a saved view whose working copies have expired. Deleted views
 do not retain locators under pressure. Capabilities report 256 non-deleted working views, 30-day detached recovery and the current plot
-limits (4,096 points and 32 series per view). HTTP JSON replies are bounded to 16 MiB; plot replies
-are bounded to 1 MiB each in the preview client. Saved metadata listing stops at 1,024 records or
+limits (up to 65,536 recorded plot points, 4,096 live plot points per selection and 32 series per
+view). The recorded client chooses a smaller point limit from its available window allowance,
+series count and plot/table copies. HTTP JSON replies are bounded to 16 MiB; recorded sample replies
+have a client admission limit up to 4 MiB, reserved before download. Recorded/live sample and
+paged-inventory buffers share the configured window allowance, with a separate 64 MiB aggregate
+encoded allowance. These are conservative accounted buffers, not a total process-heap bound. Saved metadata listing stops at 1,024 records or
 8 MiB per store. Invalid/newer records are skipped intact and reported in `unreadable` with
 `store_id`, `file` and `reason`. A bounded partial listing sets `listing_incomplete`; opening a
 known saved UUID reads only that record and is independent of the listing budget. Saved/draft
 overview lists carry summaries, not configuration buffers. A full or unavailable state workspace
 explains the refusal; health remains available. Plots use the shared Arrow reader, while cursor
 tables select original samples and their decoder diagnostics. Title, geometry and style edits
-reuse loaded series and values; changing the required series or recorded range starts a new
-query. Statistics delegate to `get_statistics`; raw pages use the reader's physical ordinals
+reuse loaded series and values; changing the required series, display-copy counts or recorded
+range starts a new admission and query. Statistics delegate to `get_statistics`; raw pages use the reader's physical ordinals
 and retain equal/backward timestamps. The API permits 4,096 records and 1 MiB per raw response;
-Explorer requests 256 and replaces its previous page. The source catalog is owned once per
+Explorer requests at most 256, reduced by available buffer headroom, and replaces its previous page. The source catalog is owned once per
 workspace and replaced when its configured roots change; access is revalidated on each operation.
 
 Recording inspection is the first live-panel integration checkpoint. On an open manifested
@@ -702,15 +719,104 @@ opens. Missing/non-finite estimates are null; `right_edge_sec` then uses the ind
 `waiting_for_time_sync` is true only while unfinalized without a usable estimate. This call
 does not retain a previously valid display edge or mix receipt/wall time into sample timestamps.
 Capabilities say `live_source_inspection: true`, `recording_bindings: true` and
-`recording_views: true`, but still `live: false`. Recording-backed working and saved metadata
-is available through the API; editor opening and single-file data routes remain unavailable
-until panel wiring. The separate compatibility and metadata operations are described below.
-The overview labels this inspection-only state and points to the existing Explorer for live
-following. Refresh signals replaces its frozen inventory; a visible overview also refreshes at
+`recording_views: true` and `recording_view_follow: true`, but still `live: false`. Recording-backed working and saved metadata
+is available through the API. The editor now has a local recording-panel preview using
+revision-bound follows; the complete Stage 3 feature is still gated by resource/performance and
+remote-source work, hence `live: false`. Value/statistics routes now accept recording references
+through the shared analysis operation described below. Single-file resolution, Arrow and raw-page
+routes still refuse to choose a member. The separate compatibility, metadata and revision-bound
+binding operations are described below.
+The overview can open recording layouts. Refresh signals replaces its frozen inventory; a visible overview also refreshes at
 absolute expiry. A failed reopen keeps known-expired rows disabled until a valid replacement
 page is admitted. Unavailable declarations use a separate, explicitly labeled traversal without
 name/type filters; ordinary filters are retained for switching back. A finalized file opened afresh retains the recorded
 content-hash workflow; an already-held recording reference keeps its original identity.
+
+Source chart reads use `POST /source/histogram` and `POST /source/scatter`, or MCP
+`visualization_source_histogram` and `visualization_source_scatter` with `api_version: 1`.
+Both take `source_ref`, optional inclusive `start_time`/`end_time` or mutually exclusive
+`last_seconds`. Histogram takes exact `entry` and optional `field`; scatter takes `x_entry`,
+`y_entry`, optional `x_field`/`y_field`, nonnegative `offset` and `limit` 1–4096 (default 256).
+Fields are explicit numeric scalar paths or indices. Active recordings require a requested
+1–300-second interval; finalized recordings and single files may use their complete duration.
+A recent window uses the same admitted-clock resolver as statistics, with fewer samples allowed
+when the source is younger than the requested duration.
+
+The chart result identifies its independent `prefix` (file or session, finalized state,
+member writer/hash/boundary evidence and clock). It is not the plot frontier. Original finite
+samples use the image chart's binning and one-to-one exact timestamp pairing, stable by member
+ID then physical ordinal at ties. Numeric values use the existing binary64 analysis rules,
+including struct-angle unwrapping. Native timestamps that cannot round-trip through numeric
+seconds within the supported exact-microsecond range refuse instead of pairing unequal times.
+Histogram edges that cannot be represented as distinct finite numbers also refuse.
+No source path or reusable permission is returned. Missing finite data/pairs are `no_match`
+with a remedy; decode problems retain exact totals and at most 100 details.
+
+Chart reads share two nonqueued slots per workspace, separate from value/statistics slots.
+Each call bounds visits at 1,048,576 records, retained original samples at 262,144 across unique
+selected entries, retained-value estimates at 32 MiB, individual payloads at 64 KiB and operation
+JSON at 1 MiB before the outer MCP envelope. Capabilities publish these as `source_chart_limits`
+and `source_charts: true`. A ten-second work budget and cancellation are cooperative; admission
+I/O and individual arithmetic passes can outlast a check. Scratch storage and shared indexes
+are outside the retained-value estimate. Slot pressure is retryable with `retry_after_ms: 1000`;
+fixed limits refuse without approximation. Grants, boundaries and session liveness are checked
+before publication. Scatter page totals cover the full interval; each call is fresh, so compare
+prefixes before combining pages during appends. The preview exposes both controls for files and
+recordings. It replaces scatter pages rather than combining them, retains the current offset on
+automatic refresh, and supplies First pairs to reset it. Its client limit is at most 256 pairs,
+reduced by the shared window allowance. Histograms may overlay several independent server bin
+sets; scatter uses the first selected signal for X and the second for Y, with an explicit swap.
+Charts join the recording-analysis queue for the window and its at-most-one-Hz refresh cadence. The
+client reserves shared bytes before I/O, caps requests at 64 KiB, responses at no more than
+1 MiB and calls at 15 seconds. It rejects foreign/malformed chart results as a whole. Pause,
+hide, close and stale-generation guards apply to both types; chart axes are independent of the
+time cursor. See the [panel steps](OPERATIONS.md#52-recording-panel-preview).
+
+Recording analysis uses `POST /source/value` (`source_ref`, exact `entry`, optional scalar `field`
+and inclusive `at_sec`) and `POST /source/statistics` (`source_ref`, exact `entry`, optional scalar
+`field`, inclusive `start_time` and `end_time`, or positive finite `last_seconds`). The MCP counterparts are
+`visualization_source_value` and `visualization_source_statistics`, with `api_version: 1`.
+These are fresh, independent prefix reads, not answers tied to the plot's last displayed frontier.
+All present members must agree on type, metadata and selected schema; absent members are reported.
+Recording fields use the existing numeric-scalar compatibility rule and require a recorded witness;
+whole-entry values preserve other declared types.
+The value is the greatest timestamp at or before the cursor (or greatest overall when omitted).
+Equal timestamps choose the greatest original member ID in Java string order, then the last
+physical entry ordinal. A backward physical tail does not replace a newer timestamp. Tagged
+values retain exact integers and non-finite floating bits; no interpolation or previous-value
+substitution is applied to a recorded missing field. Results include `member_id`, `ordinal`,
+`timestamp_us`, `basis`, `tie_basis`, member-qualified `problems`, their full `problem_count` and
+`problems_truncated`. Statistics use original samples, including equal/backward timestamps,
+through the same field/angle, percentile, sample standard deviation and quality rules as
+`get_statistics`. Non-finite samples are counted by `data_quality.nan_filtered`. A valid numeric
+window without finite samples returns `no_match` with `count: 0`, `looked_for`, a hint and the
+same inputs and prefix proof; no mean or other computed statistic is invented. It remains
+eligible for refresh when a new recording prefix completes. Invalid selectors and resource
+limits keep their existing refusals.
+`last_seconds` uses the shared relative-window resolver before retaining samples and cannot
+combine with absolute bounds. It ends at the admitted robot estimate, no earlier than the last
+recorded timestamp, or the last timestamp when no estimate exists. `inputs.window` and
+`inputs.last_seconds` report that decision; `prefix.clock` carries its clock evidence.
+
+Recording results include `inputs.source_ref`, exact entry/field, `records_visited` and `prefix`
+with recording ID, finalized state and every member's writer/hash/boundary, presence and entry
+record count. Analysis retains no mapping pin, follow lease or decoded-result cache after the call. Grants, session
+liveness and finalized boundaries are checked before publication. Capabilities expose
+`recording_analysis: true` and `recording_analysis_limits`: two concurrent reads without a queue,
+1,048,576 visited records, 262,144 materialized statistics samples, a conservative 32 MiB retained
+value estimate, 64 KiB per original record payload, 100 problem details, 1 MiB of operation JSON
+before the MCP envelope and a cooperative ten-second work budget including admission. The estimate excludes shared native
+indexes and statistics scratch space; it is not a total-heap claim. Deadline and cancellation are
+checked between admission, batches and calculation, not by interrupting filesystem I/O or an
+individual arithmetic operation. File-order traversal counts records outside the requested
+window too. A narrower range can reduce retained data but cannot bypass the visit ceiling.
+Exceeding a bound refuses with `RESOURCE_LIMIT` rather than returning partial statistics; only
+occupied slots are retryable, with `retry_after_ms: 1000`. Use smaller ranges for retained-value
+pressure or read individual members. The local value/statistics panels use these operations with one queued analysis at a time per
+window, at most 32 waiting views, a 15-second client deadline and a window-budget-sized response
+cap no larger than 1 MiB. Active statistics intervals are 1–300 seconds; finalized layouts may
+request their full recording under the same server bounds. Each result identifies its own
+analysis prefix, which need not equal the displayed plot frontier.
 
 Paged recording discovery is shared by the overview and local HTTP/MCP callers. The overview
 negotiates support before opening, requires the paged-mode echo, and caps responses at 1 MiB
@@ -785,7 +891,7 @@ or 413 `RESOURCE_LIMIT`. Resource refusals include boolean `retryable`; temporar
 also includes `retry_after_ms: 1000`. Existing native source refusals retain their codes. HTTP
 and MCP return the same page facts; MCP adds true-total `limits` and `no_match` with a hint when
 nothing matches. Old handles cannot survive a server restart. This inventory service does not create views or render panels. Recording-backed metadata
-creation is a separate operation below; panel rendering remains pending.
+creation is a separate operation below; the local panel preview uses it.
 
 `POST /templates/check` and `visualization_template_check` also accept an anchored `session`
 source reference. They admit a fresh recording prefix and resolve every requirement using each
@@ -796,6 +902,14 @@ mismatches and conflicting declarations remain unresolved with per-member reason
 conversion or preferred-member selection occurs. Dynamic fields/array indices need a recorded
 numeric witness; a valid declaration with no such sample stays unresolved. Schema fallbacks
 retain their reported basis in warnings.
+
+The recording preview's **Check and add field** uses the existing visualization
+`POST /visualizations/v1/templates/check` operation with one exact numeric requirement and an
+empty panel list. It does not create a new field-discovery API or grant a later read. The
+client keeps the same session and directory grants, checks the returned source and selector,
+and saves the layout only if its local intent is still current. The editor bounds a check to
+15 seconds, 64 KiB of request JSON and at most 1 MiB of response JSON (256 KiB with a 16 MiB
+window allowance). A capacity refusal leaves the layout unchanged and requires a new gesture.
 
 Recording compatibility returns `source_ref`, `recording_id`, `catalog_revision`, `finalized`,
 `binding_basis: fresh_recording_prefix`, `bindings`, `compatibility`,
@@ -820,6 +934,18 @@ Temporary concurrency pressure returns retryable `RESOURCE_LIMIT`; fixed limits 
 in a loop. Select exact entries or fewer requirements when the stated limit permits that remedy.
 Unreadable evidence keeps the native reader error instead of becoming a negative match.
 These bounds are functional admission limits, not measured heap or throughput claims.
+
+`POST /views/<view-id>/bindings` takes `expected_revision`; `visualization_view_bind` additionally
+names `view_id` and `api_version: 1`. Both return the same detached binding plan. Revision is
+checked before source work and again after it, without holding the working-state queue. The
+plan includes all unresolved requirements and deduplicated resolved entry/field queries, at most
+32; exceeding that cap refuses rather than dropping a series. `compatibility.bindings` includes
+`evidence_identity`, an opaque identity of the selected declaration and transitive schemas;
+it is not another source of unit or type inference. A zero-selection MCP result is `no_match`.
+A read of the plan retains no prefix or follow. Direct creation of a view follow uses
+[the read route](READ_API.md#following-a-recording-view) with the same revision and an active
+local MCP session; callers do not need a preceding check. Avoid issuing a check and creation
+simultaneously: they share the two compatibility slots.
 
 `POST /views` and `visualization_view_create` accept anchored recording references for metadata
 creation, and saved-open and recording clones admit that same source again. Admission shares the
@@ -921,6 +1047,11 @@ hand.
 The VS Code extension always uses this install’s `http` server. It starts the launcher with the home configuration explicitly, then registers its window’s directories and secret-storage key by lease. Every client shares the loaded logs and disk cache ([extension guide](../vscode-extension/README.md#the-standalone-install-is-the-server)).
 
 The server listens only on `127.0.0.1` unless `WPILOG_HTTP_BIND` says otherwise (see [Command-Line Flags](#command-line-flags)); set it before `start`. The HTTP transport has no authentication, so anyone who can reach the port can use the server.
+The routes this guide calls loopback-only also refuse a request that carries a header proxies add
+(`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP` or `Via`),
+even over loopback, because a reverse proxy on the same machine connects from loopback too. A
+proxy in front of the server must add one; nginx does not unless configured, as in the
+[pit guide's example](pit-server/STANDALONE.md).
 
 Started with flags, `wpilog-mcp --http` runs the HTTP server in the foreground instead, as the Docker image below does.
 
@@ -934,7 +1065,7 @@ alone does not change the JVM's native filename encoding.
 
 ### Directories by lease
 
-A local client may grant the shared server access to directories for the life of its MCP session. This is an HTTP registration endpoint, not an MCP tool: the person decides which files the server may read. Leases are visible to all sessions, including agents that connect independently. Both routes require `Mcp-Session-Id`, pass the MCP Origin check, and return 403 when the server is bound to anything except loopback, even for a request arriving locally.
+A local client may grant the shared server access to directories for the life of its MCP session. This is an HTTP registration endpoint, not an MCP tool: the person decides which files the server may read. Leases are visible to all sessions, including agents that connect independently. Both routes require `Mcp-Session-Id`, pass the MCP Origin check, and return 403 when the server is bound to anything except loopback, even for a request arriving locally, and for a request forwarded by a proxy.
 
 ```
 POST /directories
@@ -1027,8 +1158,8 @@ documents the routes, limits, Java local/remote library, recorded REV access and
 ### The Import Endpoint
 
 The HTTP transport accepts imports beside the data endpoint. Server-path JSON imports and
-assignments require a loopback connection; the byte-upload route below also accepts network
-connections. All keep the Origin check:
+assignments require a direct loopback connection, not one forwarded by a proxy; the byte-upload
+route below also accepts network connections. All keep the Origin check:
 
 ```http
 POST /store/import

@@ -59,6 +59,13 @@ public class SessionManager {
     });
   }
 
+  /** When a session was last used, without using it: asking whether another window is still
+   * there must not keep it there. Empty when there is no such session. */
+  public java.util.Optional<Instant> lastActivity(String id) {
+    var session = id == null ? null : sessions.get(id);
+    return session == null ? java.util.Optional.empty() : java.util.Optional.of(session.getLastAccessedAt());
+  }
+
   public McpSession removeSession(String id) {
     var removed = new McpSession[1];
     sessions.computeIfPresent(id, (key, session) -> {

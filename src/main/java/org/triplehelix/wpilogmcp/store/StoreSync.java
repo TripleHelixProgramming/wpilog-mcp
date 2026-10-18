@@ -222,7 +222,7 @@ public final class StoreSync {
       path = root.resolve("robots").resolve(robot.id()).resolve("sessions").resolve(day).resolve(time + "_" + remote.id()).resolve("session.json");
       if (Files.exists(io.check(path))) throw new IOException("Session destination already exists outside the catalog");
       merged = new Session(remote.id(), remote.startedAt(), remote.endedAt(), remote.startBasis(), remote.event(), remote.matchType(),
-          remote.matchNumber(), remote.teamNumber(), List.of(), null, remote.endReason(), remote.deviceIdentity(), remote.identityConflicts(), remote.conflicts(), remote.captureStats(), SystemLogState.EMPTY, remote.mergedSessionIds());
+          remote.matchNumber(), remote.teamNumber(), List.of(), null, remote.endReason(), remote.deviceIdentity(), remote.identityConflicts(), remote.conflicts(), remote.captureStats(), SystemLogState.EMPTY, remote.mergedSessionIds(), List.of());
       created.add(new Created(peer.url(), merged.id(), path.getParent()));
     } else {
       path = candidates.get(0).getKey(); var local = candidates.get(0).getValue().session();
@@ -231,7 +231,7 @@ public final class StoreSync {
     for (var conflict : disagreements) conflicts.add(new Disagreement(merged.id(), conflict));
     merged = new Session(merged.id(), merged.startedAt(), merged.endedAt(), merged.startBasis(), merged.event(), merged.matchType(),
         merged.matchNumber(), merged.teamNumber(), merged.files(), merged.openCapture(), merged.endReason(), merged.deviceIdentity(),
-        merged.identityConflicts(), union(merged.conflicts(), disagreements), merged.captureStats(), merged.systemLogs(), merged.mergedSessionIds());
+        merged.identityConflicts(), union(merged.conflicts(), disagreements), merged.captureStats(), merged.systemLogs(), merged.mergedSessionIds(), merged.clocks());
     io.write(path, merged); sessions.put(path, new StoreCatalog.SessionDirectory(path.getParent(), localRobot, merged));
     return path;
   }
@@ -247,7 +247,7 @@ public final class StoreSync {
         local.deviceIdentity() == null ? remote.deviceIdentity() : local.deviceIdentity(), union(local.identityConflicts(), remote.identityConflicts()), union(local.conflicts(), remote.conflicts()), local.captureStats() == null ? remote.captureStats() : local.captureStats(), local.systemLogs(),
         java.util.stream.Stream.concat(java.util.stream.Stream.of(local.id(), remote.id()),
             java.util.stream.Stream.concat(local.mergedSessionIds().stream(), remote.mergedSessionIds().stream()))
-            .filter(alias -> !alias.equals(id)).distinct().sorted().toList());
+            .filter(alias -> !alias.equals(id)).distinct().sorted().toList(), local.clocks());
   }
 
   /** Move closed fragments as directories, retaining their manifests and every old path alias. */
@@ -299,18 +299,48 @@ public final class StoreSync {
     var text = new LinkedHashMap<String, SystemLogState.File>();
     current.systemLogs().files().forEach(f -> text.put(f.location() + "/" + f.path(), f));
     pending.session().systemLogs().files().forEach(f -> text.putIfAbsent(f.location() + "/" + f.path(), f));
+    var archived = io.read(to.resolve("session.json"), Session.class);
+    var clocks = new LinkedHashMap<String, StoreManifest.ClockRecord>(); current.clocks().forEach(c -> clocks.put(c.path(), c));
+    for (var record : moved(archived, to, manifest.getParent())) clocks.putIfAbsent(record.path(), record);
     var merged = combine(current, pending.session(), List.copyOf(records.values()));
-    io.write(manifest, merged.withSystemLogs(merged.systemLogs().withFiles(List.copyOf(text.values()))));
+    io.write(manifest, merged.withSystemLogs(merged.systemLogs().withFiles(List.copyOf(text.values()))).withClocks(List.copyOf(clocks.values())));
     var header = io.read(root.resolve("store.json"), Header.class); var moves = new ArrayList<Move>();
     for (var old : header.moves()) {
       var path = io.resolve(root, old.movedTo());
       moves.add(path.startsWith(from) ? new Move(old.originalPath(), StoreFiles.relative(root, to.resolve(from.relativize(path))), pending.movedAt()) : old);
     }
-    var archived = io.read(to.resolve("session.json"), Session.class);
     for (var file : archived.files()) moves.add(new Move(io.resolve(from, file.path()).toString(),
         StoreFiles.relative(root, io.resolve(to, file.path())), pending.movedAt()));
     io.write(root.resolve("store.json"), header.withMoves(moves.stream().distinct().toList()));
     io.write(receipt, new Merge(pending.sourceDirectory(), pending.destinationDirectory(), pending.manifest(), pending.session(), pending.movedAt(), true));
+  }
+
+  /**
+   * The clock records of a fragment moved under the session's merged/, written again for the
+   * capture's new path in the session: a record names its capture, and the capture moved. The moved
+   * original stays with the fragment's archived manifest. A record that no longer reads as its
+   * receipt is left out; a store that records writes it again from the capture.
+   */
+  private List<StoreManifest.ClockRecord> moved(Session archived, Path fragment, Path session) throws IOException {
+    var result = new ArrayList<StoreManifest.ClockRecord>();
+    for (var record : archived.clocks()) {
+      var capture = archived.files().stream().filter(f -> f.path().equals(record.capture()) && f.sha256().equals(record.captureSha256())).findFirst();
+      if (capture.isEmpty()) continue;
+      ClockRecords.Facts facts;
+      try { facts = ClockRecords.read(io, ClockRecords.resolve(io, fragment, record), record); }
+      catch (IOException unreadable) {
+        org.slf4j.LoggerFactory.getLogger(StoreSync.class).warn("Clock record not carried into the merged session: {}", unreadable.getMessage());
+        continue;
+      }
+      String path = StoreFiles.relative(session, io.resolve(fragment, record.capture()));
+      var target = io.check(io.resolve(session, ClockRecords.path(path)));
+      Files.createDirectories(target.getParent());
+      io.write(target, new ClockRecords.Facts(facts.formatVersion(), path, facts.captureSha256(), facts.captureSizeBytes(),
+          facts.collectingStoreId(), facts.recordingStartedAt(), facts.minTimestampSec(), facts.maxTimestampSec(), facts.uptime()));
+      result.add(new StoreManifest.ClockRecord(ClockRecords.path(path), StoreFiles.hash(target), Files.size(target), path,
+          record.captureSha256(), record.recording()));
+    }
+    return result;
   }
 
   private Path destination(Incoming item) throws IOException {

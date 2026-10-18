@@ -419,6 +419,14 @@ public final class DiscoveryTools {
         List.of("visualization", "recording", "inventory"), List.of("browse recording signals"), false, List.of("visualization_source_inspect")));
     tools.add(new ToolInfo("visualization_source_inventory_close", "visualization", "Release a session-owned inventory without returning its contents.",
         List.of("visualization", "recording", "inventory"), List.of("browse recording signals"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_value", "visualization", "Read timestamp-latest or cursor values from a file or proven recording prefix, with exact coordinates and decode diagnostics.",
+        List.of("visualization", "recording", "cursor"), List.of("recording values"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_statistics", "visualization", "Compute exact bounded statistics across recording members with shared field, angle and quality rules.",
+        List.of("visualization", "recording", "statistics"), List.of("recording statistics"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_histogram", "visualization", "Count original samples with shared bounded histogram rules, never plot reductions.",
+        List.of("visualization", "histogram", "distribution"), List.of("source charts"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_scatter", "visualization", "Page exact timestamp pairs from one source prefix with full match and unpaired totals.",
+        List.of("visualization", "scatter", "pairs"), List.of("source charts"), false, List.of("visualization_source_inspect")));
     tools.add(new ToolInfo("visualization_template_list", "visualization", "Search immutable bundled and configured-store templates by query. Returns templates, unreadable records and listing_incomplete.",
         List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
     tools.add(new ToolInfo("visualization_template_get", "visualization", "Read an exact pinned template_ref; a changed revision refuses rather than silently substituting.",
@@ -437,6 +445,8 @@ public final class DiscoveryTools {
         List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
     tools.add(new ToolInfo("visualization_view_get", "visualization", "Read one working view: revision, configuration, source_ref, checkpoint, saved/template references, attachment, expiry, has_unsaved_changes and native_dirty. Does not display it.",
         List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_bind", "visualization", "Resolve a recording view at its expected revision, with explicit unresolved requirements and server-owned follow queries. Does not open a follow or display.",
+        List.of("visualization", "view", "recording"), List.of("recording view configuration"), false, List.of("visualization_view_get")));
     tools.add(new ToolInfo("visualization_view_create", "visualization", "Create an independent working view from source_ref and configuration_json or template_ref, or an empty layout. Returns its stable view_id and revision, configuration and persistence state. Creation does not request display or start acquisition.",
         List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
     tools.add(new ToolInfo("visualization_view_update", "visualization", "CAS edit a working view with strict configuration_json at expected_revision. Returns the updated view and notifies its attached Explorer. Conflicts retain both edits; never retry automatically against a newer revision.",
@@ -762,7 +772,7 @@ public final class DiscoveryTools {
 
     @Override
     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
-      String task = getRequiredString(arguments, "task").toLowerCase();
+      String task = getRequiredString(arguments, "task").toLowerCase(Locale.ROOT);
       int maxSuggestions = getOptInt(arguments, "max_suggestions", 5);
 
       // Score each tool based on keyword matches
@@ -780,7 +790,7 @@ public final class DiscoveryTools {
 
         // Check use cases
         for (var useCase : tool.useCases()) {
-          if (task.contains(useCase.toLowerCase()) || fuzzyMatch(task, useCase.toLowerCase())) {
+          if (task.contains(useCase.toLowerCase(Locale.ROOT)) || fuzzyMatch(task, useCase.toLowerCase(Locale.ROOT))) {
             score += 3;
           }
         }

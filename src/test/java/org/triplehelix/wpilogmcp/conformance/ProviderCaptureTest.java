@@ -150,6 +150,26 @@ class ProviderCaptureTest {
         String beforeMove = capture.toString(); capture = rig.service.live().resolve(capture);
         assertTrue(capture.startsWith(rig.root.resolve("robots").resolve("PROVIDER-FIXTURE")),
             "The close barrier includes promotion to the device serial");
+        // Closing the file has the pit write its clock record, with no further request: exactly the
+        // uptime samples the independent reader finds in the capture, its hash and its span.
+        var sessionJson = capture.getParent().resolve("session.json"); String captureName = capture.getFileName().toString();
+        org.triplehelix.wpilogmcp.harness.HarnessHttp.await("clock record", 30, () -> org.triplehelix.wpilogmcp.store.StoreJson.JSON.fromJson(Files.readString(sessionJson),
+            org.triplehelix.wpilogmcp.store.StoreManifest.Session.class).clocks().stream().anyMatch(r -> r.capture().equals(captureName)));
+        var closedSession = org.triplehelix.wpilogmcp.store.StoreJson.JSON.fromJson(Files.readString(sessionJson), org.triplehelix.wpilogmcp.store.StoreManifest.Session.class);
+        var receipt = closedSession.clocks().stream().filter(r -> r.capture().equals(captureName)).findFirst().orElseThrow();
+        var captured = closedSession.files().stream().filter(f -> f.path().equals(captureName)).findFirst().orElseThrow();
+        var recordPath = capture.getParent().resolve(receipt.path());
+        assertEquals(receipt.sha256(), java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(recordPath))));
+        var facts = org.triplehelix.wpilogmcp.store.StoreJson.JSON.fromJson(Files.readString(recordPath), org.triplehelix.wpilogmcp.store.ClockRecords.Facts.class);
+        assertEquals(captured.sha256(), facts.captureSha256()); assertEquals(captured.minTimestampSec(), facts.minTimestampSec());
+        assertEquals(captured.maxTimestampSec(), facts.maxTimestampSec());
+        var uptime = IndependentLog.read(capture, java.util.Set.of(org.triplehelix.wpilogmcp.store.ClockRecords.UPTIME_ENTRY))
+            .series.get(org.triplehelix.wpilogmcp.store.ClockRecords.UPTIME_ENTRY);
+        assertTrue(uptime.n > 0, "The scripted roboRIO's uptime must be sampled");
+        assertEquals(uptime.n, facts.uptime().size());
+        for (int i = 0; i < uptime.n; i++) {
+          assertEquals(uptime.values[i], facts.uptime().get(i)[0], "uptime " + i); assertEquals(uptime.times[i], facts.uptime().get(i)[1], "robot time " + i);
+        }
         var manifest = com.google.gson.JsonParser.parseString(Files.readString(capture.getParent().resolve("session.json"))).getAsJsonObject();
         var summary = manifest.getAsJsonObject("capture_stats");
         assertEquals(2, summary.getAsJsonArray("providers").size());

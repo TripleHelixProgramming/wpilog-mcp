@@ -72,10 +72,14 @@ test("the settings appear in a fixed order: where the logs are, then the team an
     "wpilog-mcp.mirror.robots",
     "wpilog-mcp.mirror.events",
     "wpilog-mcp.mirror.intervalSec",
+    "wpilog-mcp.live.enabled",
+    "wpilog-mcp.live.folder",
+    "wpilog-mcp.live.gatewayPort",
     "wpilog-mcp.enableForClaudeCode",
     "wpilog-mcp.javaPath",
     "wpilog-mcp.wpiLibYear",
     "wpilog-mcp.maxHeap",
+    "wpilog-mcp.visualization.decodedBufferMiB",
   ]);
   const orders = byOrder.map((s) => s.order);
   assert.ok(orders.every((o) => Number.isInteger(o)), "every setting has an order");

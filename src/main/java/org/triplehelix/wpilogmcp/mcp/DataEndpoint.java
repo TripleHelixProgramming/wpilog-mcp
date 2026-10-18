@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -169,7 +170,7 @@ final class DataEndpoint {
       }
       if (maxPoints < 1) throw new Refusal(400, "max_points must be at least 1", null);
     }
-    var format = q.getOrDefault("format", List.of("arrow")).get(0).strip().toLowerCase();
+    var format = q.getOrDefault("format", List.of("arrow")).get(0).strip().toLowerCase(Locale.ROOT);
     if (!format.equals("arrow") && !format.equals("csv")) {
       throw new Refusal(400, "format must be arrow or csv, not " + format, null);
     }

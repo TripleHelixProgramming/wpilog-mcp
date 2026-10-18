@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Comparator;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
@@ -81,7 +82,7 @@ public final class QueryTools {
 
       for (var entry : log.entries().values()) {
         if (typeFilter != null && !entry.type().contains(typeFilter)) continue;
-        if (nameContains != null && !entry.name().toLowerCase().contains(nameContains.toLowerCase())) continue;
+        if (nameContains != null && !entry.name().toLowerCase(Locale.ROOT).contains(nameContains.toLowerCase(Locale.ROOT))) continue;
 
         if (minSamples != null && log.sampleCount(entry.name()) < minSamples) continue;
 
@@ -655,14 +656,14 @@ public final class QueryTools {
           getOptDouble(arguments, "end_time"));
       var pattern = getOptString(arguments, "pattern", null);
       boolean regex = getOptBoolean(arguments, "regex");
-      var level = getOptString(arguments, "level", "any").toLowerCase();
+      var level = getOptString(arguments, "level", "any").toLowerCase(Locale.ROOT);
       if (!level.equals("any") && !level.equals("error") && !level.equals("warning")
           && !level.equals("info")) {
         throw new IllegalArgumentException("level must be 'error', 'warning', 'info', or 'any' "
             + "(got '" + level + "')");
       }
       var entryPattern = getOptString(arguments, "entry_pattern", null);
-      var entryPatternLower = entryPattern == null ? null : entryPattern.toLowerCase();
+      var entryPatternLower = entryPattern == null ? null : entryPattern.toLowerCase(Locale.ROOT);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
       int offset = Math.max(0, getOptInt(arguments, "offset", 0));

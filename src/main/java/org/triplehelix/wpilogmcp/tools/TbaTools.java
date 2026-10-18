@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.tools;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import java.util.Locale;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
 
@@ -268,7 +269,7 @@ public final class TbaTools {
           var suggestions = new JsonArray();
           suggestions.add("For elimination matches, try 'Semifinal' or 'Final' instead of 'Elimination'");
           suggestions.add("Match numbers are 1-indexed (first qual is match 1, not 0)");
-          suggestions.add("Verify match exists at thebluealliance.com/event/" + year + eventCode.toLowerCase());
+          suggestions.add("Verify match exists at thebluealliance.com/event/" + year + eventCode.toLowerCase(Locale.ROOT));
           result.add("suggestions", suggestions);
         }
 
@@ -428,7 +429,7 @@ public final class TbaTools {
     }
 
     private boolean isGenericElimination(String matchType) {
-      var lower = matchType.toLowerCase();
+      var lower = matchType.toLowerCase(Locale.ROOT);
       return (lower.contains("elimination") || lower.contains("elim"))
           && !lower.contains("semi")
           && !lower.contains("quarter")

@@ -65,6 +65,32 @@ class RenderChartTest {
     for (int i = 0; i < 2; i++) { var bin = bins.get(i).getAsJsonObject(); assertEquals(5 + 3 * i, bin.get("low").getAsDouble()); assertEquals(8 + 3 * i, bin.get("high").getAsDouble()); assertEquals(2, bin.get("count").getAsInt()); }
     assertTrue(spec(result).get("histogram_rule").getAsString().contains("sqrt"));
   }
+  @Test void histogramBinsOfValuesBeyondADoublesRangeAreFiniteOrRefusedNeverAnInternalError() throws Exception {
+    var wide = temp.resolve("2026-wide.wpilog");
+    try (var w = new FixtureWriter(wide, "")) {
+      w.dbl("/Wide", 0, -1e308).dbl("/Wide", 1, 1e308);
+      w.dbl("/Huge", 0, 1e308).dbl("/Huge", 1, 1e308);
+    }
+    var request = JsonParser.parseString("{\"name\":\"/Wide\",\"kind\":\"histogram\"}").getAsJsonObject();
+    request.addProperty("path", wide.toString());
+    var result = tool.execute(request).getAsJsonObject();
+    assertEquals("ok", result.get("status").getAsString(), result::toString);
+    // 2e308 overflows a double; the two bins still split [-1e308, 1e308] at zero, one value in each.
+    var bins = spec(result).getAsJsonArray("series").get(0).getAsJsonObject().getAsJsonArray("bins");
+    assertEquals(2, bins.size(), bins::toString);
+    for (var bin : bins) for (String edge : List.of("low", "high")) assertTrue(bin.getAsJsonObject().get(edge).isJsonPrimitive(), bins::toString);
+    assertEquals(-1e308, bins.get(0).getAsJsonObject().get("low").getAsDouble());
+    assertEquals(0.0, bins.get(0).getAsJsonObject().get("high").getAsDouble());
+    assertEquals(0.0, bins.get(1).getAsJsonObject().get("low").getAsDouble());
+    assertEquals(1e308, bins.get(1).getAsJsonObject().get("high").getAsDouble());
+    for (var bin : bins) assertEquals(1, bin.getAsJsonObject().get("count").getAsInt(), bins::toString);
+    // A unit-wide bin around 1e308 rounds to 1e308 itself: refused as an argument, with the reason.
+    request.addProperty("name", "/Huge");
+    var refused = tool.execute(request).getAsJsonObject();
+    assertEquals("error", refused.get("status").getAsString(), refused::toString);
+    assertFalse(refused.toString().contains("Internal error"), refused::toString);
+    assertTrue(refused.toString().contains("not representable as finite distinct numbers"), refused::toString);
+  }
   @Test void holdsAreStepsAndPhasesComeOnlyFromTheResolver() throws Exception {
     var result = call("{\"name\":\"NT:/Held\"}");
     assertEquals("step_after", spec(result).getAsJsonArray("series").get(0).getAsJsonObject().get("style").getAsString());

@@ -9,6 +9,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -157,7 +158,7 @@ public final class RobotAnalysisTools {
         var only = enabled.get(0);
         var phase = MatchTimeline.phase(only.start(), only.end());
         phase.addProperty("description", only.mode() == MatchTimeline.Mode.UNKNOWN
-            ? "Enabled (mode unknown)" : "Enabled (" + only.mode().name().toLowerCase() + ")");
+            ? "Enabled (mode unknown)" : "Enabled (" + only.mode().name().toLowerCase(Locale.ROOT) + ")");
         phases.add("enabled", phase);
       }
       builder.addData("phases", phases);
@@ -822,7 +823,7 @@ public final class RobotAnalysisTools {
      */
     static boolean isCurrentEntryName(String entryName) {
       var original = entryName.replace(" ", "");
-      var lower = original.toLowerCase();
+      var lower = original.toLowerCase(Locale.ROOT);
       if (lower.contains("voltage")) return false;
       if (lower.contains("powerdistribution") && lower.matches(".*/chan\\d+$")) return true;
       if (original.matches(".*(?:^|[^A-Za-z]|[a-z])(?:Amps|Amperes)$")
@@ -1112,7 +1113,7 @@ public final class RobotAnalysisTools {
             row.addProperty(key + "_max_while_enabled", max);
             if (max > maxEnabledErrorCounter) {
               maxEnabledErrorCounter = max;
-              maxEnabledErrorWhere = bus.name() + " " + key.toUpperCase() + " reached "
+              maxEnabledErrorWhere = bus.name() + " " + key.toUpperCase(Locale.ROOT) + " reached "
                   + (long) max + " at " + String.format("%.2f", e.get("max_time_sec")
                       .getAsDouble()) + " s";
             }
@@ -1730,7 +1731,7 @@ public final class RobotAnalysisTools {
       var leaf = entryName.substring(entryName.lastIndexOf('/') + 1);
       for (var key : KEYS) {
         if (!leaf.equalsIgnoreCase(key)) continue;
-        if (key.equals("Version") && !entryName.toLowerCase().contains("metadata")) return null;
+        if (key.equals("Version") && !entryName.toLowerCase(Locale.ROOT).contains("metadata")) return null;
         return key;
       }
       return null;

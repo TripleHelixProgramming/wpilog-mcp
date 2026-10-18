@@ -65,6 +65,35 @@ class MirrorEndpointTest {
     do { status = status(); if (status.get("state").getAsString().equals(state)) return status; Thread.yield(); } while (System.nanoTime() < deadline);
     fail("Mirror did not reach " + state + ": " + status); return null;
   }
+  @Test void turningTheMirrorOffWaitsForAChangeInProgressAndTheTwoControlsShareOneGuard() throws Exception {
+    // Held: one of the two controls is changing. Neither may start, and the mirror may not be turned
+    // off and reported disabled while a configuration is about to start its next service.
+    var guard = new java.util.concurrent.atomic.AtomicBoolean(true);
+    try (var mirror = new MirrorEndpoint(manager.stores(), () -> null, guard);
+         var live = new LiveSourceEndpoint(manager, new java.util.concurrent.atomic.AtomicReference<>(), mirror::folder, guard)) {
+      assertTrue(assertThrows(java.io.IOException.class, mirror::disable).getMessage().contains("already changing"));
+      var request = JsonParser.parseString("{\"robot\":{\"host\":\"127.0.0.1\",\"port\":9},\"store\":"
+          + new com.google.gson.JsonPrimitive(temp.resolve("live").toString()) + "}").getAsJsonObject();
+      assertTrue(assertThrows(java.io.IOException.class, () -> live.configure(request)).getMessage().contains("already changing"));
+      var config = org.triplehelix.wpilogmcp.config.MirrorConfig.parse(configuration(), v -> v);
+      assertTrue(assertThrows(java.io.IOException.class, () -> mirror.configure(config)).getMessage().contains("already changing"));
+      assertEquals("disabled", JsonParser.parseString(request("/store/mirror", "GET", null).body()).getAsJsonObject().get("state").getAsString());
+      guard.set(false);
+      assertEquals(java.util.Map.of("state", "disabled"), mirror.disable());
+      assertFalse(guard.get(), "the guard is released after turning the mirror off");
+    }
+  }
+  @Test void theServersMirrorAndLiveControlsShareTheirGuard() throws Exception {
+    local.localControlsGuard().set(true); // a change of either control in progress
+    try {
+      assertEquals(409, request("/store/mirror/configure", "POST", configuration().toString()).statusCode());
+      assertEquals(409, request("/store/mirror", "DELETE", null).statusCode());
+      var live = "{\"robot\":{\"host\":\"127.0.0.1\",\"port\":9},\"store\":" + new com.google.gson.JsonPrimitive(temp.resolve("live").toString()) + "}";
+      var refused = request("/store/live/configure", "POST", live);
+      assertEquals(409, refused.statusCode(), refused.body()); assertTrue(refused.body().contains("already changing"), refused.body());
+    } finally { local.localControlsGuard().set(false); }
+    assertEquals(200, request("/store/mirror", "DELETE", null).statusCode());
+  }
   @Test void configurationSyncPinsAndOfflineListingUseTheLocalServer() throws Exception {
     assertEquals("disabled", status().get("state").getAsString());
     var configured = request("/store/mirror/configure", "POST", configuration().toString()); assertEquals(202, configured.statusCode(), configured.body());

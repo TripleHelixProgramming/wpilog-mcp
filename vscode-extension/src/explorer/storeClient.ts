@@ -2,7 +2,7 @@ import { HttpHeaders, noHeaders } from "../pitCredential";
 /** User commands use local HTTP jobs; only the Java store owner writes mirror or peer files. */
 import * as http from "http";
 import * as https from "https";
-import { MirrorRequest, MirrorStatus } from "./pitServer";
+import { LiveRequest, LiveStatus, MirrorRequest, MirrorStatus } from "./pitServer";
 import { formatSize } from "./logsTree";
 
 export class StoreControlError extends Error {
@@ -65,6 +65,9 @@ export class StoreClient {
   configure(config: MirrorRequest): Promise<MirrorStatus> { return this.request("/store/mirror/configure", "POST", config); }
   disable(): Promise<MirrorStatus> { return this.request("/store/mirror", "DELETE"); }
   syncNow(): Promise<MirrorStatus> { return this.request("/store/mirror/sync", "POST", {}); }
+  liveStatus(): Promise<LiveStatus> { return this.request("/store/live"); }
+  configureLive(config: LiveRequest): Promise<LiveStatus> { return this.request("/store/live/configure", "POST", config); }
+  disableLive(): Promise<LiveStatus> { return this.request("/store/live", "DELETE"); }
   pin(sessionId: string, pinned: boolean): Promise<unknown> {
     return this.request(`/store/mirror/${pinned ? "pin_session" : "unpin_session"}`, "POST", { session_id: sessionId });
   }

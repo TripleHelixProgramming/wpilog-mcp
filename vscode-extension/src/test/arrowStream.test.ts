@@ -208,3 +208,25 @@ test("a stream that is not Arrow, or stops short, is refused with a reason", () 
     assert.ok(!stream.complete, "without the end marker the stream is incomplete, not wrong");
   }
 });
+
+/** The reader reports a stream cut at a message boundary as incomplete; the plot and the data pane
+ * must refuse it, or a series the server ended early is drawn and tabled as whole. */
+test("the plot and the data pane refuse a stream without its end marker", { skip: !haveSamples && "no build/arrow-samples" }, async () => {
+  const vm = require("node:vm") as typeof import("node:vm");
+  const media = path.join(__dirname, "..", "..", "media");
+  const plot = vm.runInNewContext(fs.readFileSync(path.join(media, "plot.js"), "utf8") + "\nPlot", { ArrowStream, document: {} });
+  // The data pane is an ES module beside its bundled grid; only its reply handling is exercised here.
+  const module = fs.readFileSync(path.join(media, "dataPane.mjs"), "utf8").replace(/^import .*$/gm, "").replace("export class DataPane", "class DataPane")
+    .replace(/import\.meta\.url/g, JSON.stringify("file:///media/dataPane.mjs"));
+  const DataPane = vm.runInNewContext(module + "\nDataPane", { ArrowStream, window: { dispatchEvent() {} }, Event: class {} });
+  const whole = new Uint8Array(fs.readFileSync(path.join(samples, "battery_window.arrow")));
+  const entry = (ArrowStream.parsedMetadata(ArrowStream.read(whole)) as { entries: { name: string }[] }).entries[0].name;
+  const cut = whole.subarray(0, whole.length - 8);
+  assert.ok(ArrowStream.read(whole).complete && !ArrowStream.read(cut).complete, "the sample is whole, and cutting its end marker leaves a stream that parses");
+  assert.ok(plot.seriesOf(whole, entry).count > 0);
+  assert.throws(() => plot.seriesOf(cut, entry), /end marker/, "the plot drew a stream that stopped short");
+  const pane = new DataPane({ post() {} }, { querySelector: () => ({}) });
+  const reply = (bytes: Uint8Array) => new Promise((resolve, reject) => { pane.requests.set(1, { resolve, reject }); pane.receive({ requestId: 1, type: "data", bytes }); });
+  assert.ok(((await reply(whole)) as { complete: boolean }).complete);
+  await assert.rejects(reply(cut), /end marker/, "the data pane tabled a stream that stopped short");
+});

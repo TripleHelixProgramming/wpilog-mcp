@@ -24,7 +24,8 @@ import { Choices, MOVE_CHOICES, ORGANIZE_CHOICES, OrganizeOffer, containsPath, i
 import { completeListing, progressText, resultDetails, resultSummary, runImport, sameRobotMessages } from "./explorer/importJobs";
 import { organizeSources } from "./explorer/organizeSources";
 import { DATA_STORE_ENABLED_CONTEXT, IngestionPolicy, IngestionSource, IngestionStatus, LocalIngestionClient, dataStoreDisabled, ingestionPolicyError, ingestionReview, sourceCandidates, temporaryDirectoryRoots } from "./explorer/localIngestion";
-import { mirroredCopy, originOf, pitEndpoint, pitLogTree, readRemoteLogUri, remoteLogUri } from "./explorer/pitServer";
+import { MirrorStatus, PitOverview, mirroredCopy, originOf, pitEndpoint, pitLogTree, pitOverview, readRemoteLogUri, remoteLogUri } from "./explorer/pitServer";
+import { SESSION_END_MS, endWithin } from "./sessionEnd";
 import { Selection, parseExplorerUri, openValidated, selectionPrompt } from "./explorer/selection";
 import { notebook } from "./explorer/notebook";
 import { explorerPage } from "./explorer/webviewHtml";
@@ -66,6 +67,8 @@ export class Explorer implements vscode.Disposable {
   readonly preview: RecordedPreview;
   private readonly disposables: vscode.Disposable[] = [];
   private choices: Choices;
+  /** The mirror's state, which extension.ts polls; a pit file's overview reports its progress. */
+  mirrorStatus: () => MirrorStatus = () => ({ state: "disabled" });
   private offering = false;
   private offeredStore = false;
 
@@ -101,13 +104,14 @@ export class Explorer implements vscode.Disposable {
         if (!roots.includes(folder)) await context.workspaceState.update(key, [...roots, folder]);
         await (await this.clientFor(this.spec())).refreshRegistration();
       },
+      pitOverview: (uri, listed) => this.pitOverview(uri, listed),
     });
     this.disposables.push(this.preview,
       // Custom editor URIs are documents, not paths on this laptop. No file contents cross this provider.
       vscode.workspace.registerFileSystemProvider("wpilog-pit", {
         onDidChangeFile: new vscode.EventEmitter<vscode.FileChangeEvent[]>().event,
         watch: () => new vscode.Disposable(() => {}),
-        stat: uri => { readRemoteLogUri(uri.toString()); return { type: vscode.FileType.File, ctime: 0, mtime: 0, size: 0 }; },
+        stat: uri => { readRemoteLogUri(uri); return { type: vscode.FileType.File, ctime: 0, mtime: 0, size: 0 }; },
         readDirectory: () => [],
         readFile: () => { throw vscode.FileSystemError.Unavailable("Open this remote log with WPILog Explorer"); },
         writeFile: () => { throw vscode.FileSystemError.NoPermissions("Pit log documents are read-only"); },
@@ -551,9 +555,29 @@ export class Explorer implements vscode.Disposable {
     return client;
   }
 
-  pitSpec(): ExplorerSpec | undefined {
+  pitSpec(): Extract<ExplorerSpec, { kind: "pit" }> | undefined {
     const url = pitEndpoint(this.pitUrl());
     return url ? { kind: "pit", name: `pit:${url}`, url } : undefined;
+  }
+
+  /** A pit file's overview opens on this laptop: the pit's listing says what the file is, this
+   * window's listing what the laptop holds. A REV item opens the log it is listed under. */
+  async pitOverview(uri: vscode.Uri, listed?: ListedLog): Promise<PitOverview> {
+    const remote = readRemoteLogUri(uri)!; const pit = this.pitSpec();
+    if (!pit) return { message: "Set wpilog-mcp.pitServerUrl to read the pit's files on this laptop.", actions: [] };
+    const origin = originOf(remote.url);
+    const changed: PitOverview = { message: "This log belongs to a different pit server, or the configured connection changed. Restore wpilog-mcp.pitServerUrl to this log's server, or open a log from the configured pit.", actions: [] };
+    const current = () => { const configured = this.pitSpec(); return configured && originOf(configured.url) === origin; };
+    if (originOf(pit.url) !== origin) return changed;
+    const target = listed?.kind === "revlog" && listed.wpilog ? listed.wpilog : remote.path;
+    const pitListing = await this.logs.listing(pit);
+    if (!current()) return changed;
+    const name = target.replace(/\\/g, "/").split("/").pop() ?? target;
+    const file = pitListing.logs?.find(log => log.path === target)
+      ?? { path: target, filename: name, friendly_name: name, session: listed?.session ?? remote.session };
+    const local = await this.logs.listing(this.spec());
+    if (!current()) return changed;
+    return pitOverview(file, local, origin, this.mirrorStatus(), Date.now());
   }
 
   async offlineCopy(source: ListedLog, url: string): Promise<ListedLog | undefined> {
@@ -569,9 +593,16 @@ export class Explorer implements vscode.Disposable {
     this.output.appendLine(message);
   }
 
-  dispose(): void {
-    for (const { client } of this.clients.values()) void client.dispose();
+  /** Ends every server session this window holds, waiting at most `boundMs`. Each client
+   * refuses new requests first, then ends its session, which releases the window's views. */
+  endSessions(boundMs: number): Promise<boolean> {
+    const clients = [...this.clients.values()].map(entry => entry.client);
     this.clients.clear();
+    return endWithin(clients.map(client => client.dispose()), boundMs);
+  }
+
+  dispose(): void {
+    void this.endSessions(SESSION_END_MS);
     for (const d of this.disposables) d.dispose();
   }
 }
@@ -989,7 +1020,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       data: { scriptUri: asset("dataPane.mjs"), styleUri: asset("vendor", "perspective", "pro.css") },
       nonce: crypto.randomBytes(16).toString("hex"),
     });
-    const remote = readRemoteLogUri(document.uri.toString());
+    const remote = readRemoteLogUri(document.uri);
     let loadedResolve!: () => void;
     const loaded = new Promise<void>(resolve => { loadedResolve = resolve; });
     const editor: Editor = { panel, loaded, loadedResolve, requests: new Map(), log: remote ? { path: remote.path,

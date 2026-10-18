@@ -67,10 +67,12 @@ class CaptureRecoveryTest {
         old.endedAt(), old.startBasis(), "Synthetic", "Qualification", 7, 9999, old.files(), open, null)));
     return file;
   }
+  /** A startup includes the clock records it writes in the background for the captures it closed. */
   private void startup(Path root) throws Exception {
     try (var service = new CaptureService(config(root), LogManager.getInstance(), WALL,
         org.triplehelix.wpilogmcp.nt4.client.ClientScheduler.daemon())) {
       service.start().get(10, TimeUnit.SECONDS);
+      LogManager.getInstance().stores().store(root).clocksSettled().get(10, TimeUnit.SECONDS);
     }
   }
 
@@ -160,6 +162,9 @@ class CaptureRecoveryTest {
       assertEquals(stored.path().equals(second.toRealPath()), file.truncated());
     }
     assertArrayEquals(original, Files.readAllBytes(first)); assertEquals(modified, Files.getLastModifiedTime(first));
+    var recovered = manifest(first);
+    assertEquals(recovered.files().stream().filter(f -> f.provenance().captured()).map(StoreManifest.LogFile::path).sorted().toList(),
+        recovered.clocks().stream().map(StoreManifest.ClockRecord::capture).sorted().toList(), "Every recovered capture file has its clock record");
     String once = Files.readString(first.resolveSibling("session.json")); startup(root);
     assertEquals(once, Files.readString(first.resolveSibling("session.json")), "A second startup leaves completed facts alone");
   }

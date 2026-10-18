@@ -64,6 +64,24 @@ class StoreReadCatalogTest {
     }
   }
 
+  /** A mirror folder exists before its first contact names the origin's store id. Until then it
+   * answers to no origin, and a reference to another store still resolves or refuses with its
+   * reason instead of failing on the unnamed mirror. */
+  @Test void aMirrorThatHasNotNamedItsOriginMatchesNoReference() throws Exception {
+    var fresh = Files.createDirectory(temp.resolve("a-fresh-mirror")).toRealPath();
+    write(fresh.resolve("store.json"), new Header(StoreManifest.FORMAT_VERSION, WHEN, "store-fresh", List.of())
+        .withOrigin(new MirrorOrigin(null, "http://origin.invalid", null, List.of(), Map.of())));
+    var plain = fixture("plain", false);
+    try (var catalog = new StoreReadCatalog(List.of(fresh, plain.root()))) {
+      assertNull(StoreReadCatalog.originId(catalog.snapshot().stores().stream().filter(s -> s.header().mirror()).findFirst().orElseThrow()));
+      assertEquals(plain.anchor(), catalog.resolveContent("store-plain", plain.anchorFile().sha256()).facts().path());
+      var missing = assertThrows(IOException.class, () -> catalog.resolveContent("origin-elsewhere", plain.anchorFile().sha256()));
+      assertTrue(missing.getMessage().startsWith("SOURCE_UNAVAILABLE"), missing.getMessage());
+      var refused = assertThrows(IOException.class, () -> catalog.recording(new RecordingReference("store-plain", "session-id", "capture.wpilog", WHEN, List.of())));
+      assertTrue(refused.getMessage().startsWith("SOURCE_UNAVAILABLE"), refused.getMessage());
+    }
+  }
+
   @Test void durableRecordingReferencesUseProvenanceAndCanRecoverOnlyKnownHashes() throws Exception {
     var fixture = fixture("durable", false);
     var first = file(fixture.anchor(), "wpilog", new Provenance("captured", null, "capture.wpilog", WHEN, false), null);

@@ -20,6 +20,10 @@ public final class VisualizationTools {
     registry.registerTool(new SourceEntriesList(registry));
     registry.registerTool(new SourceEntriesGet(registry));
     registry.registerTool(new SourceInventoryClose(registry));
+    registry.registerTool(new SourceValue(registry));
+    registry.registerTool(new SourceStatistics(registry));
+    registry.registerTool(new SourceHistogram(registry));
+    registry.registerTool(new SourceScatter(registry));
     registry.registerTool(new TemplateList(registry));
     registry.registerTool(new TemplateGet(registry));
     registry.registerTool(new TemplateCheck(registry));
@@ -29,6 +33,7 @@ public final class VisualizationTools {
     registry.registerTool(new TemplateExport(registry));
     registry.registerTool(new ViewList(registry));
     registry.registerTool(new ViewGet(registry));
+    registry.registerTool(new ViewBind(registry));
     registry.registerTool(new ViewCreate(registry));
     registry.registerTool(new ViewUpdate(registry));
     registry.registerTool(new ViewClone(registry));
@@ -52,13 +57,38 @@ public final class VisualizationTools {
         var response = name().equals("visualization_source_entries_list") && result.get("total_matching").getAsInt() == 0
             ? ResponseBuilder.noMatch("No inventory names match the filter").lookedFor(List.of("Authorized fixed inventory names and exact declared types"))
                 .hint("Change the filter or reopen from source_ref to refresh the inventory") : ResponseBuilder.success();
+        if (name().equals("visualization_view_bind") && result.getAsJsonArray("queries").isEmpty())
+          response = ResponseBuilder.noMatch("No recording requirements resolved")
+              .lookedFor(List.of("Every configured exact entry or explicit resolver role in the admitted recording members"))
+              .hint("Inspect binding.compatibility, edit the requirements, or check again after new declarations arrive");
+        boolean chart = name().equals("visualization_source_histogram") || name().equals("visualization_source_scatter");
+        boolean analysis = chart || name().equals("visualization_source_value") || name().equals("visualization_source_statistics");
+        if (analysis) {
+          if (result.has("success") && !result.get("success").getAsBoolean() && result.has("error")) response = ResponseBuilder.error(result.get("error").getAsString());
+          else if (name().equals("visualization_source_value") && result.get("value").isJsonNull())
+            response = ResponseBuilder.noMatch("No recorded value at or before the requested cursor")
+                .lookedFor(List.of("Decodable records of the exact entry and scalar field in the admitted source"))
+                .hint("Choose a later cursor, inspect problems, or wait for a sample in the same recording");
+          if (result.has("status") && result.get("status").getAsString().equals("no_match"))
+            response = ResponseBuilder.noMatch(result.get("reason").getAsString())
+                .addData("looked_for", result.get("looked_for")).hint(result.get("hint").getAsString());
+          if (chart && result.has("limits")) {
+            var limits = new JsonObject(); result.getAsJsonObject("limits").entrySet().forEach(e -> limits.add(resultKey() + "." + e.getKey(), e.getValue()));
+            response.addData("limits", limits);
+          }
+          if (result.has("problem_count") && result.get("problem_count").getAsLong() > 0)
+            response.addSkipped("undecodable_records", result.get("problem_count").getAsString() + " selected records failed; inspect member-qualified problems");
+          var inputs = result.has("inputs") ? result.getAsJsonObject("inputs").deepCopy() : new JsonObject();
+          inputs.add("source_ref", arguments.get("source_ref")); if (arguments.has("entry")) inputs.add("entry", arguments.get("entry")); response.addData("inputs", inputs);
+          for (var key : List.of("data_quality", "server_analysis_directives")) if (result.has(key)) response.addData(key, result.get(key));
+        }
         response.addProperty("api_version", 1).addData(resultKey(), result);
         if (name().equals("visualization_source_entries_list")) {
           var limits = new JsonObject(); var page = new JsonObject();
           page.add("total", result.get("total_matching")); page.add("returned", result.get("returned")); page.add("limit", result.get("limit"));
           limits.add("page.entries", page); response.addData("limits", limits);
         }
-        if (name().equals("visualization_source_inspect")) {
+        if (name().equals("visualization_source_inspect") || name().equals("visualization_view_bind")) {
           var inputs = new JsonObject(); inputs.add("source_ref", result.get("source_ref")); response.addData("inputs", inputs);
         }
         return response.build();
@@ -95,15 +125,15 @@ public final class VisualizationTools {
   static final class CapabilitiesGet extends Operation {
     CapabilitiesGet(ToolRegistry registry) { super(registry); }
     @Override public String name() { return "visualization_capabilities_get"; }
-    @Override public String description() { return "Supported configuration schema, type and role vocabulary, persistent identity, budgets and preview limits. Result envelope: api_version, status, capabilities. All operations require trusted local transport authority."; }
+    @Override public String description() { return "Supported configuration schema, type and role vocabulary, persistent identity, budgets and preview limits. Capabilities include decoded_buffer_budget defaults/range and attached_windows with client_id, current_session, decoded_buffer_budget_bytes and basis client_reported; these facts are not server allocations or access grants. client_id is an opaque window ID for this server process, the same ID a working view reports for its attachment; it is not a session ID and grants nothing. current_session marks the caller's own window. Result envelope: api_version, status, capabilities. All operations require trusted local transport authority."; }
     @Override String resultKey() { return "capabilities"; }
     @Override public JsonObject inputSchema() {
       return schema()
           .build();
     }
     @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
-      var input = project(arguments, "api_version");
-      return workspace.capabilities();
+      var input = project(arguments, "api_version"); var session = SessionContext.current();
+      return workspace.capabilities(session == null ? null : session.getId());
     }
   }
   static final class SourceInspect extends Operation {
@@ -164,6 +194,80 @@ public final class VisualizationTools {
     @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
       var input = project(arguments, "api_version", "inventory_id");
       return workspace.inventories.release(RecordingInventories.Client.current(caller), input);
+    }
+  }
+  static final class SourceValue extends Operation {
+    SourceValue(ToolRegistry registry) { super(registry); }
+    @Override public String name() { return "visualization_source_value"; }
+    @Override String resultKey() { return "value"; }
+    @Override public String description() { return "Read the latest recorded value or the last sample at or before at_sec from a file or anchored recording. Never interpolates. Recording ties use member_id string order then physical ordinal; value includes exact tagged value, timestamp_us, member_id, ordinal, prefix proof and decode problems. A recording call admits a fresh bounded prefix, independent of displayed follow buffers. No sample is no_match with a hint; decode failures are partial. Result envelope: api_version, status, value, inputs. All operations require trusted local transport authority."; }
+    @Override public JsonObject inputSchema() {
+      return schema().addProperty("source_ref", "object", "Durable file or anchored recording identity", true)
+          .addProperty("entry", "string", "Exact declared entry name; no role or name guessing", true)
+          .addProperty("field", "string", "Optional scalar field path or array index; recording fields require a numeric witness and refuse wildcards", false)
+          .addNumberProperty("at_sec", "Inclusive robot-clock cursor in seconds; omit for latest by timestamp", false, null).build();
+    }
+    @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
+      var session = SessionContext.current();
+      return workspace.value(project(arguments, "api_version", "source_ref", "entry", "field", "at_sec"), () -> session == null || session.active());
+    }
+  }
+  static final class SourceStatistics extends Operation {
+    SourceStatistics(ToolRegistry registry) { super(registry); }
+    @Override public String name() { return "visualization_source_statistics"; }
+    @Override String resultKey() { return "statistics"; }
+    @Override public String description() { return "Compute exact full-window statistics for a numeric entry or scalar field in a file or anchored recording. Uses the shared statistics, angle, sample standard deviation, percentile and data-quality rules; plot buckets never feed analysis. Duplicate and backward timestamps remain samples. An empty numeric window returns no_match with count 0, looked_for and a hint, retaining its inputs and prefix evidence. Recording members must agree on declarations and schemas; limits refuse rather than approximate. Statistics include count, min, max, mean, median, std_dev, q1, q3, iqr, p5, p95, data_quality and analysis directives, plus recording prefix and decode problems when applicable. Result envelope: api_version, status, statistics, inputs. Sample count and non-finite filtering bound confidence; one recording cannot establish a general cause. All operations require trusted local transport authority."; }
+    @Override public JsonObject inputSchema() {
+      return schema().addProperty("source_ref", "object", "Durable file or anchored recording identity", true)
+          .addProperty("entry", "string", "Exact declared numeric entry name", true)
+          .addProperty("field", "string", "Optional scalar field path or array index; recording reads refuse wildcards", false)
+          .addNumberProperty("start_time", "Inclusive robot-clock start in seconds", false, null)
+          .addNumberProperty("end_time", "Inclusive robot-clock end in seconds", false, null)
+          .addNumberProperty("last_seconds", "Positive finite recent duration, anchored at the admitted robot clock or last record; cannot combine with start_time/end_time. inputs.window reports absolute bounds", false, null).build();
+    }
+    @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
+      var session = SessionContext.current();
+      return workspace.statistics(project(arguments, "api_version", "source_ref", "entry", "field", "start_time", "end_time", "last_seconds"), () -> session == null || session.active());
+    }
+  }
+  static final class SourceHistogram extends Operation {
+    SourceHistogram(ToolRegistry registry) { super(registry); }
+    @Override public String name() { return "visualization_source_histogram"; }
+    @Override String resultKey() { return "histogram"; }
+    @Override public String description() { return "Count original finite numeric samples in a file or anchored recording using render_chart's histogram rule: equal-width ceil(sqrt(n)) bins capped at 64, [low,high), maximum included; constant data one unit-wide bin. Never bins plot buckets. Histogram includes bins with low/high/count, histogram_rule, summary, inputs, data_quality, prefix, records_visited and decode problems. Active recordings require a 1–300 second interval; admission and work limits refuse rather than approximate. Empty intervals are no_match with a hint. Sample weighting is not elapsed-time weighting, and one recording does not establish a cause. Result envelope: api_version, status, histogram, inputs, data_quality and analysis directives. All operations require trusted local transport authority."; }
+    @Override public JsonObject inputSchema() {
+      return schema().addProperty("source_ref", "object", "Durable file or anchored recording identity", true)
+          .addProperty("entry", "string", "Exact numeric entry; booleans use 0/1", true)
+          .addProperty("field", "string", "Optional scalar numeric field or array index; no wildcard", false)
+          .addNumberProperty("start_time", "Inclusive robot-clock start in seconds", false, null)
+          .addNumberProperty("end_time", "Inclusive robot-clock end in seconds", false, null)
+          .addNumberProperty("last_seconds", "Recent duration; mutually exclusive with start_time/end_time; 1–300 seconds while active", false, null).build();
+    }
+    @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
+      var session = SessionContext.current();
+      return workspace.histogram(project(arguments, "api_version", "source_ref", "entry", "field", "start_time", "end_time", "last_seconds"), () -> session == null || session.active());
+    }
+  }
+  static final class SourceScatter extends Operation {
+    SourceScatter(ToolRegistry registry) { super(registry); }
+    @Override public String name() { return "visualization_source_scatter"; }
+    @Override String resultKey() { return "scatter"; }
+    @Override public String description() { return "Pair original finite numeric samples at exact timestamps from one admitted file or anchored recording prefix. Equal times pair one-to-one in stable member-id and physical order, with no interpolation or automatic clock alignment. Scatter contains points as [x, y, robot-clock seconds], matched, unpaired_x, unpaired_y, summary, alignment_rule, offset, next_offset, complete, limits with true total, inputs, data_quality, prefix and decode problems. limit pages the drawing only; totals and summaries describe the full interval. Each page read is fresh; inspect prefix before combining pages across appends. Active recordings require a 1–300 second interval. Empty pairs or pages are no_match with a hint. Work limits refuse rather than approximate; correlation does not imply causation. Result envelope: api_version, status, scatter, inputs, limits, data_quality and analysis directives. All operations require trusted local transport authority."; }
+    @Override public JsonObject inputSchema() {
+      return schema().addProperty("source_ref", "object", "Durable file or anchored recording identity", true)
+          .addProperty("x_entry", "string", "Exact horizontal numeric entry; booleans use 0/1", true)
+          .addProperty("y_entry", "string", "Exact vertical numeric entry; may equal x_entry", true)
+          .addProperty("x_field", "string", "Optional horizontal scalar numeric field or array index", false)
+          .addProperty("y_field", "string", "Optional vertical scalar numeric field or array index", false)
+          .addNumberProperty("start_time", "Inclusive robot-clock start in seconds", false, null)
+          .addNumberProperty("end_time", "Inclusive robot-clock end in seconds", false, null)
+          .addNumberProperty("last_seconds", "Recent duration; mutually exclusive with start_time/end_time; 1–300 seconds while active", false, null)
+          .addIntegerProperty("offset", "Matched pairs skipped; nonnegative, default 0", false, null)
+          .addIntegerProperty("limit", "Returned pairs, 1–4096, default 256; full-interval totals remain exact", false, null).build();
+    }
+    @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
+      var session = SessionContext.current();
+      return workspace.scatter(project(arguments, "api_version", "source_ref", "x_entry", "y_entry", "x_field", "y_field", "start_time", "end_time", "last_seconds", "offset", "limit"), () -> session == null || session.active());
     }
   }
   static final class TemplateList extends Operation {
@@ -291,7 +395,7 @@ public final class VisualizationTools {
   static final class ViewList extends Operation {
     ViewList(ToolRegistry registry) { super(registry); }
     @Override public String name() { return "visualization_view_list"; }
-    @Override public String description() { return "List unexpired working views, optionally for source_ref. Returns views with revision, configuration, source_ref, checkpoint, saved/template references, attachment and expiry. Result envelope: api_version, status, workspace. All operations require trusted local transport authority."; }
+    @Override public String description() { return "List unexpired working views, optionally for source_ref. Returns views with revision, configuration, source_ref, checkpoint, saved/template references, attachment and expiry. attached_client_id is the attached window's opaque ID, as in capabilities, never a session ID. Result envelope: api_version, status, workspace. All operations require trusted local transport authority."; }
     @Override String resultKey() { return "workspace"; }
     @Override public JsonObject inputSchema() {
       return schema()
@@ -306,7 +410,7 @@ public final class VisualizationTools {
   static final class ViewGet extends Operation {
     ViewGet(ToolRegistry registry) { super(registry); }
     @Override public String name() { return "visualization_view_get"; }
-    @Override public String description() { return "Read one working view: revision, configuration, source_ref, checkpoint, saved/template references, attachment, expiry, has_unsaved_changes and native_dirty. Does not display it. Result envelope: api_version, status, view. All operations require trusted local transport authority."; }
+    @Override public String description() { return "Read one working view: revision, configuration, source_ref, checkpoint, saved/template references, attachment, expiry, has_unsaved_changes and native_dirty. attached_client_id is the attached window's opaque ID, as in capabilities, never a session ID. Does not display it. Result envelope: api_version, status, view. All operations require trusted local transport authority."; }
     @Override String resultKey() { return "view"; }
     @Override public JsonObject inputSchema() {
       return schema()
@@ -316,6 +420,19 @@ public final class VisualizationTools {
     @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
       var input = project(arguments, "api_version", "view_id");
       return workspace.getView(input);
+    }
+  }
+  static final class ViewBind extends Operation {
+    ViewBind(ToolRegistry registry) { super(registry); }
+    @Override public String name() { return "visualization_view_bind"; }
+    @Override public String description() { return "Resolve an anchored recording view at expected_revision on a fresh admitted prefix. Returns binding with view_id, revision, source_ref, compatibility including unresolved requirements, clock, time_policy, queries, follow_ready, reason, frontier_scope and max_page_bytes. No follow or display is started; this detached evidence is not a permission grant. Result envelope: api_version, status, binding, inputs; zero selections are no_match with looked_for and hint. All operations require trusted local transport authority."; }
+    @Override String resultKey() { return "binding"; }
+    @Override public JsonObject inputSchema() {
+      return schema().addProperty("view_id", "string", "Working recording view UUID", true)
+          .addProperty("expected_revision", "integer", "Pinned working revision; concurrent edits refuse with REVISION_CONFLICT", true).build();
+    }
+    @Override JsonObject run(VisualizationWorkspace workspace, CallerContext.Authority caller, JsonObject arguments) throws Exception {
+      return workspace.bindView(caller, project(arguments, "api_version", "view_id", "expected_revision"));
     }
   }
   static final class ViewCreate extends Operation {

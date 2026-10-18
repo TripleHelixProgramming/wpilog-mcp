@@ -49,19 +49,19 @@ class OperationsClaimTest {
    * Account for every bare identifier rather than scanning only names already in the registry:
    * that would silently skip a misspelled tool. New prose identifiers need this classification. */
   private static final Set<String> NON_TOOLS = Set.of(("""
-      configuration_json resolved template_ref
+      configuration_json resolved template_ref x_entry y_entry x_field y_field next_offset
       brownout_threshold_basis brownout_voltage_entry bus_name bytes_per_sec camera_settings
       capture cause channel_analysis chooser_entry complete confidence_level conflicts connect
-      connected current_entry data_quality development df disabled diskcachesize dmesg end_reason end_time
+      connected current_entry current_session data_quality development df disabled diskcachesize dmesg end_reason end_time
       ended_at entries entry error event event_code field folder following gateway growing
       has_more high hint histogram host http imports inputs insufficient journalctl jvm jvm_crash
       kernel kind last_seconds last_sync limit listening log_directories looked_for low lvuser
-      managed match_number match_type matching_reason measured_entry measurement_entry mechanism_name
+      managed match_number match_type matching_reason max_error_ms measured_entry measurement_entry mechanism_name
       medium mirror name no_match not_applicable offline offset offset_ms ok origin partial path
       pattern pit port program rate_bytes reason records regex rio robot run sampling scatter
       scope server_analysis_directives server_instance_id servers setpoint_entry settle_sec sha256sum signal_key
-      skipped source stall_current_threshold stand_down start start_time stated_robot status sync
-      sync_status syslog tba tba_key team temperature_entry text_event_counts text_event_summary
+      skipped source source_ref at_sec prefix problems stall_current_threshold stand_down start start_time stated_robot status sync
+      sync_method sync_status syslog tba tba_key team temperature_entry text_event_counts text_event_summary
       threshold threshold_ms time_series timeout_ms unassigned velocity_entry vision_entries
       voltage_analysis waiting waiting_for_sync warning windows working_state working_state_reason year
       """).strip().split("\\s+"));

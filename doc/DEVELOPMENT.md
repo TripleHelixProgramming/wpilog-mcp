@@ -536,6 +536,101 @@ delay; permanent refusals omit it. The shipped renderer is driven directly to ke
 Resume/Open disabled while recorded-file actions work. These checks do not claim live panel
 integration or a sustained-performance gate.
 
+Revision-bound admission tests block source work while updating the metadata queue, check stale
+revisions before and after admission, and prove bootstrap borrows the same prefix. Generated
+5,000- and 10,000-topic two-member recordings check all selected values and timestamps at
+1 MiB. Projections, deduplication, partial/missing bindings, absent clocks, exact rolling/fixed
+windows, shared-slot retries, retained-page revocation, changed declarations and finalization
+and unchecked-failure cleanup are covered. The new operation participates in the schema/corpus sweep and isolated HTTP/MCP
+conformance workflow. The real-log sweep discovers it through the common registry; it does not
+create views in a production store. The opt-in HTTP stress workflow also repeats 32 binding
+reads on a generated 10,000-topic recording and releases all ownership afterward. These are functional checks, not the 32-lease declaration
+burst or season-sized store benchmark.
+
+### Visualization window buffers
+
+The Node budget suites exercise one window owner across recorded/live consumers, reservation
+before I/O, server reduction sizing, per-response caps including cached replies, bounded queued
+handoffs, stale/cancelled replies, renderer acknowledgements, hidden expiry and disposal. Shipped
+renderer tests keep hidden tables/plots alive before clearing and require their contents to be
+removed before release is acknowledged. Server endpoint and budget tests cover default/range,
+strict session registration, HTTP/MCP parity, capacity, session expiry and restart.
+
+After building the server and extension fixture, run the recorded runner with
+`WPILOG_PANEL_FIXTURE=true VSCODE_VERSION=<version>` for the recording-panel workflow. Set
+`WPILOG_DECODED_MIB=16` to write the real setting into its isolated editor profile; leaving it
+unset exercises the 64 MiB default. It opens a recorded plot beside a two-member, 20,000-topic
+recording, checks the shared owner and server-reported allowance, continues live updates, and
+requires zero accounted bytes after close. Run both the oldest supported and current editor,
+and the ordinary recorded workflow below. This is functional budget evidence, not the planned
+sustained heap/resource benchmark.
+
+### Recording analysis checkpoint
+
+`./gradlew test --tests '*RecordingAnalysisTest' --tests '*VisualizationEndpointTest' --tests '*FollowEndpointTest.recordingAnalysisReadsFreshFixedPrefixesDuringAppendAndAfterFinalization'`
+checks fresh cross-member timestamp selection, original-ordinal ties, exact integer tags,
+duplicate/backward samples, inclusive windows, struct angle statistics, non-finite filtering,
+diagnostics, every resource ceiling, cancellation, concurrent admission and final grant/boundary
+checks. Expected numeric answers are computed from small generated records. The HTTP/MCP
+cases check adapter parity, no-match/partial results and real capture finalization. Empty and
+all-non-finite numeric windows retain their no-match evidence and recover when new samples arrive. Conformance
+calls both source-analysis tools through their registered schemas, with independent numeric
+assertions. Server evidence and deliberate regression plants are under
+`/private/tmp/wpilog-visualization-stage3-recording-analysis/`.
+
+The extension analysis tests cover server-bound selectors, relative/absolute windows,
+coalescing, a bounded fair window queue, cursor supersession, pause/hide/close cancellation,
+late uncancellable replies, identity refusals, retry classification and acknowledged byte
+ownership. Host/renderer tests drive statistics and cursor controls, independent prefix labels,
+per-kind tokens and clearing without replacing plot/raw data. The native panel fixture adds a
+backward-timestamp append, exact latest/cursor checks and independent count/mean/sample-deviation
+expectations across two members, then fixed-to-finalized/full transitions. It also leaves a
+statistics window quiet, then verifies automatic recovery with one new sample and no edit or Retry. Evidence lives in
+`/private/tmp/wpilog-visualization-stage3-panel-analysis/`; sustained performance remains open.
+
+The field-selection continuation uses that same native runner. It adds custom nested schemas,
+a numeric array, empty arrays and a conflicting schema across two members without changing the
+20,000-name inventory size. Real inline controls must persist `.translation.x` and `[1]`,
+refuse malformed/wildcard/missing and conflicting selections without a new revision, and route
+the same numeric requirement to plot, latest, statistics and raw panels. Independent values
+2, 8 and 14 give count 3, mean 8 and sample deviation 6. Node checks cover reply identity,
+pre-I/O budget reservation, cancellation before queued gestures, stale revisions and detail
+proofs, and matching inline status. Evidence is in
+`/private/tmp/wpilog-visualization-stage3-field-selection/validation.md`.
+
+
+### Source chart analysis checkpoint
+
+`./gradlew test --tests '*SourceChartsTest' --tests '*VisualizationEndpointTest.chart*' --tests '*RenderChart*'`
+checks the shared histogram/pair arithmetic over generated file and two-member recording data.
+Expected bins, matched pairs and page totals are independently enumerated, including duplicates,
+backward records, explicit fields whose combined names collide with real entries, angles,
+non-finite samples, malformed payloads, empty pages and unrepresentable numeric boundaries.
+Native-writer coverage checks a fixed admission during appends and requested live-window limits.
+Resource, cancellation, concurrent-slot, grant and file-boundary tests require no retained reads
+after failure. HTTP/MCP tests check identical operation results, refusal codes and no-match
+status; conformance exercises both new registered tools, and the HTTP stress task includes
+bounded histogram/scatter calls. Evidence and deliberate regressions are under
+`/private/tmp/wpilog-visualization-stage3-chart-analysis/validation.md`.
+The subsequent chart-panel continuation uses the same isolated recording-panel runner. Its
+native controls check two-member numeric fields with values [2,8,14] and [6,12,18]: histogram
+bins [2,8):1 and [8,14]:2, with exact pairs retaining both samples at time 1. A separately
+written 600-point WPILOG uses x=i, y=2i and t=i/1000 to check file charts and replacement paging.
+The fixture drives Swap X and Y, presentation reuse, pause during a backward append, hide/reveal and shared window bounds. It also observes real scatter point drawing and histogram axes covering every bin edge from a zero count baseline.
+Node checks cover response identity/shape, stale pages, rate coalescing, queue fairness,
+pre-I/O accounting, renderer acknowledgement and exact plotting coordinates. Failing-first runs,
+plants and native results are kept under
+`/private/tmp/wpilog-visualization-stage3-chart-panels/validation.md`. Remote routing and sustained
+resource/performance gates remain separate.
+The historical-navigation continuation also uses that runner. Keyboard pan/zoom must recover
+old samples no longer present in a 45-second rolling buffer; a real bundled-plot mouse drag must
+persist and re-read its interval. A late historical append keeps the inspected axis fixed,
+Resume following restores the window, and file gestures check exact x=i samples. Node checks
+cover finite clock bounds, microsecond rounding, linking, generation guards, retained UI window
+state and refusal recovery. Evidence and plants are under
+`/private/tmp/wpilog-visualization-stage3-history/validation.md`. Recording-history reduction
+is still deferred; the native checks make no completeness claim beyond the displayed point cap.
+
 ### Visualization recorded preview
 
 Run `./gradlew shadowJar extensionSmokeFixture`, then `npm run test:recorded-visualization`
@@ -821,3 +916,16 @@ The release workflow publishes every release without a suffix when the token is 
 - Report bugs: open an issue with steps to reproduce, and the tool call and result if a tool gave a wrong answer.
 - Request features: open an issue describing your use case.
 - Submit pull requests: fork, make your changes, add tests, and open a PR.
+
+
+The recording-panel editor fixture runs after `./gradlew extensionSmokeFixture` and extension
+compilation, using `WPILOG_PANEL_FIXTURE=true VSCODE_VERSION=1.101.0 node
+out/smoke/recordedRun.js` from `vscode-extension/`; repeat with the cached current editor version.
+It creates an isolated profile and foreground synthetic server, with 20,000 topics and two
+members, and exercises paged selection, plots/value/statistics/raw tables, exact integer and
+backward-time appends, unchanged acquisition/analysis after title edits, pause/resume,
+independent peers, hide/reveal and finalization.
+It checks no single-file analysis fallback, no renderer/CSP errors and zero charged buffers at
+close. The fixture's stdin commands are test-only and expose no product route. Keep the recorded
+workflow fixture passing too; shared renderer changes can affect both paths. Native operating
+systems and sustained-load measurements are distinct from the ordinary Node/Java suites.

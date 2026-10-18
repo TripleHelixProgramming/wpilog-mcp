@@ -15,7 +15,8 @@ import { directoryRegistration, LEASE_SETTINGS, SessionRegistration } from "./di
 import { claudeArgs, claudeCommandText, claudePitArgs, claudePitCommandText, findClaude, registerWithClaude, ClaudeReply, ClaudeRegistrationAttempt, claudeRegistrationFeedback } from "./claudeRegistration";
 import { GitStatus, PROJECT_FILE, ignoreProjectFile, projectFileOffer, projectFileText } from "./projectFile";
 import { legacyCleanupAction, retireLegacyEntry } from "./legacyMigration";
-import { MirrorStatus, mirrorRequest, mirrorStatusText, peerUrl, pitEndpoint, serverDefinitions, sessionPicks } from "./explorer/pitServer";
+import { MirrorStatus, liveRequest, mirrorRequest, mirrorStatusText, peerUrl, pitEndpoint, serverDefinitions, sessionPicks } from "./explorer/pitServer";
+import { SESSION_END_MS } from "./sessionEnd";
 import { uploadLog } from "./explorer/upload";
 import { resultSummary, resultDetails, progressText } from "./explorer/importJobs";
 import { StoreClient, rememberedPeers, syncSummary } from "./explorer/storeClient";
@@ -270,6 +271,12 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
       robots: config.get<string[]>("mirror.robots"), events: config.get<string[]>("mirror.events"), intervalSec: config.get<number>("mirror.intervalSec") };
   };
   const mirrorConfiguration = () => mirrorRequest(pitUrl(), mirrorSettings(), context.globalStorageUri.fsPath);
+  const liveSettings = () => {
+    const config = vscode.workspace.getConfiguration("wpilog-mcp");
+    return { enabled: config.get<boolean>("live.enabled"), folder: config.get<string>("live.folder"), gatewayPort: config.get<number>("live.gatewayPort") };
+  };
+  /** Live data reaches this laptop as NetworkTables from the pit's gateway, recorded locally, so views read local files only. */
+  const liveConfiguration = () => liveRequest(pitUrl(), liveSettings(), context.globalStorageUri.fsPath);
   async function registration(): Promise<SessionRegistration> {
     const user = userSettings();
     const additional = Array.isArray(user.additionalLogDirectories) ? user.additionalLogDirectories : [];
@@ -279,6 +286,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     const directories = directoryRegistration(user, projects());
     const mirror = mirrorRequest(pitUrl(), { ...mirrorSettings(), enabled: true }, context.globalStorageUri.fsPath);
     if (mirror && !directories.paths.some(p => p.path === mirror.folder)) directories.paths.push({ path: mirror.folder, team: null });
+    const live = liveRequest(pitUrl(), { ...liveSettings(), enabled: true }, context.globalStorageUri.fsPath);
+    if (live && !directories.paths.some(p => p.path === live.store)) directories.paths.push({ path: live.store, team: null });
     return { directories, key: await context.secrets.get(TBA_SECRET) || null, pitCredential: await pitRegistration(pitUrl(), context.secrets) };
   }
   const explorer = new Explorer(context, outputChannel, serverManager, standaloneSpec,
@@ -286,6 +295,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     () => { const user = userSettings(); const roots = combineLogDirectories(user.logDirectory, user.additionalLogDirectories);
       const fallback = wellKnownLogDirectory(); return roots.length ? roots : fallback ? [fallback] : []; });
   context.subscriptions.push(serverManager, explorer, outputChannel, didChangeEmitter);
+  endWindowSessions = () => explorer.endSessions(SESSION_END_MS);
 
   /** Registration finishes before an agent receives its URL; a third session can then read the lease. */
   async function connectWindow(): Promise<string | undefined> {
@@ -413,6 +423,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
   const mirrorBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   mirrorBar.command = "wpilog-mcp.mirrorActions";
   let mirrorState: MirrorStatus = { state: "disabled" }, lastConfigured: string | undefined, mirrorPolling = false;
+  explorer.mirrorStatus = () => mirrorState;
   let mirrorTimer: ReturnType<typeof setInterval> | undefined;
   async function storeClient(): Promise<StoreClient> {
     const endpoint = await connectWindow();
@@ -445,6 +456,28 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     showMirror(await client.status());
     clearInterval(mirrorTimer);
     if (config || mirrorState.state !== "disabled") mirrorTimer = setInterval(() => void pollMirror(), 5000);
+  }
+  let liveConfigured: string | undefined;
+  /** Sets or stops the server's live source; a gateway that cannot be reached yet is the source's state, not an error. */
+  async function configureLive() {
+    try {
+      const client = await storeClient(), config = liveConfiguration();
+      if (config) {
+        const status = await client.configureLive(config); liveConfigured = JSON.stringify(config);
+        outputChannel.appendLine(`Live source: ${status.state}, recording ${config.robot.host}:${config.robot.port} into ${config.store}`);
+      } else if (liveConfigured) { await client.disableLive(); liveConfigured = undefined; outputChannel.appendLine("Live source stopped"); }
+    } catch (error) { outputChannel.appendLine(`Could not set the live source: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+  // Both routes hold the server's configuration guard, including stopping the old capture.
+  // Serialize the whole operation, across activation and settings events, not just its lease.
+  let configuring = Promise.resolve();
+  function configureServices(live: boolean, mirror: boolean): Promise<void> {
+    configuring = configuring.then(async () => {
+      await refreshLease();
+      if (live) await configureLive();
+      if (mirror) await command(configureMirror)();
+    }).catch(error => outputChannel.appendLine(`Could not configure local services: ${String(error)}`));
+    return configuring;
   }
   function command(action: () => Promise<unknown>) {
     return async () => { try { await action(); } catch (error) {
@@ -589,8 +622,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
         void refreshLease();
         void scheduleProjectOffers();
       }
-      if (event.affectsConfiguration("wpilog-mcp.pitServerUrl") || event.affectsConfiguration("wpilog-mcp.mirror")) {
-        void refreshLease().then(command(configureMirror)); didChangeEmitter.fire(); explorer.serversChanged();
+      const liveChanged = event.affectsConfiguration("wpilog-mcp.pitServerUrl") || event.affectsConfiguration("wpilog-mcp.live");
+      const mirrorChanged = event.affectsConfiguration("wpilog-mcp.pitServerUrl") || event.affectsConfiguration("wpilog-mcp.mirror");
+      if (liveChanged || mirrorChanged) void configureServices(liveChanged, mirrorChanged);
+      if (mirrorChanged) {
+        didChangeEmitter.fire(); explorer.serversChanged();
         if (event.affectsConfiguration("wpilog-mcp.pitServerUrl")) void command(() => registerPitClaude(false))();
       }
       if (event.affectsConfiguration("wpilog-mcp.enableForClaudeCode")) void scheduleProjectOffers();
@@ -604,7 +640,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
   const ready = (async () => {
     await moveTbaKeyNow();
     await updateStandaloneAtActivation();
-    if (await connectWindow()) { void explorer.offerOrganizing(); await command(configureMirror)(); }
+    if (await connectWindow()) { void explorer.offerOrganizing(); await configureServices(true, true); }
     void scheduleProjectOffers();
     void command(() => registerPitClaude(false))();
   })();
@@ -777,4 +813,11 @@ function canonicalMigrationPath(file: string): string {
   }
 }
 
-export function deactivate() {}
+/** Set by activate: ends the window's server sessions as it closes or reloads. */
+let endWindowSessions: (() => Promise<boolean>) | undefined;
+
+/** The editor waits for this before shutting the extension down, so the sessions' endings are not
+ * cut off: a lost one left the window's views attached on the server for an hour. */
+export async function deactivate(): Promise<void> {
+  await endWindowSessions?.();
+}

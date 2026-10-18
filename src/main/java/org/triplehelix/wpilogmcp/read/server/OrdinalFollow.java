@@ -84,6 +84,9 @@ public final class OrdinalFollow implements AutoCloseable {
     Prefix open() throws IOException;
     /** Retained bytes do not grant access after a directory or connection is revoked. */
     default void authorize() throws IOException {}
+    /** Optional display evidence from the source owner for this fixed prefix. Ordinary native
+     * follows omit it; the reader neither extrapolates a clock nor chooses a display interval. */
+    default JsonObject clock(Prefix prefix) throws IOException { return null; }
     /** Called only after a frontier is acknowledged, outside all loops and monitors. False
      * means a bounded idle timeout, not permission to reopen the same prefix speculatively. */
     default boolean awaitChange(java.time.Duration wait, java.util.function.BooleanSupplier cancelled) throws IOException { return true; }
@@ -397,6 +400,7 @@ public final class OrdinalFollow implements AutoCloseable {
       if (proof != null) validateSuccessor(candidate);
       var out = new JsonObject(); out.addProperty("recording_id", candidate.recordingId());
       out.addProperty("catalog_revision", Long.toString(candidate.catalogRevision())); out.addProperty("finalized", candidate.finalized());
+      var clock = source.clock(candidate); if (clock != null) out.add("clock", clock);
       if (frontierScope == FrontierScope.QUERIES) out.addProperty("frontier_scope", frontierScope.wire());
       var members = new JsonArray(); int metadataBytes = 0;
       String candidateId = UUID.randomUUID().toString();

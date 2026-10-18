@@ -300,7 +300,8 @@ nothing is deleted on either side. The peer URL is remembered, so the next run i
 ### 4.2 A laptop's mirror of the pit server
 
 A mirror is a scoped copy of the pit server's store that every tool reads offline: on the bus,
-at home, the night before finals.
+at home, the night before finals. It copies the logs the pit pulled or was given, not the pit's
+captures; this laptop records its own live data.
 
 - In VS Code, set `wpilog-mcp.pitServerUrl` (for example `http://pit:2363/mcp`). The mirror
   starts by default: the last 14 days plus named events and pinned sessions, under a 20 GB cap.
@@ -335,9 +336,19 @@ On a pit server capture with `context.photonvision` configured, the camera's cal
 
 ### System logs
 
-On a pit server session with system-log pulling enabled, `search_system_logs` with the
-   capture's `path` and `source` (`kernel`, `syslog`, `program`, `jvm_crash`) reads the
-   roboRIO's own logs: a CAN interface going bus-off, a camera unplugging, a JVM crash file.
+On a pit server session with system-log pulling enabled, `search_system_logs` with any log of
+   the session as `path` and a `source` (`kernel`, `syslog`, `program`, `jvm_crash`) reads the
+   roboRIO's own logs: a CAN interface going bus-off, a camera unplugging, a JVM crash file. A
+   laptop's mirror gives the same kernel times once the session's capture file has closed.
+
+### REV data from the pit
+
+On a pit server session, the REV logs it pulled read on the clock of its capture and on that of
+   the robot's own log: `list_available_logs` lists each under both, with `sync_method`
+   `COMBINED` under the robot's log, and `list_revlog_signals`, `get_revlog_data` and
+   `sync_status` take either as `path`. A laptop's mirror holds the robot's log, not the
+   capture, and gives the same times on it. `sync_status` names the two measurements it combined
+   and `max_error_ms`, the most the combination can be off.
 
 ### Explorer follow
 

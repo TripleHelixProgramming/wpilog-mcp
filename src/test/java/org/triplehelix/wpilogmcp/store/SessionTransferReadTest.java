@@ -96,14 +96,15 @@ class SessionTransferReadTest {
       try {
         peerHttp.start();
         assertClosed(peer, peerHttp, manager, files, original.header().id(), true);
-        // A mirror of a peer must retain the original collector, not substitute its immediate origin.
+        // A mirror leaves every capture with its origin, a peer's copies included: a laptop records
+        // live data itself. These are the capture store's own records, not a fixture's.
         var mirror = manager.stores().store(temp.resolve("mirror"));
         var mirrored = mirror.mirror(new MirrorConfig(url(peerHttp), mirror.root(), 14, 1 << 20,
             List.of(), List.of(), 30, 0), p -> {}, CLOCK, StoreSync::http).get(30, TimeUnit.SECONDS);
         assertEquals("synchronized", mirrored.state(), mirrored.toString());
-        var mirrorHttp = new HttpTransport(new ToolRegistry(), 0); mirrorHttp.setStoreDirectories(Set.of(mirror.root()));
-        try { mirrorHttp.start(); assertClosed(mirror, mirrorHttp, manager, files, original.header().id(), true); }
-        finally { mirrorHttp.stop(); }
+        assertEquals(0, mirrored.bytesCopied(), mirrored.toString());
+        var held = inventory(mirror, manager);
+        assertEquals(List.of(), held.files()); assertEquals(List.of(), held.sessions());
       } finally { peerHttp.stop(); }
     } finally { http.stop(); manager.resetConfiguration(); }
   }

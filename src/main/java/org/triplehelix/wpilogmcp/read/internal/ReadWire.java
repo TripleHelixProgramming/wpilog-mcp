@@ -74,7 +74,12 @@ public final class ReadWire {
   private ReadWire() {}
   public static JsonElement value(Object value) { return value(value, MAX_FRAME_BYTES); }
   public static JsonElement value(Object value, int maxWireBytes) {
-    preflight(value, new Budget(maxWireBytes), 0); return encode(value, 0);
+    estimatedValueBytes(value, maxWireBytes); return encode(value, 0);
+  }
+  /** The existing conservative expansion walk, without building JSON. Fixed-prefix analysis
+   * uses it to bound retained decoded values before materializing a statistical history. */
+  public static long estimatedValueBytes(Object value, long limit) {
+    var budget = new Budget(limit); preflight(value, budget, 0); return limit - budget.left;
   }
   public static Object value(JsonElement value) { return decode(value, 0); }
 

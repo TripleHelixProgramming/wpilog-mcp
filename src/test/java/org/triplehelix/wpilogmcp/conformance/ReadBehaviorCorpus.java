@@ -46,10 +46,10 @@ public final class ReadBehaviorCorpus {
     // Their successful state transitions are exercised through VisualizationConformance.
     for (String tool : List.of(
         "visualization_capabilities_get", "visualization_source_inspect",
-        "visualization_source_entries_list", "visualization_source_entries_get", "visualization_source_inventory_close", "visualization_template_list",
+        "visualization_source_entries_list", "visualization_source_entries_get", "visualization_source_inventory_close", "visualization_source_value", "visualization_source_statistics", "visualization_source_histogram", "visualization_source_scatter", "visualization_template_list",
         "visualization_template_get", "visualization_template_check", "visualization_template_create",
         "visualization_template_update", "visualization_template_import", "visualization_template_export",
-        "visualization_view_list", "visualization_view_get", "visualization_view_create",
+        "visualization_view_list", "visualization_view_get", "visualization_view_bind", "visualization_view_create",
         "visualization_view_update", "visualization_view_clone", "visualization_view_save",
         "visualization_view_discard", "visualization_view_delete"))
       excluded.put(tool, "Machine-local visualization state; isolated success/receipt conformance covers it, not frozen reader equivalence.");

@@ -57,6 +57,8 @@ final class DescriptionOutputs {
           "CoreToolsLogicTest.severalDirectories (needs a log directory)"),
       Map.entry("list_available_logs | log_count", "CoreToolsLogicTest.paging (needs a log directory)"),
       Map.entry("list_revlog_signals | sync_confidence", "RevLogToolsTest (needs a synced revlog)"),
+      Map.entry("sync_status | max_error_ms", "CombinedRevAlignmentTest.theServerPairsThemWithoutCorrelatingAndTheToolsReportTheCombination"),
+      Map.entry("list_available_logs | sync_method", "CombinedRevAlignmentTest.theServerPairsThemWithoutCorrelatingAndTheToolsReportTheCombination"),
       Map.entry("profile_mechanism | needs_confirmation", "MechanismFixtureTest.stems"),
       Map.entry("get_tba_match_data | lookup_method", "TbaReplayTest.found (no TBA in the corpus)"),
       Map.entry("get_tba_match_data | match_key", "TbaReplayTest.found"),

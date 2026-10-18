@@ -91,39 +91,35 @@ public final class ContextProviders implements AutoCloseable {
         () -> live.timeEstimate().map(t -> (double) t.roundTripUs()).orElse(null), this::writeJvm, this::requestDrain);
     for (var address : config.providers().photonvision()) {
       var owner = new AtomicReference<PhotonVisionProvider>();
-      var provider = new PhotonVisionProvider(address, live::robotNowUs, (target, timestamp, cameras, metadata) -> {
-        var done = new CompletableFuture<Void>();
-        if (stopped.get()) { done.complete(null); return done; }
-        try { loop.execute(() -> {
-          try {
-            if (!stopped.get() && writer.session() == target && open) {
-              for (var camera : cameras) owner.get().recorded(record("/Daemon/PhotonVision/" + camera.name() + "/Settings",
-                  "json", camera.settings().toString(), timestamp, metadata));
-              publish();
-            }
-            done.complete(null);
-          } catch (Exception e) { done.completeExceptionally(e); }
-        }); } catch (java.util.concurrent.RejectedExecutionException e) { done.complete(null); }
-        return done;
-      }, this::requestDrain);
+      var provider = new PhotonVisionProvider(address, live::robotNowUs, (target, timestamp, cameras, metadata) -> deliver(target, () -> {
+        for (var camera : cameras) owner.get().recorded(record("/Daemon/PhotonVision/" + camera.name() + "/Settings",
+            "json", camera.settings().toString(), timestamp, metadata));
+      }), this::requestDrain);
       owner.set(provider); photons.add(provider);
     }
   }
-  /** Session admission is checked again on delivery, after any intervening capture-loop backlog. */
   java.util.concurrent.CompletionStage<Void> writeJvm(Object target, JvmProvider.Sample sample) {
+    return deliver(target, () -> {
+      for (var value : new java.util.TreeMap<>(sample.values()).entrySet()) jvm.recorded(record("/Daemon/JVM/" + value.getKey(),
+          value.getValue() instanceof Long ? "int64" : "double", value.getValue(), sample.timestampUs(), sample.metadata()));
+      if (sample.runtime() != null) jvm.recorded(record("/Daemon/JVM/Runtime", "json", sample.runtime().toString(), sample.timestampUs(), sample.metadata()));
+      if (sample.note() != null) jvm.recorded(record("/Daemon/JVM/ClockNote", "json", sample.note().toString(), sample.timestampUs(), sample.metadata()));
+    });
+  }
+  /**
+   * Session admission is checked again on delivery, after any intervening capture-loop backlog.
+   * Every failure answers the provider, an Error too: the loop's executor keeps an escaped one in
+   * the task's own future, where nothing reads it, and an unanswered provider stays busy for the
+   * rest of the session, writing nothing and saying nothing. Answered, it stands down with the reason.
+   */
+  private java.util.concurrent.CompletionStage<Void> deliver(Object target, Runnable write) {
     var done = new CompletableFuture<Void>();
     if (stopped.get()) { done.complete(null); return done; }
     try { loop.execute(() -> {
       try {
-        if (!stopped.get() && writer.session() == target && open) {
-          for (var value : new java.util.TreeMap<>(sample.values()).entrySet()) jvm.recorded(record("/Daemon/JVM/" + value.getKey(),
-              value.getValue() instanceof Long ? "int64" : "double", value.getValue(), sample.timestampUs(), sample.metadata()));
-          if (sample.runtime() != null) jvm.recorded(record("/Daemon/JVM/Runtime", "json", sample.runtime().toString(), sample.timestampUs(), sample.metadata()));
-          if (sample.note() != null) jvm.recorded(record("/Daemon/JVM/ClockNote", "json", sample.note().toString(), sample.timestampUs(), sample.metadata()));
-          publish();
-        }
+        if (!stopped.get() && writer.session() == target && open) { write.run(); publish(); }
         done.complete(null);
-      } catch (Exception e) { done.completeExceptionally(e); }
+      } catch (Throwable e) { done.completeExceptionally(e); }
     }); } catch (java.util.concurrent.RejectedExecutionException e) { done.complete(null); }
     return done;
   }

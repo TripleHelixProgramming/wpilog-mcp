@@ -79,8 +79,12 @@ class SessionAliasesTest {
           if ((type.equals("Session") || type.equals("StoreManifest.Session")) && args.size() >= 9
               && args.get(0).toString().endsWith(".id()")) {
             checked.add(tree.getSourceFile().getName());
-            assertEquals(17, args.size(), "A manifest copy lost fields: " + node);
+            assertEquals(18, args.size(), "A manifest copy lost fields: " + node);
             assertTrue(args.get(16).toString().endsWith(".mergedSessionIds()"), "A copy dropped its aliases: " + node);
+            // Peer sync copies no clock record files, so a session it starts from a peer's has none.
+            String clocks = args.get(17).toString(), file = tree.getSourceFile().getName();
+            assertTrue(clocks.endsWith(".clocks()") || clocks.startsWith("currentClocks(")
+                || file.endsWith("StoreSync.java") && clocks.equals("List.of()"), "A copy dropped its clock records: " + node);
           }
           return super.visitNewClass(node, ignored);
         }

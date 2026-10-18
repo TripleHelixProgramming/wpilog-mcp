@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.sync;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.slf4j.Logger;
@@ -178,7 +179,7 @@ public class SignalMatcher {
 
     // Boost score if device hint matches
     if (deviceHint != null && !deviceHint.isBlank()) {
-      if (entryName.contains(deviceHint.toLowerCase())) {
+      if (entryName.contains(deviceHint.toLowerCase(Locale.ROOT))) {
         score += 0.4;
       }
     }
@@ -197,7 +198,7 @@ public class SignalMatcher {
    * Checks if an entry contains numeric data.
    */
   private boolean isNumericEntry(EntryInfo info) {
-    String type = info.type().toLowerCase();
+    String type = info.type().toLowerCase(Locale.ROOT);
     return NUMERIC_TYPES.contains(type) || type.startsWith("double") || type.startsWith("float");
   }
 
@@ -233,7 +234,7 @@ public class SignalMatcher {
     return pairs.stream()
         .sorted(Comparator
             .comparingInt((SignalPair p) ->
-                priority.getOrDefault(p.signalType().toLowerCase(), 10))
+                priority.getOrDefault(p.signalType().toLowerCase(Locale.ROOT), 10))
             .thenComparingDouble((SignalPair p) -> -p.matchScore())
             .thenComparingInt((SignalPair p) -> -p.minSampleCount()))
         .toList();

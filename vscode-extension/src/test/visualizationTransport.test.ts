@@ -5,6 +5,28 @@ import { AddressInfo } from "node:net";
 import { McpClient } from "../mcpClient";
 import { DataClient } from "../dataClient";
 
+test("native view follows borrow the registered MCP session only on its own follow route", async t => {
+  let opens = 0, credentials = 0;
+  const server = http.createServer((req, res) => {
+    let text = ""; req.on("data", c => text += c); req.on("end", () => {
+      const body = text ? JSON.parse(text) : {};
+      if (body.method === "initialize") { opens++; res.setHeader("Mcp-Session-Id", "owned"); }
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }));
+    });
+  });
+  await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
+  const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+  const client = new McpClient(endpoint, "test", undefined, async () => { credentials++; return { Authorization: "synthetic" }; });
+  t.after(async () => { await client.dispose(); server.closeAllConnections(); server.close(); });
+  for (const path of ["http://outside.invalid/read/v1/follows", new URL("/wrong", endpoint).href])
+    await assert.rejects(() => (client as any).followHeaders(path), /origin|route/);
+  assert.equal(credentials, 0); assert.equal(opens, 0);
+  const headers = await (client as any).followHeaders(new URL("/read/v1/follows", endpoint).href);
+  assert.deepEqual(headers, { Authorization: "synthetic", "Mcp-Session-Id": "owned" });
+  await (client as any).followHeaders(new URL("/read/v1/follows/lease/next", endpoint).href);
+  assert.equal(opens, 1, "follow cannot create a second directory/key lease");
+});
+
 test("preview uses registered sessions and re-registers only after an explicit expiry", async t => {
   const calls: string[] = []; let opens = 0;
   const server = http.createServer((req, res) => {
@@ -90,4 +112,19 @@ test("inventory refuses malformed retryable flags rather than treating them as a
   t.after(() => { server.closeAllConnections(); server.close(); });
   const client = new McpClient(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`, "test");
   await assert.rejects(client.visualization("/source/entries/list", {}, undefined, { session: "s" }), /Invalid visualization refusal retryable/);
+});
+
+/** A small reply can arrive whole in the chunk that crosses the budget; the destroy that follows
+ * does not stop its end event, which must refuse rather than resolve with what was collected. */
+test("a visualization reply over its byte budget is refused even when it arrives whole", async t => {
+  const server = http.createServer((req, res) => {
+    let text = ""; req.on("data", c => text += c); req.on("end", () => {
+      if (req.url === "/mcp") { res.setHeader("Mcp-Session-Id", "s1"); res.end(JSON.stringify({ jsonrpc: "2.0", id: text ? JSON.parse(text).id : null, result: {} })); return; }
+      res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ capabilities: "x".repeat(64) }));
+    });
+  });
+  await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
+  const client = new McpClient(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`, "test");
+  t.after(async () => { await client.dispose(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); });
+  await assert.rejects(client.visualization("/capabilities", undefined, undefined, { maxResponseBytes: 16 }), /byte budget/);
 });

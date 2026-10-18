@@ -122,7 +122,7 @@ public class LogDirectory {
 
     public static MatchType fromString(String value) {
       if (value == null || value.isEmpty()) return null;
-      var lower = value.toLowerCase().trim();
+      var lower = value.toLowerCase(Locale.ROOT).trim();
       if (lower.contains("practice") || lower.equals("p")) return PRACTICE;
       if (lower.contains("qualification") || lower.contains("qual") || lower.equals("q")
           || lower.equals("qm")) {

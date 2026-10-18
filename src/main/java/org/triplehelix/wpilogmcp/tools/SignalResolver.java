@@ -225,10 +225,14 @@ public final class SignalResolver {
 
   // ==================== all roles ====================
 
-  /** Every role, in declaration order. */
+  /** Every role, in declaration order. The four DriverStation roles share one look at the log's sources. */
   static Map<Role, Resolution> resolveAll(LogData log) {
-    var out = new LinkedHashMap<Role, Resolution>();
-    for (var role : Role.values()) out.put(role, resolve(log, role));
+    var out = new LinkedHashMap<Role, Resolution>(); MatchTimeline.Sources sources = null;
+    for (var role : Role.values()) {
+      boolean station = switch (role) { case ROBOT_ENABLED, AUTONOMOUS, TEST_MODE, FMS_ATTACHED -> true; default -> false; };
+      if (station && sources == null) sources = MatchTimeline.sourcesOf(log);
+      out.put(role, station ? driverStation(log, role, sources) : resolve(log, role));
+    }
     return out;
   }
 
@@ -429,7 +433,9 @@ public final class SignalResolver {
 
   /** DriverStation roles: AdvantageKit /DriverStation/..., WPILib DS:..., or FMSControlData. */
   private static Resolution driverStation(LogData log, Role role) {
-    var sources = MatchTimeline.sourcesOf(log);
+    return driverStation(log, role, MatchTimeline.sourcesOf(log));
+  }
+  private static Resolution driverStation(LogData log, Role role, MatchTimeline.Sources sources) {
     var entry = switch (role) {
       case ROBOT_ENABLED -> sources.enabled();
       case AUTONOMOUS -> sources.autonomous();

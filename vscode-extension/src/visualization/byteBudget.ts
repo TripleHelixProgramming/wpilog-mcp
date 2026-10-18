@@ -6,6 +6,7 @@ export class ByteBudget {
     if (!Number.isSafeInteger(maximum) || maximum <= 0) throw new Error("Invalid byte budget");
   }
   get reserved(): number { return this.used; }
+  get available(): number { return this.maximum - this.used; }
   reserve(bytes: number): () => void {
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > this.maximum - this.used)
       throw new Error("Window byte budget is full; close another overview or visualization and Retry");
@@ -24,5 +25,9 @@ export function decodedBytes(value: unknown, depth = 0): number {
 }
 export class VisualizationBudgets {
   readonly encoded = new ByteBudget();
-  readonly decoded = new ByteBudget();
+  readonly decoded: ByteBudget;
+  constructor(mib: unknown = 64) {
+    if (typeof mib !== "number" || !Number.isInteger(mib) || mib < 16 || mib > 1024) throw new Error("Decoded buffer budget must be an integer from 16 to 1024 MiB");
+    this.decoded = new ByteBudget(mib * 1048576);
+  }
 }

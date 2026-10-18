@@ -118,7 +118,9 @@ robot.
 When no match is unique, the file gets a new session, dated by its clock evidence or its
 modification time, and the manifest records which. Its file manifest and listing retain
 `matching_reason`, distinguishing insufficient data, clock/serial disagreement, excessive offset,
-and ambiguous sessions. An open capture has no completed hash to invent. A new contact checks held
+and ambiguous sessions. An open capture has no completed hash to invent, so a match against it
+records the capture's recording instead: the files of one recording share the robot's clock, and
+the recording still names the reference after the capture closes and in a copy without it. A new contact checks held
 content even when a reused file has identical size and mtime, and a changed listing invalidates an
 in-progress proof.
 
@@ -397,12 +399,31 @@ A sync is a reader of the peer and a queued, locked writer of its own store. The
 
 `MirrorSync` keeps the origin's IDs and relative session paths instead of coalescing peer
 sessions. It snapshots the origin catalog for each pass, wraps remote names with the session
-ID, and delegates byte copying to `FileTransfer`. A growing prefix is reader-checked and
-published as open, while a finished file must also match its advertised hash. Its header holds
+ID, and delegates byte copying to `FileTransfer`. It copies every finished file except the
+origin's captures, each reader-checked and matched to its advertised hash, and a mirrored manifest
+lists only the files it holds. Captures stay at the origin because a laptop records live data from
+the gateway itself; their clock records travel instead. Captures copied by 0.10.0-dev1 to dev4
+stay unrefreshed until their session is evicted. Its header holds
 origin identity, pins and per-session freshness; the session manifests preserve provenance
-and matching evidence. Recorded REV alignments are used on the origin and mirror alike;
-new associations retain the complete synchronization result, while older summaries behave as
-recorded manual offsets. Cache format 9 retires preceding synchronization state.
+and matching evidence. Recorded REV alignments are used on the origin and mirror alike, and a
+REV log and the robot's log measured against one capture are aligned by combining the two (the
+main architecture guide's "Offsets meet at their reference"), so the mirror, holding neither
+capture, places REV data on the robot log's clock as the pit does. New associations retain the
+complete synchronization result, while older summaries behave as recorded manual offsets. Cache format 9 retires preceding synchronization state.
+
+A clock record holds the facts a closed capture has for placing other sources on robot time:
+today, the roboRIO uptime samples that alone link kernel log times to robot time. It is derived
+from the capture's bytes, so any store holding the capture can write it again, and it names the
+capture's hash, so a stale record shows. The store writes records off its queue, because reading
+a large capture takes seconds, and takes the queue only to check that the capture is unchanged
+before publishing the record in the session manifest; a capture reopened meanwhile gets none
+until it closes again. The rollover watermark belongs to the capture session, not the store
+observer: a new session starts at zero even when the preceding session closed many files.
+Only successful manifest writes advance it; reading and publishing clock records still run
+asynchronously off the capture loop. Records are kept whole, not thinned, so a mirror's searches match the
+pit's line for line. Peer sync copies no records. A server that records into a store writes them for
+every capture the store holds, peer copies included, at its start; a store nothing records into has
+none, and its own searches read the captures.
 
 `MirrorService` schedules daemon work without blocking HTTP workers. Loopback-only mirror
 endpoints configure an allowed folder, report progress, request a pass and queue pins. The

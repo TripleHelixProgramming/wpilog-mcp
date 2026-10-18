@@ -146,6 +146,16 @@ export class McpClient {
     return this.sessionId !== undefined;
   }
 
+  /** Native view follows borrow this window's registered authority. Refuse a different origin
+   * or route before consulting credentials; this never creates a second MCP directory lease. */
+  async followHeaders(endpoint: string): Promise<Record<string, string>> {
+    const url = new URL(endpoint);
+    if (url.origin !== new URL(this.endpoint).origin || url.username || url.password || url.search || url.hash
+      || !/^\/read\/v1\/follows(?:\/[^/]+(?:\/next)?)?$/.test(url.pathname)) throw new Error("Follow credentials require this server origin and follow route");
+    await this.updating.catch(() => {}); await this.ensureSession();
+    return { ...await this.headersFor(endpoint), [SESSION_HEADER]: this.sessionId! };
+  }
+
   /**
    * Calls a tool and returns its result. Rejects with a ToolError when the tool reports an error
    * or the server cannot be reached.
@@ -389,14 +399,18 @@ export class McpClient {
         endpoint,
         { method, headers, timeout },
         (response) => {
-          let text = "", bytes = 0;
+          let text = "", bytes = 0, exceeded = false;
           response.setEncoding("utf8");
           response.on("data", (chunk: string) => {
+            if (exceeded) return;
             bytes += Buffer.byteLength(chunk);
-            if (bytes > maxBytes) { request.destroy(new Error("Response exceeds its byte budget")); return; }
+            if (bytes > maxBytes) { exceeded = true; request.destroy(new Error("Response exceeds its byte budget")); return; }
             text += chunk;
           });
           response.on("end", () => {
+            // A reply that arrived whole before the destroy took effect still ends; it must not
+            // resolve with the text collected before the budget was exceeded.
+            if (exceeded) { reject(this.unreachable(method, new Error("Response exceeds its byte budget"))); return; }
             const header = response.headers[SESSION_HEADER.toLowerCase()];
             resolve({
               status: response.statusCode ?? 0,

@@ -12,9 +12,23 @@ export interface FollowWindow { readonly start_us: string; readonly end_us: stri
 export interface FollowSelection { readonly entry: string; readonly field?: string }
 export type FollowFrontierScope = "all" | "queries";
 export interface FollowLease { readonly id: string; readonly server_epoch: string; readonly cursor: string; readonly frontier_scope?: FollowFrontierScope }
+export interface RecordingClock {
+  readonly basis: "robot_estimate" | "last_sample" | "waiting_for_time_sync" | "unavailable";
+  readonly robot_time_sec: number | null; readonly last_sample_time_sec: number | null;
+  readonly right_edge_sec: number | null; readonly waiting_for_time_sync: boolean;
+}
+export function recordingClock(value: unknown): RecordingClock {
+  const clock = object(value);
+  if (!["robot_estimate", "last_sample", "waiting_for_time_sync", "unavailable"].includes(clock.basis)
+    || typeof clock.waiting_for_time_sync !== "boolean") protocol("Invalid recorded clock evidence");
+  for (const key of ["right_edge_sec", "robot_time_sec", "last_sample_time_sec"])
+    if (clock[key] !== null && (typeof clock[key] !== "number" || !Number.isFinite(clock[key]))) protocol("Invalid recorded clock time");
+  return clock as RecordingClock;
+}
 export interface FollowFrontier {
   readonly recording_id: string; readonly catalog_revision: string; readonly finalized: boolean;
   readonly frontier_scope?: FollowFrontierScope;
+  readonly clock?: RecordingClock;
   readonly members: readonly { readonly member_id: string; readonly snapshot: { readonly [key: string]: Json } }[];
 }
 export interface FollowSample {
@@ -120,6 +134,7 @@ export function page(value: unknown, lease: FollowLease, cursor: string, selecti
   const scope = readFrontierScope(frontier.frontier_scope);
   if (scope !== (lease.frontier_scope ?? "all")) protocol("Follow frontier scope changed");
   text(frontier.recording_id); decimal(frontier.catalog_revision, true); bool(frontier.finalized);
+  if (frontier.clock !== undefined) recordingClock(frontier.clock);
   if (previous && previous.frontier.recording_id !== frontier.recording_id) protocol("Follow recording identity changed");
   if (v.ended && !frontier.finalized) protocol("Terminal live frontier");
   const members = array(frontier.members), ids = new Set<string>();

@@ -16,6 +16,7 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.triplehelix.wpilogmcp.capture.pull.FakeRobot;
 import org.triplehelix.wpilogmcp.config.MirrorConfig;
+import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.*;
 import org.triplehelix.wpilogmcp.sync.*;
@@ -62,6 +63,46 @@ class SystemTextTransferTest {
     assertEquals(2, result.get("total_matches").getAsInt());
     var rows = result.getAsJsonArray("matches").asList().stream().map(com.google.gson.JsonElement::getAsJsonObject).collect(java.util.stream.Collectors.toMap(r -> r.get("source").getAsString(), r -> r));
     assertEquals(12.5, rows.get("kernel").get("timestamp_sec").getAsDouble()); assertEquals(15., rows.get("syslog").get("timestamp_sec").getAsDouble());
+  }
+  /** A mirror holds the robot's log but not the pit's capture, whose roboRIO uptime pairs kernel lines
+   * with robot time: syslog lines keep their time through systemTime, and kernel lines stay listed
+   * with the reason they have none. */
+  void assertMirroredSearch(Path file) throws Exception {
+    var result = search(file); assertEquals("ok", result.get("status").getAsString(), result::toString);
+    assertEquals(2, result.get("total_matches").getAsInt());
+    var rows = result.getAsJsonArray("matches").asList().stream().map(com.google.gson.JsonElement::getAsJsonObject).collect(java.util.stream.Collectors.toMap(r -> r.get("source").getAsString(), r -> r));
+    assertEquals(15., rows.get("syslog").get("timestamp_sec").getAsDouble());
+    var kernel = rows.get("kernel"); var time = kernel.get("timestamp_sec");
+    assertTrue(time == null || time.isJsonNull(), kernel::toString); assertTrue(kernel.get("timestamp_reason").getAsString().contains("uptime_sec"), kernel::toString);
+  }
+  /** Each match's source, line and time, without the store-specific file path. */
+  static List<String> times(com.google.gson.JsonObject result) {
+    return result.getAsJsonArray("matches").asList().stream().map(com.google.gson.JsonElement::getAsJsonObject)
+        .map(r -> r.get("source").getAsString() + "|" + r.get("line_number") + "|" + r.get("timestamp_sec") + "|" + r.get("timestamp_basis")).sorted().toList();
+  }
+  Path copied(Path original) { return copy.root().resolve(origin.root().relativize(original)); }
+  long clockBytes(Path member) throws Exception {
+    return StoreJson.JSON.fromJson(Files.readString(member.resolveSibling("session.json")), Session.class).clocks().stream().mapToLong(StoreManifest.ClockRecord::sizeBytes).sum();
+  }
+  /** The robot's own log of a session, as the pit pulled it beside its capture: robot time and the wall
+   * clock, but none of the pit's daemon context. */
+  Path pulledBeside(Path member) throws Exception { return pulledBeside(member, 10); }
+  /** The capture's wall clock reads WALL at robot time 10 s; a robot log starting later agrees with it. */
+  Path pulledBeside(Path member, int startSec) throws Exception {
+    var log = member.resolveSibling("robot").resolve("robot.wpilog"); Files.createDirectories(log.getParent());
+    try (var writer = new WpilogWriter(log, "synthetic robot log")) {
+      int system = writer.start("systemTime", "int64", "", startSec * 1_000_000L);
+      writer.append(system, startSec * 1_000_000L, WpilogWriter.encodeInt64(WALL.instant().plusSeconds(startSec - 10).toEpochMilli() * 1000));
+      writer.append(system, 20_000_000, WpilogWriter.encodeInt64(WALL.instant().plusSeconds(10).toEpochMilli() * 1000));
+    }
+    origin.capture(io -> {
+      var path = member.resolveSibling("session.json"); var s = io.read(path, Session.class); var files = new ArrayList<>(s.files());
+      files.add(new LogFile("robot/robot.wpilog", StoreFiles.hash(log), Files.size(log), "wpilog",
+          new Provenance("pulled", "/home/lvuser/logs/robot.wpilog", "robot.wpilog", WALL.instant().toString(), true, SERIAL),
+          true, startSec, 20, s.startedAt(), s.endedAt(), "pit_clock", false, null));
+      io.write(path, s.withFiles(files)); return null;
+    });
+    return log;
   }
   @Test void doorListsSharedIndexAndServesOnlyManifestedSystemPrefixes() throws Exception {
     var client = HttpClient.newHttpClient(); String path = StoreFiles.relative(origin.root(), kernel());
@@ -154,6 +195,7 @@ class SystemTextTransferTest {
     var result = copy.sync(url(), 0, p -> {}, WALL, StoreSync::http).get();
     assertTrue(result.stopped().isEmpty(), result::toString); assertEquals(4, result.filesCopied().size());
     assertEquals(2, SystemLogIndex.read(new StoreFiles(copy.root(), manager.testGetSecurityValidator()), copy.root().resolve("robots").resolve(SERIAL)).files().size());
+    pulledBeside(capture); // A mirror copies a session for the logs the pit pulled from its robot.
     var mirror = manager.stores().store(temp.resolve("mirror"));
     var config = new MirrorConfig(url(), mirror.root(), 14, 1000000, List.of(), List.of(), 30, 0);
     var mirrored = mirror.mirror(config, p -> {}, WALL, StoreSync::http).get(); assertEquals("synchronized", mirrored.state(), mirrored::toString);
@@ -161,6 +203,7 @@ class SystemTextTransferTest {
     assertSearch(StoreCatalog.readManaged(copy.root(), manager.testGetSecurityValidator()).files().get(0).path());
   }
   @Test void mirrorSearchesItsCopiesAndRefusesBytesThatDisagreeWithTheAdvertisedHash() throws Exception {
+    var robotLog = pulledBeside(capture);
     var bad = copy.mirror(config(), p -> {}, WALL, address -> {
       var peer = StoreSync.http(address); var remote = peer.remote();
       return new StoreSync.Peer(peer.url(), peer.description(), peer.robots(), peer.sessions(), new RemoteFiles() {
@@ -179,7 +222,66 @@ class SystemTextTransferTest {
     assertFalse(Files.exists(copy.root().resolve(origin.root().relativize(kernel()))), "Unverified system bytes must not be installed");
     var good = copy.mirror(config(), p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
     assertEquals("synchronized", good.state(), good::toString);
-    assertSearch(copy.root().resolve(origin.root().relativize(capture)));
+    assertFalse(Files.exists(copied(capture)), "The pit's capture stays at the pit");
+    // From a pit that has not written the capture's clock record, kernel lines arrive without times;
+    assertMirroredSearch(copied(robotLog));
+    // with the record, the copy gives the pit's own times, line for line.
+    assertEquals(1, origin.keepClocks().get(20, TimeUnit.SECONDS));
+    var timed = copy.mirror(config(), p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
+    assertEquals("synchronized", timed.state(), timed::toString); assertFalse(Files.exists(copied(capture)));
+    assertSearch(copied(robotLog)); assertEquals(times(search(robotLog)), times(search(copied(robotLog))));
+  }
+  /** List a clock record with these pairs for the boot capture, naming the given capture hash. */
+  void listClockRecord(String captureSha, List<double[]> pairs, double min, double max) throws Exception {
+    origin.capture(io -> {
+      var manifest = capture.resolveSibling("session.json"); var s = io.read(manifest, Session.class);
+      var record = capture.resolveSibling("clock").resolve("capture.wpilog.json"); Files.createDirectories(record.getParent());
+      io.write(record, new ClockRecords.Facts(ClockRecords.FORMAT_VERSION, "capture.wpilog", captureSha, Files.size(capture), null, null, min, max, pairs));
+      io.write(manifest, s.withClocks(List.of(new StoreManifest.ClockRecord("clock/capture.wpilog.json", StoreFiles.hash(record), Files.size(record), "capture.wpilog", captureSha))));
+      return null;
+    });
+  }
+  @Test void aCopyPlacesKernelLinesLikeThePitBeyondTheRobotLogsOwnSpan() throws Exception {
+    // The robot's log starts 5 s after the capture. Its line at uptime 105 maps to 12.5 s, inside
+    // the capture's span but outside the log's: the pit places it and the log's window leaves it
+    // out. A copy that knew only the log's span would list it as outside the session instead.
+    var robotLog = pulledBeside(capture, 15);
+    origin.capture(io -> {
+      var path = capture.resolveSibling("session.json"); var s = io.read(path, Session.class);
+      Files.writeString(kernel(), "[112.0] warning later\n", java.nio.file.StandardOpenOption.APPEND);
+      var old = s.systemLogs().files().get(0);
+      var receipt = new SystemLogState.File(old.location(), old.path(), old.source(), old.format(), StoreFiles.hash(kernel()), Files.size(kernel()), old.provenance(), old.note());
+      io.write(path, s.withSystemLogs(s.systemLogs().withFiles(List.of(receipt)))); return null;
+    });
+    assertEquals(1, origin.keepClocks().get(20, TimeUnit.SECONDS));
+    var mirrored = copy.mirror(config(), p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
+    assertEquals("synchronized", mirrored.state(), mirrored::toString);
+    var pit = times(search(robotLog));
+    assertEquals(List.of("kernel|2|16.0|\"uptime_pairing\"", "syslog|1|15.0|\"system_time\""), pit);
+    assertEquals(pit, times(search(copied(robotLog))));
+  }
+  @Test void aCaptureThatGivesTheSearchNothingIsNeitherLoadedNorListed() throws Exception {
+    // The robot's log supplies the wall clock and the capture's record its kernel pairs, so the
+    // capture itself contributes nothing: reading it costs a whole capture for no clock.
+    var robotLog = pulledBeside(capture);
+    assertEquals(1, origin.keepClocks().get(20, TimeUnit.SECONDS));
+    manager.unloadAllLogs();
+    var result = search(robotLog); assertSearch(robotLog);
+    var clocks = result.getAsJsonObject("inputs").getAsJsonArray("clock_files").asList().stream().map(com.google.gson.JsonElement::getAsString).toList();
+    assertEquals(List.of(capture.resolveSibling("clock").resolve("capture.wpilog.json").toString(), robotLog.toString()), clocks);
+    assertFalse(manager.getLoadedLogPaths().contains(capture.toString()), manager.getLoadedLogPaths()::toString);
+  }
+  @Test void aStaleClockRecordGivesWayToTheCaptureItNoLongerDescribes() throws Exception {
+    // These pairs would place the kernel line at 16.25 s; the capture's own pairs place it at 12.5 s.
+    var other = List.of(new double[] {100, 15}, new double[] {120, 20});
+    listClockRecord("a".repeat(64), other, 10, 20);
+    assertSearch(capture);
+    // A record naming the capture as it is now is what the search uses.
+    listClockRecord(StoreFiles.hash(capture), other, 10, 20);
+    var kernel = search(capture).getAsJsonArray("matches").asList().stream().map(com.google.gson.JsonElement::getAsJsonObject)
+        .filter(r -> r.get("source").getAsString().equals("kernel")).findFirst().orElseThrow();
+    assertEquals(16.25, kernel.get("timestamp_sec").getAsDouble(), kernel::toString);
+    assertEquals("uptime_pairing", kernel.get("timestamp_basis").getAsString());
   }
   @Test void aMirrorManifestAheadOfItsTextNamesTheCollectingServer() throws Exception {
     copy.mirror(config(), p -> {}, WALL, address -> { throw new java.io.IOException("offline fixture"); }).get();
@@ -190,7 +292,8 @@ class SystemTextTransferTest {
     assertTrue(result.toString().contains(url()), result::toString); assertFalse(result.toString().contains("Internal error"));
   }
   @Test void mirrorCapIncludesSharedTextAndEvictsItOnlyAfterItsLastSession() throws Exception {
-    var cap = new MirrorConfig(url(), copy.root(), 14, Files.size(capture) + Files.size(kernel()), List.of(), List.of(), 30, 0);
+    var robotLog = pulledBeside(capture);
+    var cap = new MirrorConfig(url(), copy.root(), 14, Files.size(robotLog) + Files.size(kernel()), List.of(), List.of(), 30, 0);
     var refused = copy.mirror(cap, p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
     assertEquals("synchronized", refused.state(), refused::toString);
     assertTrue(StoreCatalog.readManaged(copy.root(), manager.testGetSecurityValidator()).sessions().isEmpty(), "The shared syslog consumes capacity too");
@@ -202,6 +305,7 @@ class SystemTextTransferTest {
     assertTrue(SystemLogIndex.read(io, copy.root().resolve("robots").resolve(SERIAL)).files().isEmpty());
   }
   @Test void growingKernelTextResumesOnBothPathsWithoutDuplicatingTheReceipt() throws Exception {
+    pulledBeside(capture);
     copy.sync(url(), 0, p -> {}, WALL, StoreSync::http).get();
     var mirror = manager.stores().store(temp.resolve("mirror"));
     var config = new MirrorConfig(url(), mirror.root(), 14, 1000000, List.of(), List.of(), 30, 0);
@@ -270,14 +374,43 @@ class SystemTextTransferTest {
   }
   @Test void twoMirroredSessionsCountOneSharedRotationAndEvictionKeepsTheRemainingUsersText() throws Exception {
     var second = create(origin.root(), "second", false, 43);
+    var robotLog = pulledBeside(capture); var secondLog = pulledBeside(second);
+    assertEquals(2, origin.keepClocks().get(20, TimeUnit.SECONDS));
     long shared = SystemLogIndex.read(new StoreFiles(origin.root(), manager.testGetSecurityValidator()), origin.root().resolve("robots").resolve(SERIAL)).files().get(0).file().sizeBytes();
-    long allBytes = Files.size(capture) + Files.size(kernel()) + Files.size(second) + shared;
+    long allBytes = Files.size(robotLog) + Files.size(kernel()) + Files.size(secondLog) + shared + clockBytes(capture) + clockBytes(second);
     var both = new MirrorConfig(url(), copy.root(), 14, allBytes, List.of(), List.of(), 30, 0);
     var complete = copy.mirror(both, p -> {}, WALL, StoreSync::http).get(); assertEquals("synchronized", complete.state(), complete::toString);
     assertEquals(2, StoreCatalog.readManaged(copy.root(), manager.testGetSecurityValidator()).sessions().size(), "Shared bytes count once");
-    var one = new MirrorConfig(url(), copy.root(), 14, allBytes - Files.size(second), List.of(), List.of(), 30, 0);
+    var one = new MirrorConfig(url(), copy.root(), 14, allBytes - Files.size(secondLog) - clockBytes(second), List.of(), List.of(), 30, 0);
     var trimmed = copy.mirror(one, p -> {}, WALL, StoreSync::http).get(); assertEquals(List.of("second"), trimmed.evicted());
-    assertSearch(copy.root().resolve(origin.root().relativize(capture)));
+    assertFalse(Files.exists(copied(second.resolveSibling("clock").resolve("capture.wpilog.json"))), "An evicted session's clock record goes with it");
+    assertSearch(copied(robotLog));
+  }
+  @Test void consolidatedFragmentsKeepTheirCapturesClockRecordsAndLeaveNoStray() throws Exception {
+    var hashes = new java.util.HashSet<String>();
+    for (String name : List.of("first", "second")) hashes.add(StoreFiles.hash(create(copy.root(), name, false, name.equals("first") ? 43 : 44)));
+    // This store records, so each fragment's capture has its record before peer sync merges the two.
+    assertEquals(2, copy.keepClocks().get(20, TimeUnit.SECONDS));
+    var result = copy.sync(url(), 0, p -> {}, WALL, StoreSync::http).get(); assertTrue(result.stopped().isEmpty(), result::toString);
+    var local = StoreCatalog.read(copy.root(), manager.testGetSecurityValidator());
+    assertEquals(List.of(), local.unmanaged(), "a moved fragment's clock record is the store's own file");
+    assertEquals(1, local.sessions().size());
+    var session = local.sessions().get(0); var io = new StoreFiles(copy.root(), manager.testGetSecurityValidator());
+    var captures = session.session().files().stream().filter(f -> hashes.contains(f.sha256())).toList();
+    assertEquals(2, captures.size());
+    for (var capture : captures) {
+      var record = session.session().clocks().stream().filter(r -> r.capture().equals(capture.path())).findFirst()
+          .orElseThrow(() -> new AssertionError("No clock record for " + capture.path() + " in " + session.session().clocks()));
+      assertEquals(capture.sha256(), record.captureSha256());
+      // Uptime 100 s at robot time 10 s and 120 s at 20 s, as the fixture wrote the capture.
+      var pairs = ClockRecords.read(io, ClockRecords.resolve(io, session.path(), record), record).uptime();
+      assertEquals(2, pairs.size()); assertArrayEquals(new double[] {100, 10}, pairs.get(0)); assertArrayEquals(new double[] {120, 20}, pairs.get(1));
+    }
+    // The keeper writes only the record of the capture peer sync copied in; the fragments' stand.
+    var carried = session.session().clocks();
+    assertEquals(1, copy.keepClocks().get(20, TimeUnit.SECONDS));
+    var after = StoreCatalog.readManaged(copy.root(), manager.testGetSecurityValidator()).sessions().get(0).session().clocks();
+    assertTrue(after.containsAll(carried), after::toString); assertEquals(3, after.size(), after::toString);
   }
   @Test void consolidatedLocalFragmentsKeepTheirSystemTextInTheDoor() throws Exception {
     for (String name : List.of("first", "second")) {

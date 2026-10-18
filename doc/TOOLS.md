@@ -101,6 +101,11 @@ assertion that fresh values were published throughout that window.
   - [visualization_template_export](#visualization_template_export)
   - [visualization_view_list](#visualization_view_list)
   - [visualization_view_get](#visualization_view_get)
+  - [visualization_view_bind](#visualization_view_bind)
+  - [visualization_source_value](#visualization_source_value)
+  - [visualization_source_statistics](#visualization_source_statistics)
+  - [visualization_source_histogram](#visualization_source_histogram)
+  - [visualization_source_scatter](#visualization_source_scatter)
   - [visualization_view_create](#visualization_view_create)
   - [visualization_view_update](#visualization_view_update)
   - [visualization_view_clone](#visualization_view_clone)
@@ -193,8 +198,10 @@ The task said "brown out" (two words), so the keyword `brownout` did not match a
 
 ## Live Tools
 
-These three tools are registered on every server, in the catalog's Live category. On a server
-without capture they answer `not_applicable` with the reason; `list_sessions` still reports
+These three tools are registered on every server, in the catalog's Live category. They answer
+from the server's current capture: one configured in `servers.yaml`, or a laptop's live source
+recording a pit's gateway, set at run time. On a server without capture they answer
+`not_applicable` with the reason; `list_sessions` still reports
 `managed`. They open no file. Every result carries `inputs.session`, the current or last capture path
 (null before a session begins). Other tools read that path through the live log as usual.
 These are publication facts, not statistical inferences, so they carry no data-quality score.
@@ -436,9 +443,9 @@ including files beyond the ordinary directory scan depth. The `stores` array nam
 Each log row carries:
 
 - `store`: its root
-- `revlogs`: its correlated companions, each with `path`, `filename`, and `size_bytes`
+- `revlogs`: its companions, the REV logs of its session whose recorded offsets lead to this log's reference, each with `path`, `filename`, `size_bytes`, and `sync_method` (the recorded measurement's method, or `COMBINED` when the REV log's offset and this log's were recorded against one capture)
 - `robot`: `id`, `name`, `serial_number`, `comments` when known, and `basis` (`logged`, `device`, `stated`, or `address` (known only by its connection address))
-- `session`: `id`, `path`, `started_at`, `ended_at`, `start_basis`. A captured file also carries `session.open`: its event and match come from the manifest even while Windows defers the directory rename
+- `session`: `id`, `path`, `started_at`, `ended_at`, `start_basis`. A captured file also carries `session.open`: its event and match come from the manifest even while Windows defers the directory rename. Every captured member of an open session shares this flag; `session.open_capture` names the absolute path of the member currently being written, and is absent after finalization. Use that path, rather than filename order, to open the current recording
 
 Two directories with the same serial describe one robot but remain separate histories.
 
@@ -471,11 +478,15 @@ Store listings additionally return:
 - `moved_to`: notices with `original_path`, `moved_to`, and `moved_at`, retained in the listing for seven days after a move. Copy imports create no notice.
 
 For a mirrored log, `session` also reports `origin` (the origin URL), `complete`, `growing`,
-`last_sync` and `age_sec`. The last successful synchronization stays visible offline. The
-`stores` summary marks `mirror` and includes its origin, pins and freshness. A mirror refuses
+`last_sync` and `age_sec`. The last successful synchronization stays visible offline.
+`complete` means every file the mirrored session lists was verified; `growing` is true only
+for a copy of an open capture that 0.10.0-dev1 to dev4 made, which the mirror does not refresh.
+A mirror does not hold its origin's captures, so a capture is read on its origin.
+The `stores` summary marks `mirror` and includes its origin, pins and freshness. A mirror refuses
 imports and leaves unmanaged files untouched; pinning is a local HTTP UI control, not a tool.
 
-A REV companion with corrupt recorded alignment carries `read_error` naming its manifest.
+A REV companion with corrupt recorded alignment carries `read_error` naming its manifest, as does
+one whose offset names no reference in a session with more than one recording.
 It stays unsynchronized: `sync_status` explains the failure, and REV value tools cannot use its
 clock until a known offset is supplied. Other companions retain their own recorded alignments.
 
@@ -673,7 +684,9 @@ an excluded interval.
 
 Histograms carry `bins` (`low`, `high`, `count`) and `histogram_rule`: equal-width
 `ceil(sqrt(n))` bins capped at 64; `[low, high)` except the last includes the maximum;
-constant data gets one unit-wide bin. Scatter `pairs` contain x/y names, `[x, y, timestamp_sec]`
+constant data gets one unit-wide bin. A range wider than a double holds (from -1e308 to 1e308)
+still gets finite edges; values too large for a unit-wide bin around them (near 1e308) are
+refused with that reason. Scatter `pairs` contain x/y names, `[x, y, timestamp_sec]`
 points, `matched`, `unpaired_x`, `unpaired_y` and page limits. `alignment_rule` states exact
 timestamp, one-to-one record-order pairing, without interpolation or extrapolation.
 Field plots use those pairs for each pose's x/y and include `field_geometry` and `field_source`
@@ -956,7 +969,7 @@ contacts the robot. The pulled file is the exact record; `/Daemon/Tail` entries 
 `search_strings` are the timely copy, stamped at receipt. They can contain the same text.
 
 **Parameters:**
-- `path` (required): The session's capture file
+- `path` (required): Any log of the session: its capture, or a log pulled into it
 - `source` (optional): `kernel`, `syslog`, `program`, `jvm_crash`, or `all` (default)
 - `pattern` (optional): Case-insensitive substring; omit to list every line
 - `regex` (optional): Interpret pattern as a Java regex, default `false`; invalid patterns
@@ -976,12 +989,19 @@ contacts the robot. The pulled file is the exact record; `/Daemon/Tail` entries 
 and `timestamp_reason`. `total_matches` and `limits.matches.total` count all matches before
 paging; `offset`, `limit`, `returned` and `has_more` describe the page. `inputs.files` names
 paths, committed bytes and hashes; `inputs.clock_files` and `inputs.manifest` name the clock
-and membership evidence read. No companions gives `not_applicable`; no matching lines gives
+evidence read, clock records included, and the membership manifest. A capture that would add
+nothing (its record supplies its kernel pairs and another log the wall clock) is neither read nor listed. No companions gives `not_applicable`; no matching lines gives
 `no_match`. No `data_quality`: logged lines are facts.
 
 `kernel` means dmesg only. Kernel seconds interpolate the two nearest recorded
 `/Daemon/roboRIO/uptime_sec` / FPGA pairs, with basis `uptime_pairing`; nothing is
-extrapolated beyond the pairing or session.
+extrapolated beyond the pairing or session. The session's robot time spans its WPILOGs, each
+placed by the offset recorded when it was matched: a REV log's span is on its own clock and does
+not count, and a log whose recorded offset is invalid places nothing. The pairs come from the session's clock records,
+which the server that recorded each capture writes beside the session when the file closes,
+and from a capture only where no current record covers it. A record's span counts toward the
+session's. So a copy without the capture, such as a mirror, places kernel lines as the
+recording server does; a record whose capture has since changed gives way to that capture.
 
 `syslog` includes either files or the whole journal. Journal `short-unix` epochs and ISO
 timestamps with a year and zone map through recorded `systemTime` (prefer the pulled log and
@@ -1033,7 +1053,7 @@ Differences, spikes, peaks, and, in the tools that measure one signal, angle unw
 `data_quality` counts gaps only within windows, and its time span is the sum of the windows'. Results record the scope under `inputs.scope` (`scope`, up to 50 `windows`, `window_count`, `total_sec`); plain `start_time`/`end_time` still appear as `inputs.window`.
 
 ### `get_statistics`
-Statistics of a numeric entry or field over the finite samples in scope, with data quality and analysis directives. A scope with no finite sample is an error that says how many values the log and the scope hold.
+Statistics of a numeric entry or field over the finite samples in scope, with data quality and analysis directives. A scope with no finite sample returns `no_match`, `count: 0`, `looked_for` and a hint to widen the interval or wait for samples. Its reason says how many values the log and scope hold; `inputs` and `data_quality` remain present, and no mean or other computed statistic is supplied. Invalid selectors and nonnumeric entries remain errors.
 
 **Parameters:**
 - `path` (required): Path to the log file
@@ -2632,6 +2652,8 @@ REV log (`.revlog`) files hold CAN status frames from SPARK MAX and SPARK Flex m
 
 REV logs are found by recording time in the configured log directory that holds the wpilog and in the wpilog's own folder, each down to the scan depth (5 levels by default). Other configured directories are not searched, so another team's REV logs from the same event are never matched to yours. Sync results are cached on disk, so loading the same wpilog and REV logs again skips both parsing and correlation. When no REV log was found, every revlog tool returns `status: not_applicable` with the same `reason`. While synchronization is still running, the reason says so and the `hint` points to `wait_for_sync`.
 
+In a store, REV logs are not found by time, and nothing is correlated again: the offsets recorded when the files were placed decide. Each pulled or imported file records what it was measured against, a file by its hash, or a capture still recording (which has no hash yet) by its recording; the files of one capture recording share the robot's clock. A REV log measured against the wpilog, or against the capture the wpilog belongs to, keeps that measurement. A REV log and a robot log that were each measured against one capture are aligned by combining the two offsets, drift included: `sync_method` `COMBINED`, so a mirror that holds no captures aligns them as their origin does. A combination is no more confident than its least confident measurement, and its error is at most the sum of theirs; `sync_status` names the reference and each measurement. An offset recorded by 0.10.0-dev4 or earlier against a capture still recording names no recording: it is taken to be the session's recording only when the session shows exactly one, and otherwise the REV log stays unsynchronized with that reason.
+
 ### How timestamp synchronization works
 
 `.wpilog` files timestamp data on the **roboRIO's FPGA clock**, while `.revlog` files timestamp each CAN frame in milliseconds on the clock of whatever recorded them: robot code (REVLib's status logger, 2026 and later) on the roboRIO, or a laptop running the REV Hardware Client. In the robot-code REV logs tested so far, the two clocks agreed within about 20 ms, but the server does not assume it: it estimates the offset and then measures it.
@@ -2735,7 +2757,7 @@ List the signals in the wpilog's REV logs, with device, unit, sample count, and 
 - `device_filter` (optional): Only devices whose key contains this (case-insensitive, e.g., "SparkMax_1")
 - `signal_filter` (optional): Only signals whose name contains this (case-insensitive, e.g., "velocity")
 
-**Returns:** `signal_count`, `revlog_count`, `overall_sync_confidence`, and `signals`, each with `key` (what `get_revlog_data` takes: `REV/<device>/<signal>`, or `REV/<bus>/<device>/<signal>` when the wpilog has several REV logs), `device`, `signal`, `unit`, `sample_count`, `can_bus`, `sync_method` (`CROSS_CORRELATION`, `SYSTEM_TIME_ONLY`, `USER_PROVIDED`, or `FAILED`), `timestamps_aligned`, `offset_seconds` (when aligned), and `sync_confidence`. A warning says how a bus was aligned when that bounds its accuracy. `_metadata.timing_accuracy_ms` is the overall accuracy range, or `unknown` when any bus has a user offset or failed.
+**Returns:** `signal_count`, `revlog_count`, `overall_sync_confidence`, and `signals`, each with `key` (what `get_revlog_data` takes: `REV/<device>/<signal>`, or `REV/<bus>/<device>/<signal>` when the wpilog has several REV logs), `device`, `signal`, `unit`, `sample_count`, `can_bus`, `sync_method` (`CROSS_CORRELATION`, `COMBINED`, `SYSTEM_TIME_ONLY`, `USER_PROVIDED`, or `FAILED`), `timestamps_aligned`, `offset_seconds` (when aligned), and `sync_confidence`. A warning says how a bus was aligned when that bounds its accuracy. `_metadata.timing_accuracy_ms` is the overall accuracy range (with a combined bus, `up to` the widest bound), or `unknown` when any bus has a user offset or failed.
 
 **Example Response:**
 ```json
@@ -2798,7 +2820,7 @@ Read a REV log signal with its timestamps converted to FPGA time, like `read_ent
 - `limit` (optional): Maximum samples to return (default: 1000)
 - `include_stats` (optional): Include basic statistics (min, max, mean)
 
-**Returns:** `signal_key`, `can_bus`, `sample_count` (returned), `total_samples` (in range), `data` (each `timestamp` and `value`, with `limits.data`), and for the signal's own REV log `sync_method`, `timestamps_aligned`, `offset_seconds`, `sync_confidence`, and `_metadata.timing_accuracy_ms` (`unknown` for a user-provided offset). A warning names the alignment method when it bounds the accuracy. With `include_stats`, `statistics` (`min`, `max`, `mean`, `count`) covers every sample in range, with `data_quality` and `server_analysis_directives`.
+**Returns:** `signal_key`, `can_bus`, `sample_count` (returned), `total_samples` (in range), `data` (each `timestamp` and `value`, with `limits.data`), and for the signal's own REV log `sync_method`, `timestamps_aligned`, `offset_seconds`, `sync_confidence`, and `_metadata.timing_accuracy_ms` (`unknown` for a user-provided offset; for a combination, `up to` the sum of its measurements' bounds). A warning names the alignment method when it bounds the accuracy. With `include_stats`, `statistics` (`min`, `max`, `mean`, `count`) covers every sample in range, with `data_quality` and `server_analysis_directives`.
 
 **Example Response:**
 ```json
@@ -2835,7 +2857,7 @@ Synchronization status for each REV log of the wpilog: confidence, offset, drift
 - `path` (required): Path to the log file
 - `include_signal_pairs` (optional): Include the signal pairs used for correlation
 
-**Returns:** `synchronized` (any REV log synchronized), `revlog_count`, `sync_in_progress`, `overall_confidence` and `overall_confidence_value`, `revlog_filename_zone` (how REV log file names were read), and `revlogs`. Each REV log has `can_bus`, `path`, `device_count`, `signal_count`, and `sync` (`method`, `confidence`, `confidence_level`, `offset_microseconds`, `offset_milliseconds`, `offset_seconds`, `explanation`, `successful`, and the drift fields when drift was detected), plus `signal_pairs` when requested. `_metadata` gives `timing_accuracy_ms` and `confidence_description`. Warnings flag a sync still in progress and medium, low, or failed confidence.
+**Returns:** `synchronized` (any REV log synchronized), `revlog_count`, `sync_in_progress`, `overall_confidence` and `overall_confidence_value`, `revlog_filename_zone` (how REV log file names were read), and `revlogs`. Each REV log has `can_bus`, `path`, `device_count`, `signal_count`, and `sync` (`method`, `confidence`, `confidence_level`, `offset_microseconds`, `offset_milliseconds`, `offset_seconds`, `explanation`, `successful`, and the drift fields when drift was detected), plus `signal_pairs` when requested. A `COMBINED` sync adds `combined`: the `reference` its measurements share, `max_error_ms` (the sum of their bounds), and `measurements`, each with `file`, `against`, `reversed` (applied from the reference to this log), `method`, `confidence_level`, `offset_milliseconds`, and `drift_rate_ns_per_sec` when nonzero. `_metadata` gives `timing_accuracy_ms` (with a combination, `up to` the widest bound) and `confidence_description`. Warnings flag a sync still in progress and medium, low, or failed confidence.
 
 **Example Response:**
 ```json
@@ -2971,6 +2993,14 @@ template is not revision zero.
 ### `visualization_capabilities_get`
 
 Supported configuration schema, type and role vocabulary, persistent identity, budgets and preview limits.
+`capabilities.decoded_buffer_budget` describes the window setting, default/range and reload
+requirement. `attached_windows` lists each window's `client_id`, `current_session`, `decoded_buffer_budget_bytes`
+and `basis: client_reported`. These are client allowance reports, not server allocations or
+access grants; session removal or server restart removes them. `client_id` is an opaque window
+ID for this server process, the ID a working view's `attached_client_id` also shows. It is
+not the window's session ID, grants nothing and is not accepted as a session; no result carries a
+session ID. `current_session` marks the caller's own window. The extension shares that
+allowance across recorded/live sample buffers and paged inventory, with separate encoded limits.
 
 **Parameters:**
 
@@ -3000,7 +3030,7 @@ hash when present, and native descriptor with entries, schemas and sample counts
 Its basis is `robot_estimate`, `last_sample`, `waiting_for_time_sync`, or `unavailable` for an
 empty finalized recording. A stateless inspection never holds or extrapolates a previous edge.
 Capabilities expose `live_source_inspection: true` and `max_recording_inventory_bytes: 4194304`;
-`live` remains false until the editor integration is complete. See the
+`live` remains false until the complete Stage 3 gate, although local recording panels are available as a preview. See the
 [standalone reference](STANDALONE.md#recorded-visualization-preview) for admission and staged limits.
 
 Paged mode returns a session-bound inventory ID, fixed member/clock summary and exact totals
@@ -3070,6 +3100,113 @@ server epoch succeeds without returning contents; another session cannot close t
 - `inventory_id` (required, string): Handle from this session.
 
 **Returns:** `api_version`, `status`, `inventory` containing `inventory_id` and `closed: true`.
+
+### `visualization_source_value`
+
+Read timestamp-latest or cursor values from an admitted file or anchored recording. This is a
+fresh fixed-prefix read; it does not inspect the Explorer's plotted buffers or hold a follow.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `source_ref` (required, object): Durable file or anchored recording reference.
+- `entry` (required, string): Exact declared name; no role or name guessing.
+- `field` (optional, string): Scalar field or array index. Recording fields require a numeric witness and refuse wildcards.
+- `at_sec` (optional, number): Inclusive robot-clock cursor; omit for greatest timestamp.
+
+**Returns:** `api_version`, `status`, `value`, `inputs`. The nested value contains exact tagged
+`value`, decimal `timestamp_us`, `basis`, decode `problems`, `problem_count` and
+`problems_truncated`. Recording results also carry `member_id`, decimal `ordinal`, `tie_basis`,
+`records_visited` and `prefix` with member writer/hash/boundary and entry counts. Equal timestamps
+use original member ID in Java string order then physical ordinal, greatest first. A logged
+missing field remains null rather than holding a previous value. No value is `no_match` with
+`looked_for` and `hint`; diagnosed skipped records produce `partial` when a value is available.
+Recording bounds and fresh-admission semantics are in the
+[standalone reference](STANDALONE.md#recorded-visualization-preview).
+
+### `visualization_source_statistics`
+
+Use the shared statistics owner over original samples from a file or proven recording prefix.
+Every matching duplicate/backward record is included. Member declarations and schemas must agree;
+no file is preferred and no plot bucket becomes a statistical input.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `source_ref` (required, object): Durable file or anchored recording reference.
+- `entry` (required, string): Exact declared numeric entry.
+- `field` (optional, string): Numeric scalar field or array index. Recording reads refuse wildcards.
+- `start_time` (optional, number): Inclusive robot-clock start in seconds.
+- `end_time` (optional, number): Inclusive robot-clock end in seconds.
+- `last_seconds` (optional, number): Positive finite recent duration; cannot combine with `start_time` or `end_time`. Anchored at the admitted robot estimate, no earlier than the last recorded timestamp, or the last timestamp when no estimate exists. `inputs.window` gives the resolved bounds.
+
+**Returns:** `api_version`, `status`, `statistics`, `inputs`, `data_quality` and
+`server_analysis_directives`. Statistics include `count`, `min`, `max`, `mean`, `median`,
+`std_dev`, `q1`, `q3`, `iqr`, `p5`, `p95`, field/angle facts when applicable, and the same quality
+and directives as `get_statistics`. Recording results add `prefix`, `records_visited`,
+`basis: admitted_recording_prefix` and member-qualified decode problems. An empty or all-non-finite numeric window returns `no_match`, `count: 0`, `looked_for`
+and a hint on both adapters, retaining inputs, quality and recording-prefix evidence; computed
+statistics and analysis directives are absent. Nonnumeric data and invalid selectors still
+refuse, as do resource limits rather than approximate. Non-finite filtering is counted.
+Decode failures give `partial` with `skipped`; sample count and timing bound confidence and one
+recording cannot establish a general cause. These operations require trusted local authority;
+slot pressure is retryable with a one-second delay, and permanent limits have no retry delay.
+
+### `visualization_source_histogram`
+
+Count finite original samples using the same binning, numeric-field, angle and data-quality
+rules as `render_chart`. Bins never use reduced plot points. Counts weight samples, not elapsed
+time; a change-only signal's long hold contributes one sample.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `source_ref` (required, object): Durable file or anchored recording reference.
+- `entry` (required, string): Exact numeric entry; booleans use 0/1.
+- `field` (optional, string): Scalar numeric field or array index; no wildcard.
+- `start_time` (optional, number): Inclusive robot-clock start in seconds.
+- `end_time` (optional, number): Inclusive robot-clock end in seconds.
+- `last_seconds` (optional, number): Recent duration, mutually exclusive with absolute bounds; 1–300 seconds while active.
+
+**Returns:** `api_version`, `status`, `histogram`, `inputs`, `data_quality` and
+`server_analysis_directives`. The histogram contains `bins` (`low`, `high`, `count`),
+`histogram_rule`, `summary`, `prefix`, `records_visited`, `basis`, `problems`, `problem_count`
+and `problems_truncated`. The rule is equal-width `ceil(sqrt(n))` bins, at most 64; intervals
+are `[low, high)`, with the maximum included in the last bin. Constant data gets one unit-wide
+bin. Unrepresentable finite bin edges refuse. Empty finite data gives `no_match`, `looked_for`
+and `hint`; skipped decode failures give `partial` when data remains. Summary includes count,
+min, max, mean, window and non-finite count. Prefix and bounds follow the
+[source chart contract](STANDALONE.md#recorded-visualization-preview).
+
+### `visualization_source_scatter`
+
+Pair exact timestamps one-to-one over two selected numeric signals from one source prefix.
+Stable timestamp order preserves original member ID and physical ordinal within ties. There
+is no interpolation, nearest-time match or automatic clock alignment.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `source_ref` (required, object): Durable file or anchored recording reference.
+- `x_entry` (required, string): Exact horizontal numeric entry.
+- `y_entry` (required, string): Exact vertical numeric entry; may equal `x_entry`.
+- `x_field` (optional, string): Horizontal scalar numeric field or array index.
+- `y_field` (optional, string): Vertical scalar numeric field or array index.
+- `start_time` (optional, number): Inclusive robot-clock start in seconds.
+- `end_time` (optional, number): Inclusive robot-clock end in seconds.
+- `last_seconds` (optional, number): Recent duration, mutually exclusive with absolute bounds; 1–300 seconds while active.
+- `offset` (optional, integer): Matched pairs skipped; nonnegative, default 0.
+- `limit` (optional, integer): Returned pairs, 1–4096, default 256.
+
+**Returns:** `api_version`, `status`, `scatter`, `inputs`, `limits`, `data_quality` and
+`server_analysis_directives`. Scatter contains `points` as `[x, y, time_sec]`, `matched`,
+`unpaired_x`, `unpaired_y`, `alignment_rule`, `offset`, `next_offset`, `complete`, `summary`
+for both signals, prefix and decode diagnostics. `limits.points` inside the scatter result (and `limits["scatter.points"]` on the MCP envelope)
+reports the true full match total, returned count and requested limit. Paging changes only the drawing; totals and summaries
+cover the entire interval. Every page call admits a fresh prefix: compare the prefix before
+combining pages across appends. An empty page is `no_match` with a hint even if other pages
+contain matches. Sample counts and non-finite filtering bound confidence; a scatter plot does
+not establish causation. Both chart operations require trusted local authority.
 
 ### `visualization_template_list`
 
@@ -3167,7 +3304,7 @@ Return envelope_json with format, schema_version, template and content_sha256. C
 
 ### `visualization_view_list`
 
-List unexpired working views, optionally for source_ref. Returns views with revision, configuration, source_ref, checkpoint, saved/template references, attachment and expiry.
+List unexpired working views, optionally for source_ref. Returns views with revision, configuration, source_ref, checkpoint, saved/template references, attachment and expiry. attached_client_id is the attached window's opaque ID, as in capabilities, never a session ID.
 
 **Parameters:**
 
@@ -3178,7 +3315,7 @@ List unexpired working views, optionally for source_ref. Returns views with revi
 
 ### `visualization_view_get`
 
-Read one working view: revision, configuration, source_ref, checkpoint, saved/template references, attachment, expiry, has_unsaved_changes and native_dirty. Does not display it.
+Read one working view: revision, configuration, source_ref, checkpoint, saved/template references, attachment, expiry, has_unsaved_changes and native_dirty. attached_client_id is the attached window's opaque ID, as in capabilities, never a session ID. Does not display it.
 
 **Parameters:**
 
@@ -3186,6 +3323,27 @@ Read one working view: revision, configuration, source_ref, checkpoint, saved/te
 - `view_id` (required, string): Working view UUID.
 
 **Returns:** `api_version`, `status`, `view` on success; `code` and `error` on refusal.
+
+### `visualization_view_bind`
+
+Resolve an anchored recording view at its expected working revision using every freshly admitted
+member. Returns explicit compatibility and unresolved requirements, clock evidence, effective
+time policy and server-owned follow queries. It does not open a follow or display a view.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1`.
+- `view_id` (required, string): Working recording view UUID.
+- `expected_revision` (required, integer): Current working revision; an edit during admission returns `REVISION_CONFLICT`.
+
+**Returns:** `api_version`, `status`, `binding`, `inputs`; `binding` carries `view_id`, `revision`,
+`source_ref`, `compatibility`, `clock`, `time_policy`, `queries`, `follow_ready`, `reason`,
+`frontier_scope` and `max_page_bytes`. Zero resolved selections return `no_match` with
+`looked_for` and `hint`; the binding still explains every configured requirement. Missing clock
+evidence can make `follow_ready` false even with resolved selections. Refusals carry `code` and
+`error`; temporary native-read refusals include `retryable` and `retry_after_ms`.
+This detached answer is evidence, not a continuing permission grant. Follow creation rechecks
+revision and evidence; see [view follow admission](READ_API.md#following-a-recording-view).
 
 ### `visualization_view_create`
 

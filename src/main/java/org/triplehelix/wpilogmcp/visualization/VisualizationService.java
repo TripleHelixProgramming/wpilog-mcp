@@ -34,7 +34,12 @@ public final class VisualizationService implements AutoCloseable {
       new ArrayBlockingQueue<>(64), task -> { var t = new Thread(task, "visualization-state"); t.setDaemon(true); return t; });
   private volatile boolean closed;
   private volatile java.util.function.Consumer<JsonObject> changed = ignored -> {};
+  /** The listener routes by the attached window's session, so it receives view_id, revision and
+   * that internal attached_client_id, never the public projection. */
   public void onChanged(java.util.function.Consumer<JsonObject> listener) { changed = listener; }
+  private final WindowIds windowIds = new WindowIds();
+  /** Public window IDs for this workspace's replies; window allowance reports use the same ones. */
+  public WindowIds windowIds() { return windowIds; }
   private final ConcurrentMap<UUID, JsonObject> locators = new ConcurrentHashMap<>();
   private final Set<UUID> endedClients = ConcurrentHashMap.newKeySet();
 
@@ -256,10 +261,23 @@ public final class VisualizationService implements AutoCloseable {
     return attach(caller, view, client, () -> true);
   }
   public CompletableFuture<JsonObject> attach(Authority caller, UUID view, UUID client, java.util.function.BooleanSupplier active) {
+    return attach(caller, view, client, active, owner -> false);
+  }
+  /**
+   * Attaches the view to {@code client}'s window. Another window's attachment stands unless
+   * {@code gone} says that window has stopped answering: one closed or reloaded without ending its
+   * session would otherwise hold its views until the session expires an hour later.
+   */
+  public CompletableFuture<JsonObject> attach(Authority caller, UUID view, UUID client, java.util.function.BooleanSupplier active,
+      java.util.function.Predicate<UUID> gone) {
     return submit(caller, () -> {
       if (!active.getAsBoolean()) throw new IOException("SESSION_EXPIRED: the session ended while attachment was queued");
       var record = raw(view);
-      if (!record.get("attached_client_id").isJsonNull() && !client.toString().equals(record.get("attached_client_id").getAsString())) throw new IOException("VIEW_ATTACHED: reveal the owning window or open a copy");
+      var attached = record.get("attached_client_id");
+      if (!attached.isJsonNull() && !client.toString().equals(attached.getAsString())) {
+        if (!gone.test(UUID.fromString(attached.getAsString()))) throw new IOException("VIEW_ATTACHED: reveal the owning window or open a copy");
+        org.slf4j.LoggerFactory.getLogger(VisualizationService.class).info("View {} moves from a window that stopped answering", view);
+      }
       record.addProperty("attached_client_id", client.toString()); record.add("detached_expires_at", JsonNull.INSTANCE);
       write(view, record); return record;
     });
@@ -291,8 +309,8 @@ public final class VisualizationService implements AutoCloseable {
     return views.values().stream().filter(r -> !expired(r) && !r.get("deleted").getAsBoolean() && checked.equals(r.get("source_ref")))
         .sorted(Comparator.comparing(r -> r.get("view_id").getAsString())).map(r -> {
           var summary = new JsonObject();
-          for (var key : List.of("view_id", "revision", "saved_view_ref", "attached_client_id", "detached_expires_at")) summary.add(key, r.get(key).deepCopy());
-          return summary;
+          for (var key : List.of("view_id", "revision", "saved_view_ref", "detached_expires_at")) summary.add(key, r.get(key).deepCopy());
+          summary.add("attached_client_id", attachment(r)); return summary;
         }).toList();
   }
   public List<JsonObject> all() {
@@ -314,12 +332,18 @@ public final class VisualizationService implements AutoCloseable {
     if (revision >= 9_007_199_254_740_991L) throw new IOException("WORKSPACE_LIMIT: revision exhausted");
     record.addProperty("revision", revision + 1);
   }
+  /** The public projection, which retry receipts also store. Internally an attachment is the
+   * window's transport session, which ownership checks compare; callers see its public window ID. */
   private JsonObject describe(JsonObject original) {
-    var record = original.deepCopy(); record.remove("requests");
+    var record = original.deepCopy(); record.remove("requests"); record.add("attached_client_id", attachment(original));
     boolean unsaved = record.get("checkpoint_configuration").isJsonNull() || !record.get("configuration").equals(record.get("checkpoint_configuration"));
     record.addProperty("has_unsaved_changes", unsaved);
     record.addProperty("native_dirty", unsaved && !record.get("saved_view_ref").isJsonNull());
     return record;
+  }
+  private JsonElement attachment(JsonObject record) {
+    var session = record.get("attached_client_id");
+    return session.isJsonNull() ? JsonNull.INSTANCE : new JsonPrimitive(windowIds.forSession(session.getAsString()));
   }
   private boolean expired(JsonObject record) {
     return record.get("attached_client_id").isJsonNull() && !record.get("detached_expires_at").isJsonNull()
@@ -406,7 +430,9 @@ public final class VisualizationService implements AutoCloseable {
     checkBudget(id, record);
     trimTombstones(id, record);
     if (files != null) files.write("views/" + id + ".json", record.toString());
-    views.put(id, record.deepCopy()); changed.accept(describe(record));
+    views.put(id, record.deepCopy());
+    var change = new JsonObject(); for (var key : List.of("view_id", "revision", "attached_client_id")) change.add(key, record.get(key).deepCopy());
+    changed.accept(change);
   }
   /** Locators are owner-local recovery metadata, never part of a portable SourceRef. */
   public CompletableFuture<JsonObject> rememberSource(Authority caller, UUID id, JsonObject locator) {
@@ -463,8 +489,10 @@ public final class VisualizationService implements AutoCloseable {
       if (closed) throw new IOException("WORKSPACE_CLOSED");
       queue.execute(() -> {
         drainReleasedClients();
+        // Every failure answers the caller, an Error too: the HTTP worker waits on this future
+        // without a deadline, so an unanswered one would hold it for good.
         try { result.complete(operation.run()); }
-        catch (Exception failure) { result.completeExceptionally(failure); }
+        catch (Throwable failure) { result.completeExceptionally(failure); if (failure instanceof VirtualMachineError fatal) throw fatal; }
         finally { drainReleasedClients(); }
       });
     } catch (Exception failure) { result.completeExceptionally(failure); }

@@ -8,6 +8,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
@@ -291,7 +292,7 @@ public class LogCache {
     closeIfLazy(log);
 
     if (cause != RemovalCause.REPLACED) {
-      logger.info("Evicted log '{}' ({})", path, cause.name().toLowerCase());
+      logger.info("Evicted log '{}' ({})", path, cause.name().toLowerCase(Locale.ROOT));
       var callback = this.evictionCallback;
       if (callback != null) {
         try {

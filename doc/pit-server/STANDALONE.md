@@ -118,13 +118,22 @@ resumes from the last committed cursor. SFTP files resume at their content-check
   goes to `robot/system/unassigned/` with a note.
 - No remote file is deleted or modified.
 
-**Reading them.** `search_system_logs` with the capture's path reads the pulled record;
-`search_strings` reads the timely copy that a followed file provides (see
+**Reading them.** `search_system_logs` with any log of the session as its path reads the pulled
+record; `search_strings` reads the timely copy that a followed file provides (see
 [SSH stats and followed files](#ssh-stats-and-followed-files)). Kernel timestamps need recorded
 `uptime_sec` pairs; journal and ISO wall-clock timestamps need the session's `systemTime`. Without
 that evidence the text stays visible, with a null robot timestamp and a reason. A journald kernel
 message can appear twice: source `kernel` means dmesg only, and source `syslog` includes the
 whole journal.
+
+**Clock records.** The `uptime_sec` pairs are recorded only in the pit's capture, so the pit also
+writes them beside the session: when a capture file closes, and once after each start for files
+closed earlier, it writes `clock/<capture>.json` with every uptime sample in that file, the
+capture's hash, its recording and its span in robot time. The session record lists each one
+with its hash, size and the capture's recording, so a copy without the capture still knows which
+recording the capture belongs to. The search takes kernel pairs from these records, and from a capture
+only where no current record covers it, so a mirror holding no captures places kernel lines as
+the pit does. A record whose capture reopens is dropped, and written again when the file closes.
 
 **Sharing them.** The store door includes these receipts and the shared indices in
 `/store/sessions`; the file and prefix-hash routes serve only committed byte lengths. Peer sync
@@ -820,17 +829,32 @@ servers:
 | `mirror.interval_sec` | Positive integer seconds between attempts, default `30` |
 | `mirror.rate_bytes` | Nonnegative integer bytes per second; default `0` means unlimited |
 
+The mirror copies each session's finished files with the system text that belongs to them, except
+the origin's own captures: it copies the logs the origin pulled from robots and the files imported
+or uploaded into it. A laptop records live data itself from the pit's gateway
+([Live source on a laptop](#live-source-on-a-laptop)). A mirrored session lists only the files
+the mirror holds. Each capture's [clock record](#clock-records) comes instead of the capture, so
+kernel lines keep the pit's match times. The origin measures each file it pulls against its
+capture of the session, and records the capture's hash, or its recording when the capture was
+still recording. A REV log and the robot's log measured against one capture are paired by
+combining the two offsets, in the mirror as on the pit: the REV tools report `COMBINED` with both
+measurements, and nothing is correlated again.
+
 Pinned session IDs override the window and robot filter. The cap favors newer sessions and
 evicts the oldest unpinned ones first. Pins can exceed the cap; that is reported, and none is
 deleted. A copy whose origin no longer advertises its held content is retained with a reason,
 not deleted on an assumption. Retention deletes only manifested mirror files, never a stray.
-Open sessions advance to the origin's current prefix each pass, using the same content proof
-and resume engine as peer sync; ordinary log reloads notice the appended bytes. A replaced
-prefix is fetched from the start. Session IDs follow directory renames and robot moves.
+System text that grows on the origin advances to its current prefix each pass, using the same
+content proof and resume engine as peer sync. Session IDs follow directory renames and robot
+moves.
+
+Captures that 0.10.0-dev1 to dev4 copied stay as they were: listed and readable, never refreshed,
+and counted toward the cap, until their session leaves the window or the cap evicts it.
 
 `list_available_logs` adds `origin`, `complete`, `growing`, `last_sync`, and `age_sec` to a
-mirrored log's `session`. `complete` means the origin closed it and all its advertised files
-were verified. The bytes, provenance, and recorded matching offsets are the origin's; no REV
+mirrored log's `session`. `complete` means every file the mirrored session lists was verified
+against the origin's hash; `growing` is true only for a copy of an open capture that an earlier
+version made. The bytes, provenance, and recorded matching offsets are the origin's; no REV
 correlation is rerun. A disconnected origin leaves the existing listing and files readable.
 
 Local user controls require a loopback connection and the normal Origin check:
@@ -838,15 +862,35 @@ Local user controls require a loopback connection and the normal Origin check:
 | Endpoint | Result |
 |----------|--------|
 | `GET /store/mirror` | State (`disabled`, `waiting`, `synchronizing`, `synchronized`, `offline`, `partial`, `error`), configuration, last sync and age, remaining file/byte counts, result and origin policy |
-| `POST /store/mirror/configure` | The mirror block as JSON; starts background synchronization, returns 202; folder must already be allowed by configuration or a directory lease |
+| `POST /store/mirror/configure` | The mirror block as JSON; starts background synchronization, returns 202; folder must already be allowed by configuration or a directory lease, and must not be the live folder or a `servers.yaml` capture's store |
 | `POST /store/mirror/sync` | `{}` requests Sync Now, returns 202; an active pass returns 409 |
 | `POST /store/mirror/pin_session` | `{ "session_id": "..." }` queues a pin; 202; polling status shows it applied |
 | `POST /store/mirror/unpin_session` | The same body removes the pin; 202 |
-| `DELETE /store/mirror` | Stops future passes and leaves existing files intact |
+| `DELETE /store/mirror` | Stops future passes and leaves existing files intact; 409 while the mirror or the live source is being configured |
 
 These controls are endpoints for a person's UI actions, not assistant tools. Mirror configuration
 starts after the HTTP listener, so an unavailable or slow origin cannot delay daemon health.
 The mirror uses additive fields in store format 1 and refuses a different origin store ID.
+
+#### Live source on a laptop
+
+A laptop's server can record a pit's NT4 gateway into its own store, so its live views and live
+tools read local files. The extension sets this at run time from its pit settings. The controls
+are loopback-only, with the mirror's checks:
+
+| Endpoint | Result |
+|----------|--------|
+| `GET /store/live` | `state` (`disabled`, `connecting`, `waiting_for_time_sync`, `connected`, `recording`, `failed`), `configured_by`, the configuration, the gateway `address`, `disconnect_reason` while unconnected, and the current `session` (`file`, `started_at`, `open`, `records`) |
+| `POST /store/live/configure` | A capture block limited to `robot`, `store`, `period_sec`, `exclude`, `thin`, `hot_window_sec` and `max_file_bytes`; returns 202. An unchanged configuration keeps its recording; a changed one finishes the old file first |
+| `DELETE /store/live` | Stops recording and finishes the file; the files stay |
+
+The folder must already be admitted by configuration or a directory lease, and must differ from
+the mirror folder; the mirror refuses the live folder in turn, and the store of a capture that
+`servers.yaml` configures, which is empty until its robot connects. The two controls make one
+change at a time: a request during another change gets 409, and is retried. On a server whose `servers.yaml`
+configures `capture`, the status reports that capture, and both changes are refused, so an
+editor cannot redirect a pit's robot capture. Pulling robot logs, the gateway and context
+providers stay in `servers.yaml`. The live tools answer from whichever capture is current.
 
 A prefix that changes repeatedly during one pass is retried once, then reported as partial
 until the next interval; the journal keeps its place. Superseded private partial files are
@@ -899,11 +943,20 @@ pit server bound to loopback, an nginx TLS server can protect MCP and upload tog
 location / {
   auth_basic "Team pit server";
   auth_basic_user_file /etc/nginx/pit.htpasswd;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   proxy_pass http://127.0.0.1:2363;
   client_max_body_size 2047m;
   proxy_request_buffering off;
 }
 ```
+
+Keep the `X-Forwarded-For` line. nginx reaches the pit from loopback, and that header is how the
+server tells a proxied request from a local one: without it, everyone who passes the login is a
+local caller for directory leases, pit forwarding, mirror and sync controls, server-path
+imports, local ingestion and the visualization routes. Requests carrying `Forwarded`, `X-Forwarded-For`,
+`X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP` or `Via` are refused by those routes and
+treated as remote by MCP. Byte uploads, reads, raw follows and the MCP analysis tools still
+answer them.
 
 ### Live session tools and a proxy login
 

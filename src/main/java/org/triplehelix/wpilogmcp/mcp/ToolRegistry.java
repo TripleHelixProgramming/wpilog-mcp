@@ -28,19 +28,33 @@ public class ToolRegistry {
   public void serverIdentity(org.triplehelix.wpilogmcp.visualization.ServerIdentity value) { identity = java.util.Objects.requireNonNull(value); }
   private final java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CompletableFuture<
       org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace>> visualization = new java.util.concurrent.atomic.AtomicReference<>();
+  @FunctionalInterface interface WorkspaceBuild {
+    org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace build(org.triplehelix.wpilogmcp.visualization.ServerIdentity identity) throws java.io.IOException;
+  }
+  /** The first caller builds the workspace; tests substitute a build that fails. */
+  volatile WorkspaceBuild workspaceBuild = identity ->
+      new org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace(identity, org.triplehelix.wpilogmcp.log.LogManager.getInstance());
   public org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace visualizations() throws java.io.IOException {
     var future = visualization.get();
     if (future == null) {
       var pending = new java.util.concurrent.CompletableFuture<org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace>();
       if (visualization.compareAndSet(null, pending)) {
-        try { pending.complete(new org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace(identity, org.triplehelix.wpilogmcp.log.LogManager.getInstance())); }
-        catch (Exception e) { pending.completeExceptionally(e); visualization.compareAndSet(pending, null); }
+        // Every failure answers the callers waiting on this build, an Error too, and frees the slot
+        // for the next caller to build again: an unfinished build would hold them all for good.
+        try { pending.complete(workspaceBuild.build(identity)); }
+        catch (Throwable e) {
+          pending.completeExceptionally(e); visualization.compareAndSet(pending, null);
+          if (e instanceof VirtualMachineError fatal) throw fatal;
+        }
         future = pending;
       } else return visualizations();
     }
     try { return future.get(); }
     catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new java.io.IOException("Workspace admission interrupted", e); }
-    catch (java.util.concurrent.ExecutionException e) { throw new java.io.IOException("Workspace unavailable: " + e.getCause().getMessage(), e.getCause()); }
+    catch (java.util.concurrent.ExecutionException e) {
+      var cause = e.getCause();
+      throw new java.io.IOException("Workspace unavailable: " + java.util.Objects.requireNonNullElse(cause.getMessage(), cause.getClass().getSimpleName()), cause);
+    }
   }
   public void closeVisualizations() {
     var pending = visualization.getAndSet(null);

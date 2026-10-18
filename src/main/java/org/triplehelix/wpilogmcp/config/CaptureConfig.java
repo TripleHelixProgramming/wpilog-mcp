@@ -45,6 +45,16 @@ public record CaptureConfig(List<URI> addresses, Path store, double periodSecond
     return parse(value, expand, UnaryOperator.identity());
   }
 
+  /** What a laptop's runtime live source may set: where to record from, where to, and how often.
+   * Pulling robot logs, serving a gateway and context providers belong to a pit's servers.yaml. */
+  public static final Set<String> LIVE_SOURCE_KEYS = Set.of("robot", "store", "period_sec", "exclude", "thin", "hot_window_sec", "max_file_bytes");
+  public static CaptureConfig parseLiveSource(JsonElement value) throws ConfigException {
+    if (value == null || !value.isJsonObject()) throw new ConfigException("live source must be an object");
+    for (var key : value.getAsJsonObject().keySet())
+      if (!LIVE_SOURCE_KEYS.contains(key)) throw new ConfigException("capture." + key + ": not available to a live source; configure it in a pit server's servers.yaml");
+    return parse(value, UnaryOperator.identity());
+  }
+
   static CaptureConfig parse(JsonElement value, UnaryOperator<String> expand, UnaryOperator<String> text) throws ConfigException {
     if (value == null || value.isJsonNull()) return null;
     try {

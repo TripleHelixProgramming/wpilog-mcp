@@ -194,6 +194,8 @@
     /** Opens a stream for an entry: {timestamps, values, count, bucketed}, values the samples or the buckets' means. */
     static seriesOf(bytes, name) {
       const stream = ArrowStream.read(bytes);
+      // A stream cut at a batch boundary parses; only its end marker says the series is whole.
+      if (!stream.complete) throw new Error("the series ended before its end marker; try again");
       const changed = ArrowStream.fileChanged(stream);
       if (changed) throw new Error("the file changed while it was read (" + changed + "); try again");
       const metadata = ArrowStream.parsedMetadata(stream);

@@ -36,7 +36,7 @@ public final class RecordedRevRead implements AutoCloseable {
     this.path = path; this.boundary = boundary;
     this.alignment = new SyncResult(alignment.offsetMicros(), alignment.confidence(), alignment.confidenceLevel(),
         List.copyOf(alignment.signalPairs()), alignment.method(), alignment.explanation(),
-        alignment.driftRateNanosPerSec(), alignment.referenceTimeSec());
+        alignment.driftRateNanosPerSec(), alignment.referenceTimeSec(), alignment.combination());
     this.lease = lease;
     if (selected == null || selected.equals(lease.signals.keySet())) this.signals = lease.signals;
     else {
@@ -80,7 +80,8 @@ public final class RecordedRevRead implements AutoCloseable {
     if (alignment.method() == null || alignment.confidenceLevel() == null || alignment.signalPairs() == null
         || alignment.explanation() == null || !Double.isFinite(alignment.confidence())
         || alignment.confidence() < 0 || alignment.confidence() > 1
-        || !Double.isFinite(alignment.driftRateNanosPerSec()) || !Double.isFinite(alignment.referenceTimeSec())) {
+        || !Double.isFinite(alignment.driftRateNanosPerSec()) || !Double.isFinite(alignment.referenceTimeSec())
+        || !org.triplehelix.wpilogmcp.sync.Combination.consistent(alignment.method(), alignment.combination())) {
       throw new IOException("Invalid explicit recorded REV alignment");
     }
     var before = FileSnapshot.of(real);

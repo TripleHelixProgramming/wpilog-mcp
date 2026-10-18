@@ -29,6 +29,23 @@ class ConformanceChecksTest {
     result.getAsJsonObject("page").remove("entries"); assertFalse(ConformanceChecks.limitsConsistent(result));
   }
 
+  @Test void limitsOnANestedObjectAreCheckedAgainstItsOwnList() {
+    // A chart series pages its points, and a session row its costs, each with limits of its own.
+    var result = json("""
+        {"chart_spec":{"series":[{"name":"a","points":[[0,1],[1,2]],"limits":{"points":{"total":5,"returned":2,"limit":2}}}]},
+         "sessions":[{"cost":[{"name":"x"}],"limits":{"cost":{"total":1,"returned":1,"limit":10}}}]}
+        """);
+    assertTrue(ConformanceChecks.limitsConsistent(result));
+    var series = result.getAsJsonObject("chart_spec").getAsJsonArray("series").get(0).getAsJsonObject();
+    series.getAsJsonObject("limits").getAsJsonObject("points").addProperty("returned", 3);
+    assertFalse(ConformanceChecks.limitsConsistent(result), "a series claiming three returned points holds two");
+    series.getAsJsonObject("limits").getAsJsonObject("points").addProperty("returned", 2);
+    result.getAsJsonArray("sessions").get(0).getAsJsonObject().getAsJsonObject("limits").getAsJsonObject("cost").addProperty("total", 0);
+    assertFalse(ConformanceChecks.limitsConsistent(result), "a total below the returned count");
+    // A paged inventory names the server's own caps limits: a different meaning, not a page.
+    assertTrue(ConformanceChecks.limitsConsistent(json("{\"inventory\":{\"limits\":{\"max_handles\":4,\"max_page_rows\":256}}}")));
+  }
+
   static JsonObject json(String s) {
     return JsonParser.parseString(s).getAsJsonObject();
   }

@@ -76,8 +76,11 @@ use `search_system_logs`: the tail is the timely copy, the pulled file the exact
 ## Mirrored listing facts
 
 For a mirrored log, `session` also reports `origin` (the origin URL), `complete`, `growing`,
-`last_sync` and `age_sec`. The last successful synchronization stays visible offline. The
-`stores` summary marks `mirror` and includes its origin, pins and freshness. A mirror refuses
+`last_sync` and `age_sec`. The last successful synchronization stays visible offline.
+`complete` means every file the mirrored session lists was verified; `growing` is true only
+for a copy of an open capture that 0.10.0-dev1 to dev4 made, which the mirror does not refresh.
+A mirror does not hold the pit's captures, so a capture is read on the pit server.
+The `stores` summary marks `mirror` and includes its origin, pins and freshness. A mirror refuses
 imports and leaves unmanaged files untouched; pinning is a local HTTP UI control, not a tool.
 
 ## Recorded robot identity

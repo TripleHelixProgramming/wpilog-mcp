@@ -50,6 +50,60 @@ class SearchSystemLogsTest {
     assertEquals(1, result.getAsJsonObject("inputs").getAsJsonArray("files").size());
     assertEquals(List.of(capture.toString()), result.getAsJsonObject("inputs").getAsJsonArray("clock_files").asList().stream().map(com.google.gson.JsonElement::getAsString).toList());
   }
+  @Test void aRevLogsOwnClockDoesNotWidenTheSessionsRobotTime() throws Exception {
+    // Robot time runs 10..20 s. The REV log's span is on the REV log's own clock, 0..40 s here, so it
+    // says nothing about robot time: the journal line at robot time 30 s stays outside the session.
+    var rev = capture.resolveSibling("bus.revlog"); Files.writeString(rev, "synthetic REV bytes");
+    var manifest = capture.resolveSibling("session.json");
+    var session = StoreJson.JSON.fromJson(Files.readString(manifest), StoreManifest.Session.class);
+    String hash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(rev)));
+    var file = new StoreManifest.LogFile("bus.revlog", hash, Files.size(rev), "revlog",
+        new StoreManifest.Provenance("pulled", "/home/lvuser/logs/bus.revlog", "bus.revlog", WALL.instant().toString(), true, SERIAL),
+        true, 0, 40, session.startedAt(), session.endedAt(), "pit_clock", false, null);
+    Files.writeString(manifest, StoreJson.JSON.toJson(session.withFiles(List.of(file))));
+    var rows = call("\"source\":\"syslog\"").getAsJsonArray("matches");
+    // Given a time from the widened span, the line would fall outside the log's window and vanish.
+    assertEquals(2, rows.size(), "the line outside the session stays listed, untimed: " + rows);
+    assertEquals(15.25, rows.get(0).getAsJsonObject().get("timestamp_sec").getAsDouble(), 1e-9);
+    assertTrue(rows.get(1).getAsJsonObject().get("timestamp_sec").isJsonNull(), rows::toString);
+  }
+  /** A pulled robot log whose own clock runs 10..40 s, recorded as `offset` microseconds off robot time. */
+  void pulled(long offset, double confidence) throws Exception {
+    var log = capture.resolveSibling("robot").resolve("robot.wpilog"); Files.createDirectories(log.getParent());
+    try (var writer = new org.triplehelix.wpilogmcp.fixtures.WpilogWriter(log, "synthetic pulled log")) {
+      int id = writer.start("/counter", "int64", "", 10_000_000);
+      writer.append(id, 10_000_000, org.triplehelix.wpilogmcp.fixtures.WpilogWriter.encodeInt64(1));
+      writer.append(id, 40_000_000, org.triplehelix.wpilogmcp.fixtures.WpilogWriter.encodeInt64(2));
+    }
+    var manifest = capture.resolveSibling("session.json");
+    var session = StoreJson.JSON.fromJson(Files.readString(manifest), StoreManifest.Session.class);
+    String hash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(log)));
+    var file = new StoreManifest.LogFile("robot/robot.wpilog", hash, Files.size(log), "wpilog",
+        new StoreManifest.Provenance("pulled", "/home/lvuser/logs/robot.wpilog", "robot.wpilog", WALL.instant().toString(), true, SERIAL),
+        true, 10, 40, session.startedAt(), session.endedAt(), "pit_clock", false,
+        new StoreManifest.Matching("by_correlation", null, offset, confidence, 0, 0, "data_alone"));
+    Files.writeString(manifest, StoreJson.JSON.toJson(session.withFiles(List.of(file))));
+  }
+  @Test void aPulledLogsSpanCountsInRobotTimeByItsRecordedOffset() throws Exception {
+    // Its own clock reaches 40 s, but 15 s behind robot time it ends at 25 s: robot time 30 s stays outside.
+    pulled(-15_000_000, 0.9);
+    var rows = call("\"source\":\"syslog\"").getAsJsonArray("matches");
+    assertEquals(2, rows.size(), "the line outside the session stays listed, untimed: " + rows);
+    assertTrue(rows.get(1).getAsJsonObject().get("timestamp_sec").isJsonNull(), rows::toString);
+    // Recorded 15 s the other way, the log runs to 55 s of robot time and the line at 30 s is inside it.
+    pulled(15_000_000, 0.9);
+    var args = new JsonObject(); args.addProperty("path", capture.resolveSibling("robot").resolve("robot.wpilog").toString());
+    args.addProperty("source", "syslog");
+    var inside = tool.execute(args).getAsJsonObject().getAsJsonArray("matches");
+    assertEquals(30.0, inside.get(1).getAsJsonObject().get("timestamp_sec").getAsDouble(), 1e-9, inside::toString);
+  }
+  @Test void aPulledLogWithAnInvalidRecordedOffsetPlacesNothing() throws Exception {
+    // Taken at face value the offset would stretch the session to 55 s and time the line at 30 s.
+    pulled(15_000_000, 2);
+    var rows = call("\"source\":\"syslog\"").getAsJsonArray("matches");
+    assertEquals(2, rows.size(), rows::toString);
+    assertTrue(rows.get(1).getAsJsonObject().get("timestamp_sec").isJsonNull(), "an invalid offset must not stretch the session: " + rows);
+  }
   @Test void journalUsesItsWrittenEpochAndKernelMeansOnlyDmesg() throws Exception {
     var result = call("\"source\":\"syslog\""); var rows = result.getAsJsonArray("matches"); assertEquals(2, rows.size());
     assertEquals(15.25, rows.get(0).getAsJsonObject().get("timestamp_sec").getAsDouble(), 1e-9);

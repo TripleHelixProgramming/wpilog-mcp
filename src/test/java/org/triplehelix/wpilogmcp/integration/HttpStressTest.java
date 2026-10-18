@@ -674,6 +674,48 @@ class HttpStressTest {
     System.out.println("========================================\n");
   }
 
+  @Test
+  @Order(20)
+  @DisplayName("Recording view binding: repeated HTTP/MCP reads on 10000 synthetic topics")
+  void recordingViewBinding(@org.junit.jupiter.api.io.TempDir Path temporary) throws Exception {
+    temporary = temporary.toRealPath(); var logs = LogManager.getInstance(); var configured = logs.getConfiguredDirectories();
+    logs.addAllowedDirectory(temporary); String client = initialize(); JsonObject view = null;
+    try {
+      var fixture = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temporary.resolve("store"), 10000);
+      var config = org.triplehelix.wpilogmcp.visualization.VisualizationContracts.blank();
+      for (int i = 0; i < 32; i++) config.getAsJsonArray("requirements").add(JsonParser.parseString("""
+          {"id":"r%d","selector_kind":"entry","entry":"%s","accepted_entry_types":["int64"],
+           "field_path":null,"value_type":"number","unit":null}
+          """.formatted(i, org.triplehelix.wpilogmcp.fixtures.RecordingFixture.name(i))));
+      var create = new JsonObject(); create.addProperty("api_version", 1); create.addProperty("request_id", java.util.UUID.randomUUID().toString());
+      create.add("source_ref", fixture.reference); create.addProperty("configuration_json", config.toString());
+      var response = toolCall(client, "visualization_view_create", create); assertEquals("ok", response.get("status").getAsString(), response.toString()); view = response.getAsJsonObject("view");
+      var request = new JsonObject(); request.addProperty("api_version", 1); request.add("view_id", view.get("view_id")); request.add("expected_revision", view.get("revision"));
+      var histogram = new JsonObject(); histogram.addProperty("api_version", 1); histogram.add("source_ref", fixture.reference); histogram.addProperty("entry", "/signal/00000");
+      var scatter = new JsonObject(); scatter.addProperty("api_version", 1); scatter.add("source_ref", fixture.reference); scatter.addProperty("x_entry", "/signal/00000"); scatter.addProperty("y_entry", "/signal/00000");
+      for (int page = 0; page < 3; page++) {
+        scatter.addProperty("limit", 1); scatter.addProperty("offset", page);
+        var bins = toolCall(client, "visualization_source_histogram", histogram).getAsJsonObject("histogram").getAsJsonArray("bins");
+        assertEquals(2, bins.get(0).getAsJsonObject().get("count").getAsInt());
+        var pairs = toolCall(client, "visualization_source_scatter", scatter).getAsJsonObject("scatter");
+        assertEquals(3, pairs.get("matched").getAsInt()); assertEquals(1, pairs.getAsJsonArray("points").size());
+      }
+      for (int repeat = 0; repeat < 32; repeat++) {
+        response = toolCall(client, "visualization_view_bind", request); assertEquals("ok", response.get("status").getAsString(), response.toString());
+        var bound = response.getAsJsonObject("binding"); assertEquals(1 << 20, bound.get("max_page_bytes").getAsInt());
+        assertEquals(32, bound.getAsJsonArray("queries").size());
+        for (int i = 0; i < 32; i++) assertEquals(org.triplehelix.wpilogmcp.fixtures.RecordingFixture.name(i), bound.getAsJsonArray("queries").get(i).getAsJsonObject().get("entry").getAsString());
+      }
+    } finally {
+      if (view != null) {
+        var remove = new JsonObject(); remove.addProperty("api_version", 1); remove.addProperty("request_id", java.util.UUID.randomUUID().toString());
+        remove.add("view_id", view.get("view_id")); remove.add("expected_revision", view.get("revision"));
+        assertEquals("ok", toolCall(client, "visualization_view_delete", remove).get("status").getAsString());
+      }
+      delete(client); assertTrue(logs.release(temporary).released()); logs.clearAllowedDirectories(); configured.forEach(logs::addAllowedDirectory);
+    }
+  }
+
   // ==================== HTTP Helpers ====================
 
   private static String initialize() throws IOException, InterruptedException {

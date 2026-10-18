@@ -22,9 +22,11 @@ public final class CallerContext {
   private static final ThreadLocal<Authority> CURRENT = new ThreadLocal<>();
   private CallerContext() {}
   public static Authority current() { return Objects.requireNonNullElse(CURRENT.get(), Authority.UNTRUSTED); }
-  public static Authority http(InetAddress listener, InetAddress peer, boolean allowedOrigin) {
+  /** A same-host reverse proxy connects from loopback too, so a request it forwarded is never
+   * local; a forwarding header can only withdraw trust. */
+  public static Authority http(InetAddress listener, InetAddress peer, boolean allowedOrigin, boolean forwarded) {
     return listener != null && peer != null && listener.isLoopbackAddress()
-        && peer.isLoopbackAddress() && allowedOrigin ? Authority.HTTP_LOCAL : Authority.UNTRUSTED;
+        && peer.isLoopbackAddress() && allowedOrigin && !forwarded ? Authority.HTTP_LOCAL : Authority.UNTRUSTED;
   }
   static void set(Authority value) { CURRENT.set(Objects.requireNonNullElse(value, Authority.UNTRUSTED)); }
   static void clear() { CURRENT.remove(); }

@@ -16,7 +16,6 @@ import org.triplehelix.wpilogmcp.log.FileSnapshot;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.read.*;
 import org.triplehelix.wpilogmcp.store.StoreCatalog;
-import org.triplehelix.wpilogmcp.sync.SyncResult;
 
 /** A manifested session on an explicitly chosen anchor clock. Unproven files are named and
  * excluded, never given a fabricated zero offset. Overlapping recordings require KEEP_ALL;
@@ -46,8 +45,12 @@ public final class SessionSnapshot implements ReadSnapshot {
         if (file.file().sha256() != null && hashes.contains(file.file().sha256())) {
           excluded.add(new ExcludedSource(file.path().toString(), "Identical SHA-256 already included")); continue;
         }
-        var clock = clock(file, anchor, files, collectingStore);
-        if (clock == null) { excluded.add(new ExcludedSource(file.path().toString(), "No recorded alignment to the requested anchor")); continue; }
+        var alignment = org.triplehelix.wpilogmcp.store.RecordedClocks.between(file, anchor, files, collectingStore);
+        if (alignment.isEmpty() || !alignment.get().aligned()) {
+          excluded.add(new ExcludedSource(file.path().toString(), alignment.isEmpty()
+              ? "No recorded alignment to the requested anchor" : alignment.get().refusal())); continue;
+        }
+        var clock = alignment.get().steps();
         if (parts.size() == 64) throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT, "A session union admits at most 64 files");
         boolean open = file.session().openCapture() != null
             && file.session().openCapture().path().equals(file.file().path());
@@ -79,39 +82,6 @@ public final class SessionSnapshot implements ReadSnapshot {
       catalog.releaseIndex(charged, null);
       throw failure;
     }
-  }
-  private static List<SyncResult> clock(StoreCatalog.StoredFile source, StoreCatalog.StoredFile anchor,
-      List<StoreCatalog.StoredFile> files, String collectingStore) throws IOException {
-    var result = new ArrayList<SyncResult>(); var visited = new HashSet<Path>(); var at = source;
-    while (!at.path().equals(anchor.path())) {
-      if (!visited.add(at.path())) throw new IOException("Cycle in recorded session alignment: " + source.manifestPath());
-      var match = at.file().matching();
-      if (match == null) {
-        // Rollover files from the same capture session already use one robot clock.
-        if (sameRecording(at, anchor, collectingStore)) break;
-        return null;
-      }
-      var proof = StoreCatalog.recordedAlignment(at);
-      if (!proof.isSuccessful()) throw new IOException(proof.explanation());
-      if (proof.driftRateNanosPerSec() <= -1_000_000_000.) throw new IOException("Recorded clock is not increasing: " + source.manifestPath());
-      result.add(proof);
-      if (match.wpilogSha256() == null) {
-        // Older session-level matches name the capture clock, but peer consolidation can put
-        // several independent recordings in one manifest. Never choose one by calendar alone.
-        return captured(anchor) && files.stream().filter(SessionSnapshot::captured)
-            .allMatch(f -> sameRecording(f, anchor, collectingStore)) ? List.copyOf(result) : null;
-      }
-      String hash = match.wpilogSha256();
-      at = files.stream().filter(f -> hash.equals(f.file().sha256())).findFirst().orElse(null);
-      if (at == null) return null;
-    }
-    return List.copyOf(result);
-  }
-  private static boolean captured(StoreCatalog.StoredFile file) {
-    return file.file().provenance() != null && file.file().provenance().captured();
-  }
-  private static boolean sameRecording(StoreCatalog.StoredFile a, StoreCatalog.StoredFile b, String collectingStore) {
-    return org.triplehelix.wpilogmcp.store.CaptureRecording.same(a.file().provenance(), b.file().provenance(), collectingStore);
   }
   private SessionSnapshot(StoreReadCatalog owner, Path manifest, List<Part> parts, List<ExcludedSource> excluded, Overlap overlap) throws IOException {
     this.owner = owner; this.manifest = manifest; this.parts = List.copyOf(parts); this.excluded = List.copyOf(excluded);

@@ -10,6 +10,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.util.List;
+import java.util.Locale;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
@@ -82,14 +83,39 @@ public final class RevLogTools {
 
   /**
    * The timing accuracy a sync result can claim: the confidence level's range for a
-   * correlation or a wall-clock estimate; unknown for a user offset (its accuracy is the user's)
-   * and for a failed sync.
+   * correlation or a wall-clock estimate; for a combination of recorded offsets, the most it can
+   * be off (the sum of its measurements' bounds); unknown for a user offset (its accuracy is the
+   * user's) and for a failed sync.
    */
   static String accuracyOf(SyncResult result) {
     return switch (result.method()) {
       case USER_PROVIDED, FAILED -> "unknown";
+      case COMBINED -> result.estimatedAccuracyMs();
       default -> result.confidenceLevel().getAccuracyMs();
     };
+  }
+
+  /**
+   * The accuracy of several REV logs together, when one of them is a combination: the widest
+   * bound among them, since a combination's is a sum rather than a confidence level's range.
+   * Empty when none is combined, and the levels' ranges say it.
+   */
+  static java.util.Optional<String> combinedAccuracy(SynchronizedLogs syncLogs) {
+    if (syncLogs.revlogs().stream().noneMatch(s -> s.syncResult().method() == SyncMethod.COMBINED)) {
+      return java.util.Optional.empty();
+    }
+    double widest = 0;
+    for (var synced : syncLogs.revlogs()) {
+      var result = synced.syncResult();
+      double bound = switch (result.method()) {
+        case COMBINED -> result.combination().maxErrorMs();
+        case CROSS_CORRELATION, SYSTEM_TIME_ONLY -> result.confidenceLevel().getMaxErrorMs();
+        default -> Double.NaN;
+      };
+      if (!Double.isFinite(bound)) return java.util.Optional.of("unknown");
+      widest = Math.max(widest, bound);
+    }
+    return java.util.Optional.of("up to " + org.triplehelix.wpilogmcp.sync.Combination.milliseconds(widest));
   }
 
   /**
@@ -111,10 +137,37 @@ public final class RevLogTools {
       case USER_PROVIDED -> String.format("REV log '%s': timestamps aligned by a user-provided "
           + "offset of %.1f ms; the server cannot judge its accuracy.", bus,
           result.offsetMillis());
+      case COMBINED -> result.confidenceLevel() == ConfidenceLevel.HIGH
+          && Double.isFinite(result.combination().maxErrorMs()) ? null
+          : String.format("REV log '%s': timestamps aligned by combining offsets recorded against "
+              + "%s, at %s confidence (accuracy %s ms); sync_status names the measurements.", bus,
+              result.combination().reference(), result.confidenceLevel().getLabel(), accuracyOf(result));
       case FAILED -> String.format("REV log '%s' was not synchronized (%s): its timestamps are "
           + "on the REV log's own clock, and get_revlog_data returns not_applicable for its "
           + "signals until set_revlog_offset provides an offset.", bus, result.explanation());
     };
+  }
+
+  /** What a combined alignment rests on: the reference, the most it can be off, and each measurement. */
+  static JsonObject combinedJson(org.triplehelix.wpilogmcp.sync.Combination combination) {
+    var combined = new JsonObject();
+    combined.addProperty("reference", combination.reference());
+    double bound = combination.maxErrorMs();
+    combined.addProperty("max_error_ms", Double.isFinite(bound) ? bound : null);
+    var measurements = new JsonArray();
+    for (var m : combination.measurements()) {
+      var o = new JsonObject();
+      o.addProperty("file", m.file());
+      o.addProperty("against", m.against());
+      o.addProperty("reversed", m.reversed());
+      o.addProperty("method", m.method().name());
+      o.addProperty("confidence_level", m.confidenceLevel().getLabel());
+      o.addProperty("offset_milliseconds", m.offsetMicros() / 1000.0);
+      if (m.driftRateNanosPerSec() != 0.0) o.addProperty("drift_rate_ns_per_sec", m.driftRateNanosPerSec());
+      measurements.add(o);
+    }
+    combined.add("measurements", measurements);
+    return combined;
   }
 
   /** The buses and paths of the revlogs, for results that cannot use them. */
@@ -152,8 +205,9 @@ public final class RevLogTools {
           + "rotations unless a conversion factor is configured on the SPARK: compare with "
           + "the robot code's own entries before assuming a unit); and other sensors when "
           + "their frames were logged. Signals are automatically synchronized with wpilog "
-          + "timestamps when loaded; each carries sync_method (CROSS_CORRELATION, "
-          + "SYSTEM_TIME_ONLY, USER_PROVIDED, or FAILED), timestamps_aligned, offset_seconds, "
+          + "timestamps when loaded; each carries sync_method (CROSS_CORRELATION, COMBINED for "
+          + "offsets a store recorded against one capture, SYSTEM_TIME_ONLY, USER_PROVIDED, or "
+          + "FAILED), timestamps_aligned, offset_seconds, "
           + "and sync_confidence, and a warning says how a bus was aligned when that bounds its "
           + "accuracy. Returns not_applicable when no REV log could be synchronized (with the "
           + "buses, for set_revlog_offset) and no_match when the filters match no signal.";
@@ -208,13 +262,13 @@ public final class RevLogTools {
           unfiltered++;
           // Apply device filter
           if (deviceFilter != null
-              && !signal.deviceKey().toLowerCase().contains(deviceFilter.toLowerCase())) {
+              && !signal.deviceKey().toLowerCase(Locale.ROOT).contains(deviceFilter.toLowerCase(Locale.ROOT))) {
             continue;
           }
 
           // Apply signal filter
           if (signalFilter != null
-              && !signal.name().toLowerCase().contains(signalFilter.toLowerCase())) {
+              && !signal.name().toLowerCase(Locale.ROOT).contains(signalFilter.toLowerCase(Locale.ROOT))) {
             continue;
           }
 
@@ -265,14 +319,16 @@ public final class RevLogTools {
       ConfidenceLevel overall = syncLogs.overallConfidence();
       boolean accuracyKnown = syncLogs.revlogs().stream().allMatch(s ->
           s.syncResult().method() == SyncMethod.CROSS_CORRELATION
-              || s.syncResult().method() == SyncMethod.SYSTEM_TIME_ONLY);
+              || s.syncResult().method() == SyncMethod.SYSTEM_TIME_ONLY
+              || s.syncResult().method() == SyncMethod.COMBINED);
 
       ResponseBuilder response = success()
           .addProperty("signal_count", totalSignals)
           .addData("signals", signals)
           .addProperty("revlog_count", syncLogs.revlogCount())
           .addProperty("overall_sync_confidence", overall.getLabel())
-          .addMetadata("timing_accuracy_ms", accuracyKnown ? overall.getAccuracyMs() : "unknown");
+          .addMetadata("timing_accuracy_ms", accuracyKnown
+              ? combinedAccuracy(syncLogs).orElse(overall.getAccuracyMs()) : "unknown");
       warnings.forEach(response::addWarning);
 
       return response.build();
@@ -294,9 +350,11 @@ public final class RevLogTools {
       return "Get data from a REV log signal with timestamps converted to FPGA time. "
           + "Use list_revlog_signals first to discover available signal keys. sync_method, "
           + "offset_seconds, and sync_confidence say how the timestamps were aligned (a "
-          + "cross-correlation of signals both logs record, the wall-clock estimate alone, or a "
-          + "user-provided offset, whose accuracy the server cannot judge: timing_accuracy_ms "
-          + "is then unknown), and a warning says so when the method bounds the accuracy. A "
+          + "cross-correlation of signals both logs record, two offsets a store recorded against "
+          + "one capture and combined, whose error is at most the sum of theirs, the wall-clock "
+          + "estimate alone, or a user-provided offset, whose accuracy the server cannot judge: "
+          + "timing_accuracy_ms is then unknown), and a warning says so when the method bounds "
+          + "the accuracy. A "
           + "signal whose REV log could not be synchronized returns not_applicable until "
           + "set_revlog_offset provides an offset: its timestamps are on the REV log's own clock.";
     }
@@ -464,6 +522,13 @@ public final class RevLogTools {
       return "Get detailed synchronization status for all synchronized REV log files. "
           + "Shows confidence levels, timing offsets, and the signal pairs used for "
           + "synchronization. Use this to understand the accuracy of REV log timestamps. "
+          + "In a store, a REV log and this log may each have an offset recorded against one "
+          + "capture (a capture file, or a capture recording when it was still open); the two "
+          + "are then combined, with no correlation between the files: sync.method is COMBINED, "
+          + "its confidence is the lower of the two, and sync.combined names the reference, each "
+          + "measurement (file, against, reversed when applied from the reference to this log, "
+          + "method, confidence_level, offset_milliseconds) and max_error_ms, the sum of their "
+          + "bounds, which timing_accuracy_ms also reports. "
           + "revlog_filename_zone says how REV log filename times were read to find the REV "
           + "logs and estimate the coarse offset: in the zone the wpilog's own filename shows "
           + "against its wall clock, else UTC (the roboRIO's default). A REV log named by "
@@ -523,6 +588,7 @@ public final class RevLogTools {
               result.driftRateNanosPerSec() * 3.6);
           syncInfo.addProperty("reference_time_sec", result.referenceTimeSec());
         }
+        if (result.combination() != null) syncInfo.add("combined", combinedJson(result.combination()));
 
         revlogInfo.add("sync", syncInfo);
 
@@ -545,7 +611,7 @@ public final class RevLogTools {
       }
 
       ConfidenceLevel overall = syncLogs.overallConfidence();
-      String accuracyEstimate = overall.getAccuracyMs();
+      String accuracyEstimate = combinedAccuracy(syncLogs).orElse(overall.getAccuracyMs());
 
       ResponseBuilder response = success()
           .addProperty("synchronized", syncLogs.hasAnySynchronized())

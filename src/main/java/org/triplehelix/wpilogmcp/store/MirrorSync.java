@@ -37,8 +37,13 @@ import org.triplehelix.wpilogmcp.sync.PullManifest;
 import org.triplehelix.wpilogmcp.sync.RemoteFiles;
 
 /**
- * Retention and placement belong to the mirror, byte transfer to FileTransfer. One pass takes
- * an origin catalog snapshot; growing files advance to that prefix, never chase the writer.
+ * Retention and placement belong to the mirror, byte transfer to FileTransfer. The mirror copies
+ * a session's finished files with their system text, except the origin's own captures: a laptop
+ * records live data from the pit's gateway itself. Each capture's clock record comes instead, so
+ * kernel lines keep their match times without the capture. A mirrored session lists only the files
+ * the mirror holds. Text can grow: one pass takes an origin catalog snapshot and advances text to that
+ * prefix, never chasing the writer. Captures that 0.10.0-dev1 to dev4 copied stay as those
+ * versions copied them until their session leaves the window or the cap.
  * Session ids make remote directory renames independent of the transfer journal's names.
  * Runs only on the owning store queue under store.lock.
  */
@@ -47,7 +52,7 @@ public final class MirrorSync {
   public record Result(String state, String lastSync, long bytesCopied, List<String> evicted,
       List<String> retained, List<String> refusals, String reason) {}
   private record Item(String key, String remotePath, Path destination, long size, long mtime,
-      LogFile file, SystemLogIndex.Entry text, StoreDoor.Session session) {}
+      LogFile file, SystemLogIndex.Entry text, ClockRecord clock, StoreDoor.Session session) {}
   private record Pending(String from, String to, String hash, String sessionId) {}
   private final Path root;
   private final StoreFiles io;
@@ -106,13 +111,15 @@ public final class MirrorSync {
           if (offered.put(session.manifest().id(), session) != null) throw new IOException("Duplicate origin session id");
         }
         var local = StoreCatalog.readManaged(root, security);
+        var heldById = new HashMap<String, StoreCatalog.SessionDirectory>();
+        for (var session : local.sessions()) heldById.putIfAbsent(session.session().id(), session);
         for (var robot : local.robots()) localText.put(robot.robot().id(), SystemLogIndex.read(io, robot.path()).files());
         var safeToEvict = new HashSet<String>();
         for (var held : local.sessions()) {
           var present = offered.get(held.session().id());
           if (present != null && originStillHolds(held, present, remote)) safeToEvict.add(held.session().id());
         }
-        var chosen = choose(config, offered, local, safeToEvict);
+        var chosen = choose(config, offered, local, heldById, safeToEvict);
         for (var session : local.sessions()) {
           String id = session.session().id();
           if (!chosen.contains(id) && offered.containsKey(id)) {
@@ -122,16 +129,18 @@ public final class MirrorSync {
         }
         evictShared(local, chosen, offered, remote);
         for (var id : chosen) {
-          var exported = offered.get(id); var robot = peer.robots().stream()
+          var exported = offered.get(id);
+          // Nothing to copy: a capture stays at the origin, and an earlier version's copy of one stays as it was.
+          if (copyable(exported.manifest()).isEmpty()) continue;
+          var robot = peer.robots().stream()
               .filter(r -> r.id().equals(exported.robotId())).findFirst().orElseThrow(() -> new IOException("Missing origin robot"));
           if (!Set.of("logged", "device", "stated", "address").contains(robot.basis())) throw new IOException("Invalid origin robot basis");
           var robotPath = io.resolve(root, "robots/" + StoreFiles.component(robot.id()) + "/robot.json");
           io.write(robotPath, new Robot(robot.id(), robot.serialNumber(), robot.name(), robot.comments(), robot.basis()));
           relocate(exported);
-          for (var file : exported.manifest().files()) add(exported, file.path(), file.sizeBytes(), file);
-          var open = exported.manifest().openCapture();
-          if (open != null) add(exported, open.path(), open.sizeBytes(), null);
+          for (var file : copyable(exported.manifest())) add(exported, file);
           for (var text : StoreDoor.systemFiles(offeredCatalog, exported)) addText(exported, text);
+          for (var clock : currentClocks(exported.manifest())) addClock(exported, clock);
         }
         var localFiles = new Local();
         var snapshot = new RemoteFiles() {
@@ -158,7 +167,7 @@ public final class MirrorSync {
             catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Mirror interrupted", e); }
           }
         }
-        for (var id : chosen) publish(offered.get(id));
+        for (var id : chosen) if (!copyable(offered.get(id).manifest()).isEmpty()) publish(offered.get(id), heldById.get(id));
         discardSupersededPartials();
         String now = clock.instant().toString(); saveHeader(now);
         return new Result(refusals.isEmpty() ? "synchronized" : "partial", now, copied,
@@ -189,13 +198,18 @@ public final class MirrorSync {
     }
     if (s.openCapture() != null && (!names.add(payload(path, s.openCapture().path())) || s.openCapture().sizeBytes() < 0
         || s.openCapture().provenance() == null || !"captured".equals(s.openCapture().provenance().kind()))) throw new IOException("Invalid origin open capture");
+    for (var clock : s.clocks()) {
+      ClockRecords.validate(clock);
+      if (!names.add(payload(path, clock.path()))) throw new IOException("Duplicate origin file path");
+    }
   }
   private Path payload(Path session, String name) throws IOException {
     var path = io.resolve(session, name);
     if (!path.startsWith(session) || path.equals(session.resolve("session.json"))) throw new IOException("Invalid session payload path");
     return path;
   }
-  private Set<String> choose(MirrorConfig config, Map<String, StoreDoor.Session> offered, StoreCatalog.Snapshot local, Set<String> safeToEvict) {
+  private Set<String> choose(MirrorConfig config, Map<String, StoreDoor.Session> offered, StoreCatalog.Snapshot local,
+      Map<String, StoreCatalog.SessionDirectory> heldById, Set<String> safeToEvict) {
     var pinned = Set.copyOf(header.origin().pinnedSessions()); var result = new HashSet<String>();
     long budget = config.maxSizeBytes();
     // A rotation shared by fifty sessions consumes space once, including forced retention.
@@ -210,19 +224,54 @@ public final class MirrorSync {
     var ordered = offered.values().stream().sorted(Comparator.comparing((StoreDoor.Session s) -> s.manifest().startedAt()).reversed()
         .thenComparing(s -> s.manifest().id())).toList();
     for (var session : ordered) if (pinned.contains(session.manifest().id())) {
-      result.add(session.manifest().id()); budget -= account(accounted, costs(session.manifest(), StoreDoor.systemFiles(offeredCatalog, session)), true);
+      var costs = holdingCosts(session, heldById.get(session.manifest().id()));
+      if (costs == null) continue;
+      result.add(session.manifest().id()); budget -= account(accounted, costs, true);
     }
     for (var session : ordered) {
       var s = session.manifest();
       if (result.contains(s.id())) continue;
       if (!config.robots().isEmpty() && !config.robots().contains(session.robotId())) continue;
+      var costs = holdingCosts(session, heldById.get(s.id()));
+      if (costs == null) continue;
       boolean inScope = !Instant.parse(s.endedAt()).isBefore(cutoff) || s.event() != null && config.events().contains(s.event());
-      var costs = costs(s, StoreDoor.systemFiles(offeredCatalog, session));
       long cost = account(accounted, costs, false);
       if (inScope && cost <= budget) { result.add(s.id()); budget -= account(accounted, costs, true); }
     }
     if (budget < 0) retained.add("Pinned or origin-missing sessions exceed mirror.max_size_gb; none were deleted");
     return result;
+  }
+  /** Every finished file is copied except the origin's own captures. */
+  private static List<LogFile> copyable(Session s) {
+    return s.files().stream().filter(f -> !f.provenance().captured()).toList();
+  }
+  /** The origin's session as the mirror holds it: its facts and the files the mirror copies, in the
+   * origin's order, plus any capture an earlier version copied, kept as that version copied it. */
+  private static Session holding(Session offered, Session held) {
+    var earlier = new LinkedHashMap<String, LogFile>();
+    if (held != null) for (var file : held.files()) if (file.provenance().captured()) earlier.putIfAbsent(file.path(), file);
+    var files = new ArrayList<LogFile>(); var names = new HashSet<String>();
+    for (var file : offered.files()) {
+      var kept = file.provenance().captured() ? earlier.get(file.path()) : file;
+      if (kept != null && names.add(kept.path())) files.add(kept);
+    }
+    for (var file : earlier.values()) if (names.add(file.path())) files.add(file);
+    return new Session(offered.id(), offered.startedAt(), offered.endedAt(), offered.startBasis(), offered.event(),
+        offered.matchType(), offered.matchNumber(), offered.teamNumber(), files, held == null ? null : held.openCapture(),
+        offered.endReason(), offered.deviceIdentity(), offered.identityConflicts(), offered.conflicts(), offered.captureStats(),
+        offered.systemLogs(), offered.mergedSessionIds(), currentClocks(offered));
+  }
+  /** The origin's clock records for captures it still lists as they were read. */
+  private static List<ClockRecord> currentClocks(Session s) {
+    return s.clocks().stream().filter(r -> s.files().stream().anyMatch(f -> f.path().equals(r.capture())
+        && f.sha256().equals(r.captureSha256()) && f.provenance().captured())).toList();
+  }
+  /** The space a session takes once held, or null when the mirror would hold nothing of it. */
+  private Map<String, Long> holdingCosts(StoreDoor.Session offered, StoreCatalog.SessionDirectory held) {
+    if (!copyable(offered.manifest()).isEmpty()) {
+      return costs(holding(offered.manifest(), held == null ? null : held.session()), StoreDoor.systemFiles(offeredCatalog, offered));
+    }
+    return held == null ? null : costs(held.session(), localSystemFiles(held));
   }
   private List<SystemLogIndex.Entry> localSystemFiles(StoreCatalog.SessionDirectory session) {
     var entries = new LinkedHashMap<String, SystemLogIndex.Entry>();
@@ -234,6 +283,7 @@ public final class MirrorSync {
     var result = new HashMap<String, Long>();
     for (var file : s.files()) result.put(s.id() + "/" + file.path(), file.sizeBytes());
     if (s.openCapture() != null) result.put(s.id() + "/" + s.openCapture().path(), s.openCapture().sizeBytes());
+    for (var clock : s.clocks()) result.put(s.id() + "/" + clock.path(), clock.sizeBytes());
     for (var entry : text) {
       var file = entry.file(); result.put(file.location() == SystemLogState.Location.STORE ? "system/" + file.path() : s.id() + "/system/" + file.path(), file.sizeBytes());
     }
@@ -312,6 +362,7 @@ public final class MirrorSync {
       try { return io.resolve(session.path(), f.path()); } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
     }).toList());
     if (session.session().openCapture() != null) paths.add(io.resolve(session.path(), session.session().openCapture().path()));
+    for (var clock : session.session().clocks()) paths.add(ClockRecords.resolve(io, session.path(), clock));
     for (var text : session.session().systemLogs().files()) if (text.location() == SystemLogState.Location.SESSION) paths.add(SystemLogFiles.resolve(io, root, session.path(), session.session(), text));
     try (var reservation = LogFileAccess.reserveMove(List.of(session.path()))) {
       release(session.path());
@@ -357,11 +408,17 @@ public final class MirrorSync {
     String name = e.localName().startsWith(from + "/") ? to + e.localName().substring(from.length()) : e.localName();
     return new PullManifest.Entry(e.remoteName(), e.size(), e.mtimeMillis(), e.bytesCopied(), e.verified(), name, e.retries(), e.failure());
   }
-  private void add(StoreDoor.Session s, String name, long size, LogFile file) throws IOException {
-    String key = s.manifest().id() + "/" + name;
-    var destination = payload(io.resolve(root, s.path()), name);
+  private void add(StoreDoor.Session s, LogFile file) throws IOException {
+    String key = s.manifest().id() + "/" + file.path();
+    var destination = payload(io.resolve(root, s.path()), file.path());
     long mtime = Instant.parse(s.manifest().endedAt()).toEpochMilli();
-    wanted.put(key, new Item(key, s.path() + "/" + name, destination, size, mtime, file, null, s));
+    wanted.put(key, new Item(key, s.path() + "/" + file.path(), destination, file.sizeBytes(), mtime, file, null, null, s));
+  }
+  private void addClock(StoreDoor.Session s, ClockRecord clock) throws IOException {
+    String key = s.manifest().id() + "/" + clock.path();
+    var destination = payload(io.resolve(root, s.path()), clock.path());
+    long mtime = Instant.parse(s.manifest().endedAt()).toEpochMilli();
+    wanted.put(key, new Item(key, s.path() + "/" + clock.path(), destination, clock.sizeBytes(), mtime, null, null, clock, s));
   }
   private static String textKey(StoreDoor.Session s, SystemLogState.File file) {
     return file.location() == SystemLogState.Location.STORE ? "system/" + file.path() : s.manifest().id() + "/system/" + file.path();
@@ -370,16 +427,19 @@ public final class MirrorSync {
     var file = entry.file(); String key = textKey(s, file);
     var destination = SystemLogFiles.resolve(io, root, io.resolve(root, s.path()), s.manifest(), file);
     long mtime = file.provenance().importedAt() == null ? 0 : Instant.parse(file.provenance().importedAt()).toEpochMilli();
-    wanted.putIfAbsent(key, new Item(key, SystemLogFiles.remotePath(s.path(), file), destination, file.sizeBytes(), mtime, null, entry, s));
+    wanted.putIfAbsent(key, new Item(key, SystemLogFiles.remotePath(s.path(), file), destination, file.sizeBytes(), mtime, null, entry, null, s));
   }
-  private void publish(StoreDoor.Session remote) throws IOException {
-    var s = remote.manifest();
+  private void publish(StoreDoor.Session remote, StoreCatalog.SessionDirectory held) throws IOException {
+    var s = holding(remote.manifest(), held == null ? null : held.session());
     var entries = journal.files().stream().collect(java.util.stream.Collectors.toMap(PullManifest.Entry::remoteName, e -> e));
     for (var item : wanted.values()) if (item.session().manifest().id().equals(s.id())) {
       var entry = entries.get(item.key());
       if (entry == null || !entry.verified() || entry.bytesCopied() != item.size()) return;
       if (item.file() != null && !item.file().sha256().equals(StoreFiles.hash(item.destination()))) {
         refusals.add(item.remotePath() + ": origin hash differs from copied bytes"); return;
+      }
+      if (item.clock() != null && !item.clock().sha256().equals(StoreFiles.hash(item.destination()))) {
+        refusals.add(item.remotePath() + ": clock record hash differs from copied bytes"); return;
       }
     }
     for (var text : StoreDoor.systemFiles(offeredCatalog, remote)) {
@@ -501,9 +561,14 @@ public final class MirrorSync {
         if (Files.size(path) != file.sizeBytes() || !StoreFiles.hash(path).equals(file.sha256())) throw new IOException("Mirror system-file hash verification failed");
         return;
       }
+      if (item.clock() != null) {
+        var path = io.resolve(root, name);
+        if (Files.size(path) != item.clock().sizeBytes() || !StoreFiles.hash(path).equals(item.clock().sha256())) throw new IOException("Mirror clock record hash verification failed");
+        return;
+      }
       var inspection = ImportInspection.read(io.resolve(root, name), parser);
-      if (item.file() != null && (!inspection.hash().equals(item.file().sha256()) || !inspection.kind().equals(item.file().kind())
-          || inspection.truncated() && !item.file().truncated())) throw new IOException("Mirror hash or reader verification failed");
+      if (!inspection.hash().equals(item.file().sha256()) || !inspection.kind().equals(item.file().kind())
+          || inspection.truncated() && !item.file().truncated()) throw new IOException("Mirror hash or reader verification failed");
     }
     public String verified(PullManifest.Entry entry) throws IOException {
       var item = wanted.get(entry.remoteName()); var from = io.resolve(root, entry.localName()); var to = item.destination();

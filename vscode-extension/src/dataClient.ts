@@ -65,13 +65,14 @@ export class DataClient {
   ) {}
 
   /** Fetches a request's stream from the server whose MCP endpoint is `mcpUrl`. */
-  async fetch(mcpUrl: string, request: DataRequest, signal?: AbortSignal): Promise<DataResponse> {
+  async fetch(mcpUrl: string, request: DataRequest, signal?: AbortSignal, responseLimit = this.responseLimit): Promise<DataResponse> {
     const key = `${mcpUrl} ${dataQuery(request)}`;
     const known = this.remembered.get(key);
+    if (known && known.bytes.byteLength > responseLimit) throw new DataError("Cached response exceeds the byte limit");
     const headers: Record<string, string> = { ...await this.headersFor(mcpUrl), Accept: "application/vnd.apache.arrow.stream, application/json" };
     if (known) headers["If-None-Match"] = known.etag;
     const url = dataUrl(mcpUrl, request);
-    const response = await this.get(url, headers, signal);
+    const response = await this.get(url, headers, signal, responseLimit);
     const kind = classifyStatus(response.status);
     if (kind.kind === "unchanged") {
       if (!known) throw new DataError("The server answered 304 to a request with no ETag", 304);
@@ -133,14 +134,14 @@ export class DataClient {
     }
   }
 
-  private get(url: string, headers: Record<string, string>, signal?: AbortSignal): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Uint8Array }> {
+  private get(url: string, headers: Record<string, string>, signal: AbortSignal | undefined, responseLimit: number): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Uint8Array }> {
     return new Promise((resolve, reject) => {
       const request = (new URL(url).protocol === "https:" ? https : http).get(url, { headers, timeout: REQUEST_TIMEOUT_MS }, (response) => {
         const chunks: Buffer[] = [];
         let received = 0;
         response.on("data", (chunk: Buffer) => {
           received += chunk.length;
-          if (received > this.responseLimit) { reject(new DataError("Response exceeds the byte limit")); response.destroy(); request.destroy(); return; }
+          if (received > responseLimit) { reject(new DataError("Response exceeds the byte limit")); response.destroy(); request.destroy(); return; }
           chunks.push(chunk);
         });
         response.on("end", () => {

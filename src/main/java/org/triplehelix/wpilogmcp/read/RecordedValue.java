@@ -12,6 +12,11 @@ import java.util.List;
 public final class RecordedValue {
   private RecordedValue() {}
   public record Result(Sample sample, List<ReadProblem> problems, long problemCount) {}
+  /** Timestamp first, physical ordinal second; a later file record can have an older clock. */
+  public static boolean later(Sample sample, Sample previous) {
+    return previous == null || sample.timestampUs() > previous.timestampUs()
+        || sample.timestampUs() == previous.timestampUs() && sample.ordinal() > previous.ordinal();
+  }
   public static Result at(ReadSnapshot snapshot, String entry, String field, Long atUs) throws IOException {
     var query = atUs == null ? ReadQuery.all(entry) : ReadQuery.window(entry, Long.MIN_VALUE, atUs, true);
     if (field != null) query = query.project(field);
@@ -20,8 +25,7 @@ public final class RecordedValue {
       while (true) {
         if (Thread.currentThread().isInterrupted()) throw new IOException("Recorded value request cancelled");
         var batch = cursor.next();
-        for (var sample : batch.samples()) if (last == null || sample.timestampUs() > last.timestampUs()
-            || sample.timestampUs() == last.timestampUs() && sample.ordinal() > last.ordinal()) last = sample;
+        for (var sample : batch.samples()) if (later(sample, last)) last = sample;
         for (var problem : batch.problems()) if (problems.size() < 100) problems.add(problem);
         problemCount += batch.problems().size();
         if (batch.complete()) return new Result(last, List.copyOf(problems), problemCount);

@@ -16,7 +16,10 @@ import org.triplehelix.wpilogmcp.store.StoreManifest.Session;
 public final class SystemLogFiles {
   private SystemLogFiles() {}
   public record Receipt(Path path, SystemLogState.File file) {}
-  public record Snapshot(Path manifest, Session session, List<Receipt> files, List<Path> clocks, String collectingServer) {}
+  /** A clock record listed by the session, read and checked against its receipt. */
+  public record Clock(Path path, ClockRecords.Facts facts) {}
+  public record Snapshot(Path manifest, Session session, List<Receipt> files, List<Path> clocks, String collectingServer,
+      List<Clock> clockRecords) {}
 
   static Path resolve(StoreFiles io, Path root, Path directory, Session session, SystemLogState.File file) throws IOException {
     validate(file);
@@ -86,6 +89,10 @@ public final class SystemLogFiles {
     try {
       for (var file : session.systemLogs().files()) receipts.add(new Receipt(resolve(io, root.get(), directory, session, file), file));
     } catch (IOException e) { throw new IOException("Invalid system file receipt in " + manifest + ": " + e.getMessage(), e); }
+    var records = new java.util.ArrayList<Clock>();
+    try {
+      for (var clock : session.clocks()) { var path = ClockRecords.resolve(io, directory, clock); records.add(new Clock(path, ClockRecords.read(io, path, clock))); }
+    } catch (IOException e) { throw new IOException("Invalid clock record in " + manifest + ": " + e.getMessage(), e); }
     var robot = robotDirectory(root.get(), directory);
     if (robot != null) for (var entry : SystemLogIndex.read(io, robot).files()) if (SystemLogIndex.applies(entry, session)) {
       var path = resolve(io, root.get(), directory, session, entry.file());
@@ -99,6 +106,6 @@ public final class SystemLogFiles {
       if (!copies.isEmpty()) { collector = copies.get(copies.size() - 1).url(); break; }
     }
     if (collector == null) collector = "store " + header.id();
-    return Optional.of(new Snapshot(manifest, session, List.copyOf(receipts), List.copyOf(clocks), collector));
+    return Optional.of(new Snapshot(manifest, session, List.copyOf(receipts), List.copyOf(clocks), collector, List.copyOf(records)));
   }
 }

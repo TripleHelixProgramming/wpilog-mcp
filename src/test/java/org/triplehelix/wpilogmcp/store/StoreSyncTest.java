@@ -458,7 +458,7 @@ class StoreSyncTest {
           new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 1_000_001L + i, 2, 10L + i), 0);
       assertNull(writer.session().endReason(), "Peer file names cannot block a future local rollover");
     }
-    first.completion().get(); var finished = catalog(a); assertTrue(finished.unmanaged().isEmpty());
+    first.completion().get(); var finished = catalog(a); assertTrue(finished.unmanaged().isEmpty(), finished.unmanaged()::toString);
     assertTrue(finished.files().stream().map(f -> f.file().sha256()).collect(java.util.stream.Collectors.toSet()).containsAll(peerHashes));
     long records = 0;
     for (var file : finished.files()) try (var use = manager.acquire(file.path().toString())) {

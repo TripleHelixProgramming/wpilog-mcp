@@ -394,8 +394,8 @@ class MigratedToolsEdgeCaseTest {
     }
 
     @Test
-    @DisplayName("provides clear error for empty time range")
-    void providesClearErrorForEmptyTimeRange() throws Exception {
+    @DisplayName("provides clear no-match result for empty time range")
+    void providesClearNoMatchForEmptyTimeRange() throws Exception {
       var mockLog = mockLogBuilder
           .setPath("/test.wpilog")
           .addNumericEntry("/entry", new double[]{0, 1, 2}, new double[]{1.0, 2.0, 3.0})
@@ -413,7 +413,10 @@ class MigratedToolsEdgeCaseTest {
       var obj = result.getAsJsonObject();
 
       assertFalse(obj.get("success").getAsBoolean());
-      assertTrue(obj.get("error").getAsString().contains("No numeric data in range"));
+      assertEquals("no_match", obj.get("status").getAsString());
+      assertEquals(0, obj.get("count").getAsInt()); assertFalse(obj.has("mean"));
+      assertTrue(obj.get("reason").getAsString().contains("No numeric data in range"));
+      assertTrue(obj.has("looked_for")); assertTrue(obj.has("hint"));
     }
   }
 
