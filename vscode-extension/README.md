@@ -43,9 +43,9 @@ Registration remains at user scope; a pre-release does not restore project `.mcp
 
 ## How It Works
 
-On activation, the extension starts the standalone install's `http` server. VS Code's agents, the explorer, Claude Code, and other local clients share its loaded logs and cache. The launcher starts it on demand and joins it when it is already running; no operating-system service is installed.
+Selecting a local connection starts the standalone install's `http` server on demand. Activation and collapsed connection roots do not start it. VS Code's agents, the explorer, Claude Code, and other local clients share its loaded logs and cache. The launcher starts it on demand and joins it when it is already running; no operating-system service is installed.
 
-Each window registers its User log directories and open projects' directories with the server. These are **leases**: every client can read them while the window's MCP session lives. Settings, key, and folder changes replace the lease without restarting the server. Closing or reloading a window ends its session, waiting up to three seconds, which releases its lease and its views; another window or a terminal bridge can keep the same directories available. A view held by a window that closed without ending its session moves to the window asking for it two minutes later; a window that is hung but still connected keeps its views, and another window can open a copy. The client re-registers after a daemon restart and keeps its session alive while the window is open.
+Each window that uses a local connection registers its User log directories and open projects' directories with the server. These are **leases**: every client can read them while the window's MCP session lives. Settings, key, and folder changes replace the lease without restarting the server. Closing or reloading a window ends its session, waiting up to three seconds, which releases its lease and its views; another window or a terminal bridge can keep the same directories available. A view held by a window that closed without ending its session moves to the window asking for it two minutes later; a window that is hung but still connected keeps its views, and another window can open a copy. The client re-registers after a daemon restart and keeps its session alive while the window is open.
 
 The server's permanent settings live in `~/.wpilog-mcp/servers.yaml`. **VS Code's Settings UI does not read or edit that file.** It supplies the window's directories and team through the lease. Edit YAML for permanent directories, port, cache, or idle policy. The installer creates an absent configuration and preserves an existing one.
 
@@ -101,7 +101,9 @@ For an active recording, **Resume following** restores the visible 1–300-secon
 That choice survives editor restoration as UI state; a newly opened fixed view starts at 30
 seconds. Full recording is available for files and finalized recordings; requesting it after
 finalization reads earlier samples even if the saved policy was already full while following. Historical recording
-plots retain the same 4,096-point limit, with trimming disclosed; narrow the window for detail. A statistics
+plots use server min/max bands and means over the whole admitted interval, with original-sample
+counts and an independent prefix. The bucket count fits the shared byte allowance (at most
+4,096); zoom in for detail. A limit produces an explained refusal instead of a truncated history. A statistics
 window with no finite samples shows a hint and refreshes on the next completed recording
 prefix. New data needs no manual Retry; invalid selectors and resource refusals still do.
 
@@ -120,7 +122,7 @@ rows stay disabled until a replacement page is admitted. Hiding or closing cance
 and releases the inventory and row buffers; reveal opens a new snapshot with the filter
 and exact-name selection retained. No heartbeat keeps a hidden inventory alive. Older servers
 without paged discovery show an update hint instead of downloading the full recording inventory.
-**Blank layout**, template opening and Resume/Open now enter the local recording-panel preview.
+**Blank layout**, template opening and Resume/Open now enter the connected recording-panel preview.
 Add a plot, value table, statistics, raw, histogram or scatter panel, then use **Recording signals**, **Inspect** and **Add inspected
 signal to target panel**. For a numeric leaf, enter an exact path such as `.translation.x` or
 `[2]` in **Numeric field or array index**, then **Check and add field** (Enter also works).
@@ -132,7 +134,7 @@ The server binds the exact working revision and supplies 1 MiB queried follows. 
 keeps acquisition running, while hiding cancels it and clears buffers after 30 seconds. Reveal
 rebootstraps the same recording, and finalization drains and stops polling.
 
-The displayed prefix and recorded clock evidence are explicit. Plots keep 4,096 recent samples
+The displayed prefix and recorded clock evidence are explicit. Follow plots keep 4,096 recent samples
 per selection; trimming, equal-time collapse and non-representable values are disclosed. Value
 tables show the server's timestamp-latest value, or the last original sample at/before an
 explicit cursor, with exact integer text, member and ordinal. **Add statistics** reads original
@@ -167,20 +169,23 @@ measurement. Remote sources and the full performance gate remain pending.
 See the [recording-panel workflow](../doc/OPERATIONS.md#52-recording-panel-preview) for limits and remedies.
 
 Draft gestures are persisted on the local server, with a local recovery journal; drafts do not
-trigger native Save prompts. **Save view…** chooses a labeled writable store, or **Create store…**
-creates one through an empty import without enrolling any folders. It clears draft undo history;
-subsequent edits use native Save/Undo/Redo. Native **Save As** still refuses with a **Save view…**
+trigger native Save prompts. **Save view…** asks for a title in the connected server's library,
+without selecting or creating a log store. Ephemeral servers explain why durable saves are
+unavailable. It clears draft undo history;
+subsequent edits use native Save/Undo/Redo. Retrying a lost save response recovers its original
+checkpoint and preserves newer edits as dirty; Save again to checkpoint them. Native **Save As** still refuses with a **Save view…**
 hint. **Duplicate and Open Beside** creates an independent UUID; native Split moves the same view.
 The overview lists Saved views and Unsaved views, including a detached draft's 30-day expiry.
 Unreadable/newer saved files are reported beside the readable views and left intact. A metadata
-budget limit produces an explained partial list, without blocking an already known saved view.
+budget limit produces a bounded page; **Next saved-view page** advances and **First saved-view
+page** restarts the listing, without blocking an already known saved view.
 Saved views open as new working copies. A named server with durable state restores working UUIDs
 and configurations after restart; ephemeral state shows its restart warning. Unavailable files or a different owner are explained instead
 of being silently substituted. For a file outside a store, identity checks file attributes, not
-content: a rewrite preserving the fingerprint is not detected. Unreferenced source locators may
-be reclaimed; reopen the unchanged file in Source Overview to restore its saved views.
+content: a rewrite preserving the fingerprint is not detected. Library views retain owner-local source locators independently of working drafts. Reopening
+still rechecks current directory grants and the original fingerprint.
 
-**Reusable templates** searches built-in and configured-store definitions. Select one to see
+**Reusable templates** searches built-in and server-library names/descriptions, with **Next template page** for further matches. Select one to see
 compatibility reasons, then **Open new view** to keep the current view. **Replace this layout…**
 offers Save or Discard before replacing it. Missing exact names stay unresolved; explicit roles
 use the shared resolver. Unit mismatches refuse the binding; unknown units remain a stated
@@ -190,7 +195,7 @@ published user-code duration, never the full-loop clock.
 
 **Save template…** uses exact entry names by default; retaining role selectors is an explicit
 choice. **Update selected template…** compares the selected revision. Built-ins are immutable,
-and changing a store template never changes an existing view's configuration. Export/import
+and changing a library template never changes an existing view's configuration. Export/import
 shares only definition JSON with an RFC 8785 digest. Reimporting identical content is a no-op;
 a conflicting identity/revision is refused. For a newer known revision, **Import copy** is the
 default and **Update existing** explicitly compares the current revision. Templates live in a
@@ -246,13 +251,14 @@ runs, resumes when the server restarts, and does not rewrite your User settings 
 Another profile sees the same setup; a conflicting edit is refused for review rather than
 silently replacing it.
 
-The default Logs view and MCP listing prefer the store while keeping files still awaiting import
-or refused. A confirmed imported original is hidden only while its receipt still describes that
-file and its stored copy exists. **Toggle All Source Logs** switches back to the original files
-as well. **Manage Data Store…** reviews sources, shows status and file receipts, pauses or resumes
-synchronization, and requests a scan; **Sync Data Store Now** and **Pause or Resume Data Store Sync**
-also have their own commands. The **Folder synchronization** group reports pending/refused files
-with their reasons. Existing files remain readable while synchronization is paused. Direct log
+Logs shows separate connection roots and source scopes. MCP listings stay within the chosen
+`scope_id`, and ask for a choice when several roots exist. **Manage Data Store…** reviews sources,
+pauses or resumes synchronization, and requests a scan. Its **Show source status** item reports
+per-source states and reasons, writes the first 100 file receipts to the output channel, and
+reports the total and paging parameters when more exist. **Sync Data Store Now** and **Pause or Resume Data Store Sync**
+also have their own commands. Under the local connection only, the **Folder synchronization**
+group reads local-ingestion status and file receipts to report pending/refused files with their
+reasons, when a destination store is configured. Remote connections have no local-ingestion controls. Existing files remain readable while synchronization is paused. Direct log
 paths and the experimental reader library's explicitly supplied roots keep their usual behavior.
 
 ## Organizing Your Logs
@@ -317,7 +323,49 @@ User directories remain available for the window; open projects add their own di
 | `wpilog-mcp.wpiLibYear` | WPILib JDK year for the installer | latest installed |
 | `wpilog-mcp.maxHeap` | Maximum JVM heap for the server, applied when the extension starts or restarts it, and for the installer | `4g` |
 
-`useStandaloneServer` and `idleExitMinutes` are removed. Every window uses the standalone install; idle policy is `idle_exit_minutes` in YAML. The installed launcher's own Java lookup runs the daemon, not the installer's `javaPath` and `wpiLibYear`. The heap is the extension's `maxHeap` when the extension starts the daemon, passed to the launcher as `WPILOG_MAX_HEAP`; a daemon another client started keeps the heap it was given until it is restarted.
+`useStandaloneServer` and `idleExitMinutes` are removed. Local connections use the standalone install; idle policy is `idle_exit_minutes` in YAML. The installed launcher's own Java lookup runs the daemon, not the installer's `javaPath` and `wpiLibYear`. The heap is the extension's `maxHeap` when the extension starts the daemon, passed to the launcher as `WPILOG_MAX_HEAP`; a daemon another client started keeps the heap it was given until it is restarted.
+
+## Choosing local and remote sources
+
+Set `wpilog-mcp.connections` in User settings to an explicit list. For a remote-only laptop:
+
+```json
+"wpilog-mcp.connections": [
+  { "id": "pit", "label": "Pit server", "kind": "remote", "url": "http://pit-server:2363/mcp" }
+]
+```
+
+Add `{ "id": "local", "label": "This laptop", "kind": "local" }` for the local server,
+or additional named remote endpoints. A null setting preserves the compatibility choices:
+This laptop and, if configured, `pitServerUrl`. There is no preferred connection or store.
+Logs presents collapsed connection roots; expanding one discovers only its source scopes,
+and expanding a scope lists only that source. An unused root makes no requests. A command
+without an explicit source asks when more than one connection or scope is possible, including
+unavailable choices. The remote server must support visualization API 2 and persistent identity.
+
+The remote-only configuration does not need Java, a server installation or log files on the
+laptop. Manual Source Overview, chart, table, history, follow and library actions use that
+server directly. Samples are bounded response data in memory; the extension does not mirror
+logs to make a plot. Explicit notebook/export actions can still write their requested outputs.
+Mirror and local live-recording services are separate opt-in settings, both disabled by default;
+leave them disabled for remote-only use. Existing explicit settings remain effective.
+
+The connection id names a configuration choice; the server UUID names its owner. The first
+successful handshake pins that UUID in extension global state. `serverInstanceId` can pin it
+in configuration before first use. A same-owner restart reconnects; a replacement owner refuses.
+Use a new connection id when deliberately replacing a server. Existing views keep their original
+context when configuration changes and ask to reopen explicitly, without following a changed
+URL. URLs must be HTTP(S), with root or `/mcp` path and no embedded credentials, query or fragment.
+At most 32 connections and 64 opened source contexts are admitted per window; reload releases
+unused contexts. Visualizations share the window's decoded allowance and analysis workers.
+
+VS Code exposes one named MCP definition per connection and resolves only the chosen one.
+**Register Pit Server with Claude Code** selects a remote connection and registers a native
+HTTP entry, so it needs no laptop bridge. Existing different registrations are not overwritten.
+Proxy credentials stay scoped to their HTTP origin in SecretStorage; Claude authentication is
+configured separately, never copied into command arguments. Authentication policy and automatic
+agent-to-window display handoff remain separate work. Agent selection prompts and generated
+notebook data URLs carry the selected server and scope.
 
 ## The Blue Alliance API Key
 
@@ -331,11 +379,11 @@ A key found in Workspace settings is cleared too, but never replaces an already 
 
 The extension and [standalone clients](../doc/STANDALONE.md) use the same install at `~/.wpilog-mcp`. No ownership setting or second daemon is needed.
 
-When missing, the extension offers **Install**, **Not now**, or **Open Settings**. Install runs its bundled JAR under a progress notification, reports the version and PATH hint, then starts the server. Not now lasts until the next activation. **Install Standalone Server** runs it on demand.
+When a local connection needs a missing install, the extension offers **Install**, **Not now**, or **Open Settings**. Install runs its bundled JAR under a progress notification, reports the version and PATH hint, then starts the server. Not now lasts until the next activation. **Install Standalone Server** runs it on demand.
 
 A new configuration is seeded with absolute User log directories and team only. Relative and Workspace directories stay leases; the TBA key is never seeded. Without seeds the default is `~/riologs`, with no team. Existing YAML or legacy `servers.json` is preserved.
 
-On activation, an older launcher is updated from the bundled JAR without configuration seeds. The automatic comparison uses version numbers and ignores development suffixes; use the install command to advance a suffix. The JAR's own comparison includes suffixes and never downgrades, even if a newer install appeared during the check. Installation leaves a running daemon alone; the next start replaces a different running version.
+When preparing a local connection, an older launcher is updated from the bundled JAR without configuration seeds. The automatic comparison uses version numbers and ignores development suffixes; use the install command to advance a suffix. The JAR's own comparison includes suffixes and never downgrades, even if a newer install appeared during the check. Installation leaves a running daemon alone; the next start replaces a different running version.
 
 For a complete reinstall with settings preserved, use the standalone installer's explicit [`--refresh`](../doc/STANDALONE.md#replacing-an-old-install). Extension updates never refresh or bootstrap the extension itself; the Marketplace updates the extension.
 
@@ -372,3 +420,24 @@ The [real-editor smoke](../doc/DEVELOPMENT.md#the-real-editor-smoke) runs in CI 
 supported VS Code and current stable. It checks activation, shared-server startup, a generated
 log in the Logs tree, its editor opening and data-view updates. Interactive plots and organizing still have a
 manual checklist there.
+
+### Recording health and reconnects
+
+Visible recording views show acquisition separately from follow progress. Quiet change-only
+signals remain connected; last-value age is informational. Health checks share one request per
+visible source with a five-second cadence and client deadline. Hiding the final view stops them.
+A same-clock reconnect reopens drained history using fresh buffers. A new robot recording never
+replaces an existing view's source automatically.
+
+After a same-owner server session restart, the preview restores the window allowance and the same
+working view, retries failed attachment, then bootstraps fresh data. Configuration, source anchor
+and pause intent remain; old replies and handles are discarded. Unavailable owners/sources are
+explained without creating replacement layouts. Close cancels recovery without affecting peers.
+Host-to-render timing is shown after animation-frame acknowledgement; it is not an end-to-end
+latency or performance claim.
+
+The Explorer uses qualified API 2 source references on each selected connection. Its server,
+scope, inventory, data, follow and library adapters retain that context for the life of a view.
+No failed remote request substitutes a mirror or starts the local daemon. To use another copy,
+open that connection's source as a separate document. Later mirror-engine and display-handoff
+work is tracked in [the source and mirror plan](../doc/SOURCE_AND_MIRROR_PLAN.md).

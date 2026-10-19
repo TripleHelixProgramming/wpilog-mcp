@@ -16,8 +16,30 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /** Shared-server capabilities are documented without promoting an experimental separate product. */
 class DocumentationLayoutTest {
+  @Test void visualizationVersionLinesMatchRemoteAdmission() throws Exception {
+    String tool = "";
+    int checked = 0;
+    for (String line : Files.readAllLines(Path.of("doc/TOOLS.md"))) {
+      if (line.startsWith("### `")) tool = line.substring(5, line.lastIndexOf('`'));
+      if (!tool.startsWith("visualization_") || !line.startsWith("- `api_version`")) continue;
+      checked++;
+      var operation = org.triplehelix.wpilogmcp.visualization.VisualizationAccess.tool(tool);
+      if (operation == org.triplehelix.wpilogmcp.visualization.VisualizationAccess.Operation.ADMINISTRATION) {
+        assertTrue(line.contains("trusted local authority is required"), tool + ": " + line);
+      } else {
+        assertDoesNotThrow(() -> org.triplehelix.wpilogmcp.visualization.VisualizationAccess.transport(
+            org.triplehelix.wpilogmcp.mcp.CallerContext.Authority.HTTP_REMOTE, 2, operation));
+        assertTrue(line.contains("API 2 admits remote callers"), tool + ": " + line);
+        assertFalse(line.contains("both require trusted local authority"), tool + ": " + line);
+      }
+    }
+    assertTrue(checked > 0, "No visualization version claims checked");
+  }
+
   @Test void mainGuidesDescribeCapabilitiesWithoutPromotingASeparateProduct() throws Exception {
-    var promotion = Pattern.compile("(?i)pit[- ]server");
+    // Direct remote source connections are a normal reader feature; NT4 acquisition setup
+    // remains in the experimental guide and must not be promoted as a validated deployment.
+    var promotion = Pattern.compile("(?i)nt4Gateway|gatewayPort|networktables\\.first\\.wpi\\.edu");
     for (String file : List.of("README.md", "doc/OPERATIONS.md", "doc/STANDALONE.md",
         "doc/TOOLS.md", "vscode-extension/README.md")) {
       String text = Files.readString(Path.of(file)).replaceAll("\\]\\([^)]*\\)", "]");

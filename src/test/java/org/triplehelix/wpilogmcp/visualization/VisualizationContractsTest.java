@@ -39,6 +39,21 @@ class VisualizationContractsTest {
     assertThrows(IllegalArgumentException.class, () -> VisualizationContracts.source(source));
   }
 
+  @Test void qualifiedSourceRetainsOwnerScopeAndStrictLegacyContent() {
+    var source = JsonParser.parseString("""
+        {"schema_version":2,"server_instance_id":"11111111-1111-4111-8111-111111111111",
+         "scope_id":"22222222-2222-4222-8222-222222222222",
+         "content":{"kind":"unmanaged","source_id":"33333333-3333-4333-8333-333333333333"}}
+        """).getAsJsonObject();
+    assertEquals(source, assertDoesNotThrow(() -> VisualizationContracts.source(source)));
+    var extra = source.deepCopy(); extra.addProperty("url", "http://other.invalid");
+    assertThrows(IllegalArgumentException.class, () -> VisualizationContracts.source(extra));
+    var nested = source.deepCopy(); nested.add("content", source.deepCopy());
+    assertThrows(IllegalArgumentException.class, () -> VisualizationContracts.source(nested));
+    var future = source.deepCopy(); future.addProperty("schema_version", 3);
+    assertThrows(IllegalArgumentException.class, () -> VisualizationContracts.source(future));
+  }
+
   @Test void sessionAnchorReportsInvalidClockAsAContractError() {
     var source = JsonParser.parseString("""
         {"kind":"session","origin_store_id":"00000000-0000-4000-8000-000000000001",

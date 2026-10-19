@@ -683,6 +683,39 @@ upstream publication, every view is disconnected as soon as the loop resumes, wi
 reason, even below five seconds. A dashboard sees the disconnect rather than silently keeping a
 missed change-only value. Recording continues without waiting for gateway cleanup.
 
+The gateway also publishes the server's recorded `/Daemon/` context: robot identity, Linux
+statistics, JVM statistics, followed text and camera settings. These keep the timestamp the
+collecting provider recorded, rather than being stamped again on transmission or on the laptop.
+The `wpilog_context` topic property has `version: 1` and `metadata`, including the provider source
+and available clock or receipt facts. A remote wpilog-mcp recorder preserves the canonical `/Daemon/` entry name and
+metadata, so the clock and provider conventions remain usable. An ordinary topic with a similar
+name stays ordinary NT data; the explicit property is required. If an upstream topic uses the
+same name, upstream owns it and the local provider cannot replace its value or type.
+
+Newly committed pulled text is published as JSON on `/Daemon/System/<source>`, where `source`
+is `kernel`, `syslog`, `program` or `jvm_crash`. Each value includes `text`, `remote_path`,
+`original_timestamp`, `timestamp_sec`, `timestamp_basis` and `timestamp_reason`. The server uses
+the same clock evidence and conversion as `search_system_logs`: kernel lines interpolate measured
+uptime/robot-time pairs without extrapolation; journal and ISO timestamps use recorded wall-clock
+pairs. The NT4 timestamp is that converted event time. Missing evidence goes to the separate
+`/Daemon/System/<source>/unmapped` topic, with null `timestamp_sec` and a reason; its NT4 timestamp
+means receipt of the committed update, before publication work, not event time. Later clock evidence does not rewrite a publication. A new search
+of the stored text may then map a line that was previously unmapped.
+
+This is a feed of newly collected complete lines, not history replay to each subscriber. A new
+subscriber receives the retained latest value and subsequent changes; request all changes to
+record the stream. Kernel and journal cursors suppress overlaps, and byte-identical file prefixes
+suppress old complete lines when a file grows. An incomplete final line waits for its newline.
+The complete original files, compressed archives and older history remain available through the
+store and mirror. Publication follows collection, so the existing disabled-state pull gate and
+rate limit still determine when pulled text becomes available. It does not make dmesg collection
+continuous or send a pulled WPILOG/REV file's telemetry over NT4.
+
+The timely text copy has limits: 64 KiB of characters per line, 65,536 lines and 16 MiB of
+characters per committed update. A refused or failed publication retains the durable file, logs
+the reason and disconnects gateway views so the interruption is visible; it does not replay the
+missed history on reconnect. The ordinary gateway byte and peer-queue bounds apply too.
+
 The gateway follows `WPILOG_HTTP_BIND`, including its default `127.0.0.1`. Bind deliberately to
 the team network for other machines to connect. This separate port has **no authentication** and
 belongs on the **private network**; an HTTP proxy login does not protect it. HTTP's Origin and

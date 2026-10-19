@@ -33,6 +33,56 @@ class SystemPullTest {
   }
   @AfterEach void close() { registry.close(); }
   Session session(Path file) throws Exception { return StoreJson.JSON.fromJson(Files.readString(file.getParent().resolve("session.json")), Session.class); }
+  @Test void kernelAndJournalNotificationsExposeOnlyCommittedNewPrefixesOutsideTheStoreQueue() throws Exception {
+    var changes = new java.util.ArrayList<SystemPullStore.Text>();
+    try (var watch = store.observeSystemText(text -> {
+      try {
+        assertEquals(text.sessionId(), store.captureAsync(io -> io.read(text.capture().resolveSibling("session.json"), Session.class).id()).get(2, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals(text.to(), Files.size(text.path())); changes.add(text);
+      } catch (Exception e) { throw new AssertionError("Notification must follow receipt commit and release the store queue", e); }
+    })) {
+      assertTrue(local.beginPass()); local.kernel(List.of("[110] first"), 120); local.kernel(List.of("[110] first"), 121);
+      local.kernel(List.of("[110] first", "[115] second"), 122);
+      assertEquals(2, changes.size()); assertEquals(0, changes.get(0).from());
+      assertEquals(changes.get(0).to(), changes.get(1).from());
+      assertEquals("[115] second\n", Files.readString(changes.get(1).path()).substring((int) changes.get(1).from()));
+      local.journal(List.of("1772893358.0 synthetic first"), "c1", "boot");
+      local.journal(List.of("1772893359.0 synthetic second"), "c2", "boot");
+      assertEquals(4, changes.size()); assertEquals("journal", changes.get(2).format());
+      assertEquals(changes.get(2).to(), changes.get(3).from());
+      assertThrows(java.io.IOException.class, () -> local.kernel(List.of("[1] reboot"), 2)); assertEquals(4, changes.size());
+    }
+  }
+  @Test void immutableTextSnapshotsRememberTheirPreviousPrefixAndNeverRepublishIdenticalContent() throws Exception {
+    var changes = new java.util.ArrayList<SystemPullStore.Text>();
+    try (var watch = store.observeSystemText(changes::add)) {
+      assertTrue(local.beginPass()); local.sources(java.util.Map.of("/var/log/messages", "syslog"));
+      String name = local.create("messages");
+      byte[] bytes = "2026-03-07T14:22:38Z synthetic first\npartial".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+      local.append(name, 0, bytes);
+      var first = new org.triplehelix.wpilogmcp.sync.PullManifest.Entry("/var/log/messages", bytes.length, 0, bytes.length, true, name, 0, null);
+      local.verified(first); local.verified(first); assertEquals(1, changes.size()); assertNull(changes.get(0).previous());
+      byte[] more = " line\n".getBytes(java.nio.charset.StandardCharsets.UTF_8); local.append(name, bytes.length, more);
+      local.verified(new org.triplehelix.wpilogmcp.sync.PullManifest.Entry(first.remoteName(), bytes.length + more.length, 1, bytes.length + more.length, true, name, 0, null));
+      assertEquals(2, changes.size()); assertEquals(changes.get(0).path(), changes.get(1).previous());
+      assertEquals(bytes.length, changes.get(1).previousBytes());
+    }
+  }
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"syslog", "program"})
+  void growthAfterRotationUsesTheLatestReceiptRatherThanTheLongestOldFile(String source) throws Exception {
+    var changes = new java.util.ArrayList<SystemPullStore.Text>();
+    try (var watch = store.observeSystemText(changes::add)) {
+      assertTrue(local.beginPass()); local.sources(java.util.Map.of("/var/log/messages", source));
+      for (String text : List.of("old long line that is larger than either new version\n", "new\n", "new\nmore\n")) {
+        String name = local.create("messages"); byte[] bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_8); local.append(name, 0, bytes);
+        local.verified(new org.triplehelix.wpilogmcp.sync.PullManifest.Entry("/var/log/messages", bytes.length, 0, bytes.length, true, name, 0, null));
+      }
+      assertEquals(3, changes.size());
+      assertEquals(changes.get(1).path(), changes.get(2).previous(), "Rotating to a shorter file must not make later growth replay its old lines");
+      assertEquals(4, changes.get(2).previousBytes());
+    }
+  }
   SystemLogIndex index() throws Exception { return StoreJson.JSON.fromJson(Files.readString(root.resolve("robots").resolve(SERIAL).resolve("system/index.json")), SystemLogIndex.class); }
   static String reply(double uptime, String boot, String text, int status) { return "WPILOG_SYSTEM_BEGIN " + uptime + " " + boot + "\n" + text + "\nWPILOG_SYSTEM_END " + status + "\n"; }
   void pass(SystemPullPass pass, AtomicLong clock) throws Exception {

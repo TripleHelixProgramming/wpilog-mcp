@@ -21,11 +21,18 @@ public final class CaptureIndex implements CaptureWriter.Observer {
   private final long hotWindowUs;
   private final java.util.function.Supplier<Double> robotNowUs;
   private LiveLog live;
+  public record PublicationTiming(String writerIdentity, long revision, String recordingStartedAt, double receiveToPublicationMs) {}
+  private final java.util.function.Consumer<PublicationTiming> timing;
   public CaptureIndex(CaptureWriter.Observer placement, LogManager manager, long hotWindowUs) {
     this(placement, manager, hotWindowUs, () -> null);
   }
   public CaptureIndex(CaptureWriter.Observer placement, LogManager manager, long hotWindowUs,
       java.util.function.Supplier<Double> robotNowUs) {
+    this(placement, manager, hotWindowUs, robotNowUs, ignored -> {});
+  }
+  public CaptureIndex(CaptureWriter.Observer placement, LogManager manager, long hotWindowUs,
+      java.util.function.Supplier<Double> robotNowUs, java.util.function.Consumer<PublicationTiming> timing) {
+    this.timing = timing;
     this.robotNowUs = robotNowUs;
     this.placement = placement; this.manager = manager; this.hotWindowUs = hotWindowUs;
     if (placement instanceof CaptureStore store) store.onMove((from, to) -> {
@@ -62,6 +69,13 @@ public final class CaptureIndex implements CaptureWriter.Observer {
   @Override public void value(CaptureWriter.Session session, EntryInfo entry, ValueFrame frame, WpilogOutput.Written written)
       throws IOException {
     live.append(entry, frame, written); placement.value(session, entry, frame, written);
+  }
+  @Override public void publication(CaptureWriter.Session session, long receivedUs, long publishedUs) {
+    if (publishedUs >= receivedUs) {
+      var prefix = live.publication();
+      timing.accept(new PublicationTiming(prefix.writerId(), prefix.revision(), session.startedAt().toString(), (publishedUs - receivedUs) / 1000.0));
+    }
+    placement.publication(session, receivedUs, publishedUs);
   }
   @Override public void flushed(CaptureWriter.Session session) throws IOException {
     live.expire(); placement.flushed(session);

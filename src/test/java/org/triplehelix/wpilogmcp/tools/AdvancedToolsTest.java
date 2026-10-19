@@ -62,8 +62,8 @@ class AdvancedToolsTest extends ToolTestBase {
     @Test
     @DisplayName("total tool count is correct")
     void totalToolCountIsCorrect() {
-      // The existing 51 tools plus 25 visualization operations; live tools register separately.
-      assertEquals(76, tools.size());
+      // Includes the three server-library operations; live tools register separately.
+      assertEquals(82, tools.size());
     }
   }
 
@@ -367,11 +367,11 @@ class AdvancedToolsTest extends ToolTestBase {
       var properties = schema.getAsJsonObject("properties");
 
       assertTrue(properties.has("brownout_threshold"));
-      // No fixed schema default: the log's BrownoutVoltage when logged, else 6.8 V (stated)
+      // No fixed schema default: the log's BrownoutVoltage when logged, else 6.3 V (stated)
       assertFalse(properties.getAsJsonObject("brownout_threshold").has("default"));
       var description = properties.getAsJsonObject("brownout_threshold").get("description")
           .getAsString();
-      assertTrue(description.contains("BrownoutVoltage") && description.contains("6.8"));
+      assertTrue(description.contains("BrownoutVoltage") && description.contains("6.3") && description.contains("6.75"));
     }
 
     @Test

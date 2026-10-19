@@ -119,13 +119,14 @@ export function activate(context: vscode.ExtensionContext): void {
         checks.push("Enter resizes a focused panel; Entries routes to B's selected table and leaves both A views unchanged");
         await preview.open(a.controller.snapshot as RecordedView); await ready(aUri);
         await click(id, "#save");
-        await until("product first-store Save view", () => !!a.controller.snapshot.saved_view_ref);
+        await until("product server-library Save view", () => !!a.controller.snapshot.saved_view_ref);
         assert.ok(a.controller.snapshot.saved_view_ref); assert.equal(a.controller.draftUndoDepth, 0);
-        assert.ok(fs.existsSync(path.join(root, "logs/store/store.json")));
-        checks.push("real first-store metadata save checkpoints the draft and clears draft undo without enrollment");
-        // Drive store templates and portable sharing through the product controls and dialogs.
+        assert.ok(!fs.existsSync(path.join(root, "logs/store/store.json")));
+        assert.ok("library_id" in a.controller.snapshot.saved_view_ref!);
+        checks.push("real server-library save checkpoints the ordinary-folder draft without creating a log store");
+        // Drive library templates and portable sharing through the product controls and dialogs.
         await click(id, "#template-picker summary"); await click(id, "#template-save");
-        await until("store template listed", async () => (await driver.evaluate(selector(id), "document.getElementById('templates')?.textContent"))?.includes("Saved fixture"));
+        await until("library template listed", async () => (await driver.evaluate(selector(id), "document.getElementById('templates')?.textContent"))?.includes("Saved fixture"));
         const selectTemplate = async (viewId: string) => {
           await driver.evaluate(selector(viewId), "(() => { const q=document.getElementById('template-search'); q.value='Saved fixture'; document.getElementById('template-find').click(); return true; })()");
           await until("searched template", async () => await driver.evaluate(selector(viewId), "document.getElementById('templates')?.options.length") === 1);

@@ -151,7 +151,7 @@ public final class FrcDomainTools {
       return new SchemaBuilder()
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
-          .addNumberProperty("brownout_threshold", "Voltage threshold for BROWNOUT_START/END crossings (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V)", false, null)
+          .addNumberProperty("brownout_threshold", "Voltage threshold for BROWNOUT_START/END crossings (default: the log's BrownoutVoltage entry when logged, else 6.3V for roboRIO 1; roboRIO 2 defaults to configurable 6.75V)", false, null)
           .addProperty("voltage_entry", "string", "Battery voltage entry for BROWNOUT_START/END "
               + "(default: BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery)",
               false)
@@ -2659,7 +2659,7 @@ public final class FrcDomainTools {
           + "window end, marked open_at_scope_end (open_at_log_end and open_at_end remain "
           + "same-value compatibility aliases), not merely "
           + "the last voltage sample; the brownout threshold from the log's "
-          + "BrownoutVoltage entry when logged, else 6.8 V (roboRIO 1, stated); dips below "
+          + "BrownoutVoltage entry when logged, else 6.3 V (roboRIO 1, stated); dips below "
           + "warning_threshold; and, when a total-current entry exists, the load line: battery "
           + "voltage regressed on total current, giving the effective source resistance (battery "
           + "internal resistance plus wiring and connectors) and open-circuit voltage. "
@@ -2681,7 +2681,7 @@ public final class FrcDomainTools {
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
           .addNumberProperty("nominal_voltage", "Expected full battery voltage (default: 12.6V)", false, 12.6)
           .addNumberProperty("brownout_threshold", "Brownout threshold in volts (default: the log's "
-              + "BrownoutVoltage entry when logged, else 6.8 V for roboRIO 1; roboRIO 2 is 6.3 V)", false, null)
+              + "BrownoutVoltage entry when logged, else 6.3 V for roboRIO 1; roboRIO 2 defaults to configurable 6.75 V)", false, null)
           .addNumberProperty("warning_threshold", "Voltage below which a dip is reported (default: 9.0V)", false, 9.0)
           .addProperty("voltage_entry", "string", "Battery voltage entry (default: "
               + "BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery)", false)

@@ -8,6 +8,14 @@ A proposal for the next large piece of wpilog-mcp: a program that runs in the sh
 
 **Status, October 2026.** The pit server described here is built and runs on the `development` branch. Part I is the idea as it was proposed, kept as written. Part II is the specification, and under each milestone its implementation record says what was built, what was found, and what changed. Part III is the decision record. For controlled evaluation, see the [operations and usage manual](OPERATIONS.md); for every setting and route, the [standalone reference](STANDALONE.md).
 
+**Next design, 2026-10-18:** [Explorer sources and mirror implementation plan](../SOURCE_AND_MIRROR_PLAN.md)
+owns the next source and mirror checkpoints. Its agreed behavior supersedes automatic
+scope/cap eviction, mandatory laptop capture for visualization, exclusion of finalized pit
+captures, and the prohibition on mirrors supplying peers. Download scope controls acquisition;
+cleanup is explicit and a full mirror pauses downloads. Peer writes remain exclusively owned
+by the mirror engine, with separate provisional and master-confirmed states. The older
+specification and implementation records below are preserved; these changes are planned.
+
 ## Part I: The Idea
 
 ### What it is
@@ -205,6 +213,13 @@ An unreadable or damaged file stays in `open_capture`, with the recovery failure
 **Cost accounting.** Per topic: cumulative records, bytes, dropped and thinned counts, and the rate over the last minute. `list_sessions` reports these facts. Every five minutes while a session is open, the server logs one INFO summary of topic count and cumulative record, byte, dropped and thinned totals, plus up to five topics ranked by cumulative recorded bytes. Per-topic detail is logged at DEBUG. Configuration may `exclude` topics by prefix or `thin` them to a period; a thinned topic's entry metadata records the period, so a result on it can say so.
 
 **Context entries.** Providers write typed entries under `/Daemon/<provider>/...` (see §8): numeric system stats, followed strings, and JSON identity or structured context, timestamped in the robot's clock.
+
+The gateway now forwards these recorded contexts with explicit versioned provenance and unchanged
+timestamps. Newly collected system text is converted on the collecting server through the same
+clock mapping as system-log search, then published as JSON events; unmapped event times remain
+explicit. Subscribers receive new changes and a retained latest value, not a replay of pulled
+history. The [gateway reference](STANDALONE.md#nt4-gateway-for-dashboards) owns the topics, limits
+and distinction between collection time and event time.
 
 ### 6. The live log: indexed as it is written
 
@@ -1687,3 +1702,7 @@ imports check in `LiveToolsTest`. No matching algorithm or manifest format chang
   `placement_method` and its reason through identity promotion; `list_sessions` reports both
   for a newly imported session without inventing an offset. Plants remove each guard or
   field on its actual path. These checks change no placement rule or existing receipt.
+
+The source/mirror plan's M1 server contracts and explicit selection checkpoint is now implemented
+locally and uncommitted. Its acceptance evidence and pending M2/M3 boundaries are recorded in
+[SOURCE_AND_MIRROR_PLAN.md](../SOURCE_AND_MIRROR_PLAN.md#m1-source-contracts-and-selection-checkpoint).

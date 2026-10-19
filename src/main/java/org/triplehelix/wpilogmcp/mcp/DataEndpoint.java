@@ -36,6 +36,7 @@ import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.LogFileException;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
+import org.triplehelix.wpilogmcp.read.server.SourceScopes;
 import org.triplehelix.wpilogmcp.tools.Buckets;
 import org.triplehelix.wpilogmcp.tools.EntryData;
 
@@ -89,6 +90,12 @@ final class DataEndpoint {
     final int status;
     final JsonObject body;
 
+    Refusal(int status, JsonObject body) {
+      super(body.get("error").getAsString());
+      this.status = status;
+      this.body = body;
+    }
+
     Refusal(int status, String error, String hint) {
       super(error);
       this.status = status;
@@ -100,9 +107,14 @@ final class DataEndpoint {
 
   /** A request, parsed. */
   private record Request(String path, List<String> names, Double startTime, Double endTime,
-      Integer maxPoints, String format) {}
+      Integer maxPoints, String format, String scopeId, JsonObject source) {}
+
+  @FunctionalInterface interface SourceResolver { java.nio.file.Path resolve(JsonObject source) throws IOException; }
 
   void handle(HttpExchange exchange) throws IOException {
+    handle(exchange, source -> { throw new IOException("Qualified sources are unavailable on this server"); });
+  }
+  void handle(HttpExchange exchange, SourceResolver sources) throws IOException {
     if (!"GET".equals(exchange.getRequestMethod())) {
       exchange.getResponseHeaders().set("Allow", "GET");
       exchange.sendResponseHeaders(405, -1);
@@ -111,7 +123,7 @@ final class DataEndpoint {
     }
     try {
       var request = parse(exchange.getRequestURI().getRawQuery());
-      serve(exchange, request);
+      serve(exchange, request, sources);
     } catch (Refusal r) {
       if (r.status == 503) exchange.getResponseHeaders().set("Retry-After", "2");
       sendJson(exchange, r.status, r.body);
@@ -139,6 +151,7 @@ final class DataEndpoint {
   }
 
   private static Request parse(String rawQuery) throws Refusal {
+    if (rawQuery != null && rawQuery.length() > 65536) throw new Refusal(413, "Data query exceeds 64 KiB", null);
     var q = query(rawQuery);
     var paths = q.getOrDefault("path", List.of());
     if (paths.size() != 1 || paths.get(0).isBlank()) {
@@ -174,7 +187,27 @@ final class DataEndpoint {
     if (!format.equals("arrow") && !format.equals("csv")) {
       throw new Refusal(400, "format must be arrow or csv, not " + format, null);
     }
-    return new Request(paths.get(0), List.copyOf(names), start, end, maxPoints, format);
+    String scope = one(q, "scope_id"), reference = one(q, "source_ref");
+    JsonObject source = null;
+    try {
+      if (scope != null) java.util.UUID.fromString(scope);
+      if (reference != null) {
+        source = org.triplehelix.wpilogmcp.visualization.VisualizationContracts.source(
+            com.google.gson.JsonParser.parseString(reference).getAsJsonObject());
+        if (!source.has("schema_version") || source.get("schema_version").getAsInt() != 2)
+          throw new IllegalArgumentException("Data source_ref requires schema version 2");
+        if (scope != null && !scope.equals(source.get("scope_id").getAsString()))
+          throw new IllegalArgumentException("Data scope differs from source_ref");
+        scope = source.get("scope_id").getAsString();
+      }
+    } catch (RuntimeException invalid) { throw new Refusal(400, "Invalid data source qualification: " + invalid.getMessage(), null); }
+    return new Request(paths.get(0), List.copyOf(names), start, end, maxPoints, format, scope, source);
+  }
+
+  private static String one(Map<String, List<String>> q, String name) throws Refusal {
+    var values = q.getOrDefault(name, List.of());
+    if (values.size() > 1 || !values.isEmpty() && values.get(0).isBlank()) throw new Refusal(400, name + " must occur once and be nonempty", null);
+    return values.isEmpty() ? null : values.get(0);
   }
 
   private static Double number(Map<String, List<String>> q, String key) throws Refusal {
@@ -196,10 +229,13 @@ final class DataEndpoint {
       ArrowType valueType, Buckets.Result buckets, String sampling, String unit,
       EntryData.RevSync rev, JsonObject decoding) {}
 
-  private void serve(HttpExchange exchange, Request request) throws IOException, Refusal {
+  private void serve(HttpExchange exchange, Request request, SourceResolver sources) throws IOException, Refusal {
     org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot use;
     try {
-      use = logAccess.acquire(request.path());
+      checkSource(request, sources);
+      use = logAccess.acquire(request.path(), request.scopeId());
+    } catch (SourceScopes.Failure failure) {
+      throw new Refusal(409, failure.result());
     } catch (LogFileException e) {
       throw new Refusal(e.getMessage().startsWith("File not found") ? 404 : 403, e.getMessage(),
           "Pass a log file inside the configured log directories, as list_available_logs lists them");
@@ -285,6 +321,10 @@ final class DataEndpoint {
         }
       }
 
+      // A cached reply is still a read of this exact owner/scope/content. Recheck after
+      // preparing values so replacement or revoked admission cannot publish stale data.
+      checkSource(request, sources);
+      if (!before.sameAs(FileSnapshot.of(use.path()))) throw new Refusal(409, "The log changed during this data request", "Reopen the selected source");
       var etag = etag(before, exchange.getRequestURI().getRawQuery(), revValidators);
       var ifNoneMatch = exchange.getRequestHeaders().getFirst("If-None-Match");
       if (etag != null && ifNoneMatch != null && matches(ifNoneMatch, etag)) {
@@ -307,6 +347,13 @@ final class DataEndpoint {
         }
       }
     }
+  }
+
+  private void checkSource(Request request, SourceResolver sources) throws Refusal {
+    try {
+      if (request.source() != null && !sources.resolve(request.source()).equals(logManager.validateSourcePath(java.nio.file.Path.of(request.path()))))
+        throw new Refusal(409, "The data path no longer identifies the selected source", "Resolve the original source again; do not select another copy");
+    } catch (IOException unavailable) { throw new Refusal(409, unavailable.getMessage(), "Reopen the selected source; do not switch owners automatically"); }
   }
 
   /** Booleans as numbers, for bucketing a boolean entry as the tools read it (1/0). */

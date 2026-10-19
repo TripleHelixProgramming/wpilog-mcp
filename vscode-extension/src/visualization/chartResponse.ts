@@ -1,3 +1,4 @@
+import { sourceContent } from "./recordedModel";
 import { canonical, object } from "./followProtocol";
 
 /** Wire shape and identity admission only. Binning, pairing, units and statistics stay on the
@@ -6,9 +7,9 @@ export function chartResponse(result: any, body: any, scatter: boolean): void {
   const inputs = object(result.inputs), prefix = object(result.prefix);
   const refused = () => { throw new Error("Invalid chart response identity, prefix or measurements"); };
   if (canonical(inputs.source_ref) !== canonical(body.source_ref)
-    || prefix.source_kind !== (body.source_ref.kind === "session" ? "session" : "file")
+    || prefix.source_kind !== (sourceContent(body.source_ref).kind === "session" ? "session" : "file")
     || typeof prefix.finalized !== "boolean" || !Array.isArray(prefix.members)
-    || body.source_ref.kind === "session" && typeof prefix.catalog_revision !== "string"
+    || sourceContent(body.source_ref).kind === "session" && typeof prefix.catalog_revision !== "string"
     || result.basis !== "admitted_source_prefix") refused();
   for (const key of scatter ? ["x_entry", "x_field", "y_entry", "y_field"] : ["entry", "field"])
     if ((inputs[key] ?? null) !== (body[key] ?? null)) refused();

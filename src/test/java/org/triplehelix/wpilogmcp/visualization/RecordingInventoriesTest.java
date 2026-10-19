@@ -52,6 +52,30 @@ class RecordingInventoriesTest {
     assertTrue(done.getAsBoolean(), "Worker did not unwind before test deadline");
   }
 
+  @Test void healthRefusesMoreThan64ManifestedMembersWithoutReadingTheirPayloads() throws Exception {
+    var path = fixture.directory.resolve("session.json"); var manifest = JsonParser.parseString(Files.readString(path)).getAsJsonObject();
+    var files = manifest.getAsJsonArray("files");
+    for (int i = 2; i < 65; i++) {
+      var copy = files.get(0).getAsJsonObject().deepCopy(); String name = "member-" + i + ".wpilog";
+      Files.copy(fixture.directory.resolve("capture.wpilog"), fixture.directory.resolve(name));
+      copy.addProperty("path", name); copy.getAsJsonObject("provenance").addProperty("original_name", name); files.add(copy);
+    }
+    Files.writeString(path, manifest.toString()); logs.catalogPublished();
+    assertTrue(assertThrows(Exception.class, () -> sources.health(fixture.reference, null)).getMessage().contains("64-member"));
+    assertEquals(0, hashes.get());
+  }
+
+  @Test void healthRechecksCatalogAndGrantsWithoutOpeningOrHashingData() throws Exception {
+    for (int i = 0; i < 5; i++) {
+      var health = sources.health(fixture.reference, null);
+      assertEquals("inactive", health.get("acquisition_state").getAsString());
+      assertEquals("finalized", health.get("history_state").getAsString());
+      assertTrue(health.get("connected").isJsonNull()); assertTrue(health.get("publication_timing").isJsonNull());
+    }
+    assertEquals(0, opens.get()); assertEquals(0, hashes.get()); assertTrue(logs.release(temp).released());
+    logs.clearAllowedDirectories(); assertThrows(Exception.class, () -> sources.health(fixture.reference, null));
+  }
+
   @Test void pagesDoNotReopenOrRehashButDetailsReadFreshEvidence() throws Exception {
     var inventory = open(); assertEquals(1, opens.get()); assertEquals(2, hashes.get());
     assertTrue(logs.release(temp).released());

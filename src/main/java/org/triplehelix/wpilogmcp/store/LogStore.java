@@ -395,6 +395,16 @@ public final class LogStore implements AutoCloseable {
   }
   private final java.util.Set<Observer> observers = java.util.concurrent.ConcurrentHashMap.newKeySet();
   public AutoCloseable observe(Observer observer) { observers.add(observer); return () -> observers.remove(observer); }
+  private final java.util.Set<Consumer<SystemPullStore.Text>> textObservers = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  /** Called by a pull worker after its receipt commits and the store queue/lock are released. */
+  public AutoCloseable observeSystemText(Consumer<SystemPullStore.Text> observer) {
+    textObservers.add(observer); return () -> textObservers.remove(observer);
+  }
+  void publishedSystemText(SystemPullStore.Text text) {
+    if (text == null) return;
+    for (var observer : textObservers) try { observer.accept(text); }
+    catch (RuntimeException failure) { LoggerFactory.getLogger(LogStore.class).warn("System text gateway publication failed; durable text retained: {}", failure.getMessage()); }
+  }
   private void published(Path path, Object value) {
     logManager.catalogPublished();
     for (var observer : observers) {

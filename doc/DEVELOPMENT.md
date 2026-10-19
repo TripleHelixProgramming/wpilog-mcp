@@ -319,7 +319,7 @@ npm test
 `npm test` compiles TypeScript and runs every `*.test.js` through `src/test/runTests.ts` on Node 20+. The suites cover:
 
 - Directory resolution and per-path teams; lease-refresh decisions; standalone layout, install arguments/summaries and version decisions; user-scope Claude commands on both platforms; project YAML offers/content; and conservative migration of recorded legacy entries. Migration keeps tracked/custom files and waits for a successful old-daemon stop before removing private settings.
-- MCP sessions and registrations against a fake transport, including reconnect, disposal, overlapping updates, refusal words, and secret redaction. The real-JAR client test proves a third session sees leased directories and key availability, then loses them when the holder closes. It uses a scratch home and no live TBA requests. That test skips only when no JAR or Java is available; CI builds the JAR first.
+- MCP sessions and registrations against a fake transport, including reconnect, disposal, overlapping updates, refusal words, and secret redaction. The real-JAR client test proves another session can explicitly select a leased directory and observe key availability, then loses both when the holder closes. It uses a scratch home and no live TBA requests. That test skips only when the current-version JAR or Java is unavailable; CI builds the JAR first.
 - Shared-server preparation and startup against fake launches with real HTTP health and temporary PID/configuration files: one start for concurrent consumers, declined installation, failed starts, missing PID records, and ordered manual restart. Settings change leases rather than rewriting configuration or restarting the daemon.
 - The explorer's tree models (plain/store/mixed listings, directory origins, structs and arrays), organizing decisions and quick picks, MCP/data/import request handling, pagination, refusals and retry limits, content security policy, and manifest declarations/order/command links.
 - The Entries sidebar's inline-filter command, full-path filtering before branches are opened, lazy field expansion, stale asynchronous replies, keyboard navigation and Collapse All behavior.
@@ -628,8 +628,8 @@ persist and re-read its interval. A late historical append keeps the inspected a
 Resume following restores the window, and file gestures check exact x=i samples. Node checks
 cover finite clock bounds, microsecond rounding, linking, generation guards, retained UI window
 state and refusal recovery. Evidence and plants are under
-`/private/tmp/wpilog-visualization-stage3-history/validation.md`. Recording-history reduction
-is still deferred; the native checks make no completeness claim beyond the displayed point cap.
+`/private/tmp/wpilog-visualization-stage3-history/validation.md`. At that checkpoint, recording-history reduction
+was deferred; the native checks make no completeness claim beyond the displayed point cap.
 
 ### Visualization recorded preview
 
@@ -640,13 +640,14 @@ configuration, then launches an isolated normal editor profile. It never uses th
 service or robot logs. It exercises the actual overview/working providers, bundled GridStack
 and uPlot under CSP, Arrow and typed cursor replies, panel controls via Enter, A/A/B isolation,
 and transport counts proving title/resize edits issue no new Arrow or cursor request,
-Entries routing, first-store metadata save and a second Java/editor launch for draft/saved
+Entries routing, server-library save and a second Java/editor launch for draft/saved
 recovery. Stage 2b also drives searchable templates, exact compatibility, template update and
 export/import, independently checked statistics/raw rows, MCP revision delivery/conflict,
 request-counted hidden/reveal behavior and overview Resume/Open new view. Results, renderer
-diagnostics and screenshots stay under `build/visualization-stage2b`. The narrow DevTools
-connection belongs only to this disposable editor. Supplied dialogs select the test store/file;
-the native fixture runs the product empty-import and store-ID first-save path. Cancellation is
+diagnostics and screenshots stay under `build/visualization-stage2b`, or the directory selected
+by `WPILOG_RECORDED_OUTPUT`. The narrow DevTools connection belongs only to this disposable
+editor. Supplied dialogs enter the library title and select the export file; the native fixture
+checks library references and that saving creates no recording store. Cancellation is
 also covered in the Node fixture. Template digest checks use RFC 8785 vectors and an independent
 SHA-256 over the expected canonical string. The canonicalization dependency's upstream license
 and copyright notice ship under `META-INF/licenses/JCS-LICENSE.txt`. Native lifecycle regression remains
@@ -656,7 +657,14 @@ Xvfb, and actual Linux/Windows native results must not be inferred from Mac or m
 Focused Java tests include `TemplateDefinitionTest`, `TemplateMetadataTest`,
 `VisualizationBindingsTest`, `ControlNotificationsTest`, `RecordedSourcesTest`,
 `VisualizationEndpointTest`, `VisualizationServiceTest`, `VisualizationTombstoneTest`,
-`VisualizationMetadataTest` and `CallerContextTest`. Node tests cover optional registration,
+`VisualizationMetadataTest`, `VisualizationLibraryTest`, `VisualizationLibraryWorkspaceTest`,
+`LibraryTransportCapacityTest` and `CallerContextTest`. Library checks cover independent disk and
+response bounds, receipts, migration, source revocation and interrupted working checkpoints.
+The extension's real-server MCP fixture selects the exact version in its package manifest and
+asserts the running server version. Older JARs left in `build/libs` cannot satisfy this check.
+Its multiple-directory case expects source-selection guidance and explicitly selects the test
+directory; it never relies on a combined listing.
+Node tests cover optional registration,
 layout purity, Entries generations, lease/save ordering, aborts and response bounds. The focused
 review checks also cover per-record saved-file failures, direct open beyond a listing budget,
 locator reclamation, and host/renderer buffer retention across presentation revisions. Plants
@@ -929,3 +937,61 @@ It checks no single-file analysis fallback, no renderer/CSP errors and zero char
 close. The fixture's stdin commands are test-only and expose no product route. Keep the recorded
 workflow fixture passing too; shared renderer changes can affect both paths. Native operating
 systems and sustained-load measurements are distinct from the ordinary Node/Java suites.
+
+### Recording health and recovery checkpoint
+
+The focused capture workflow starts a real loopback gateway and laptop acquisition, verifies
+quiet-source health, disconnects/reconnects the same robot clock, and checks the exact two-sample
+count and mean after resume. A different capture must not supply health for the old anchor.
+HTTP and MCP share the health result; grants, raw request limits and bounded dispatch remain
+part of transport coverage. A synthetic scheduler independently fixes publication duration,
+without borrowing sample timestamps as elapsed time.
+
+Extension tests cover shared health requests, cancellation, late replies, pause-state truth,
+same-anchor rebootstrap, whole-operation recovery retries and frame timing in separate clock
+domains. The native recording workflow replaces the HTTP/session/workspace owners while a
+writer continues, deliberately refuses one attachment, and checks restored configuration,
+working UUID, pause intent, fresh buffers and window allowance in both supported editor
+versions. It retires the unused opening overview before peer workflows, and waits for enabled
+controls rather than assuming that a follow's terminal state has already been painted.
+A second phase starts a fresh Java process after finalization and checks the same
+working record and exact restored samples. Abrupt process crashes and power cuts remain a
+separate gate. Evidence,
+failing-first runs and mutation plants are in
+`/private/tmp/wpilog-visualization-stage3-health-recovery/validation.md`.
+
+The dense-history continuation validates the shared native merge/reducer through HTTP and MCP,
+with a generated 10,000-sample two-member oracle (early extrema, duplicate and backward times),
+projection/nonfinite cases, work/byte limits, cancellation and post-read grant/boundary changes.
+Controller/renderer checks cover budget-sized requests, stale replies, pause/hide/close,
+empty-window refresh and incoming follow frames preserving displayed history. The recording
+native workflow now compares bucket counts/means/extrema to its own integer-time oracle,
+including 5,003 original records and a spike outside the old 4,096-point tail. Evidence belongs
+under `/private/tmp/wpilog-visualization-stage3-reduction/validation.md`; run the full build,
+license, broker and Node suites before the two native editor versions. The declaration-burst,
+season-sized store, sustained-performance and platform gates remain separate.
+
+The code-review follow-up adds real HTTP/MCP cases for missing array leaves, signed and
+unsigned enum/integer boundaries, declaration-only files and recordings, clock-present/absent
+relative windows, and null-versus-omitted chart arguments. The headless broker task now also
+runs the live analysis controller against a real Java server: an empty admitted binding returns
+`no_match`, and its first appended sample refreshes statistics, histogram and scatter without
+Retry. Numeric regressions check lag translation invariance and WPILib's documented brownout
+thresholds. Failing-first runs, plants and final checks are recorded in
+`/private/tmp/wpilog-code-review-fixes-2026-10-18/validation.md`.
+
+### Direct connection checkpoint tests
+
+`followBrokerTest` also runs `connectionsReal.test.ts` against two synthetic Java servers:
+API 2 inventory, follow, chart, qualified data and library requests keep their serving owner,
+including restart, with a local-daemon factory that fails if called. `npm test` runs the pure
+connection/URI/credential and rendered-source tests. These are loopback transport tests,
+not a real remote deployment or throughput measurement.
+
+The optional native M3 routing fixture uses already-installed macOS editor binaries and never
+downloads or installs them. After `compileExtension` and `extensionSmokeFixture`, run from
+`vscode-extension` with explicit `VSCODE_VERSION=1.101.0` (then `1.141.0`) and
+`WPILOG_CONNECTION_OUTPUT=/private/tmp/wpilog-source-mirror-m3`:
+`/opt/homebrew/bin/node out/smoke/connectionsRun.js`. It opens isolated editor windows,
+profiles and two synthetic server processes. Obtain permission before launching native UI
+validation. Inspect each `native-*/result.json`; compilation alone is not a native pass.

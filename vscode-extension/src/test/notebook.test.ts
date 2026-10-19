@@ -19,3 +19,10 @@ test("notebook requests the exact selection and carries the server inputs in its
   assert.ok(result.cells[2].source.includes(JSON.stringify(inputs, null, 2)), "the evidence cannot disappear when the notebook leaves VS Code");
   assert.ok(result.cells[2].source.includes('"/Quote\\"here"')); assert.ok(result.cells[2].source.includes("2 to 4"));
 });
+
+test("remote notebooks retain the serving owner and scope in each data request", () => {
+  const result = notebook({ path: "/same.wpilog", entries: ["/x"], kind: "time_series", serverInstanceId: "owner-a", scopeId: "scope-a" }, "http://pit:2363/mcp") as any;
+  const requests = JSON.parse(result.cells[0].source.match(/requests = (.*)\n/)[1]);
+  const url = new URL(requests[0][1]); assert.equal(url.origin, "http://pit:2363");
+  assert.equal(url.searchParams.get("scope_id"), "scope-a"); assert.equal(url.searchParams.get("server_instance_id"), "owner-a");
+});

@@ -50,6 +50,12 @@ interface Exchange {
   sessionId?: string;
 }
 
+/** Checked before any session is published or any directory/key registration is sent. */
+export interface ConnectionPolicy {
+  verify(capabilities: Record<string, unknown>): Promise<void>;
+  scopeId?: string;
+}
+
 export class McpClient {
   private nextId = 1;
   private sessionId?: string;
@@ -138,12 +144,24 @@ export class McpClient {
     readonly endpoint: string,
     private readonly clientVersion: string,
     private readonly registration?: () => Promise<SessionRegistration>,
-    private readonly headersFor: HttpHeaders = noHeaders
+    private readonly headersFor: HttpHeaders = noHeaders,
+    private readonly policy?: ConnectionPolicy
   ) {}
 
   /** Whether a session is open. */
   get connected(): boolean {
     return this.sessionId !== undefined;
+  }
+
+  async connect(): Promise<void> { await this.ensureSession(); }
+
+  /** Data requests use the same verified owner and session as metadata and follows. */
+  async dataHeaders(endpoint: string): Promise<Record<string, string>> {
+    const url = new URL(endpoint), owner = new URL(this.endpoint);
+    if (url.origin !== owner.origin || url.username || url.password || url.hash || url.pathname !== "/data/entries")
+      throw new Error("Data credentials require this server's data route");
+    await this.ensureSession();
+    return { ...await this.headersFor(endpoint), [SESSION_HEADER]: this.sessionId! };
   }
 
   /** Native view follows borrow this window's registered authority. Refuse a different origin
@@ -160,18 +178,24 @@ export class McpClient {
    * Calls a tool and returns its result. Rejects with a ToolError when the tool reports an error
    * or the server cannot be reached.
    */
-  async callTool(name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  async callTool(name: string, args: Record<string, unknown> = {}, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Record<string, unknown>> {
     if (this.disposed) throw new ToolError("The client was disposed", name);
     await this.updating;
     await this.ensureSession();
-    const calledSession = this.sessionId;
-    let exchange = await this.post(toolCallRequest(this.nextId++, name, args), this.sessionId);
+    if (this.policy?.scopeId && (typeof args.path === "string" || name === "list_available_logs")) {
+      if (args.scope_id !== undefined && args.scope_id !== this.policy.scopeId) throw new Error("This request belongs to another source scope");
+      args = { ...args, scope_id: this.policy.scopeId };
+    }
+    let calledSession = this.sessionId;
+    let exchange = await this.post(toolCallRequest(this.nextId++, name, args), this.sessionId, options);
     if (sessionLost(exchange.status, this.sessionId !== undefined)) {
       // The server forgot the session: open another and try once more
       if (this.sessionId === calledSession) this.sessionId = undefined;
       await this.ensureSession();
-      exchange = await this.post(toolCallRequest(this.nextId++, name, args), this.sessionId);
+      calledSession = this.sessionId;
+      exchange = await this.post(toolCallRequest(this.nextId++, name, args), this.sessionId, options);
     }
+    if (this.disposed || this.sessionId !== calledSession) throw new ToolError("The connection changed during this request; retry on its original source", name);
     const outcome = this.outcomeOf(exchange, name);
     if (!outcome.ok) throw new ToolError(outcome.error, name, outcome.result);
     return outcome.result;
@@ -204,7 +228,7 @@ export class McpClient {
   }
 
   private async initialize(): Promise<void> {
-    const exchange = await this.post(initializeRequest(this.nextId++, this.clientVersion));
+    const exchange = await this.post(initializeRequest(this.nextId++, this.clientVersion), undefined, { timeoutMs: this.policy ? 5000 : undefined });
     if (exchange.status !== 200 || !exchange.sessionId) {
       throw new ToolError(
         `The server did not open a session (HTTP ${exchange.status}: ${exchange.body.trim()})`,
@@ -213,7 +237,12 @@ export class McpClient {
     }
     const session = exchange.sessionId;
     try {
-      await this.post(initializedNotification(), session);
+      await this.post(initializedNotification(), session, { timeoutMs: this.policy ? 5000 : undefined });
+      if (this.policy) {
+        const reply = await this.exchange(new URL("/visualizations/v2/capabilities", this.endpoint).toString(), "GET", undefined, session, 5000, undefined, 1 << 20);
+        if (reply.status !== 200) throw new Error(`This connection requires visualization API 2 (HTTP ${reply.status})`);
+        await this.policy.verify(JSON.parse(reply.body));
+      }
       await this.register(session);
       if (this.disposed) throw new ToolError("The client was disposed", "initialize");
       this.sessionId = session;
@@ -288,7 +317,7 @@ export class McpClient {
       check(); let called = options.session ?? this.sessionId;
       const send = () => {
         check(); options.captureSession?.(called!);
-        return this.exchange(new URL("/visualizations/v1" + route, this.endpoint).toString(),
+        return this.exchange(new URL(`/visualizations/v${options.apiVersion ?? 1}` + route, this.endpoint).toString(),
           body === undefined ? "GET" : "POST", body, called, options.timeoutMs ?? 600_000, controller.signal, options.maxResponseBytes ?? 16 << 20);
       };
       let reply = await send(); check();
@@ -301,6 +330,7 @@ export class McpClient {
         if (value.retryable !== undefined && typeof value.retryable !== "boolean") throw new Error("Invalid visualization refusal retryable flag");
         throw new LocalControlError(`${value.code ?? "PREVIEW_FAILED"}: ${value.error ?? reply.status}`, reply.status, value.code, value.retryable);
       }
+      if (this.disposed || this.sessionId !== called) throw new Error("The connection changed during this visualization request");
       return value as T;
     };
     let abort!: () => void;
@@ -380,8 +410,8 @@ export class McpClient {
   }
 
   /** Posts one message; rejects only when the server cannot be reached. */
-  private post(message: JsonRpcMessage, sessionId?: string): Promise<Exchange> {
-    return this.exchange(this.endpoint, "POST", message, sessionId);
+  private post(message: JsonRpcMessage, sessionId?: string, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Exchange> {
+    return this.exchange(this.endpoint, "POST", message, sessionId, options.timeoutMs, options.signal);
   }
 
   private async exchange(endpoint: string, method: string, payload?: unknown, sessionId?: string,
@@ -422,6 +452,8 @@ export class McpClient {
         }
       );
       request.on("timeout", () => request.destroy(new Error("the request timed out")));
+      const deadline = setTimeout(() => request.destroy(new Error("the request deadline expired")), timeout);
+      request.once("close", () => clearTimeout(deadline));
       request.on("error", (error) => reject(this.unreachable(method, error)));
       const abort = () => request.destroy(new Error("Request cancelled"));
       signal?.addEventListener("abort", abort, { once: true });
@@ -448,6 +480,7 @@ export class LocalControlError extends Error {
 
 /** Inventory handles are session-owned; passing session prohibits automatic rebinding/replay. */
 export interface VisualizationRequest {
+  apiVersion?: 1 | 2;
   maxRequestBytes?: number; maxResponseBytes?: number; timeoutMs?: number;
   session?: string; captureSession?(session: string): void;
 }

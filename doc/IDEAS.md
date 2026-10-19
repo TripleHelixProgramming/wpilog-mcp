@@ -2,6 +2,14 @@
 
 Ideas for future versions of wpilog-mcp, grouped by theme and roughly prioritized within each section. Where part of an idea already exists, the section says so. Section numbers are kept when an idea is completed or dropped, so the code and the robustness documents can refer to them; the gaps are expected.
 
+The agreed next Explorer/source work is specified in
+[Explorer sources and mirror implementation plan](SOURCE_AND_MIRROR_PLAN.md): independent
+local/remote sources with no default, server-owned visualization libraries, and mirrors
+that retain collected files, pause at capacity and accept provisional peer content through
+their engine. M1 source contracts and M2 server-library persistence are implemented locally;
+M3 source-aware Explorer routing and the later mirror checkpoints remain pending. The plan
+records migration, acceptance gates and the validation limits for each checkpoint.
+
 ---
 
 ## 1. Performance & Scalability
@@ -810,9 +818,50 @@ was not at fault, and this checkpoint does not claim a native test or fix for th
 Historical-navigation continuation (2026-10-16): the local preview now connects time-series drag
 zoom and keyboard pan/zoom to revisioned interval reads, with Inspect History and Resume
 following. Evidence is in `/private/tmp/wpilog-visualization-stage3-history/validation.md`.
-Dense recording history still keeps only 4,096 recently delivered points per selection; it is
-not a complete min/max representation. Add shared server reduction for anchored historical
-prefixes before claiming complete long-window plots. The fixed saved policy has no following
+At the historical-navigation checkpoint, dense recording history kept only 4,096 recently delivered points per selection; it was
+not a complete min/max representation. The dense-history continuation below replaces that
+limit for fixed/full history with shared server reduction. The fixed saved policy has no following
 window field; the current editor remembers its resume choice in VS Code UI state, while a new
 fixed-view fork defaults to 30 seconds. Remote routing, acquisition health/latency, unavailable
 source recovery, Linux/Windows native runs and sustained performance remain open.
+
+#### Health/recovery checkpoint follow-up (2026-10-17)
+
+Source health and complete editor reattachment recovery are implemented in the current Stage 3
+checkpoint. Recording-history reduction is implemented in the next local checkpoint; continue with the pending workload/platform gates.
+The native recovery fixture replaces HTTP/session/workspace owners while acquisition continues
+and starts a fresh Java process after finalization, restoring the same working view and exact
+samples. Add a combined process-crash/restart test for live laptop capture and mirroring. Existing named
+server startup and recorded-workflow process restart tests are separate evidence, not that gate.
+Clock-domain timing is observable; server/host/renderer offset calibration and end-to-end p95
+remain unmeasured. Season-sized catalog scans, declaration bursts with 32 leases, sustained
+throughput, multi-member rollovers, Linux/Windows native runs and the manual Close cancellation
+check remain outstanding. Save As still refuses with the Save view hint.
+
+Native recovery testing exposed an inventory leak: cancelling an admitted creation destroyed the
+response before its opaque handle could be closed. Creation now keeps its bounded 15-second
+request alive, then closes a late handle in its original session if the view cancelled. Reads
+remain immediately cancellable. The real-HTTP regression and plant reproduce that fault.
+The fixture also closes its unused opening overview before peer workflows and waits for the
+final frame to enable Full recording. Diagnostics preserve inventory owners, delivery state and
+rendered text. Both editor versions now pass after the product fix. Network failure before the
+handle response still relies on server expiry; native Linux/Windows reliability remains unproven.
+
+Dense historical recording reads now reuse the native merge/reducer across a fresh proven
+prefix. Fixed/full plots preserve whole-interval extrema and counts under explicit work and
+byte caps; Follow keeps its incremental limit. This closes the trimmed-history implementation
+item, with evidence in `/private/tmp/wpilog-visualization-stage3-reduction/validation.md`.
+Measure its repeated historical reads during late appends, two-member sorting and shared
+window pressure in the sustained gate; there is no historical reduction cache yet. Preserve
+strict catalog reuse while measuring the season-sized inventory scan/hash cost, and include
+the 32-lease declaration burst. Platform runs, manual Close cancellation and Save As remain
+open as recorded in the visualization plan.
+
+#### Shared bucket means at extreme dynamic range (review C1)
+
+The shared reducer deliberately retains legacy sequential summation. For exact floating-point
+inputs `[1e16, 1, -1e16]`, it reports mean 0 instead of 1/3; counts and extrema remain correct.
+Consider Neumaier compensation as a separate compatibility change across native and legacy
+consumers, with independent cancellation and finite-input-overflow oracles. The current review
+fixes do not change this arithmetic. This remains separate from the Stage 3 workload and
+platform gates above.

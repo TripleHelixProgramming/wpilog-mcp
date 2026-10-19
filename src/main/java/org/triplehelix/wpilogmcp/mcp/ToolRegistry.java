@@ -31,9 +31,11 @@ public class ToolRegistry {
   @FunctionalInterface interface WorkspaceBuild {
     org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace build(org.triplehelix.wpilogmcp.visualization.ServerIdentity identity) throws java.io.IOException;
   }
+  private volatile java.util.function.Supplier<org.triplehelix.wpilogmcp.capture.LiveCapture> capture = () -> null;
+  public void captureSource(java.util.function.Supplier<org.triplehelix.wpilogmcp.capture.LiveCapture> value) { capture = java.util.Objects.requireNonNull(value); }
   /** The first caller builds the workspace; tests substitute a build that fails. */
   volatile WorkspaceBuild workspaceBuild = identity ->
-      new org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace(identity, org.triplehelix.wpilogmcp.log.LogManager.getInstance());
+      new org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace(identity, org.triplehelix.wpilogmcp.log.LogManager.getInstance(), () -> capture.get());
   public org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace visualizations() throws java.io.IOException {
     var future = visualization.get();
     if (future == null) {
@@ -67,8 +69,8 @@ public class ToolRegistry {
   private volatile java.util.function.Supplier<JsonObject> currentSession = () -> CurrentSessionResource.read(null);
   public void setCurrentSession(java.util.function.Supplier<JsonObject> value) { currentSession = value; }
   public JsonObject currentSession() { return currentSession.get(); }
-  public static final String LOCAL_LOCATION = "This server reads files on this machine and its mirrors. Use the pit server for live sessions; a completed mirrored file has the same bytes and answers offline.";
-  public static final String PIT_LOCATION = "This is the pit server: use it for the team's sessions and live captures. A completed mirror on a laptop has the same bytes and answers offline.";
+  public static final String LOCAL_LOCATION = "This server serves its configured files and mirrors. Other servers and copies are separate user-selected sources.";
+  public static final String PIT_LOCATION = "This server serves the team's files and captures. Other servers and copies are separate user-selected sources.";
   private volatile String serverLocation = LOCAL_LOCATION;
   public void setServerLocation(String value) { serverLocation = value; }
   public String getServerLocation() { return serverLocation; }

@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Predicate;
@@ -189,6 +190,10 @@ public class LogDirectory {
     return paths.stream().distinct().toList();
   }
 
+  private final org.triplehelix.wpilogmcp.read.server.SourceScopes scopes =
+      new org.triplehelix.wpilogmcp.read.server.SourceScopes(() -> Set.copyOf(getLogDirectories()));
+  public org.triplehelix.wpilogmcp.read.server.SourceScopes sourceScopes() { return scopes; }
+
   private List<Path> ingestionDirectories() {
     var service = LogManager.getInstance().stores().localIngestion();
     if (service == null || service.preferredStore() == null) return List.of();
@@ -316,9 +321,20 @@ public class LogDirectory {
 
   /** The default view removes a source only after its current version has a surviving receipt. */
   public DirectoryScan scanLogs(boolean allSources) throws IOException {
-    var service = LogManager.getInstance().stores().localIngestion();
     var preferred = ingestionDirectories();
     var dirs = allSources || preferred.isEmpty() ? getLogDirectories() : preferred;
+    return scanLogs(dirs, allSources, true);
+  }
+
+  /** A source-qualified listing never scans a neighbor or hides its own files using import
+   * destination preferences. Ordinary directory scopes exclude nested stores. */
+  public DirectoryScan scanLogs(org.triplehelix.wpilogmcp.read.server.SourceScopes.Scope scope) throws IOException {
+    var spelling = getLogDirectories().stream().filter(path -> realPath(path).equals(scope.root())).findFirst().orElse(scope.root());
+    return scanLogs(List.of(spelling), true, !scope.kind().equals("directory"));
+  }
+
+  private DirectoryScan scanLogs(List<Path> dirs, boolean allSources, boolean includeStores) throws IOException {
+    var service = LogManager.getInstance().stores().localIngestion();
     if (dirs.isEmpty()) throw new IOException("Log directory not configured");
 
     var unavailable = new ArrayList<UnavailableDirectory>();
@@ -334,7 +350,7 @@ public class LogDirectory {
         continue;
       }
       try {
-        for (var root : StoreCatalog.discover(dir)) {
+        for (var root : includeStores ? StoreCatalog.discover(dir) : List.<Path>of()) {
           if (!seenStores.add(root)) continue;
           var store = StoreCatalog.read(root, security);
           stores.add(store);
@@ -509,6 +525,15 @@ public class LogDirectory {
   }
 
   public record DirectoryOrigin(String path, String origin, Integer team) {}
+
+  /** A discovered store may sit below a configured root, including a root spelled through a
+   * symlink. Describe the actual search root while preserving its grant's origin and team. */
+  public DirectoryOrigin directoryOrigin(Path root) {
+    var actual = realPath(root);
+    var inherited = directoryOrigins().stream().filter(origin -> actual.startsWith(realPath(Path.of(origin.path()))))
+        .max(java.util.Comparator.comparingInt(origin -> realPath(Path.of(origin.path())).getNameCount()));
+    return new DirectoryOrigin(root.toString(), inherited.map(DirectoryOrigin::origin).orElse("configured"), teamFor(root));
+  }
 
   /**
    * Reads the bounded metadata prefix through the resolver roles, then the file name for facts

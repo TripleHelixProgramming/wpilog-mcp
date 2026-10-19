@@ -103,6 +103,29 @@ class StoreDoorTest {
     }
   }
 
+  @Test void failedDiscoveryKeepsHealthyStoreAvailableAndReportsTheFailedRoot() throws Exception {
+    var denied = Files.createDirectory(temp.resolve("denied"));
+    org.junit.jupiter.api.Assumptions.assumeTrue(Files.getFileStore(denied).supportsFileAttributeView("posix"), "POSIX permissions required");
+    transport.stop(); transport = new HttpTransport(new ToolRegistry(), 0);
+    transport.setStoreDirectories(Set.of(root, denied)); transport.start();
+    var permissions = Files.getPosixFilePermissions(denied);
+    try {
+      Files.setPosixFilePermissions(denied, Set.of());
+      org.junit.jupiter.api.Assumptions.assumeFalse(Files.isReadable(denied), "Process can bypass directory permissions");
+      for (int attempt = 0; attempt < 2; attempt++) { // A cached discovery keeps its failure, too.
+        var response = get("/store"); assertEquals(200, response.statusCode(), text(response));
+        var descriptor = JsonParser.parseString(text(response)).getAsJsonObject();
+        assertTrue(descriptor.has("stores") && descriptor.has("unreadable"), "Failed roots must remain in discovery: " + descriptor);
+        assertEquals(1, descriptor.getAsJsonArray("stores").size());
+        assertEquals(1, descriptor.getAsJsonArray("unreadable").size());
+        assertEquals(denied.toString(), descriptor.getAsJsonArray("unreadable").get(0).getAsJsonObject().get("path").getAsString());
+        String id = descriptor.getAsJsonArray("stores").get(0).getAsJsonObject().get("id").getAsString();
+        var content = get(path() + "?store=" + id); assertEquals(200, content.statusCode(), text(content));
+        assertArrayEquals(Files.readAllBytes(log), content.body());
+      }
+    } finally { Files.setPosixFilePermissions(denied, permissions); }
+  }
+
   @org.junit.jupiter.params.ParameterizedTest
   @org.junit.jupiter.params.provider.ValueSource(strings = {"robot.json", "prefix-hash"})
   void manifestedUnassignedPayloadsAreReadableEvenWithAControlFilename(String filename) throws Exception {

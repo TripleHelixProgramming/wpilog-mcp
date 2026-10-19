@@ -31,6 +31,12 @@ export interface IngestionStatus {
   pending?: number;
   sources?: { path: string; state?: string; reason?: string; [key: string]: unknown }[];
 }
+export interface IngestionFiles {
+  files: { path: string; state: string; reason?: string | null; destination?: string | null }[];
+  offset: number;
+  limit: number;
+  total: number;
+}
 export interface SourceCandidate {
   path: string;
   origin: "configured" | "user" | "project or session" | "temporary" | "saved";
@@ -101,7 +107,7 @@ export class LocalIngestionClient {
       request<IngestionStatus>("/store/local-ingestion", "PUT", policy));
   }
   scan(): Promise<IngestionStatus> { return this.client.requestLocalControl("/store/local-ingestion/scan", "POST", {}); }
-  files(offset = 0, limit = 100): Promise<{ files: { path: string; state: string; reason?: string | null; destination?: string | null }[]; offset: number; limit: number; total: number }> {
+  files(offset = 0, limit = 100): Promise<IngestionFiles> {
     return this.client.requestLocalControl(`/store/local-ingestion/files?offset=${offset}&limit=${limit}`, "GET");
   }
 }

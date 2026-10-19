@@ -114,6 +114,11 @@ final class FollowEndpoint implements AutoCloseable {
     }
     if (!body.has("source_ref") || !body.get("source_ref").isJsonObject()) throw new IllegalArgumentException("source_ref must be an object");
     var ref = org.triplehelix.wpilogmcp.visualization.VisualizationContracts.source(body.getAsJsonObject("source_ref"));
+    // The raw v1 factory receives content identity only. Never discard a caller's serving
+    // owner; qualified view follows retain it through RecordedSources and each access check.
+    if (ref.has("schema_version") || body.has("scope_id"))
+      throw new IllegalArgumentException("Raw follows require an unqualified schema-1 source_ref; "
+          + "create a visualization API 2 view and follow its view_binding for a qualified source");
     var reference = org.triplehelix.wpilogmcp.visualization.VisualizationContracts.recordingReference(ref);
     var queries = new ArrayList<ReadQuery>();
     if (!body.has("queries") || !body.get("queries").isJsonArray()) throw new IllegalArgumentException("queries must be an array");

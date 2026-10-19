@@ -30,11 +30,19 @@ test("control resynchronization reattaches metadata before reopening recording a
   const client = { onVisualization: (f: any) => { event = f; return { dispose() {} }; } };
   preview.host = { client: async () => client }; preview.paint = () => calls.push("paint"); preview.warning = (_p: any, e: any) => assert.fail(String(e));
   const snapshot = { view_id: "v", revision: 1 }; const controller = { snapshot, agentChanged: async () => calls.push("apply") };
-  const page = { closed: false, serial: Promise.resolve(), document: { controller }, live: { refresh: () => calls.push("follow") } };
+  const page: any = { closed: false, serial: Promise.resolve(), document: { controller }, generation: { cancel: () => calls.push("cancel") }, panel: { visible: true },
+    live: { suspend: () => calls.push("suspend") }, recordingInventory: { hide: () => calls.push("hide"), show: () => calls.push("show") } };
+  preview.owner = "owner";
   preview.registerWindow = async () => { calls.push("budget"); };
-  preview.pages = new Map([["v", page]]); preview.backend = { attach: async () => { calls.push("attach"); return snapshot; } };
-  await preview.controls(); event({ kind: "resync_required" }); await page.serial;
-  assert.deepEqual(calls, ["budget", "attach", "apply", "paint", "follow"]);
+  preview.pages = new Map([["v", page]]); preview.backend = { call: async (route: string) => {
+    if (route === "/capabilities") { calls.push("identity"); return { server_instance_id: "owner" }; }
+    assert.equal(route, "/views/v/attach"); calls.push("attach"); return snapshot;
+  } };
+  await preview.controls(); event({ kind: "resync_required" });
+  assert.equal(page.recovering, true); assert.deepEqual(calls.slice(0, 4), ["cancel", "suspend", "hide", "identity"]);
+  await new Promise(resolve => setImmediate(resolve)); await page.serial;
+  assert.deepEqual(calls, ["cancel", "suspend", "hide", "identity", "budget", "attach", "apply", "paint", "show"]);
+  assert.equal(page.recovering, false); page.recovery.dispose();
 });
 
 test("recording cursor and pause gestures reach the recording analysis owner without a single-file read", async () => {
@@ -169,7 +177,7 @@ test("a checked field is one reusable numeric requirement across raw, latest and
 });
 test("render lifecycle cancels field requests immediately even while the view message queue is busy", async () => {
   const f = selectionFixture(); let receive: (m: any) => void = () => {}, visible: () => void = () => {}, close: () => void = () => {};
-  f.preview.pages = new Map(); f.preview.rendered = new Map(); f.preview.overviews = new Map(); f.preview.targetEntries = () => {}; f.preview.pageHtml = () => "fixture";
+  f.preview.controls = async () => {}; f.preview.pages = new Map(); f.preview.rendered = new Map(); f.preview.overviews = new Map(); f.preview.targetEntries = () => {}; f.preview.pageHtml = () => "fixture";
   Object.assign(f.page.panel, { onDidChangeViewState: (fn: any) => visible = fn, onDidDispose: (fn: any) => close = fn });
   f.page.panel.webview.onDidReceiveMessage = (fn: any) => receive = fn;
   await f.preview.render(f.page.document, f.page.panel);

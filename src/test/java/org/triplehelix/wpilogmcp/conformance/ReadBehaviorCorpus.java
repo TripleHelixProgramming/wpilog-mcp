@@ -38,6 +38,7 @@ public final class ReadBehaviorCorpus {
   private static final Map<String, String> EXCLUDED = excluded();
   private static Map<String, String> excluded() {
     var excluded = new java.util.LinkedHashMap<String, String>(Map.of(
+      "list_source_scopes", "Machine-local source configuration added after the frozen baseline; SourceScopesTest and SourceSelectionTest pin selection and paging.",
       "health_check", "Runtime heap/cache counters are checked separately, not equal across processes.",
       "list_loaded_logs", "Runtime cache residency depends on heap pressure; lifecycle checks cover it separately.",
       "set_revlog_offset", "Changes shared alignment state; this frozen corpus compares read-only requests.",
@@ -45,8 +46,9 @@ public final class ReadBehaviorCorpus {
     // These definitions and machine-local source IDs did not exist in the frozen reader baseline.
     // Their successful state transitions are exercised through VisualizationConformance.
     for (String tool : List.of(
-        "visualization_capabilities_get", "visualization_source_inspect",
-        "visualization_source_entries_list", "visualization_source_entries_get", "visualization_source_inventory_close", "visualization_source_value", "visualization_source_statistics", "visualization_source_histogram", "visualization_source_scatter", "visualization_template_list",
+        "visualization_library_list", "visualization_library_migrate", "visualization_saved_view_open",
+        "visualization_capabilities_get", "visualization_source_inspect", "visualization_source_health",
+        "visualization_source_entries_list", "visualization_source_entries_get", "visualization_source_inventory_close", "visualization_source_value", "visualization_source_statistics", "visualization_source_reduction", "visualization_source_histogram", "visualization_source_scatter", "visualization_template_list",
         "visualization_template_get", "visualization_template_check", "visualization_template_create",
         "visualization_template_update", "visualization_template_import", "visualization_template_export",
         "visualization_view_list", "visualization_view_get", "visualization_view_bind", "visualization_view_create",

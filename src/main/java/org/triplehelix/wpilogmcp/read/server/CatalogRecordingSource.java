@@ -34,6 +34,8 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
   private final Catalogs catalogs;
   private final RecordingReference reference;
   private final VerifiedContentHashes verified;
+  private final String scopeId;
+  private final SourceScopes.Scope scope;
   private StoreReadCatalog.Recording recording;
   private Map<Path, Object> publications = Map.of();
   private List<Stamp> stamps = List.of();
@@ -43,8 +45,12 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
     this(logs, catalogs, reference, new VerifiedContentHashes());
   }
   public CatalogRecordingSource(LogManager logs, Catalogs catalogs, RecordingReference reference, VerifiedContentHashes verified) {
+    this(logs, catalogs, reference, verified, null);
+  }
+  public CatalogRecordingSource(LogManager logs, Catalogs catalogs, RecordingReference reference,
+      VerifiedContentHashes verified, SourceScopes.Scope scope) {
     this.logs = logs; this.catalogs = catalogs; this.reference = reference;
-    this.verified = verified;
+    this.verified = verified; this.scope = scope; this.scopeId = scope == null ? null : scope.id();
   }
   public RecordingReference reference() { return reference; }
   @FunctionalInterface public interface Access { void check() throws IOException; }
@@ -56,19 +62,27 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
         .map(m -> new Location(m.root(), m.facts().path(), m.facts().file().provenance().originalName())).toList());
     var catalogs = this.catalogs; var logs = this.logs; var reference = this.reference;
     return () -> {
+      if (scope != null) logs.sourceScopes().recheck(scope);
       try (var lease = catalogs.acquire()) {
         var retained = locations.get();
         if (lease.value() == null || retained.stream().anyMatch(m -> !lease.value().roots().contains(m.root())))
           throw new java.nio.file.AccessDeniedException("Recording store is no longer configured");
-        try { for (var member : retained) logs.validateSourcePath(member.path()); }
+        try {
+          for (var member : retained) {
+            var path = logs.validateSourcePath(member.path());
+            if (scope != null) logs.sourceScopes().recheckPath(path, scope);
+          }
+        }
         catch (java.nio.file.NoSuchFileException moved) {
           // Only a missing old path needs a fresh metadata resolution. The catalog owns
           // recording aliases; ordinary pages never reopen a prefix or hash file contents.
-          var current = lease.value().recording(reference); var updated = new ArrayList<Location>();
+          var current = lease.value().recording(scopeId, reference); var updated = new ArrayList<Location>();
           for (var before : retained) {
             var member = current.members().stream().filter(m -> m.facts().file().provenance().originalName().equals(before.member())).findFirst()
                 .orElseThrow(() -> new java.nio.file.AccessDeniedException("Recording member is no longer available"));
-            updated.add(new Location(member.root(), logs.validateSourcePath(member.facts().path()), before.member()));
+            var path = logs.validateSourcePath(member.facts().path());
+            if (scope != null) logs.sourceScopes().recheckPath(path, scope);
+            updated.add(new Location(member.root(), path, before.member()));
           }
           locations.set(List.copyOf(updated));
         }
@@ -78,10 +92,11 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
 
   @Override public void authorize() throws IOException { if (recording != null) access().check(); }
   @Override public OrdinalFollow.Prefix open() throws IOException {
+    if (scope != null) logs.sourceScopes().recheck(scope);
     long version = logs.catalogPublication();
     try (var lease = catalogs.acquire()) {
       if (lease.value() == null) throw new IOException("SOURCE_UNAVAILABLE: no configured recording store");
-      var resolved = lease.value().recording(reference);
+      var resolved = lease.value().recording(scopeId, reference);
       if (resolved.members().size() > 64) throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT, "A follow admits at most 64 recording members");
       var tokens = new HashMap<Path, Object>(); var boundaries = new ArrayList<Stamp>();
       var opened = new ArrayList<OrdinalFollow.Member>();
@@ -89,6 +104,7 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
       try {
         for (var member : resolved.members()) {
           var path = logs.validateSourcePath(member.facts().path());
+          if (scope != null) logs.sourceScopes().recheckPath(path, scope);
           // Observe before opening: a publication racing snapshot admission can only cause
           // an extra wake, never hide an ordinal until a later sample happens to arrive.
           tokens.put(path, logs.capturePublication(path));
@@ -107,6 +123,7 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
               throw new ReadException(ReadProblem.Code.FILE_CHANGED, "Recording metadata belongs to another writer; explicitly rebootstrap the same retained recording");
             identity = live.captureIdentity();
           }
+          if (scope != null) logs.sourceScopes().recheckPath(snapshot.path(), scope);
           opened.set(opened.size() - 1, new OrdinalFollow.Member(member.facts().file().provenance().originalName(), 0, snapshot, stamp.hash(), identity));
           if (growing && !snapshot.live()) throw new IOException("SOURCE_UNAVAILABLE: open recording needs its writer's managed prefix");
           indexed = Math.addExact(indexed, snapshot.indexBytes());
@@ -135,7 +152,8 @@ public final class CatalogRecordingSource implements OrdinalFollow.Source {
       if (version != catalogPublication || now - checkedAt >= Duration.ofSeconds(5).toNanos()) {
         try (var lease = catalogs.acquire()) {
           if (lease.value() == null) throw new IOException("SOURCE_UNAVAILABLE: recording store is no longer configured");
-          var current = lease.value().recording(reference);
+          if (scope != null) logs.sourceScopes().recheck(scope);
+          var current = lease.value().recording(scopeId, reference);
           for (var member : current.members()) logs.validateSourcePath(member.facts().path());
           if (!recording.equals(current)) return true;
           for (var stamp : stamps) if (!java.util.Objects.equals(stamp.boundary(), FileSnapshot.of(stamp.path()))) return true;

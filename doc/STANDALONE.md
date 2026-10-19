@@ -357,10 +357,13 @@ supplies identity only when the log does not record it.
 User and permanent server folders are preselected. Project folders, session-only folders and OS
 temporary folders start unchecked; you can explicitly select them. Newly configured folders are
 never enrolled automatically. Cancellation before confirmation changes no setting and submits no
-import. **Manage Data Store…** edits the shared policy, shows status and opens the store folder;
+import. **Manage Data Store…** edits the shared policy; its **Show source status** item reports
+per-source states and reasons, and writes the first 100 file receipts to the output channel.
+When more receipts exist, it reports the total and the endpoint's `offset` and `limit` parameters.
 **Sync Data Store Now** requests discovery and retries unchanged refusals,
 **Pause/Resume Data Store Sync** controls ingestion,
-and **Show All Sources** switches the listing. Pausing retains files and the readable store.
+and the existing Explorer controls manage the import listing. MCP reads now require explicit
+source selection; Logs shows separate connection and source-scope roots. Pausing retains files and the readable store.
 
 The named local server owns one preferred store and the persistent source policy. Closing VS Code
 or its session does not stop syncing; the daemon keeps running while the policy is enabled and
@@ -384,11 +387,13 @@ Unavailable sources report their reason; a missing or replaced destination suspe
 than silently creating a different store. Removing a source stops future imports, not an already
 admitted transaction. Imported files, original paths and duplicate origins remain recorded.
 
-The default `list_available_logs` view searches the preferred store and enrolled sources, hiding
-an original only when its current version has a receipt and its stored copy still exists.
-Pending, changed and refused source files remain visible. `view: all` includes the originals and
-other readable directories. Explicit file paths and the standalone reader's root selection keep
-their meaning. A REV file arriving before its WPILOG is reconsidered when the store gains a new
+`list_source_scopes` enumerates separate managed-store, mirror and ordinary-directory sources.
+There is no default read source. With multiple choices, `list_available_logs` requires the chosen
+`scope_id` and instructs the agent to ask the user when it is absent. Import destination preferences
+do not choose reads. Legacy `view: default` and `view: all` both stay within the selected scope.
+Explicit absolute paths keep their meaning; a relative log path with several configured scopes
+requires `scope_id`. Source policy, pending files and receipts remain in the controls below.
+A REV file arriving before its WPILOG is reconsidered when the store gains a new
 session-owned WPILOG; only the existing unique, strong, near-zero correlation can assign it.
 Ambiguous files remain unassigned with their reason.
 
@@ -627,15 +632,43 @@ the server logs a warning and continues with a fresh ephemeral identity. Unnamed
 report `working_state: "ephemeral"`. In both cases, `working_state_reason` explains why durable
 recovery is unavailable; restarting may change the owner ID. This fallback does not stop log
 analysis or recording.
-This identity creates no log store or ingestion policy. The explicit recorded preview uses
+This identity creates no log store or ingestion policy.
+
+Qualified source references are available through `/visualizations/v2` and MCP visualization
+`api_version: 2`. The v1 routes and API 1 reject qualified references, including operations on
+working views containing them. API 1 remains local-only. API 2 admits remote reads, working-view operations and server-library
+operations through the same HTTP/MCP policy. Store enumeration and legacy library migration
+remain local administration; directory, key and proxy-credential registration also remain local.
+Denied Origins never receive read authority. Forwarded requests can use API 2 but do not gain
+local authority. This admission policy is not an authentication system. API 2 adds:
+
+- `POST /source/scopes` with optional integer `offset` and `limit` (1–64), a 64 KiB request
+  limit and bounded descriptors; unknown fields and lossy integer values refuse.
+- `POST /source/qualify` with a legacy `source_ref` and optional explicit `scope_id`.
+- `POST /source` with `path` and optional `scope_id`, returning a qualified reference.
+
+A qualified reference has `schema_version: 2`, persistent `server_instance_id`, `scope_id`,
+and strict legacy `content` (`recorded`, anchored `session`, or `unmanaged`). A store scope
+uses its own UUID, including a mirror's UUID. Directory scope UUIDs are derived from canonical
+configured roots, stable across restart and reordering; moving a directory changes that scope.
+These IDs grant no access. Reads revalidate current grants, server identity and serving scope;
+matching hashes on a different mirror or master never supply a fallback. Legacy origin/hash
+references with several serving copies refuse before searching for the hash. Future logical
+`file_version` references belong to the mirror-identity checkpoint and are not accepted yet.
+
+The raw `/read/v1/follows` source/query form rejects qualified references and `scope_id` with
+400 `INVALID_REQUEST`. Follow an API 2 working view with `view_binding` to retain its serving
+owner and scope; see [Following a recording view](READ_API.md#following-a-recording-view).
+
+The existing recorded-preview routes remain available under
 `/visualizations/v1` on a loopback-bound HTTP server, with a loopback peer, the normal Origin
 check and a live `Mcp-Session-Id`. Network-bound servers refuse these routes even to a local peer.
 The `visualization_*` MCP tools share the same application owner and require trusted local
 transport authority (direct stdio or loopback HTTP). The HTTP preview adapter uses GET for `/capabilities`, `/stores`
-and `/views/<uuid>`; POST supplies `/window`, `/source`, `/source/describe`, `/source/resolve`,
+and `/views/<uuid>`; POST supplies `/window`, `/source`, `/source/describe`, `/source/health`, `/source/resolve`,
 `/source/value`, `/source/views`, `/views`, `/views/<uuid>`, `/views/<uuid>/attach`,
 `/views/<uuid>/detach`, `/views/<uuid>/describe`, `/views/<uuid>/save` and `/saved/open`.
-POST also supplies `/source/statistics`, `/source/histogram`, `/source/scatter`, `/source/raw`, and `/templates/list`, `/templates/get`,
+POST also supplies `/source/reduction`, `/source/statistics`, `/source/histogram`, `/source/scatter`, `/source/raw`, and `/templates/list`, `/templates/get`,
 `/templates/check`, `/templates/create`, `/templates/update`, `/templates/import-preview`,
 `/templates/import`, `/templates/export`. The import preview is read-only; mutation rechecks
 under the store lock. MCP schemas and results are listed in [TOOLS.md](TOOLS.md).
@@ -732,6 +765,32 @@ page is admitted. Unavailable declarations use a separate, explicitly labeled tr
 name/type filters; ordinary filters are retained for switching back. A finalized file opened afresh retains the recorded
 content-hash workflow; an already-held recording reference keeps its original identity.
 
+Source history reduction uses `POST /source/reduction` or MCP
+`visualization_source_reduction`. Pass `source_ref`, exact `entry`, optional scalar `field`,
+optional inclusive `start_time`/`end_time` in seconds, `max_points` (1–4096, default 1024)
+and `max_bytes` (4096–1048576, default 1048576). Missing bounds use the admitted source span.
+Alternatively, `last_seconds` uses the shared relative-window resolver on the admitted clock
+(robot estimate when available, otherwise recorded time); it cannot combine with explicit
+bounds, and the result reports absolute bounds. A fresh prefix proves all members; values are merged in timestamp/member/ordinal order before
+using the native min/max/mean reducer. The response identifies that independent prefix and
+absolute `window`, includes counts and chronological first/last, and reports decode problems
+with at most 100 member-qualified details. Empty windows are `no_match` with a refresh hint.
+Nonfinite values, absent projected array elements and integers outside ±(2^53−1) become
+counted gaps. Signed and unsigned integers, including enum fields, are checked before floating-point
+conversion; enum values otherwise contribute their stored number. All-gap buckets retain their
+sample count with null extrema/mean. Exact raw/value reads remain available. These drawing buckets never feed statistics.
+
+Capabilities expose `source_reduction` and `source_reduction_limits`: two concurrent reads,
+4,194,304 selected records (including out-of-window records, checked before sorting), 64 KiB
+per decoded record, 8 MiB merge lookahead payload, 1 MiB maximum result, 64 KiB raw request
+and a cooperative 10 s work budget. Native time ordering also uses its existing shared sort
+budget (12 bytes per selected record at peak when ordering is needed). Busy admission is
+retryable with a 1000 ms delay; work, record and result limits refuse permanently for that
+request. For a result limit, reduce `max_points` or raise `max_bytes` within its cap; for a
+selected-record limit, read individual members. There is no partial-history success on a limit.
+The local-authority, active-session, bounded dispatch and refusal-drain rules apply to both
+HTTP and MCP; MCP includes all raw batch bytes in request admission.
+
 Source chart reads use `POST /source/histogram` and `POST /source/scatter`, or MCP
 `visualization_source_histogram` and `visualization_source_scatter` with `api_version: 1`.
 Both take `source_ref`, optional inclusive `start_time`/`end_time` or mutually exclusive
@@ -740,7 +799,13 @@ Both take `source_ref`, optional inclusive `start_time`/`end_time` or mutually e
 Fields are explicit numeric scalar paths or indices. Active recordings require a requested
 1–300-second interval; finalized recordings and single files may use their complete duration.
 A recent window uses the same admitted-clock resolver as statistics, with fewer samples allowed
-when the source is younger than the requested duration.
+when the source is younger than the requested duration. An explicit null `last_seconds` has the
+same meaning as omitting it, including in the reported inputs.
+
+Before any source sample exists, relative statistics, chart and reduction reads return `no_match`
+with a hint. The available clock estimate still sets the right edge; with neither measured bounds
+nor an estimate, the empty scope uses zero. These scope bounds never become a measured session
+span. Live analysis remains eligible to refresh when a later prefix contains samples.
 
 The chart result identifies its independent `prefix` (file or session, finalized state,
 member writer/hash/boundary evidence and clock). It is not the plot frontier. Original finite
@@ -891,7 +956,7 @@ or 413 `RESOURCE_LIMIT`. Resource refusals include boolean `retryable`; temporar
 also includes `retry_after_ms: 1000`. Existing native source refusals retain their codes. HTTP
 and MCP return the same page facts; MCP adds true-total `limits` and `no_match` with a hint when
 nothing matches. Old handles cannot survive a server restart. This inventory service does not create views or render panels. Recording-backed metadata
-creation is a separate operation below; the local panel preview uses it.
+creation is a separate operation below; the connected panel preview uses it.
 
 `POST /templates/check` and `visualization_template_check` also accept an anchored `session`
 source reference. They admit a fresh recording prefix and resolve every requirement using each
@@ -936,7 +1001,7 @@ Unreadable evidence keeps the native reader error instead of becoming a negative
 These bounds are functional admission limits, not measured heap or throughput claims.
 
 `POST /views/<view-id>/bindings` takes `expected_revision`; `visualization_view_bind` additionally
-names `view_id` and `api_version: 1`. Both return the same detached binding plan. Revision is
+names `view_id` and the selected `api_version` (1 or 2). Both return the same detached binding plan. Revision is
 checked before source work and again after it, without holding the working-state queue. The
 plan includes all unresolved requirements and deduplicated resolved entry/field queries, at most
 32; exceeding that cap refuses rather than dropping a series. `compatibility.bindings` includes
@@ -944,7 +1009,7 @@ plan includes all unresolved requirements and deduplicated resolved entry/field 
 it is not another source of unit or type inference. A zero-selection MCP result is `no_match`.
 A read of the plan retains no prefix or follow. Direct creation of a view follow uses
 [the read route](READ_API.md#following-a-recording-view) with the same revision and an active
-local MCP session; callers do not need a preceding check. Avoid issuing a check and creation
+MCP session; API 2 view bindings include `api_version: 2` inside `view_binding`. Callers do not need a preceding check. Avoid issuing a check and creation
 simultaneously: they share the two compatibility slots.
 
 `POST /views` and `visualization_view_create` accept anchored recording references for metadata
@@ -957,13 +1022,59 @@ ID and intent after retryable pressure; changes require a new ID. No create/open
 an authorization token for a later read, and a grant can change after admission.
 
 The existing configuration contains both recorded full-range and live following-30-seconds
-policies; explicit ranges and pinned template snapshots are retained. Save writes only metadata
-into a caller-selected writable store. Reopen creates an independent working UUID, with the
+policies; explicit ranges and pinned template snapshots are retained. API 2 saves write metadata
+into the server visualization library; API 1 retains caller-selected store saves. Reopen creates an independent working UUID, with the
 anchored recording identity retained through aliases, restart and finalization. No operation
-here starts a recorder, follow lease or renderer. Source Overview lists recording view metadata
-with disabled Resume/Open actions and an existing-Explorer hint until panels are wired.
+here starts a recorder, follow lease or renderer. The native Source Overview uses these metadata
+operations to resume working views or open independent saved views.
 
-Store templates use `visualizations/templates/<uuid>.json`. Each atomic metadata record includes
+API 2 library controls use `/visualizations/v2`. `/templates/list`, `/templates/get`,
+`/templates/create`, `/templates/update`, `/templates/import-preview`, `/templates/import`
+and `/templates/export` share the MCP application operations. Creation/import omit `store_id`;
+an API 2 request that supplies it refuses. `/library/list` accepts `kind` (`view` or `template`),
+optional title `query`, `limit` (1–256, default 256), and the prior `next` key as `after`.
+Rows contain a pinned reference and title or an unavailable reason. Totals include unreadable
+rows whose titles cannot be checked; `total_unavailable` reports that subset. Template-tool
+`limits` count the `templates` and `unreadable` arrays separately. Metadata pages reflect current
+state, not a fixed snapshot. `LIBRARY_CHECKPOINT_PENDING` means the definition was committed but
+the working checkpoint needs recovery: retry the identical request. A definitive refusal before
+publication permits a corrected save; an unknown transport outcome retains the original intent.
+`/source/views` accepts the same continuation controls for source-matching saved views, alongside
+working summaries. `/saved/open` accepts `request_id` and `saved_view_ref`. `/library/migrate`
+accepts `kind` and a pinned store-backed `legacy_ref`; it copies one definition idempotently,
+retains originals and atomically records the alias. No route creates a log store or enables ingestion.
+
+Saved references contain `server_instance_id`, `library_id`, `saved_view_id` and `revision`;
+template references use `origin: "library"`, those owner IDs, `template_id` and `revision`.
+API 1 refuses library references. Saving an existing legacy working view through API 2 first
+migrates its old checkpoint; a later legacy change conflicts instead of overwriting the library.
+Migration does not guess a new source scope. Unavailable or ambiguous sources remain unresolved
+and originals remain exportable. API 2 reference ownership does not grant source access.
+
+Library files live in `library/` below the server's visualization state directory: `identity.json`,
+`objects/view-<uuid>.json` and `objects/template-<uuid>.json`. Library mutations have a dedicated
+worker, cross-process transaction lock, eight pending queue slots, and an 8 MiB serialized-input
+reservation pool (2 MiB per admitted input, four admitted operations through completion).
+The limits are 1,024 objects, 64 MiB accounted disk metadata including quarantined/unknown files
+and temporary replacement bytes, 4 MiB per record including at most 64 combined receipts,
+and 1 MiB per configuration. Ordinary controls are 64 KiB; configuration/import bodies keep
+1 MiB. Definition and page replies fit 1 MiB including MCP escaping and bounded envelope/ID
+space. Working save/open preflight their larger repeated configuration projections too.
+Template admission also checks the extra escaping in the portable export reply.
+A configuration below its raw cap can still exceed the encoded reply cap and refuse before commit.
+
+Library HTTP/MCP requests share the four inventory request workers and 8 MiB encoded-response
+pool. Reservations remain held through encoding and socket completion. Health, ping and inventory
+close retain control capacity. Request/write deadlines do not release library inputs while disk
+work still runs. One disk worker bounds record parsing and temporary JSON/encoding copies; four
+bounded completion slots keep caller callbacks off its queue and remain charged until those
+callbacks finish. These byte accounting limits are not measured JVM heap bounds. Oversized existing libraries
+open for paged inspection; unreadable records remain in place and block mutations at quota, never
+being deleted to make space. `LIBRARY_BUSY` is retryable; `LIBRARY_LIMIT` and `LIBRARY_UNAVAILABLE`
+require changing the request or server state. An ephemeral server has no durable library and never
+substitutes a laptop or recording store. Capabilities report library availability and its bounds.
+
+Legacy API 1 store templates use `visualizations/templates/<uuid>.json`. Each atomic metadata record includes
 the definition and retry/import receipts, under the existing store queue/lock. A file is bounded
 to 1 MiB, each receipt map to 64 entries, and listings to 1,024 records or 8 MiB per store.
 Unknown/newer/bad neighbors are reported intact. Imports require a complete readable registry
@@ -1277,3 +1388,48 @@ Then take the `bin` folder off your `PATH` (the `export PATH=...` line in your s
   ```
 - **Out of memory with large logs**: set `WPILOG_MAX_HEAP=8g` in the environment the server starts in. For an MCP client, that is the `env` of the server's entry, since the client starts the launcher. In VS Code, set the extension's `maxHeap` setting and restart the server; the extension passes it to the launcher.
 - **Log reported as truncated**: a log cut short (by a power loss on the robot, for example) still loads. The server reads every complete record and reports the log as `truncated`.
+
+### Recording health and view recovery
+
+`POST /visualizations/v1/source/health` accepts `{ "source_ref": ... }` for an anchored
+recording; `visualization_source_health` is the same operation for agents. It reports current
+acquisition separately from manifested history and rechecks grants without reading log payloads.
+`recording` means acquisition is connected and synchronized, including when selected signals
+have not changed. `reconnecting` refers only to that recording's acquisition. `inactive` never
+borrows another recording's connection; a history manifested as open with no matching local
+acquisition says so explicitly. The result is metadata, not proof that a later data read will
+be admitted. Follow admission still checks writer identity, file boundaries and hashes.
+
+Visible panels share one health read per source, at most every five seconds after the previous
+read finishes, with a five-second client deadline and a 16 KiB reply cap. Health uses the same
+bounded dispatch pool and 64 KiB request limit as inventory reads. A failed check is shown as
+unavailable; it does not interrupt a healthy follow. Hiding or closing the last view cancels
+that health read. A completed follow automatically bootstraps again only when the same anchored
+recording becomes live; the old buffers are replaced, so replay cannot append duplicates.
+
+When the server replaces an editor's session, the editor suspends old data generations,
+re-registers its window allowance, and reattaches the same working UUID before rebootstrap.
+Registration and attachment failures retry with a one-to-ten-second backoff. Configuration,
+source anchor and display pause intent survive; old handles and sample buffers do not.
+Pending local edits retain the controller's conflict rules. A missing working view, changed
+server identity, unavailable source or revoked grant stays explained; recovery creates no
+replacement view and starts no acquisition. Closing a view cancels its recovery.
+
+The display reports host page receipt to render acknowledgement and renderer-local elapsed
+milliseconds after animation-frame scheduling. Health can report the server's latest capture
+receipt-to-publication duration with writer/revision coordinates. These independent clock-domain
+measurements are not source-to-screen latency; end-to-end percentiles still require clock
+calibration and the workload gate.
+
+### Qualified data requests
+
+`GET /data/entries` accepts optional `scope_id` and `server_instance_id`. A mismatched owner
+returns 409 before reading, and the shared log admission enforces the selected scope. A source
+selection refusal also returns 409 with its `code`, bounded `source_scopes` choices and `hint`;
+a missing file still returns 404. The
+optional URL-encoded `source_ref` is a complete schema-2 JSON reference; its scope must agree
+with `scope_id` if both are present. The source is freshly resolved and its path/file boundary
+checked before replying, including cached 304 replies. Invalid qualification refuses instead
+of falling back to another path or serving copy. Query text is capped at 64 KiB. The direct
+Explorer uses these checks for samples; notebooks retain owner and scope without embedding
+session IDs or credentials. Existing unqualified requests retain their legacy behavior.

@@ -1,3 +1,4 @@
+import { HealthWatch, HealthObservation } from "./sourceHealth";
 import { ByteBudget, decodedBytes } from "./byteBudget";
 import { FollowSource, canonical } from "./followProtocol";
 import { LiveBroker, FollowSubscription } from "./liveBroker";
@@ -18,26 +19,48 @@ export class LiveView {
   private visible = true; private closed = false; private paused = false;
   private hiddenTimer?: NodeJS.Timeout; private retry?: NodeJS.Timeout; private check?: AbortController;
   private latest?: ReturnType<LiveDisplay['consume']>; private pending = false;
+  private healthSubscription?: { dispose(): void }; private healthEpoch = 0; private healthKey?: string;
+  private health?: HealthObservation; private lastState = { kind: "waiting", reason: "Waiting for a recording" };
+  private recoverable = false; private suspended = false;
   private releaseLatest?: () => void;
   constructor(private broker: LiveBroker, private budget: ByteBudget, readonly presentation: LivePresentation,
     private bind: (view: RecordedView, signal: AbortSignal) => Promise<ViewFollowBinding>,
-    private state: (value: { kind: string; reason: string; generation: number; paused: boolean; binding?: ViewFollowBinding }) => void,
+    private state: (value: { kind: string; reason: string; generation: number; paused: boolean; binding?: ViewFollowBinding; health?: HealthObservation }) => void,
     private retryMs = 5000, private hiddenMs = 30000,
-    private analysis?: { complete(binding: ViewFollowBinding, finalized: boolean): void; invalidate(): void }) {}
+    private analysis?: { complete(binding: ViewFollowBinding, finalized: boolean): void; invalidate(): void },
+    private healthWatch?: HealthWatch) {}
   update(view: RecordedView, pending = false, rebind = false): void {
     const key = liveDataKey(view); this.view = structuredClone(view); this.pending = pending;
+    this.watchHealth();
     if (key === this.key && this.subscription && !rebind) return;
     if (key !== this.key || rebind) { this.stop(); this.key = key; this.clear(); }
     if (this.visible && !this.closed && !pending && !this.subscription) this.start();
   }
   private current(generation: number): boolean { return !this.closed && this.visible && generation === this.generation; }
-  private emit(kind: string, reason: string): void { this.state({ kind, reason, generation: this.generation, paused: this.paused, binding: this.binding }); }
+  private emit(kind: string, reason: string): void {
+    this.lastState = { kind, reason }; this.state({ kind, reason, generation: this.generation, paused: this.paused, binding: this.binding, health: this.health });
+  }
+  private watchHealth(): void {
+    if (!this.healthWatch || !this.view || this.closed || !this.visible || this.suspended) return;
+    const source = this.view.source_ref as unknown as FollowSource, key = canonical(source);
+    if (this.healthSubscription && key === this.healthKey) return;
+    this.stopHealth(); this.healthKey = key; const epoch = this.healthEpoch;
+    try { this.healthSubscription = this.healthWatch.watch(source, value => {
+      if (epoch !== this.healthEpoch || this.closed || !this.visible || this.suspended) return;
+      this.health = value; this.emit(this.lastState.kind, this.lastState.reason);
+      if (value.kind === "ok" && value.health.history_state === "live" && value.health.acquisition_state === "recording"
+          && (this.lastState.kind === "ended" || this.recoverable)) this.start();
+    }); } catch (error) { this.health = { kind: "unavailable", reason: String(error) }; this.emit(this.lastState.kind, this.lastState.reason); }
+  }
+  private stopHealth(): void { this.healthEpoch++; this.healthSubscription?.dispose(); this.healthSubscription = undefined; this.health = undefined; }
+
   private start(): void {
-    if (!this.view || this.closed || !this.visible || this.pending) return;
+    if (!this.view || this.closed || !this.visible || this.pending || this.suspended) return;
     this.stop(); this.analysis?.invalidate(); const generation = this.generation, view = this.view, key = this.key!;
     if (!(view.configuration as RecordedConfiguration).panels.some(p => p.series.length)) {
       this.emit("waiting", "Add a signal to a plot, value table, statistics or raw table"); return;
     }
+    this.recoverable = false; this.emit("connecting", "Opening the anchored recording");
     try {
       this.subscription = this.broker.subscribeView(view.source_ref as unknown as FollowSource, { view_id: view.view_id, expected_revision: view.revision }, {
         identity: { viewId: view.view_id, revision: view.revision, generation, queryKey: key }, current: () => this.current(generation),
@@ -50,6 +73,7 @@ export class LiveView {
           if (!this.current(generation)) return;
           if (state.kind === "reset") this.clear();
           if (state.kind === "ended") { clearTimeout(this.retry); this.check?.abort(); }
+          this.recoverable = state.kind === "error" && ["SOURCE_UNAVAILABLE", "SOURCE_CHANGED", "SESSION_EXPIRED", "CURSOR_EXPIRED"].includes(state.code ?? "");
           this.emit(state.kind, state.reason);
           if (state.kind === "error" && ["NO_RESOLVED_BINDINGS", "CLOCK_UNAVAILABLE", "BINDING_CHANGED", "REVISION_CONFLICT"].includes(state.code ?? "")) this.scheduleCheck(generation, true);
         },
@@ -84,15 +108,16 @@ export class LiveView {
     } catch (error) { if (this.current(generation)) this.emit("waiting", String(error)); }
     if (this.current(generation)) this.scheduleCheck(generation, required);
   }
-  refresh(): void { if (!this.closed && this.visible) this.start(); }
-  pause(paused: boolean): void { this.paused = paused; if (paused) this.presentation.hold(); else if (this.latest) this.presentation.offer(this.latest); this.emit(paused ? "paused" : "following", paused ? "Display paused; recording and acquisition continue" : "Display follows the latest completed prefix"); }
-  show(): void { if (this.closed || this.visible) return; this.visible = true; clearTimeout(this.hiddenTimer); this.start(); }
+  suspend(reason: string): void { this.suspended = true; this.stopHealth(); this.stop(); this.analysis?.invalidate(); this.presentation.hold(); this.emit("reconnecting", reason); }
+  refresh(): void { this.suspended = false; this.watchHealth(); if (!this.closed && this.visible) this.start(); }
+  pause(paused: boolean): void { this.paused = paused; if (paused) this.presentation.hold(); else if (this.latest) this.presentation.offer(this.latest); this.emit(this.lastState.kind, this.lastState.reason); }
+  show(): void { if (this.closed || this.visible) return; this.visible = true; clearTimeout(this.hiddenTimer); this.watchHealth(); this.start(); }
   hide(): void {
-    if (!this.visible || this.closed) return; this.visible = false; this.stop(); this.presentation.hold();
+    if (!this.visible || this.closed) return; this.visible = false; this.stopHealth(); this.stop(); this.presentation.hold();
     this.hiddenTimer = setTimeout(() => { this.hiddenTimer = undefined; this.clear(); }, this.hiddenMs);
   }
   fail(reason: string): void { this.stop(); this.emit("error", reason); }
   private stop(): void { this.generation++; this.subscription?.dispose(); this.subscription = undefined; clearTimeout(this.retry); this.check?.abort(); this.check = undefined; }
   private clear(): void { this.analysis?.invalidate(); this.display?.dispose(); this.display = undefined; this.releaseLatest?.(); this.releaseLatest = undefined; this.latest = undefined; this.binding = undefined; this.presentation.offer(null); }
-  dispose(): void { if (this.closed) return; this.closed = true; this.stop(); clearTimeout(this.hiddenTimer); this.clear(); this.presentation.dispose(); }
+  dispose(): void { if (this.closed) return; this.closed = true; this.stopHealth(); this.stop(); clearTimeout(this.hiddenTimer); this.clear(); this.presentation.dispose(); }
 }

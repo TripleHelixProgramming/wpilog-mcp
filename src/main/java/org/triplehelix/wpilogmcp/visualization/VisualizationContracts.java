@@ -16,9 +16,11 @@ import java.util.*;
 public final class VisualizationContracts {
   public static final int MAX_CONFIGURATION_BYTES = 1024 * 1024;
   private static final JsonObject SCHEMA = resource("contracts-v1.json");
+  private static final JsonObject SOURCE_V2 = resource("source-v2.json");
   private VisualizationContracts() {}
 
   public static JsonObject schema() { return SCHEMA.deepCopy(); }
+  public static JsonObject sourceSchema2() { return SOURCE_V2.deepCopy(); }
   public static JsonObject blank() { return resource("blank-v1.json"); }
   private static JsonObject resource(String name) {
     try (var in = VisualizationContracts.class.getResourceAsStream("/visualization/" + name)) {
@@ -29,7 +31,11 @@ public final class VisualizationContracts {
 
   /** Parse before Gson can discard duplicate keys. Depth and input bytes are bounded first. */
   public static JsonObject parse(String json) {
-    if (json.getBytes(StandardCharsets.UTF_8).length > MAX_CONFIGURATION_BYTES) fail("configuration exceeds 1 MiB");
+    return parse(json, MAX_CONFIGURATION_BYTES);
+  }
+  /** Persistent receipts have a separate byte cap; definitions still use the public parser. */
+  static JsonObject parse(String json, int maximum) {
+    if (json.length() > maximum || json.getBytes(StandardCharsets.UTF_8).length > maximum) fail("JSON exceeds its byte limit");
     try (var reader = new JsonReader(new StringReader(json))) {
       reader.setLenient(false);
       var value = read(reader, 0);
@@ -78,6 +84,11 @@ public final class VisualizationContracts {
 
   public static JsonObject source(JsonObject input) {
     var source = parse(input.toString());
+    if (source.has("schema_version")) {
+      check(source, SOURCE_V2, "source_ref");
+      source(source.getAsJsonObject("content"));
+      return source;
+    }
     check(source, SCHEMA.getAsJsonObject("$defs").getAsJsonObject("source_ref"), "source_ref");
     if (source.get("kind").getAsString().equals("session")) {
       var anchor = source.getAsJsonObject("anchor_member");
@@ -89,9 +100,24 @@ public final class VisualizationContracts {
     return source;
   }
 
-  /** The inspector and follower consume exactly the same durable recording reference. */
+  /** The outer qualified owner stays in persisted definitions; only content readers unwrap it. */
+  public static JsonObject content(JsonObject source) { return source.has("schema_version") ? source.getAsJsonObject("content") : source; }
+  public static String kind(JsonObject source) { return content(source).get("kind").getAsString(); }
+  public static String scopeId(JsonObject source) { return source.has("schema_version") ? source.get("scope_id").getAsString() : null; }
+  public static void transportSource(JsonObject request, int version) {
+    if (version == 1 && (request.has("scope_id") || request.has("source_ref")
+        && request.getAsJsonObject("source_ref").has("schema_version")))
+      throw new IllegalArgumentException("Qualified sources require visualization API version 2");
+  }
+  public static JsonObject qualify(UUID server, String scope, JsonObject content) {
+    var ref = new JsonObject(); ref.addProperty("schema_version", 2); ref.addProperty("server_instance_id", server.toString());
+    ref.addProperty("scope_id", scope); ref.add("content", content.deepCopy()); return source(ref);
+  }
+
+  /** The inspector and follower consume the same content identity. Callers must validate the
+   * qualified owner through RecordedSources first, or refuse qualification on legacy routes. */
   public static org.triplehelix.wpilogmcp.read.catalog.RecordingReference recordingReference(JsonObject input) {
-    var ref = source(input);
+    var ref = content(source(input));
     if (!ref.get("kind").getAsString().equals("session")) throw new IllegalArgumentException("A follow requires a captured session source_ref");
     var anchor = ref.getAsJsonObject("anchor_member");
     var hashes = new ArrayList<String>();
@@ -140,6 +166,11 @@ public final class VisualizationContracts {
 
   /** Deliberately implements only the keywords in our checked-in schema, not general JSON Schema. */
   private static void check(JsonElement value, JsonObject rule, String at) {
+    if (rule.has("$ref")) {
+      if (!rule.get("$ref").getAsString().equals("contracts-v1.json#/$defs/source_ref"))
+        throw new IllegalStateException("Unsupported contract reference");
+      check(value, SCHEMA.getAsJsonObject("$defs").getAsJsonObject("source_ref"), at); return;
+    }
     if (rule.has("oneOf")) {
       int matches = 0;
       for (var branch : rule.getAsJsonArray("oneOf")) {

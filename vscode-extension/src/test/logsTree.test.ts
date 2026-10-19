@@ -6,6 +6,7 @@ import {
   LogNode,
   NO_EVENT,
   buildLogTree,
+  folderSynchronization,
   dateInFilename,
   dateOf,
   formatSize,
@@ -235,15 +236,30 @@ test("plain leased roots keep event/date groups and empty roots stay visible", (
 });
 
 
-test("source synchronization keeps refusal reasons visible without presenting successful receipts as pending", () => {
-  const state = { ...listing, source_sync: { policy: { enabled: true, store: "/destination" }, state: "running" },
-    source_files: [{ path: "/logs/waiting.revlog", state: "waiting", reason: "File is still growing" },
-      { path: "/logs/bad.wpilog", state: "refused", reason: "Invalid header" },
-      { path: "/logs/done.wpilog", state: "imported", destination: "/destination/done.wpilog" }] };
-  const tree = buildLogTree(state);
-  const sync = tree.find(node => node.label === "Folder synchronization");
-  assert.ok(sync && "children" in sync, "Synchronization state needs its own group, not the inbox");
-  const serialized = JSON.stringify(sync);
-  assert.match(serialized, /File is still growing/); assert.match(serialized, /Invalid header/);
-  assert.doesNotMatch(serialized, /done.wpilog/);
+test("local ingestion status and receipts keep refusal reasons and hide successful files", () => {
+  const status = { policy: { revision: 1, enabled: true, store: "/destination", store_id: "store", sources: [] }, pending: 2 };
+  const page = { offset: 0, limit: 100, total: 4, files: [
+    { path: "/logs/waiting.revlog", state: "waiting", reason: "File is still growing" },
+    { path: "/logs/bad.wpilog", state: "refused", reason: "Invalid header" },
+    { path: "/logs/done.wpilog", state: "imported" }, { path: "/logs/present.wpilog", state: "present" }] };
+  const sync = folderSynchronization(status, page)!;
+  assert.ok("children" in sync);
+  assert.deepEqual(sync.children.map(node => node.label), ["waiting.revlog · waiting", "bad.wpilog · refused"]);
+  assert.ok(sync.children[1].kind === "note");
+  assert.equal(sync.children[1].tooltip, "/logs/bad.wpilog\nInvalid header");
+  assert.equal(sync.tooltip, "/destination\nEnabled");
+  for (const query of ["BAD.WPILOG", "refused", "invalid header"]) {
+    const filtered = folderSynchronization(status, page, query)!;
+    assert.ok("children" in filtered); assert.deepEqual(filtered.children.map(node => node.label), ["bad.wpilog · refused"]);
+  }
+  const notes = (state: typeof status, error?: string) => {
+    const node = folderSynchronization(state, undefined, "", error)!;
+    assert.ok("children" in node); return node.children.map(child => child.label);
+  };
+  assert.deepEqual(notes(status), ["2 files pending; use Manage Data Store for source details"]);
+  assert.deepEqual(notes({ ...status, pending: 0 }), ["No pending files on this receipt page"]);
+  assert.deepEqual(notes({ ...status, policy: { ...status.policy, enabled: false } }), ["Synchronization is paused"]);
+  assert.deepEqual(notes(status, "Receipt read failed"), ["Receipt read failed"]);
+  assert.equal(folderSynchronization({ policy: null }, page), undefined);
+  assert.equal(folderSynchronization({ policy: { ...status.policy, store: null } }, page), undefined);
 });

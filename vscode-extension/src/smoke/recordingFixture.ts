@@ -47,11 +47,19 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }, 10);
   const headers = client.followHeaders.bind(client); client.followHeaders = async url => { calls.push(url); return headers(url); };
-  const original = client.visualization.bind(client); client.visualization = (async (...args: Parameters<typeof client.visualization>) => { routes.push(args[0]); return original(...args); }) as typeof client.visualization;
+  let refuseNextAttachment = false, attachmentRefusals = 0;
+  const original = client.visualization.bind(client); client.visualization = (async (...args: Parameters<typeof client.visualization>) => {
+    routes.push(args[0]);
+    if (refuseNextAttachment && args[0].endsWith("/attach")) { refuseNextAttachment = false; attachmentRefusals++; throw new Error("Synthetic transient reattachment refusal"); }
+    return original(...args);
+  }) as typeof client.visualization;
   const mark = (check: string) => { checks.push(check); fs.writeFileSync(path.join(root, "progress.json"), JSON.stringify({ checks, calls, routes }, null, 2)); };
   const command = async (op: string, value?: string, at_us = 3_000_000) => {
     const id = randomUUID(); trace.push({ at: Date.now(), command: op, value, at_us }); fs.writeFileSync(path.join(root, "command.json"), JSON.stringify({ id, op, value, at_us }));
     await until("fixture " + op, () => { try { return JSON.parse(fs.readFileSync(path.join(root, "command-result.json"), "utf8")).id === id; } catch { return false; } });
+    const result = JSON.parse(fs.readFileSync(path.join(root, "command-result.json"), "utf8"));
+    if (result.error) throw new Error(result.error);
+    return result;
   };
   void (async () => {
     const driver = await RecordedDevtools.open(Number(process.env.WPILOG_RECORDED_DEBUG_PORT));
@@ -77,6 +85,12 @@ export function activate(context: vscode.ExtensionContext): void {
       const page: any = [...(preview as any).pages.values()][0], id = page.document.controller.snapshot.view_id;
       selector = `document.body?.dataset.viewId === ${JSON.stringify(id)}`;
       await until("blank recording ready", async () => await read("!document.getElementById('live-controls').hidden") === true);
+      // Only two inventories are admitted per session. The opening overview is no longer
+      // part of this workflow; a later editor-group reveal must not make it a third owner.
+      for (const overview of [...(preview as any).overviews.values()] as any[]) {
+        await overview.inventory?.hide(); overview.panel.dispose();
+      }
+      assert.equal((preview as any).overviews.size, 0, "The unused overview must release its inventory before peer workflows");
       assert.ok((await read("document.getElementById('budget').textContent")).includes(`${expectedMiB} MiB`));
       const settled = () => until("gesture persisted and painted", async () => !page.document.controller.pending && await read("document.body.dataset.revision") === String(page.document.controller.snapshot.revision) && await read("document.body.dataset.generation") === page.key);
       await click("plot"); await until("plot created", () => page.document.controller.snapshot.configuration.panels.length === 1); await settled();
@@ -137,6 +151,26 @@ export function activate(context: vscode.ExtensionContext): void {
       const afterPeer = opens(); peer.panel.dispose(); await pause(300); assert.equal(opens(), afterPeer);
       await command("append", "43"); await until("uninterrupted original", async () => (await read("document.querySelector('.recorded-values').textContent"))?.includes("43"));
       mark("duplicate opens beside independently; closing it leaves the original peer following");
+      await click("live-pause"); await until("paused before server replacement", () => page.live.paused);
+      const recoverySnapshot = structuredClone(page.document.controller.snapshot), priorSession = (client as any).sessionId;
+      const priorKey = page.key, priorPrefix = await read("document.getElementById('clock').textContent");
+      refuseNextAttachment = true; await command("restart");
+      await until("same view automatically reattached after transient refusal", () => attachmentRefusals === 1 && (client as any).sessionId !== priorSession
+        && !page.recovering && page.key !== priorKey, 30000);
+      assert.equal(page.live.paused, true, "Server recovery must not unpause the user's display");
+      await click("live-resume");
+      await until("recovered original recording data", async () => (await read("document.querySelector('.recorded-values').textContent"))?.includes("43"));
+      assert.deepEqual(page.document.controller.snapshot.configuration, recoverySnapshot.configuration);
+      assert.equal(page.document.controller.snapshot.view_id, recoverySnapshot.view_id);
+      assert.deepEqual(page.document.controller.snapshot.source_ref, recoverySnapshot.source_ref);
+      await until("fresh prefix after owner restart", async () => (await read("document.getElementById('clock').textContent")) !== priorPrefix);
+      const recoveredFacts: any = await preview.backend.capabilities();
+      assert.equal(recoveredFacts.attached_windows.filter((w: any) => w.current_session).length, 1);
+      mark("HTTP/session/workspace restart reattaches the same working UUID and configuration after one refused attachment, with fresh buffers and window registration");
+      await until("same-clock render timing visible", async () => (await read("document.getElementById('live-timing').textContent"))?.includes("Host page receipt to render acknowledgement"));
+      assert.ok(routes.includes("/source/health"));
+      assert.ok((await read("document.getElementById('live-timing').textContent")).includes("not source-to-screen latency"));
+      mark("visible recording independently polls source health and reports host/renderer timing after animation-frame acknowledgement");
       const previousPrefix = await read("document.getElementById('clock').textContent");
       const text = await vscode.workspace.openTextDocument({ content: "Hidden recording preview fixture" });
       await vscode.window.showTextDocument(text, { viewColumn: page.panel.viewColumn, preview: false });
@@ -214,7 +248,8 @@ export function activate(context: vscode.ExtensionContext): void {
       await until("finalized frame rendered", async () => (await read("document.getElementById('clock').textContent"))?.includes("Finalized"));
       await until("fixed analysis survives finalization", async () => await stat("count") === "3");
       await until("rolling peer finalized", async () => (await historyRead("document.getElementById('live-status').textContent"))?.includes("ended"));
-      await historyRead("(document.getElementById('full').click(), true)");
+      // The ended state can arrive before the final frame enables this control.
+      await until("rolling peer full history control ready", async () => await historyRead("(() => { const e = document.getElementById('full'); if (!e || e.disabled) return false; e.click(); return true; })()") === true);
       await until("unchanged full policy reloads earlier physical records", async () => await historyRead("document.querySelectorAll('.raw-records tr').length") === 7);
       const historyTimes: number[] = await historyRead("Array.from(document.querySelectorAll('.raw-records tr')).slice(1).map(row => Number(row.cells[2].textContent))");
       assert.deepEqual(historyTimes.sort((a, b) => a - b), [1000000, 1000000, 1250000, 1500000, 2000000, 120000000]);
@@ -224,6 +259,13 @@ export function activate(context: vscode.ExtensionContext): void {
       await until("ten full records", async () => await read("document.querySelectorAll('.raw-records tr').length") === 11);
       await until("ten full statistical samples", async () => await stat("count") === "10");
       mark("fixed range survives finalization; Full recording restores ten physical records and original statistics");
+      const beforeProcess = structuredClone(page.document.controller.snapshot), processKey = page.key;
+      const processes = await command("processRestart"); assert.notEqual(processes.pid, processes.previous_pid);
+      await until("fresh JVM restores an already finalized working view", () => !page.recovering && page.key !== processKey, 30000);
+      await until("exact restored history after process restart", async () => await read("document.querySelectorAll('.raw-records tr').length") === 11);
+      await until("restored statistics after process restart", async () => await stat("count") === "10");
+      assert.deepEqual(page.document.controller.snapshot, beforeProcess);
+      mark("a new Java process restores the same finalized working view, configuration and ten exact raw/statistical records without recreating it");
       await read("(document.getElementById('recording-picker').open = false, document.getElementById('grid').scrollIntoView(), true)");
       await pause(200); fs.writeFileSync(path.join(root, "initial-workbench.png"), await driver.screenshot());
       await read("(document.querySelector('.recorded-statistics').scrollIntoView({ block: 'center' }), true)");

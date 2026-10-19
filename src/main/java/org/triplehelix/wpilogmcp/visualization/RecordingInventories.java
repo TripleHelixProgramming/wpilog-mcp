@@ -34,7 +34,7 @@ public final class RecordingInventories implements AutoCloseable {
       return new Client(authority, "stdio", () -> authority == Authority.STDIO_LOCAL);
     }
     void check() throws IOException {
-      authority.requireLocal(); if (!alive.getAsBoolean()) throw InventoryFailure.expired();
+      VisualizationAccess.require(authority, VisualizationAccess.Operation.READ); if (!alive.getAsBoolean()) throw InventoryFailure.expired();
     }
   }
   @FunctionalInterface interface Admissions { RecordedSources.Admission open(JsonObject ref) throws IOException; }
@@ -89,20 +89,22 @@ public final class RecordingInventories implements AutoCloseable {
     return mode;
   }
   public static void checkRequest(JsonObject request) throws IOException { InventoryWire.request(request); }
-  private final class Response implements AutoCloseable {
+  public final class Response implements AutoCloseable {
     final AtomicBoolean released = new AtomicBoolean(); boolean retained;
     Response() throws InventoryFailure {
       if (!responses.tryAcquire()) throw InventoryFailure.limit("Inventory response capacity is busy; retry after 1000 ms", true);
     }
-    JsonObject finish(JsonObject value) throws InventoryFailure {
+    public JsonObject finish(JsonObject value) throws InventoryFailure {
       InventoryWire.size(value); retained = InventoryResponses.retain(this::release); return value;
     }
     void release() { if (released.compareAndSet(false, true)) responses.release(); }
     @Override public void close() { if (!retained) release(); }
   }
+  /** Library controls share the existing encoded-response pool, held until the transport finishes. */
+  public Response reserveMetadataResponse() throws InventoryFailure { return new Response(); }
   public JsonObject open(Client client, JsonObject source) throws Exception {
     client.check(); InventoryWire.request(source); var ref = VisualizationContracts.source(source);
-    if (!ref.get("kind").getAsString().equals("session")) throw new IllegalArgumentException("Paged inventory requires an anchored recording source_ref");
+    if (!VisualizationContracts.kind(ref).equals("session")) throw new IllegalArgumentException("Paged inventory requires an anchored recording source_ref");
     try (var response = new Response()) {
       Slot slot;
       synchronized (lock) {

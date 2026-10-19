@@ -61,6 +61,10 @@ public final class LiveCapture implements LogStore.Observer {
   private final java.util.concurrent.atomic.AtomicLong receivedValues = new java.util.concurrent.atomic.AtomicLong();
   public long receivedValues() { return receivedValues.get(); }
   private volatile CaptureStore.Status current;
+  private volatile CaptureIndex.PublicationTiming publicationTiming;
+  public void publicationTiming(CaptureIndex.PublicationTiming value) { publicationTiming = value; }
+  public CaptureIndex.PublicationTiming publicationTiming() { return publicationTiming; }
+  private volatile long lastValueUs = Long.MIN_VALUE;
   private volatile Catalog catalog = new Catalog(new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
   private volatile StoreManifest.Header header;
   private final Object waitLock = new Object();
@@ -92,8 +96,21 @@ public final class LiveCapture implements LogStore.Observer {
   }
   public CaptureStore.Status current() { return current; }
   public void status(CaptureStore.Status status) {
+    var previous = current;
+    if (previous == null || !previous.startedAt().equals(status.startedAt())) { lastValueUs = Long.MIN_VALUE; publicationTiming = null; }
     current = status;
     if (!status.open()) endWaits("The capture session ended");
+  }
+  /** A constant-space observation: a quiet change-only stream is still connected. Receipt age
+   * is freshness evidence only, and never supplies a sample timestamp or a timeout verdict. */
+  public record Health(org.triplehelix.wpilogmcp.store.CaptureRecording recording, boolean connected,
+      boolean synchronizedClock, boolean open, String reason, Double lastValueAgeMs) {}
+  public Health health() {
+    var state = current; var store = header; long received = lastValueUs;
+    var recording = state == null || store == null ? null
+        : new org.triplehelix.wpilogmcp.store.CaptureRecording(store.id(), state.startedAt().toString());
+    return new Health(recording, connected(), timeEstimate().isPresent(), state != null && state.open(),
+        disconnectReason(), received == Long.MIN_VALUE ? null : Math.max(0, clock.nowUs() - received) / 1000.0);
   }
   public boolean connected() { var value = client; return value != null && value.isConnected(); }
   public String disconnectReason() { var value = client; return value == null ? "Not started" : value.disconnectReason(); }
@@ -191,7 +208,10 @@ public final class LiveCapture implements LogStore.Observer {
   private void finish(Wait wait, Change change) { if (remove(wait)) wait.result().complete(change); }
   /** Called by the same ordered listener after the writer saw this publication. */
   public void value(Announce topic, ValueFrame frame) {
-    receivedValues.incrementAndGet(); changed(topic, frame);
+    value(topic, frame, clock.nowUs());
+  }
+  public void value(Announce topic, ValueFrame frame, long receivedUs) {
+    lastValueUs = receivedUs; receivedValues.incrementAndGet(); changed(topic, frame);
   }
   private void changed(Announce topic, ValueFrame frame) {
     List<Wait> targets;

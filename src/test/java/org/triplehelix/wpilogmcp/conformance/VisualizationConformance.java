@@ -53,6 +53,24 @@ final class VisualizationConformance {
         throw new AssertionError("Capabilities must retain the reported window allowance under its window ID; stdio has no window");
       run.registry.visualizations().windows.release(window);
       var inspect = args(); inspect.addProperty("path", fixture.toString()); var source = run.call("source_inspect", inspect, "source").getAsJsonObject("source_ref");
+      var healthArgs = args(); healthArgs.add("source_ref", recording.reference);
+      var health = run.call("source_health", healthArgs, "health");
+      if (!health.get("history_state").getAsString().equals("finalized") || !health.get("acquisition_state").getAsString().equals("inactive")
+          || !health.get("connected").isJsonNull() || !health.get("source_ref").equals(recording.reference))
+        throw new AssertionError("Health describes this finalized anchor without inventing an active acquisition");
+      var acquisition = new org.triplehelix.wpilogmcp.capture.LiveCapture(recording.root,
+          new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler());
+      acquisition.manifest(recording.root.resolve("store.json"), StoreJson.JSON.fromJson(Files.readString(recording.root.resolve("store.json")), StoreManifest.Header.class));
+      acquisition.status(new CaptureStore.Status(recording.directory.resolve("capture.wpilog"),
+          java.time.Instant.parse(org.triplehelix.wpilogmcp.fixtures.RecordingFixture.WHEN), null, "synthetic", false, null, null, null, null, null, null));
+      acquisition.publicationTiming(new org.triplehelix.wpilogmcp.capture.CaptureIndex.PublicationTiming(
+          "synthetic-writer", 7, org.triplehelix.wpilogmcp.fixtures.RecordingFixture.WHEN, 9.0));
+      run.registry.captureSource(() -> acquisition);
+      var timed = run.call("source_health", healthArgs, "health").getAsJsonObject("publication_timing");
+      if (!timed.get("writer_identity").getAsString().equals("synthetic-writer") || timed.get("publication_revision").getAsLong() != 7
+          || timed.get("receive_to_publication_ms").getAsDouble() != 9.0)
+        throw new AssertionError("Health preserves published capture timing in its own monotonic clock domain");
+      run.registry.captureSource(() -> null);
       var analysis = args(); analysis.add("source_ref", recording.reference); analysis.addProperty("entry", "/signal/00000");
       var value = run.call("source_value", analysis, "value");
       if (!value.getAsJsonObject("value").get("value").getAsString().equals("1")) throw new AssertionError("Recording cursor oracle");
@@ -64,6 +82,12 @@ final class VisualizationConformance {
       if (emptyStatistics.get("count").getAsInt() != 0 || emptyStatistics.has("mean")
           || !emptyStatistics.has("looked_for") || !emptyStatistics.has("hint") || !emptyStatistics.has("prefix"))
         throw new AssertionError("Empty recording statistics retain evidence without inventing measurements");
+      var reducedArgs = analysis.deepCopy(); reducedArgs.addProperty("max_points", 1);
+      var reduced = run.call("source_reduction", reducedArgs, "reduction");
+      if (reduced.get("sample_count").getAsInt() != 3 || reduced.getAsJsonArray("buckets").size() != 1
+          || reduced.getAsJsonArray("buckets").get(0).getAsJsonObject().get("max").getAsInt() != 1
+          || Math.abs(reduced.getAsJsonArray("buckets").get(0).getAsJsonObject().get("mean").getAsDouble() - 1.0 / 3) > 1e-12)
+        throw new AssertionError("Reduction must include every member and original sample");
       var histogram = run.call("source_histogram", analysis, "histogram");
       if (histogram.getAsJsonArray("bins").get(0).getAsJsonObject().get("count").getAsInt() != 2) throw new AssertionError("Histogram original count oracle");
       var scatterArgs = args(); scatterArgs.add("source_ref", recording.reference); scatterArgs.addProperty("x_entry", "/signal/00000"); scatterArgs.addProperty("y_entry", "/signal/00000");
@@ -111,6 +135,20 @@ final class VisualizationConformance {
       recordedViewArgs.addProperty("request_id", UUID.randomUUID().toString()); recordedViewArgs.addProperty("configuration_json", VisualizationContracts.blank().toString());
       recordedView = run.call("view_create", recordedViewArgs, "view"); bindingArgs.add("view_id", recordedView.get("view_id"));
       run.call("view_bind", bindingArgs, "binding", "no_match");
+      var migration = args(); migration.addProperty("api_version", 2); migration.addProperty("kind", "view"); migration.add("legacy_ref", view.get("saved_view_ref"));
+      var migrated = run.call("library_migrate", migration, "definition");
+      if (!migrated.equals(run.call("library_migrate", migration, "definition"))) throw new AssertionError("Migration retry must return its original pinned definition");
+      var opening = mutation(); opening.addProperty("api_version", 2); opening.add("saved_view_ref", migrated.get("saved_view_ref"));
+      var opened = run.call("saved_view_open", opening, "view");
+      if (!opened.get("configuration").equals(view.get("configuration"))) throw new AssertionError("Library open preserves the migrated configuration");
+      var libraryList = args(); libraryList.addProperty("api_version", 2); libraryList.addProperty("kind", "view"); libraryList.addProperty("limit", 1);
+      var definitions = run.call("library_list", libraryList, "catalog");
+      if (definitions.get("total_matching").getAsInt() != 1 || !definitions.getAsJsonArray("items").get(0).getAsJsonObject().get("saved_view_ref").equals(migrated.get("saved_view_ref")))
+        throw new AssertionError("Library listing names the exact migrated identity");
+      libraryList.addProperty("query", "not-a-saved-title"); run.call("library_list", libraryList, "catalog", "no_match");
+      migration.addProperty("kind", "template"); migration.add("legacy_ref", template.get("template_ref")); run.call("library_migrate", migration, "definition");
+      var libraryTemplates = args(); libraryTemplates.addProperty("api_version", 2); libraryTemplates.addProperty("limit", 1);
+      run.call("template_list", libraryTemplates, "catalog");
       var expected = run.registry.getToolNames().stream().filter(n -> n.startsWith("visualization_")).collect(java.util.stream.Collectors.toSet());
       var exercised = run.calls.stream().map(ToolConformanceTest.Call::tool).collect(java.util.stream.Collectors.toSet());
       if (!expected.equals(exercised)) throw new AssertionError("Every visualization operation needs an isolated success case: " + expected + " vs " + exercised);

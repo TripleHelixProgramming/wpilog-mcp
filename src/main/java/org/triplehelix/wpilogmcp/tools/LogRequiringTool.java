@@ -113,6 +113,9 @@ public abstract class LogRequiringTool extends ToolBase {
     pathProp.addProperty("description",
         "Path to the log file (from list_available_logs)");
     properties.add("path", pathProp);
+    var scopeProp = new JsonObject(); scopeProp.addProperty("type", "string");
+    scopeProp.addProperty("description", "Optional serving scope from list_source_scopes; required for ambiguous relative paths. Absolute listed paths explicitly select their file.");
+    properties.add("scope_id", scopeProp);
     if (TimeScope.acceptsRelative(properties)) {
       var recent = new JsonObject(); recent.addProperty("type", "number");
       recent.addProperty("exclusiveMinimum", 0);
@@ -139,7 +142,9 @@ public abstract class LogRequiringTool extends ToolBase {
   @Override
   protected final JsonElement executeInternal(JsonObject arguments) throws Exception {
     var path = getRequiredString(arguments, "path");
-    try (var use = logAccess.acquire(path)) {
+    var scope = ToolUtils.getOptString(arguments, "scope_id", null);
+    try (var use = logAccess.acquire(path, scope)) {
+      if (scope != null) path = use.log().path();
       var loaded = use.log();
       // The file as the log was read from it, taken now so that an eviction during the call does
       // not lose it; the call's result is trusted only if the file is still that file afterwards
@@ -160,6 +165,7 @@ public abstract class LogRequiringTool extends ToolBase {
       }
       var change = logManager.changeDuringCall(path, loaded, before);
       if (change != null) return changedDuringCall(change);
+      use.recheckScope();
       if (result != null && result.isJsonObject()) {
         var object = result.getAsJsonObject();
         // Never compute silently from partly undecodable entries: say which ones and why
@@ -172,6 +178,7 @@ public abstract class LogRequiringTool extends ToolBase {
         }
         if (object.has("inputs") && object.get("inputs").isJsonObject()) {
           var inputs = object.getAsJsonObject("inputs");
+          if (scope != null) inputs.addProperty("scope_id", scope);
           if (before != null) inputs.addProperty("file_size_bytes", before.size());
           log.recordSessionRange(inputs);
           if (relative) {

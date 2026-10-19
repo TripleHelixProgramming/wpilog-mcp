@@ -1059,8 +1059,8 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       // Zero variance → correlation is undefined: null (NaN is not valid JSON), explained
       assertTrue(resultObj.get("correlation").isJsonNull(),
           "Correlation with constant signal should be null");
-      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("near-zero variance"),
-          "Should warn about zero variance: " + resultObj);
+      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("constant at floating-point precision"),
+          "Should explain the constant-value rule: " + resultObj);
     }
 
     @Test
@@ -1324,9 +1324,8 @@ class StatisticsToolsLogicTest extends ToolTestBase {
     @Test
     @DisplayName("computes correlation for very small-scale signals")
     void testCorrelationWithSmallScaleSignals() throws Exception {
-      // Two perfectly correlated signals at small scale.
-      // The variance threshold is 1e-15 * n, so we need denX > 5e-15.
-      // Using 1e-5 scale: denX = sum((xi-mean)^2) ~ 1e-9, well above threshold.
+      // Two perfectly correlated signals at 1e-5 scale. Their logged ranges exceed
+      // the four-ulp constancy tolerance; changing units must not change correlation.
       var log = new MockLogBuilder()
           .setPath("/test/corr_small.wpilog")
           .addNumericEntry("/A",

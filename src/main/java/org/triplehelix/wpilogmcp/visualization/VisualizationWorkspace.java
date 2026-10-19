@@ -19,6 +19,7 @@ import org.triplehelix.wpilogmcp.mcp.CallerContext.Authority;
  * binding, persistence, save/checkpoint ordering, or numerical policy. */
 public final class VisualizationWorkspace implements AutoCloseable {
   public final VisualizationService views;
+  public final VisualizationLibrary library;
   public final WindowBudgets windows;
   public final ControlNotifications notifications = new ControlNotifications();
   public final RecordedSources sources;
@@ -27,24 +28,42 @@ public final class VisualizationWorkspace implements AutoCloseable {
   private final ViewBinding viewBindings;
   private final RecordingAnalysis recordingAnalysis;
   private final SourceCharts sourceCharts;
+  private final SourceReduction sourceReduction;
   private final ServerIdentity identity;
+  private final UUID epoch = UUID.randomUUID();
   private final LogManager logs;
   private final StoreDoor door;
+  private final java.util.function.Supplier<org.triplehelix.wpilogmcp.capture.LiveCapture> capture;
   public VisualizationWorkspace(ServerIdentity identity, LogManager logs) throws IOException {
+    this(identity, logs, () -> null);
+  }
+  public VisualizationWorkspace(ServerIdentity identity, LogManager logs,
+      java.util.function.Supplier<org.triplehelix.wpilogmcp.capture.LiveCapture> capture) throws IOException {
+    this.capture = capture;
     this.identity = identity; this.logs = logs; door = new StoreDoor(logs::getAllowedDirectories);
-    views = new VisualizationService(identity); views.onChanged(notifications::changed); windows = new WindowBudgets(views.windowIds());
+    views = new VisualizationService(identity);
+    try { library = new VisualizationLibrary(identity); } catch (IOException | RuntimeException failure) { views.close(); throw failure; }
+    views.onChanged(notifications::changed); windows = new WindowBudgets(views.windowIds());
     sources = new RecordedSources(logs, views, door);
     inventories = new RecordingInventories(sources); recordingBindings = new RecordingBindings(sources); viewBindings = new ViewBinding(views, recordingBindings);
-    recordingAnalysis = new RecordingAnalysis(recordingBindings); sourceCharts = new SourceCharts(sources);
+    recordingAnalysis = new RecordingAnalysis(recordingBindings); sourceCharts = new SourceCharts(sources); sourceReduction = new SourceReduction(sources);
   }
-  public void close() { inventories.close(); views.close(); try { sources.close(); } catch (IOException e) { throw new java.io.UncheckedIOException(e); } }
+  public void close() { inventories.close(); views.close(); library.close(); try { sources.close(); } catch (IOException e) { throw new java.io.UncheckedIOException(e); } }
   /** For a caller without a transport session, such as direct stdio. */
   public JsonObject capabilities() { return capabilities(null); }
+  public JsonObject sourceScopes(JsonObject request) throws IOException {
+    var result = logs.sourceScopes().describe(request);
+    result.addProperty("server_instance_id", identity.id().toString()); return result;
+  }
   /** Both adapters pass the caller's transport session so its own window is marked; no session
    * ID, the caller's or a peer's, appears in the report. */
   public JsonObject capabilities(String session) {
     var result = identity.describe(); result.addProperty("stage", "reusable-recorded-preview");
+    result.addProperty("remote_visualization", true); result.addProperty("server_epoch", epoch.toString());
     result.add("blank_configuration", VisualizationContracts.blank()); result.add("schema", VisualizationContracts.schema());
+    result.add("source_schema_v2", VisualizationContracts.sourceSchema2());
+    result.add("source_reference_versions", JsonParser.parseString("[1,2]"));
+    result.add("library", library.capabilities());
     result.addProperty("max_working_views", VisualizationService.MAX_DOCUMENTS);
     result.addProperty("max_working_metadata_bytes", VisualizationService.MAX_STATE_BYTES); result.addProperty("max_working_record_bytes", 4 << 20); result.addProperty("max_working_receipts", 4096); result.addProperty("draft_lifetime_days", 30);
     result.addProperty("max_deleted_view_receipts", VisualizationService.MAX_TOMBSTONES);
@@ -56,9 +75,10 @@ public final class VisualizationWorkspace implements AutoCloseable {
     result.addProperty("max_template_receipts", 64); result.addProperty("max_template_metadata_bytes", 1048576);
     result.addProperty("recording_bindings", true); result.add("recording_binding_limits", RecordingBindings.limits());
     result.addProperty("recording_views", true); result.addProperty("recording_view_follow", true);
+    result.addProperty("source_reduction", true); result.add("source_reduction_limits", SourceReduction.capabilities());
     result.addProperty("source_charts", true); result.add("source_chart_limits", SourceCharts.capabilities());
     result.addProperty("recording_analysis", true); result.add("recording_analysis_limits", RecordingAnalysis.capabilities());
-    result.addProperty("live", false); result.addProperty("live_source_inspection", true);
+    result.addProperty("live", false); result.addProperty("live_source_inspection", true); result.addProperty("source_health", true);
     result.addProperty("max_recording_inventory_bytes", RecordingInventory.MAX_BYTES);
     result.addProperty("recording_inventory_paging", true); result.add("recording_inventory_limits", inventories.capabilities());
     result.addProperty("templates", true); result.add("roles", VisualizationBindings.roles());
@@ -66,9 +86,14 @@ public final class VisualizationWorkspace implements AutoCloseable {
     return result;
   }
   public ViewBinding.Prepared prepareViewFollow(Authority caller, JsonObject request, java.util.function.BooleanSupplier alive) throws IOException {
-    caller.requireLocal();
+    VisualizationAccess.transport(caller, version2(request) ? 2 : 1, VisualizationAccess.Operation.READ);
+    if (request.has("api_version") && !Set.of(new JsonPrimitive(1), new JsonPrimitive(2)).contains(request.get("api_version")))
+      throw new IllegalArgumentException("Unsupported visualization api_version");
     if (!request.keySet().stream().allMatch(k -> Set.of("api_version", "view_id", "expected_revision").contains(k)))
       throw new IllegalArgumentException("View binding accepts only view_id and expected_revision");
+    // The read API predates a version on view_binding and accepted both source forms locally.
+    // Preserve that local contract; remote callers must explicitly opt into qualified API 2.
+    if (request.has("api_version")) views.requireSourceVersion(uuid(request, "view_id"), version2(request) ? 2 : 1);
     return viewBindings.prepare(uuid(request, "view_id"), TemplateDefinition.revision(request, "expected_revision", false), alive);
   }
   public JsonObject bindView(Authority caller, JsonObject request) throws IOException {
@@ -89,9 +114,9 @@ public final class VisualizationWorkspace implements AutoCloseable {
     return views.revise(caller, uuid(request, "view_id"), TemplateDefinition.revision(request, "expected_revision", false), uuid(request, "request_id"), null, false, true).get();
   }
   public JsonObject cloneView(Authority caller, JsonObject request) throws Exception {
-    caller.requireLocal(); UUID id = uuid(request, "view_id"), operation = uuid(request, "request_id");
+    VisualizationAccess.require(caller, VisualizationAccess.Operation.WORKING); UUID id = uuid(request, "view_id"), operation = uuid(request, "request_id");
     var source = views.get(id).getAsJsonObject("source_ref");
-    if (text(source, "kind").equals("session")) admitViewSource(source);
+    if (VisualizationContracts.kind(source).equals("session")) admitViewSource(source);
     var intent = request.deepCopy(); intent.addProperty("operation", "clone");
     var receipt = views.prepareMutation(caller, id, TemplateDefinition.revision(request, "expected_revision", false), operation, intent, null).get();
     if (receipt.has("result")) return receipt.getAsJsonObject("result");
@@ -102,15 +127,22 @@ public final class VisualizationWorkspace implements AutoCloseable {
   }
 
   public JsonObject saveView(Authority caller, JsonObject request) throws Exception {
-    caller.requireLocal(); UUID id = uuid(request, "view_id"); var args = request.deepCopy(); args.add("revision", args.get("expected_revision"));
+    VisualizationAccess.require(caller, VisualizationAccess.Operation.WORKING); UUID id = uuid(request, "view_id"); var args = request.deepCopy(); args.add("revision", args.get("expected_revision"));
     return save(caller, null, id, views.get(id), args);
+  }
+  public JsonObject health(Authority caller, JsonObject request) throws IOException {
+    VisualizationAccess.require(caller, VisualizationAccess.Operation.WORKING); RecordingInventories.checkRequest(request);
+    return sources.health(request.getAsJsonObject("source_ref"), capture.get());
   }
   public JsonObject inspect(Authority caller, JsonObject request) throws Exception {
     boolean paged = RecordingInventories.mode(request).equals("paged");
     if (paged) RecordingInventories.checkRequest(request);
     if (request.has("path") == request.has("source_ref")) throw new IllegalArgumentException("Name exactly one path or source_ref");
-    var out = request.has("path") ? sources.identify(caller, Path.of(text(request, "path"))) : new JsonObject();
+    boolean qualified = request.has("api_version") && request.get("api_version").getAsInt() == 2;
+    String scope = request.has("scope_id") ? text(request, "scope_id") : null;
+    var out = request.has("path") ? sources.identify(caller, Path.of(text(request, "path")), scope, qualified) : new JsonObject();
     var source = request.has("source_ref") ? request.getAsJsonObject("source_ref") : out.getAsJsonObject("source_ref");
+    if (qualified) source = sources.qualify(source, scope);
     if (paged) out = new JsonObject();
     out.add("source_ref", source); out.add("inventory", describe(RecordingInventories.Client.current(caller), source, request)); return out;
   }
@@ -120,7 +152,7 @@ public final class VisualizationWorkspace implements AutoCloseable {
     RecordingInventories.checkRequest(request); return inventories.open(client, source);
   }
   public JsonObject create(Authority authority, JsonObject body) throws Exception {
-    authority.requireLocal(); var source = VisualizationContracts.source(body.getAsJsonObject("source_ref"));
+    VisualizationAccess.require(authority, VisualizationAccess.Operation.WORKING); var source = VisualizationContracts.source(body.getAsJsonObject("source_ref"));
     if (body.has("template_ref") && (body.has("configuration") || body.has("configuration_json"))) throw new IllegalArgumentException("Choose a template_ref or configuration, not both");
     var definition = body.has("template_ref") ? template(body) : null;
     var configuration = definition != null ? definition.getAsJsonObject("template").getAsJsonObject("configuration")
@@ -133,10 +165,11 @@ public final class VisualizationWorkspace implements AutoCloseable {
   /** Metadata admission shares recording identity/bounds, but retains no prefix while writing
    * working state. Unresolved requirements remain editable intent, never a cached permission. */
   private void admitViewSource(JsonObject source) throws IOException {
-    if (text(source, "kind").equals("session")) recordingBindings.check(source, VisualizationContracts.blank());
+    if (VisualizationContracts.kind(source).equals("session")) recordingBindings.check(source, VisualizationContracts.blank());
     else sources.resolve(source);
   }
   public JsonObject templates(JsonObject request) throws IOException {
+    if (version2(request)) return libraryTemplates(request);
     String query = request.has("query") ? text(request, "query").toLowerCase(Locale.ROOT) : "";
     var items = new JsonArray(); var unreadable = new JsonArray(); boolean incomplete = false;
     for (var t : BundledTemplates.all()) if (matches(t, query)) items.add(TemplateDefinition.catalog(null, t));
@@ -158,7 +191,12 @@ public final class VisualizationWorkspace implements AutoCloseable {
   public JsonObject template(JsonObject body) throws IOException {
     var validated = TemplateDefinition.validateReference(body.get("template_ref"));
     if (validated.isJsonNull()) throw new IOException("INVALID_TEMPLATE: template_ref is required");
-    var ref = validated.getAsJsonObject(); String origin = text(ref, "origin"); UUID id = uuid(ref, "template_id");
+    var ref = validated.getAsJsonObject();
+    if (ref.has("library_id")) {
+      if (!version2(body)) throw new IllegalArgumentException("Library references require API version 2");
+      return await(library.get(Authority.STDIO_LOCAL, "template", ref));
+    }
+    String origin = text(ref, "origin"); UUID id = uuid(ref, "template_id");
     JsonObject t; String store = null;
     if (origin.equals("bundled")) {
       t = BundledTemplates.all().stream().filter(v -> text(v, "template_id").equals(id.toString())).findFirst().orElseThrow(() -> new IOException("TEMPLATE_UNAVAILABLE: bundled template is missing"));
@@ -171,7 +209,7 @@ public final class VisualizationWorkspace implements AutoCloseable {
   public JsonObject check(JsonObject request) throws Exception {
     var config = request.has("template_ref") ? template(request).getAsJsonObject("template").getAsJsonObject("configuration") : configuration(request);
     var source = VisualizationContracts.source(request.getAsJsonObject("source_ref"));
-    if (source.get("kind").getAsString().equals("session")) return recordingBindings.check(source, config);
+    if (VisualizationContracts.kind(source).equals("session")) return recordingBindings.check(source, config);
     try (var use = logs.acquireReadOnly(sources.resolve(source).toString())) {
       var out = VisualizationBindings.check(use.log(), config); sources.resolve(source); return out;
     }
@@ -190,9 +228,24 @@ public final class VisualizationWorkspace implements AutoCloseable {
     return selected;
   }
   public JsonObject createTemplate(Authority authority, JsonObject request) throws Exception {
-    authority.requireLocal(); var store = destination(request); UUID id = uuid(request, "request_id");
+    if (version2(request)) { fields(request, "request_id", "name", "description", "configuration", "configuration_json", "view_id", "expected_view_revision"); library.requireAvailable(); }
+    VisualizationAccess.require(authority, VisualizationAccess.Operation.WORKING); UUID id = uuid(request, "request_id");
     if (request.has("view_id") && (request.has("configuration") || request.has("configuration_json"))) throw new IllegalArgumentException("Name a view or a configuration, not both");
-    JsonObject config = request.has("view_id") ? viewConfiguration(request) : configuration(request);
+    JsonObject reservation = null;
+    if (version2(request) && request.has("view_id")) {
+      var intent = request.deepCopy(); intent.addProperty("operation", "save_template");
+      reservation = views.prepareMutation(authority, uuid(request, "view_id"), TemplateDefinition.revision(request, "expected_view_revision", false), id, intent, null).get();
+      if (reservation.has("result")) return reservation.getAsJsonObject("result");
+    }
+    JsonObject config = reservation != null ? reservation.getAsJsonObject("snapshot").getAsJsonObject("configuration")
+        : request.has("view_id") ? viewConfiguration(request) : configuration(request);
+    if (version2(request)) {
+      noStore(request); library.requireAvailable();
+      var saved = library.save(authority, "template", id, 0, templateCandidate(id, 1, request, config), null,
+          request.has("view_id") ? uuid(request, "view_id") : null).get();
+      return reservation == null ? saved : completeLibraryMutation(authority, uuid(request, "view_id"), id, saved, null);
+    }
+    var store = destination(request);
     return new TemplateMetadata(logs.stores().store(store.root()), store.description().id()).save(authority, id, id, 0,
         text(request, "name"), text(request, "description"), config).get();
   }
@@ -202,7 +255,15 @@ public final class VisualizationWorkspace implements AutoCloseable {
     return view.getAsJsonObject("configuration");
   }
   public JsonObject updateTemplate(Authority authority, JsonObject request) throws Exception {
-    authority.requireLocal(); var ref = request.getAsJsonObject("template_ref");
+    if (version2(request)) fields(request, "request_id", "template_ref", "expected_revision", "name", "description", "configuration", "configuration_json");
+    VisualizationAccess.require(authority, VisualizationAccess.Operation.WORKING); var ref = TemplateDefinition.validateReference(request.get("template_ref")).getAsJsonObject();
+    if (version2(request)) {
+      noStore(request); library.requireReference("template", ref);
+      long expected = TemplateDefinition.revision(request, "expected_revision", false);
+      if (TemplateDefinition.revision(ref, "revision", false) != expected) throw new IOException("REVISION_CONFLICT: reference and expected revision differ");
+      return library.save(authority, "template", uuid(request, "request_id"), expected,
+          templateCandidate(uuid(ref, "template_id"), expected + 1, request, configuration(request)), null).get();
+    }
     if (!text(ref, "origin").equals("store")) throw new IOException("READ_ONLY: bundled templates are immutable; save a store copy");
     if (TemplateDefinition.revision(ref, "revision", false) != TemplateDefinition.revision(request, "expected_revision", false)) throw new IOException("REVISION_CONFLICT: reference and expected revision differ");
     var store = door.select(text(ref, "store_id"));
@@ -210,11 +271,11 @@ public final class VisualizationWorkspace implements AutoCloseable {
         TemplateDefinition.revision(request, "expected_revision", false), text(request, "name"), text(request, "description"), configuration(request)).get();
   }
   public JsonObject exportTemplate(JsonObject request) throws IOException {
-    var t = template(request); var envelope = TemplateDefinition.export(t.getAsJsonObject("template")); var out = new JsonObject(); out.addProperty("envelope_json", envelope.toString());
-    for (var key : List.of("format", "schema_version", "content_sha256")) out.add(key, envelope.get(key)); return out;
+    return TemplateDefinition.exportReply(template(request).getAsJsonObject("template"));
   }
   /** Read-only choice preview. The actual import rechecks under the store lock. */
   public JsonObject importPreview(JsonObject request) throws IOException {
+    if (version2(request)) { fields(request, "envelope_json"); noStore(request); return await(library.importPreview(Authority.STDIO_LOCAL, request)); }
     var imported = TemplateDefinition.imported(text(request, "envelope_json")); var selected = destination(request);
     var listing = TemplateMetadata.list(selected);
     if (listing.incomplete() || !listing.unreadable().isEmpty()) throw new IOException("INCOMPLETE_CATALOG: repair unreadable template records before importing");
@@ -226,17 +287,20 @@ public final class VisualizationWorkspace implements AutoCloseable {
     out.add("expected_revision", current.map(t -> t.get("revision")).orElse(JsonNull.INSTANCE)); return out;
   }
   public JsonObject importTemplate(Authority authority, JsonObject request) throws Exception {
-    authority.requireLocal(); var store = destination(request);
+    VisualizationAccess.require(authority, VisualizationAccess.Operation.WORKING);
+    if (version2(request)) { fields(request, "request_id", "envelope_json", "mode", "expected_revision"); noStore(request); return library.importTemplate(authority, request).get(); }
+    var store = destination(request);
     return new TemplateMetadata(logs.stores().store(store.root()), store.description().id()).importDefinition(authority, uuid(request, "request_id"), text(request, "envelope_json"),
         request.has("mode") ? text(request, "mode") : "copy", request.has("expected_revision") ? TemplateDefinition.revision(request, "expected_revision", false) : null).get();
   }
+  public JsonObject reduction(JsonObject request, java.util.function.BooleanSupplier alive) throws IOException { return sourceReduction.read(request, alive); }
   public JsonObject histogram(JsonObject request, java.util.function.BooleanSupplier alive) throws Exception { return sourceCharts.read(request, false, alive); }
   public JsonObject scatter(JsonObject request, java.util.function.BooleanSupplier alive) throws Exception { return sourceCharts.read(request, true, alive); }
   public JsonObject statistics(JsonObject request) throws Exception {
     return statistics(request, () -> true);
   }
   public JsonObject statistics(JsonObject request, java.util.function.BooleanSupplier alive) throws Exception {
-    if (request.getAsJsonObject("source_ref").get("kind").getAsString().equals("session")) return recordingAnalysis.statistics(request, alive);
+    if (VisualizationContracts.kind(request.getAsJsonObject("source_ref")).equals("session")) return recordingAnalysis.statistics(request, alive);
     var source = request.getAsJsonObject("source_ref"); var args = new JsonObject(); args.addProperty("path", sources.resolve(source).toString()); args.addProperty("name", text(request, "entry"));
     for (var key : List.of("field", "start_time", "end_time", "last_seconds")) if (request.has(key)) args.add(key, request.get(key));
     var result = VisualizationBindings.statistics(args); sources.resolve(source); return result;
@@ -270,22 +334,25 @@ public final class VisualizationWorkspace implements AutoCloseable {
     }
     result.add("stores", values); return result;
   }
-  public JsonObject sourceViews(JsonObject source) throws Exception {
+  private JsonObject workingSourceViews(JsonObject source) throws IOException {
     var result = new JsonObject(); var working = new JsonArray(); views.summaries(source).forEach(working::add);
     var unavailable = new JsonArray();
-    if (text(source, "kind").equals("unmanaged")) {
-      var current = views.sourceLocator(uuid(source, "source_id"));
+    if (VisualizationContracts.kind(source).equals("unmanaged")) {
+      var current = views.sourceLocator(uuid(VisualizationContracts.content(source), "source_id"));
       for (var view : views.all()) {
         var old = view.getAsJsonObject("source_ref");
-        if (!old.equals(source) && text(old, "kind").equals("unmanaged")) try {
-          if (views.sourceLocator(uuid(old, "source_id")).get("path").equals(current.get("path"))) {
+        if (!old.equals(source) && VisualizationContracts.kind(old).equals("unmanaged")) try {
+          if (views.sourceLocator(uuid(VisualizationContracts.content(old), "source_id")).get("path").equals(current.get("path"))) {
             var item = new JsonObject(); item.add("view_id", view.get("view_id")); item.addProperty("reason", "Recorded fingerprint changed; configuration is inspectable but this view cannot read the replacement file"); unavailable.add(item);
           }
         } catch (IOException ignored) { /* The missing locator cannot prove the same path. */ }
       }
     }
     result.add("unavailable_views", unavailable);
-    result.add("working_views", working); var saved = new JsonArray(); var unreadable = new JsonArray();
+    result.add("working_views", working); return result;
+  }
+  public JsonObject sourceViews(JsonObject source) throws Exception {
+    var result = workingSourceViews(source); var saved = new JsonArray(); var unreadable = new JsonArray();
     boolean incomplete = false;
     for (var store : door.stores()) {
       var listing = VisualizationMetadata.list(store);
@@ -309,11 +376,35 @@ public final class VisualizationWorkspace implements AutoCloseable {
 
   public JsonObject save(Authority authority, UUID client, UUID view, JsonObject current, JsonObject request) throws Exception {
     UUID operation = uuid(request, "request_id");
+    if (version2(request)) { fields(request, "request_id", "view_id", "revision", "expected_revision", "title"); noStore(request); library.requireAvailable(); }
     var intent = request.deepCopy(); intent.addProperty("operation", "save");
     var receipt = views.prepareMutation(authority, view, revision(request), operation, intent, client).get();
     if (receipt.has("result")) return receipt.getAsJsonObject("result");
     current = receipt.getAsJsonObject("snapshot");
     var previous = current.get("saved_view_ref");
+    if (version2(request)) {
+      UUID savedId = operation; long expected = 0; String title;
+      if (!previous.isJsonNull() && previous.getAsJsonObject().has("library_id")) {
+        var ref = previous.getAsJsonObject(); library.requireReference("view", ref);
+        savedId = uuid(ref, "saved_view_id"); expected = ref.get("revision").getAsLong();
+        // A missing title is resolved inside the library transaction, after checking its retry receipt.
+        title = request.has("title") ? text(request, "title") : null;
+      } else if (!previous.isJsonNull()) {
+        var migration = new JsonObject(); migration.addProperty("api_version", 2); migration.addProperty("kind", "view"); migration.add("legacy_ref", previous);
+        var migrated = migrateLibrary(authority, migration).getAsJsonObject("saved_view");
+        savedId = uuid(migrated, "saved_view_id"); expected = migrated.get("revision").getAsLong(); title = text(migrated, "title");
+      } else title = text(request, "title");
+      var candidate = new JsonObject(); candidate.addProperty("schema_version", 1); candidate.addProperty("saved_view_id", savedId.toString());
+      candidate.addProperty("revision", expected + 1); candidate.addProperty("title", title);
+      for (var key : List.of("source_ref", "configuration", "template_ref")) candidate.add(key, current.get(key).deepCopy());
+      var source = current.getAsJsonObject("source_ref");
+      var locator = VisualizationContracts.kind(source).equals("unmanaged") ? views.sourceLocator(uuid(VisualizationContracts.content(source), "source_id")) : null;
+      var preview = current.deepCopy(); preview.add("saved_view_ref", library.reference("view", candidate));
+      preview.add("checkpoint_configuration", current.get("configuration"));
+      VisualizationLibrary.wire(preview);
+      var saved = library.save(authority, "view", operation, expected, candidate, locator, view).get();
+      return completeLibraryMutation(authority, view, operation, null, saved.getAsJsonObject("saved_view_ref"));
+    }
     StoreDoor.Selected selected; UUID savedId; long savedRevision; String title;
     if (previous.isJsonNull()) {
       if (!request.has("store_id")) throw new IOException("NO_WRITABLE_STORE: choose a writable local store or Create store");
@@ -333,8 +424,19 @@ public final class VisualizationWorkspace implements AutoCloseable {
     return views.checkpointAttached(authority, view, current.get("revision").getAsLong(), ref, client).get();
   }
   public JsonObject openSaved(Authority authority, JsonObject request) throws Exception {
-    authority.requireLocal();
+    VisualizationAccess.require(authority, VisualizationAccess.Operation.WORKING);
+    if (version2(request)) {
+      fields(request, "request_id", "saved_view_ref"); noStore(request); var ref = request.getAsJsonObject("saved_view_ref");
+      var saved = await(library.get(authority, "view", ref)).getAsJsonObject("saved_view");
+      requireWorkingReply(saved, ref);
+      var source = saved.getAsJsonObject("source_ref"); var locator = await(library.locator(authority, ref));
+      if (!locator.isEmpty()) views.rememberSource(authority, uuid(VisualizationContracts.content(source), "source_id"), locator).get();
+      admitViewSource(source);
+      return views.createSaved(authority, uuid(request, "request_id"), source, saved.getAsJsonObject("configuration"),
+          saved.get("template_ref").isJsonNull() ? null : saved.getAsJsonObject("template_ref"), ref).get();
+    }
     var store = door.select(text(request, "store_id")); var saved = saved(store, uuid(request, "saved_view_id"));
+    VisualizationContracts.transportSource(saved, request.has("api_version") ? request.get("api_version").getAsInt() : 1);
     admitViewSource(saved.getAsJsonObject("source_ref"));
     var view = views.create(authority, uuid(request, "request_id"), saved.getAsJsonObject("source_ref"), saved.getAsJsonObject("configuration"), saved.get("template_ref").isJsonNull() ? null : saved.getAsJsonObject("template_ref")).get();
     if (!view.get("saved_view_ref").isJsonNull()) return view;
@@ -347,7 +449,7 @@ public final class VisualizationWorkspace implements AutoCloseable {
     return value(request, () -> true);
   }
   public JsonObject value(JsonObject request, java.util.function.BooleanSupplier alive) throws IOException {
-    if (request.getAsJsonObject("source_ref").get("kind").getAsString().equals("session")) return recordingAnalysis.value(request, alive);
+    if (VisualizationContracts.kind(request.getAsJsonObject("source_ref")).equals("session")) return recordingAnalysis.value(request, alive);
     try (var snapshot = sources.open(request.getAsJsonObject("source_ref"))) {
       Long at = null;
       if (request.has("at_sec")) {
@@ -365,10 +467,83 @@ public final class VisualizationWorkspace implements AutoCloseable {
       return out;
     }
   }
+  private static void requireWorkingReply(JsonObject saved, JsonObject ref) throws IOException {
+    var preview = new JsonObject();
+    for (var key : List.of("configuration", "initial_configuration", "checkpoint_configuration")) preview.add(key, saved.get("configuration"));
+    preview.add("source_ref", saved.get("source_ref")); preview.add("template_ref", saved.get("template_ref")); preview.add("saved_view_ref", ref);
+    preview.addProperty("working_metadata_allowance", "x".repeat(4096)); VisualizationLibrary.wire(preview);
+  }
+  private static void fields(JsonObject request, String... allowed) {
+    var names = new HashSet<>(List.of(allowed)); names.add("api_version");
+    if (!names.containsAll(request.keySet())) throw new IllegalArgumentException("Unknown library request fields");
+  }
+  private static boolean version2(JsonObject request) { return new JsonPrimitive(2).equals(request.get("api_version")); }
+  /** A failure after durable publication is not permission to start another save intent. */
+  private JsonObject completeLibraryMutation(Authority authority, UUID view, UUID request, JsonObject result, JsonObject ref) throws IOException {
+    try { return await(views.completeMutation(authority, view, request, result, ref)); }
+    catch (Exception failure) { throw new IOException("LIBRARY_CHECKPOINT_PENDING: definition saved; retry the identical request to recover its working checkpoint", failure); }
+  }
+  private static void noStore(JsonObject request) {
+    if (request.has("store_id")) throw new IllegalArgumentException("API version 2 saves belong to the server library; omit store_id");
+  }
+  private static JsonObject await(java.util.concurrent.CompletableFuture<JsonObject> future) throws IOException {
+    try { return future.get(); }
+    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new IOException("Library request interrupted", interrupted); }
+    catch (java.util.concurrent.ExecutionException failure) {
+      if (failure.getCause() instanceof IOException io) throw io;
+      if (failure.getCause() instanceof RuntimeException runtime) throw runtime;
+      throw new IOException("Library operation failed", failure.getCause());
+    }
+  }
+  private static JsonObject templateCandidate(UUID id, long revision, JsonObject request, JsonObject configuration) {
+    var t = new JsonObject(); t.addProperty("schema_version", 1); t.addProperty("template_id", id.toString()); t.addProperty("revision", revision);
+    t.addProperty("name", text(request, "name")); t.addProperty("description", text(request, "description")); t.add("configuration", configuration);
+    return TemplateDefinition.validate(t);
+  }
+  public JsonObject libraryList(Authority caller, JsonObject request) throws IOException {
+    if (!version2(request)) throw new IllegalArgumentException("Library operations require API version 2");
+    return await(library.list(caller, request));
+  }
+  private JsonObject libraryTemplates(JsonObject request) throws IOException {
+    var query = request.deepCopy(); query.addProperty("kind", "template"); query.addProperty("include_bundled", true);
+    var page = await(library.list(Authority.STDIO_LOCAL, query)); var templates = new JsonArray(); var unreadable = new JsonArray();
+    for (var entry : page.getAsJsonArray("items")) {
+      var row = entry.getAsJsonObject();
+      if (!row.get("available").getAsBoolean()) { unreadable.add(row); continue; }
+      var item = new JsonObject(); item.add("template_ref", row.get("template_ref")); var summary = new JsonObject();
+      summary.add("name", row.get("title")); summary.add("description", row.has("description") ? row.get("description") : new JsonPrimitive("")); item.add("template", summary); templates.add(item);
+    }
+    page.remove("items"); page.add("templates", templates); page.add("unreadable", unreadable); page.addProperty("listing_incomplete", !page.get("next").isJsonNull()); return page;
+  }
+  public JsonObject migrateLibrary(Authority caller, JsonObject request) throws Exception {
+    caller.requireLocal(); if (!version2(request)) throw new IllegalArgumentException("Library migration requires API version 2");
+    fields(request, "kind", "legacy_ref"); library.requireAvailable(); String kind = text(request, "kind"); var legacy = request.getAsJsonObject("legacy_ref");
+    if (kind.equals("template")) TemplateDefinition.validateReference(legacy); else LibraryReferences.saved(legacy);
+    if (!legacy.has("store_id")) throw new IllegalArgumentException("Migration requires a store-backed legacy reference");
+    var store = door.select(text(legacy, "store_id")); UUID oldId = uuid(legacy, VisualizationLibrary.idKey(kind));
+    var object = kind.equals("template") ? TemplateMetadata.read(store, oldId) : VisualizationMetadata.read(store, oldId);
+    if (TemplateDefinition.revision(legacy, "revision", false) != object.get("revision").getAsLong()) throw new IOException("REVISION_CONFLICT: legacy revision changed; refresh before migration");
+    object.remove("request_id"); JsonObject locator = null;
+    if (kind.equals("view") && VisualizationContracts.kind(object.getAsJsonObject("source_ref")).equals("unmanaged")) {
+      try { locator = views.sourceLocator(uuid(VisualizationContracts.content(object.getAsJsonObject("source_ref")), "source_id")); }
+      catch (IOException unavailable) { /* Preserve unresolved source intent. Opening still requires an authorized locator. */ }
+    }
+    return library.migrate(caller, kind, legacy, object, locator).get();
+  }
+  public JsonObject librarySourceViews(JsonObject request) throws IOException {
+    var source = VisualizationContracts.source(request.getAsJsonObject("source_ref"));
+    var list = request.deepCopy(); list.addProperty("kind", "view"); var page = await(library.list(Authority.STDIO_LOCAL, list));
+    var saved = new JsonArray(); var unreadable = new JsonArray();
+    for (var entry : page.getAsJsonArray("items")) {
+      var row = entry.getAsJsonObject(); if (!row.get("available").getAsBoolean()) { unreadable.add(row); continue; }
+      var item = row.deepCopy(); var ref = row.getAsJsonObject("saved_view_ref");
+      item.add("saved_view_id", ref.get("saved_view_id")); item.add("revision", ref.get("revision")); saved.add(item);
+    }
+    page.remove("items"); page.add("saved_views", saved); page.add("unreadable", unreadable);
+    var working = workingSourceViews(source); working.entrySet().forEach(e -> page.add(e.getKey(), e.getValue())); page.addProperty("listing_incomplete", !page.get("next").isJsonNull()); return page;
+  }
   public static long revision(JsonObject body) {
-    double value = body.get("revision").getAsDouble();
-    if (value < 1 || value > 9_007_199_254_740_991L || value != Math.rint(value)) throw new IllegalArgumentException("Invalid revision");
-    return (long) value;
+    return TemplateDefinition.revision(body, "revision", false);
   }
   public static UUID uuid(JsonObject body, String key) { return UUID.fromString(text(body, key)); }
   public static String text(JsonObject body, String key) { return ReadWire.text(body, key); }

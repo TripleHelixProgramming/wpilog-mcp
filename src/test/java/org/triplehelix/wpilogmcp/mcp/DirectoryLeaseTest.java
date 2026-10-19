@@ -120,7 +120,22 @@ class DirectoryLeaseTest {
   }
 
   JsonObject listing(String session) throws Exception {
-    return tool(session, "list_available_logs", new JsonObject());
+    var unqualified = tool(session, "list_available_logs", new JsonObject());
+    if (!unqualified.has("code") || !unqualified.get("code").getAsString().equals("SOURCE_SELECTION_REQUIRED")) return unqualified;
+    // This harness deliberately visits every configured root to test shared lease metadata.
+    // The server itself must refuse to choose or blend those roots.
+    var result = new JsonObject(); var paths = new JsonArray(); var origins = new JsonArray(); var rows = new JsonArray();
+    var seen = new java.util.HashSet<String>();
+    var scopes = directory.sourceScopes().snapshot();
+    for (var root : directory.getLogDirectories()) {
+      var scope = scopes.stream().filter(choice -> choice.root().equals(root.toAbsolutePath().normalize())).findFirst().orElseThrow();
+      var request = new JsonObject(); request.addProperty("scope_id", scope.id());
+      var page = tool(session, "list_available_logs", request);
+      page.getAsJsonArray("log_directory_paths").forEach(paths::add);
+      page.getAsJsonArray("log_directories").forEach(origins::add);
+      for (var row : page.getAsJsonArray("logs")) if (seen.add(row.getAsJsonObject().get("path").getAsString())) rows.add(row);
+    }
+    result.add("log_directory_paths", paths); result.add("log_directories", origins); result.add("logs", rows); return result;
   }
 
   JsonObject entries(String session, Path file) throws Exception {

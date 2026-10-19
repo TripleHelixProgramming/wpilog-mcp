@@ -33,6 +33,8 @@ public final class VisualizationService implements AutoCloseable {
   private final ThreadPoolExecutor queue = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
       new ArrayBlockingQueue<>(64), task -> { var t = new Thread(task, "visualization-state"); t.setDaemon(true); return t; });
   private volatile boolean closed;
+  private final UUID serverId;
+  public UUID serverId() { return serverId; }
   private volatile java.util.function.Consumer<JsonObject> changed = ignored -> {};
   /** The listener routes by the attached window's session, so it receives view_id, revision and
    * that internal attached_client_id, never the public projection. */
@@ -45,6 +47,7 @@ public final class VisualizationService implements AutoCloseable {
 
   public VisualizationService(ServerIdentity identity) throws IOException { this(identity, Clock.systemUTC(), MAX_DOCUMENTS, MAX_STATE_BYTES); }
   VisualizationService(ServerIdentity identity, Clock clock, int documents, long bytes) throws IOException {
+    serverId = identity.id();
     this.clock = clock; documentLimit = documents; byteLimit = bytes;
     files = identity.durable() ? new StateFiles(identity.stateDirectory()) : null;
     lock = files == null ? null : files.lock();
@@ -111,10 +114,12 @@ public final class VisualizationService implements AutoCloseable {
     if (!record.has("requests")) record.add("requests", new JsonObject());
     if (!record.has("deleted")) record.addProperty("deleted", false);
     if (!record.has("template_ref")) record.add("template_ref", JsonNull.INSTANCE);
+    if (!record.has("creation_saved_view_ref")) record.add("creation_saved_view_ref", JsonNull.INSTANCE);
+    if (!record.get("creation_saved_view_ref").isJsonNull()) LibraryReferences.saved(record.getAsJsonObject("creation_saved_view_ref"));
     TemplateDefinition.validateReference(record.get("template_ref"));
-    if (!record.keySet().equals(Set.of("schema_version", "view_id", "creation_request_id", "template_ref", "requests", "deleted", "revision", "source_ref", "configuration", "initial_configuration", "checkpoint_configuration", "saved_view_ref", "attached_client_id", "detached_expires_at"))) throw new IOException("Unknown working-state fields");
-    long revision = record.get("revision").getAsLong();
-    if (revision < 1 || revision > 9_007_199_254_740_991L || revision != record.get("revision").getAsDouble()) throw new IOException("Invalid working revision");
+    if (!record.get("saved_view_ref").isJsonNull()) LibraryReferences.saved(record.getAsJsonObject("saved_view_ref"));
+    if (!record.keySet().equals(Set.of("schema_version", "view_id", "creation_request_id", "creation_saved_view_ref", "template_ref", "requests", "deleted", "revision", "source_ref", "configuration", "initial_configuration", "checkpoint_configuration", "saved_view_ref", "attached_client_id", "detached_expires_at"))) throw new IOException("Unknown working-state fields");
+    TemplateDefinition.revision(record, "revision", false);
     UUID.fromString(record.get("creation_request_id").getAsString());
     if (!record.get("deleted").isJsonPrimitive() || !record.getAsJsonPrimitive("deleted").isBoolean()) throw new IOException("Invalid deleted marker");
     var receipts = record.getAsJsonObject("requests");
@@ -125,7 +130,10 @@ public final class VisualizationService implements AutoCloseable {
           || !receipt.get("digest").getAsString().matches("[a-f0-9]{64}")) throw new IOException("Invalid working receipt");
       var retained = receipt.getAsJsonObject(receipt.has("result") ? "result" : "snapshot");
       TemplateDefinition.validateReference(retained.get("template_ref"));
-      UUID.fromString(retained.get("view_id").getAsString()); VisualizationContracts.configuration(retained.getAsJsonObject("configuration"));
+      if (retained.has("template")) {
+        if (!retained.keySet().equals(Set.of("template", "template_ref"))) throw new IOException("Invalid template mutation receipt");
+        TemplateDefinition.validate(retained.getAsJsonObject("template"));
+      } else { UUID.fromString(retained.get("view_id").getAsString()); VisualizationContracts.configuration(retained.getAsJsonObject("configuration")); }
     }
     VisualizationContracts.configuration(record.getAsJsonObject("initial_configuration"));
     VisualizationContracts.source(record.getAsJsonObject("source_ref"));
@@ -139,6 +147,11 @@ public final class VisualizationService implements AutoCloseable {
     return create(caller, request, source, configuration, null);
   }
   public CompletableFuture<JsonObject> create(Authority caller, UUID request, JsonObject source, JsonObject configuration, JsonObject templateRef) {
+    return createSaved(caller, request, source, configuration, templateRef, null);
+  }
+  /** Opening a committed library definition publishes its checkpoint and retry identity together. */
+  public CompletableFuture<JsonObject> createSaved(Authority caller, UUID request, JsonObject source, JsonObject configuration, JsonObject templateRef, JsonObject savedRef) {
+    var saved = savedRef == null ? JsonNull.INSTANCE : LibraryReferences.saved(savedRef);
     var reference = templateRef == null ? JsonNull.INSTANCE : templateRef.deepCopy();
     var sourceCopy = source.deepCopy(); var configCopy = configuration.deepCopy();
     return submit(caller, () -> {
@@ -147,7 +160,7 @@ public final class VisualizationService implements AutoCloseable {
       TemplateDefinition.validateReference(reference);
       prune();
       for (var record : views.values()) if (request.toString().equals(record.get("creation_request_id").getAsString())) {
-        if (!validSource.equals(record.get("source_ref")) || !validConfig.equals(record.get("initial_configuration")) || !reference.equals(record.get("template_ref"))) throw new IOException("REQUEST_CONFLICT: create request reused with different content");
+        if (!validSource.equals(record.get("source_ref")) || !validConfig.equals(record.get("initial_configuration")) || !reference.equals(record.get("template_ref")) || !saved.equals(record.get("creation_saved_view_ref"))) throw new IOException("REQUEST_CONFLICT: create request reused with different content");
         return record;
       }
       var id = UUID.randomUUID(); var record = new JsonObject();
@@ -155,7 +168,7 @@ public final class VisualizationService implements AutoCloseable {
       record.addProperty("creation_request_id", request.toString()); record.addProperty("revision", 1); record.add("requests", new JsonObject()); record.addProperty("deleted", false);
       record.add("source_ref", validSource); record.add("configuration", validConfig); record.add("template_ref", reference);
       record.add("initial_configuration", validConfig.deepCopy());
-      record.add("checkpoint_configuration", JsonNull.INSTANCE); record.add("saved_view_ref", JsonNull.INSTANCE);
+      record.add("creation_saved_view_ref", saved); record.add("checkpoint_configuration", saved.isJsonNull() ? JsonNull.INSTANCE : validConfig.deepCopy()); record.add("saved_view_ref", saved.deepCopy());
       record.add("attached_client_id", JsonNull.INSTANCE);
       record.addProperty("detached_expires_at", clock.instant().plus(DRAFT_LIFETIME).toString());
       write(id, record); return record;
@@ -227,7 +240,7 @@ public final class VisualizationService implements AutoCloseable {
   public CompletableFuture<JsonObject> completeMutation(Authority caller, UUID view, UUID request,
       JsonObject result, JsonObject savedReference) {
     var answer = result == null ? null : result.deepCopy();
-    var ref = savedReference == null ? null : savedReference.deepCopy();
+    var ref = savedReference == null ? null : LibraryReferences.saved(savedReference);
     return enqueue(caller, () -> {
       var record = raw(view); var receipt = record.getAsJsonObject("requests").getAsJsonObject(request.toString());
       if (receipt.has("result")) return receipt.getAsJsonObject("result").deepCopy();
@@ -235,6 +248,7 @@ public final class VisualizationService implements AutoCloseable {
       if (ref != null) {
         record.add("saved_view_ref", ref); record.add("checkpoint_configuration", receipt.getAsJsonObject("snapshot").get("configuration").deepCopy());
         next(record); completed = describe(record);
+        if (ref.has("library_id")) VisualizationLibrary.wire(completed);
       }
       receipt.remove("snapshot"); receipt.add("result", completed.deepCopy()); write(view, record); return completed;
     });
@@ -247,10 +261,7 @@ public final class VisualizationService implements AutoCloseable {
   public CompletableFuture<JsonObject> checkpointAttached(Authority caller, UUID view, long revision, JsonObject savedReference, UUID client) {
     var ref = savedReference.deepCopy();
     return submit(caller, () -> {
-      if (!ref.keySet().equals(Set.of("store_id", "saved_view_id", "revision"))) throw new IOException("Invalid saved-view reference");
-      UUID.fromString(ref.get("store_id").getAsString()); UUID.fromString(ref.get("saved_view_id").getAsString());
-      long savedRevision = ref.get("revision").getAsLong();
-      if (savedRevision < 1 || savedRevision > 9_007_199_254_740_991L || ref.get("revision").getAsDouble() != savedRevision) throw new IOException("Invalid saved revision");
+      LibraryReferences.saved(ref);
       var record = checked(view, revision); requireOwner(record, client);
       record.add("saved_view_ref", ref); record.add("checkpoint_configuration", record.get("configuration").deepCopy());
       next(record); write(view, record); return record;
@@ -298,6 +309,12 @@ public final class VisualizationService implements AutoCloseable {
   }
 
   public JsonObject get(UUID view) throws IOException { return describe(raw(view)); }
+  /** A view's source is immutable, including in retry tombstones. Version checks therefore
+   * precede mutations without interfering with their existing idempotency handling. */
+  public void requireSourceVersion(UUID view, int version) {
+    var record = views.get(view);
+    if (record != null) { VisualizationContracts.transportSource(record, version); LibraryReferences.version(record, version); }
+  }
   public List<JsonObject> list(JsonObject source) throws IOException {
     var checked = VisualizationContracts.source(source);
     return views.values().stream().filter(r -> !expired(r) && !r.get("deleted").getAsBoolean() && checked.equals(r.get("source_ref")))
@@ -335,7 +352,7 @@ public final class VisualizationService implements AutoCloseable {
   /** The public projection, which retry receipts also store. Internally an attachment is the
    * window's transport session, which ownership checks compare; callers see its public window ID. */
   private JsonObject describe(JsonObject original) {
-    var record = original.deepCopy(); record.remove("requests"); record.add("attached_client_id", attachment(original));
+    var record = original.deepCopy(); record.remove("requests"); record.remove("creation_saved_view_ref"); record.add("attached_client_id", attachment(original));
     boolean unsaved = record.get("checkpoint_configuration").isJsonNull() || !record.get("configuration").equals(record.get("checkpoint_configuration"));
     record.addProperty("has_unsaved_changes", unsaved);
     record.addProperty("native_dirty", unsaved && !record.get("saved_view_ref").isJsonNull());
@@ -373,7 +390,7 @@ public final class VisualizationService implements AutoCloseable {
     for (var entry : views.entrySet()) if (expired(entry.getValue())) {
       if (files != null) Files.deleteIfExists(files.path("views/" + entry.getKey() + ".json"));
       var source = entry.getValue().getAsJsonObject("source_ref");
-      if (source.get("kind").getAsString().equals("unmanaged")) expiredSources.add(UUID.fromString(source.get("source_id").getAsString()));
+      if (VisualizationContracts.kind(source).equals("unmanaged")) expiredSources.add(UUID.fromString(VisualizationContracts.content(source).get("source_id").getAsString()));
       views.remove(entry.getKey());
     }
     if (!expiredSources.isEmpty()) pruneLocators(null, expiredSources);
@@ -386,7 +403,7 @@ public final class VisualizationService implements AutoCloseable {
     for (var record : views.values()) {
       if (deleted(record)) continue;
       var source = record.getAsJsonObject("source_ref");
-      if (source.get("kind").getAsString().equals("unmanaged")) referenced.add(source.get("source_id").getAsString());
+      if (VisualizationContracts.kind(source).equals("unmanaged")) referenced.add(VisualizationContracts.content(source).get("source_id").getAsString());
     }
     if (keep != null) referenced.add(keep.toString());
     all.entrySet().removeIf(entry -> !referenced.contains(entry.getKey())
@@ -410,7 +427,7 @@ public final class VisualizationService implements AutoCloseable {
     // Keep recent identifications until pressure: two overviews can identify A/B before either creates a view.
     if (total + 4096 + size(locatorRecords()) > byteLimit) {
       var source = record == null ? null : record.getAsJsonObject("source_ref");
-      var keep = source != null && source.get("kind").getAsString().equals("unmanaged") ? UUID.fromString(source.get("source_id").getAsString()) : null;
+      var keep = source != null && VisualizationContracts.kind(source).equals("unmanaged") ? UUID.fromString(VisualizationContracts.content(source).get("source_id").getAsString()) : null;
       pruneLocators(keep, null);
     }
     // Reserve space for identity and the lock; temporary replacement uses at most one extra record.
@@ -485,7 +502,7 @@ public final class VisualizationService implements AutoCloseable {
   private CompletableFuture<JsonObject> enqueue(Authority caller, Operation operation) {
     var result = new CompletableFuture<JsonObject>();
     try {
-      Objects.requireNonNullElse(caller, Authority.UNTRUSTED).requireLocal();
+      VisualizationAccess.require(caller, VisualizationAccess.Operation.WORKING);
       if (closed) throw new IOException("WORKSPACE_CLOSED");
       queue.execute(() -> {
         drainReleasedClients();

@@ -47,11 +47,11 @@ function row(v: any): InventoryRow {
 /** Uses the window's existing credentials/grants, never a second MCP connection. Handles retain
  * their opening client and session; restart means reopen, never replay a row id in a new owner. */
 export class InventoryClient implements InventoryBackend {
-  constructor(private readonly client: () => Promise<McpClient>, private readonly budget: ByteBudget) {}
+  constructor(private readonly client: () => Promise<McpClient>, private readonly budget: ByteBudget, private readonly apiVersion: 1 | 2 = 1) {}
   private async request<T>(client: McpClient, route: string, body: unknown, signal?: AbortSignal, session?: string,
     captureSession?: (session: string) => void): Promise<T> {
     const release = this.budget.reserve(2 * INVENTORY_PAGE_BYTES);
-    try { return await client.visualization<T>(route, body, signal, { maxRequestBytes: 64 << 10,
+    try { return await client.visualization<T>(route, body, signal, { apiVersion: this.apiVersion, maxRequestBytes: 64 << 10,
       maxResponseBytes: INVENTORY_PAGE_BYTES, timeoutMs: 15000, session, captureSession }); }
     finally { release(); }
   }
@@ -59,8 +59,11 @@ export class InventoryClient implements InventoryBackend {
     const client = await this.client();
     const caps = object(await this.request(client, "/capabilities", undefined, signal));
     if (caps.recording_inventory_paging !== true) throw new Error("This server does not support paged recording inventories; update the server and Retry");
+    if (signal.aborted) throw new Error("Inventory open cancelled");
     let session = "";
-    const summary = object(await this.request(client, "/source/describe", { source_ref: source, inventory_mode: "paged" }, signal, undefined, s => session = s));
+    // Creation owns a server handle before the response arrives. Finish this one bounded request
+    // even after logical cancellation, so its opaque id can be closed in the opening session.
+    const summary = object(await this.request(client, "/source/describe", { source_ref: source, inventory_mode: "paged" }, undefined, undefined, s => session = s));
     const handle = { summary, session, client };
     try {
       if (summary.inventory_mode !== "paged" || canonical(summary.source_ref) !== canonical(source)) invalid();

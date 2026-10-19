@@ -69,7 +69,7 @@ export class DataClient {
     const key = `${mcpUrl} ${dataQuery(request)}`;
     const known = this.remembered.get(key);
     if (known && known.bytes.byteLength > responseLimit) throw new DataError("Cached response exceeds the byte limit");
-    const headers: Record<string, string> = { ...await this.headersFor(mcpUrl), Accept: "application/vnd.apache.arrow.stream, application/json" };
+    const headers: Record<string, string> = { ...await this.headersFor(dataUrl(mcpUrl, request)), Accept: "application/vnd.apache.arrow.stream, application/json" };
     if (known) headers["If-None-Match"] = known.etag;
     const url = dataUrl(mcpUrl, request);
     const response = await this.get(url, headers, signal, responseLimit);

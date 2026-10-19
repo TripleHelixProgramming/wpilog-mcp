@@ -78,6 +78,15 @@ class AnalysisGuidanceTest {
     }
   }
 
+  @Test void brownoutGuidanceDistinguishesOutputDisableFromTheEarlierRailDrop() {
+    String guidance = trapFix(AnalysisGuidance.analysisPrinciples(), "Presenting a voltage threshold crossing as a roboRIO brownout");
+    assertTrue(guidance.contains("6.3 V (roboRIO 1)"));
+    assertTrue(guidance.contains("roboRIO 2 defaults to 6.75 V"));
+    assertTrue(guidance.contains("6.8 V is the earlier rail-drop stage"));
+    assertTrue(guidance.contains("stated as an assumption"));
+    assertTrue(guidance.contains("only RIO_BROWNOUT_START/END"));
+  }
+
   @Test
   @DisplayName("server instructions fit within Claude Code's 2 KB truncation limit")
   void instructionsFitWithinClientLimit() {

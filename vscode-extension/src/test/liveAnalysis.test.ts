@@ -190,3 +190,84 @@ test("queued analysis capacity is bounded and a later peer still runs after a ca
     p.resolve(); await Promise.all([active, ...jobs, last]); assert.equal(ran, 32);
   } finally { p.resolve(); await Promise.all([active, ...jobs, overflow]); }
 });
+
+function reductionAnswer(body: any): any {
+  return { ...answer(body), status: "ok", basis: "admitted_source_prefix", reduction_rule: "time_buckets_min_max_mean",
+    buckets: [{ start_us: "0", end_us: "1000000", count: 10000, finite_count: 10000, min: 0, max: 10000, mean: 1, first: 0, last: 0 }],
+    sample_count: 10000, finite_count: 10000, unplottable_count: 0, max_points: body.max_points,
+    window: { start_us: "0", end_us: "1000000" }, records_visited: 10000, problem_count: 0, problems: [], problems_truncated: false,
+    prefix: { ...answer(body).prefix, source_kind: "session" } };
+}
+test("fixed recording history reads server reductions with byte-derived points and keeps early spikes", async t => {
+  const v = view(["time_series"]), f = fixture(t, { v, request: async (_r, body) => reductionAnswer(body) });
+  const fixed = { mode: "fixed", start_sec: 0, end_sec: 1 }; v.configuration.time.live = fixed;
+  f.c.complete(binding(fixed), false); await until(() => f.messages.some(m => m.type === "reduction"));
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].route, "/source/reduction");
+  assert.equal(f.calls[0].body.start_time, 0); assert.equal(f.calls[0].body.end_time, 1);
+  assert.ok(f.calls[0].body.max_points >= 1 && f.calls[0].body.max_points <= 4096);
+  assert.ok(f.calls[0].body.max_points * 512 + 8192 <= f.calls[0].limits.maxResponseBytes);
+  assert.equal(f.messages.find(m => m.type === "reduction").result.buckets[0].max, 10000);
+  assert.equal(f.messages.find(m => m.type === "reduction").result.sample_count, 10000);
+});
+test("follow stays incremental, finalization enables full reduction and new prefixes coalesce", async t => {
+  const p = pending<any>(), f = fixture(t, { v: view(["time_series"]), request: async (_r, body) => f.calls.length === 1 ? p.promise : reductionAnswer(body) });
+  f.c.complete(binding(), false); await sleep(30); assert.equal(f.calls.length, 0);
+  f.c.complete(binding(), true); await until(() => f.calls.length === 1);
+  assert.equal(f.calls[0].body.start_time, undefined); assert.equal(f.calls[0].body.end_time, undefined);
+  for (let i = 0; i < 50; i++) f.c.complete(binding(), true);
+  p.resolve(reductionAnswer(f.calls[0].body)); await until(() => f.messages.filter(m => m.type === "reduction").length === 2);
+  await sleep(30); assert.equal(f.calls.length, 2);
+});
+
+for (const change of ["source", "entry", "field", "range", "points", "bytes", "prefix", "counts", "order", "nonfinite", "diagnostics"]) test(`history reduction rejects malformed ${change} before display`, async t => {
+  const f = fixture(t, { v: view(["time_series"]), request: async (_route, body) => {
+    const r = reductionAnswer(body);
+    if (change === "source") r.inputs.source_ref = { kind: "session", session_id: "other" };
+    if (change === "entry") r.inputs.entry = "other";
+    if (change === "field") r.inputs.field = "[1]";
+    if (change === "range") r.window.start_us = "1";
+    if (change === "points") r.max_points++;
+    if (change === "bytes") r.inputs.max_bytes++;
+    if (change === "prefix") r.prefix.catalog_revision = "invalid";
+    if (change === "counts") r.sample_count++;
+    if (change === "order") r.buckets[0].end_us = "-1";
+    if (change === "nonfinite") r.buckets[0].mean = Infinity;
+    if (change === "diagnostics") r.problems_truncated = true;
+    return r;
+  } });
+  f.c.complete(binding({ mode: "fixed", start_sec: 0, end_sec: 1 }), false);
+  await until(() => f.messages.some(m => m.type === "reduction"));
+  const r = f.messages.find(m => m.type === "reduction").result;
+  assert.equal(r.status, "error"); assert.match(r.error, /Invalid reduction/); assert.equal(r.buckets, undefined);
+});
+for (const stop of ["pause", "hide", "invalidate", "dispose"] as const) test(`history ${stop} rejects late responses and releases the reserved request`, async t => {
+  const p = pending<any>(), f = fixture(t, { v: view(["time_series"]), request: () => p.promise });
+  f.c.complete(binding({ mode: "fixed", start_sec: 0, end_sec: 1 }), false);
+  await until(() => f.calls.length === 1); assert.ok(f.budgets.decoded.reserved > 0);
+  if (stop === "pause") f.c.pause(true); else f.c[stop]();
+  assert.equal(f.calls[0].signal.aborted, true); p.resolve(reductionAnswer(f.calls[0].body)); await until(() => f.budgets.encoded.reserved === 0);
+  assert.equal(f.messages.filter(m => m.type === "reduction").length, 0); f.c.dispose(); assert.equal(f.budgets.decoded.reserved, 0);
+});
+test("empty historical ranges refresh on a completed prefix and budget refusals cannot evict a peer", async t => {
+  let empty = true;
+  const f = fixture(t, { v: view(["time_series"]), request: async (_r, body) => {
+    const r = reductionAnswer(body); if (empty) Object.assign(r, { status: "no_match", buckets: [], sample_count: 0, finite_count: 0, hint: "Wait or widen" }); return r;
+  } });
+  f.c.complete(binding(), true); await until(() => f.messages.some(m => m.type === "reduction"));
+  assert.equal(f.messages.find(m => m.type === "reduction").result.status, "no_match");
+  empty = false; f.c.complete(binding(), true); await until(() => f.messages.filter(m => m.type === "reduction").length === 2);
+  assert.equal(f.messages.filter(m => m.type === "reduction").at(-1).result.sample_count, 10000);
+  f.c.dispose(); const release = f.budgets.decoded.reserve(f.budgets.decoded.maximum - 100);
+  const peer = fixture(t, { v: view(["time_series"]), budgets: f.budgets }); peer.c.complete(binding(), true);
+  await until(() => peer.warnings.length > 0); assert.equal(peer.calls.length, 0); assert.equal(f.budgets.decoded.reserved, f.budgets.decoded.maximum - 100); release();
+});
+
+test("repeated history panels query once and reserve every renderer copy", async t => {
+  const a = fixture(t, { v: view(["time_series"]), request: async (_r, body) => reductionAnswer(body) });
+  const b = fixture(t, { v: view(["time_series", "time_series", "time_series"]), request: async (_r, body) => reductionAnswer(body) });
+  a.c.complete(binding(), true); b.c.complete(binding(), true);
+  await until(() => [a, b].every(f => f.messages.some(m => m.type === "reduction")));
+  assert.equal(a.calls.length, 1); assert.equal(b.calls.length, 1);
+  assert.ok(b.budgets.decoded.reserved > a.budgets.decoded.reserved);
+  a.c.dispose(); b.c.dispose(); assert.equal(a.budgets.decoded.reserved + b.budgets.decoded.reserved, 0);
+});

@@ -2,7 +2,7 @@ import { Compatibility } from "./recordedModel";
 import { FollowLease, FollowSelection, FollowSource, FollowWindow, RecordingClock, recordingClock, canonical, freezeJson, object, protocol, selectionKey } from "./followProtocol";
 
 export const VIEW_PAGE_BYTES = 1 << 20;
-export interface ViewFollowRequest { readonly view_id: string; readonly expected_revision: number }
+export interface ViewFollowRequest { readonly view_id: string; readonly expected_revision: number; readonly api_version?: 2 }
 export interface ViewFollowBinding {
   readonly api_version: 1; readonly view_id: string; readonly revision: number; readonly source_ref: FollowSource;
   readonly compatibility: Compatibility; readonly clock: RecordingClock;

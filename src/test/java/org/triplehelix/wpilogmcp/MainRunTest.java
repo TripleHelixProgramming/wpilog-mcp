@@ -130,8 +130,11 @@ class MainRunTest {
         }
         var mcp = new org.triplehelix.wpilogmcp.harness.HarnessHttp(port); mcp.initialize();
         var listing = mcp.call("list_available_logs", new com.google.gson.JsonObject());
-        assertEquals(dataStoreEnabled, listing.has("source_sync"),
-            "Disabled policy must not select a preferred store or register persisted source grants: " + listing);
+        assertFalse(listing.has("source_sync"), "Import policy never chooses a read source");
+        if (dataStoreEnabled) {
+          assertEquals("SOURCE_SELECTION_REQUIRED", listing.get("code").getAsString());
+          assertEquals(3, listing.getAsJsonArray("source_scopes").size());
+        }
         if (!dataStoreEnabled) {
           var roots = listing.getAsJsonArray("log_directory_paths").asList().stream().map(com.google.gson.JsonElement::getAsString).toList();
           assertEquals(1, roots.size());

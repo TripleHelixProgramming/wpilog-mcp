@@ -77,7 +77,7 @@ public final class SearchSystemLogsTool extends LogRequiringTool {
     if (!missing.isEmpty()) return ResponseBuilder.notApplicable("System text has not been copied locally; query the collecting server " + snapshot.collectingServer() + ".")
         .hint("Synchronize these files before searching this copy: " + missing.stream().map(r -> r.path().toString()).toList()).build();
     var clocksRead = new JsonArray();
-    var clocks = clocks(log, snapshot, clocksRead); var filesRead = new JsonArray(); var matches = new JsonArray(); long total = 0;
+    var clocks = SystemLogClocks.read(log, snapshot, clocksRead, logAccess); var filesRead = new JsonArray(); var matches = new JsonArray(); long total = 0;
     for (var receipt : snapshot.files().stream().sorted(java.util.Comparator.comparing(r -> r.path().toString())).toList()) {
       var file = receipt.file(); if (!source.equals("all") && !source.equals(file.source())) continue;
       // Hold the same move lease as the log reader; consume exactly the committed prefix.
@@ -110,76 +110,6 @@ public final class SearchSystemLogsTool extends LogRequiringTool {
     if (!result.has("inputs")) result.add("inputs", new JsonObject());
     var inputs = result.getAsJsonObject("inputs"); inputs.add("files", filesRead); inputs.add("clock_files", clocksRead);
     inputs.addProperty("manifest", snapshot.manifest().toString()); return result;
-  }
-  private SystemLogClocks clocks(LogData log, SystemLogFiles.Snapshot snapshot, JsonArray read) throws IOException {
-    var session = snapshot.session(); var directory = snapshot.manifest().getParent();
-    // The session's robot time spans its WPILOGs, each placed by the offset recorded when it was
-    // matched. A REV log's span is on the REV log's own clock and says nothing about robot time.
-    double min = Double.POSITIVE_INFINITY, max = Double.NEGATIVE_INFINITY;
-    var searched = onRobotTime(Path.of(log.path()), snapshot);
-    if (searched.isPresent()) {
-      min = searched.get().applyAsDouble(log.minTimestamp()); max = searched.get().applyAsDouble(log.maxTimestamp());
-    }
-    for (var f : session.files()) {
-      if (!"wpilog".equals(f.kind())) continue;
-      var placed = onRobotTime(directory.resolve(f.path()), snapshot);
-      if (placed.isEmpty()) continue;
-      min = Math.min(min, placed.get().applyAsDouble(f.minTimestampSec())); max = Math.max(max, placed.get().applyAsDouble(f.maxTimestampSec()));
-    }
-    if (session.openCapture() != null) { min = Math.min(min, session.openCapture().minTimestampSec()); max = Math.max(max, session.openCapture().maxTimestampSec()); }
-    // A clock record stands in for its capture, which this copy may not hold, so the session's span
-    // and kernel pairs are the same either way. A capture listed with another hash outranks a stale record.
-    var covered = new java.util.HashSet<Path>();
-    var records = new java.util.ArrayList<org.triplehelix.wpilogmcp.store.ClockRecords.Facts>();
-    for (var clock : snapshot.clockRecords()) {
-      var facts = clock.facts(); var capture = directory.resolve(facts.capture()).normalize();
-      if (session.files().stream().anyMatch(f -> directory.resolve(f.path()).normalize().equals(capture) && !f.sha256().equals(facts.captureSha256()))) continue;
-      records.add(facts); covered.add(capture); read.add(clock.path().toString());
-      min = Math.min(min, facts.minTimestampSec()); max = Math.max(max, facts.maxTimestampSec());
-    }
-    var result = new SystemLogClocks(min, max);
-    for (var facts : records) result.addKernel(facts.uptime());
-    // Prefer the robot's systemTime when a pulled log supplies it, respecting its recorded offset.
-    for (Path path : snapshot.clocks()) {
-      if (!pulled(path, snapshot)) continue;
-      var placed = onRobotTime(path, snapshot);
-      if (placed.isEmpty()) continue;
-      try (var use = logAccess.acquire(path.toString())) {
-        result.add(use.log(), placed.get(), true, !covered.contains(path.normalize())); read.add(path.toString());
-      }
-    }
-    boolean wallFallback = !result.hasWall();
-    for (Path path : snapshot.clocks()) {
-      if (pulled(path, snapshot)) continue;
-      boolean kernel = !covered.contains(path.normalize());
-      // A capture whose record supplies its kernel pairs, beside a log that supplied the wall clock,
-      // has nothing to give: reading it would cost the whole capture and list it as a clock it is not.
-      if (!wallFallback && !kernel) continue;
-      var placed = onRobotTime(path, snapshot);
-      if (placed.isEmpty()) continue;
-      if (path.toString().equals(log.path())) result.add(log, placed.get(), wallFallback, kernel);
-      else try (var use = logAccess.acquire(path.toString())) { result.add(use.log(), placed.get(), wallFallback, kernel); }
-      read.add(path.toString());
-    }
-    result.sort(); return result;
-  }
-  private static StoreManifest.LogFile receipt(Path path, SystemLogFiles.Snapshot snapshot) {
-    var directory = snapshot.manifest().getParent();
-    return snapshot.session().files().stream().filter(f -> directory.resolve(f.path()).equals(path)).findFirst().orElse(null);
-  }
-  private static boolean pulled(Path path, SystemLogFiles.Snapshot snapshot) {
-    var receipt = receipt(path, snapshot);
-    return receipt != null && receipt.provenance().kind().equals("pulled");
-  }
-  /** A file's own time on the session's robot time, by the offset recorded when it was matched, or
-   * as it is when it was not matched. Empty when the recorded offset is invalid: a damaged record
-   * places nothing. */
-  private static java.util.Optional<java.util.function.DoubleUnaryOperator> onRobotTime(Path path, SystemLogFiles.Snapshot snapshot) {
-    var receipt = receipt(path, snapshot);
-    if (receipt == null || receipt.matching() == null) return java.util.Optional.of(t -> t);
-    var alignment = org.triplehelix.wpilogmcp.store.StoreCatalog.recordedAlignment(
-        new org.triplehelix.wpilogmcp.store.StoreCatalog.StoredFile(path, snapshot.manifest(), null, snapshot.session(), receipt));
-    return alignment.isSuccessful() ? java.util.Optional.of(alignment::toFpgaTime) : java.util.Optional.empty();
   }
   private static final class Prefix extends java.io.FilterInputStream {
     private long remaining;

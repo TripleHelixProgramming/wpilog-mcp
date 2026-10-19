@@ -6,6 +6,11 @@
 
 ## File transfer
 
+The [source and mirror implementation plan](../SOURCE_AND_MIRROR_PLAN.md) specifies the
+next mirror protocol, verification states and separation of transfer I/O from publication.
+Its new retention and peer policies are not implemented by the current transfer owners
+described below.
+
 `sync.FileTransfer` advances at most one 64 KiB block per step, with an injected monotonic clock and
 gate. It performs no sleeps and owns no socket or thread. A read-only transport interface serves
 SFTP and the HTTP store door. A local interface supplies append, archive, rename, verification,
@@ -149,6 +154,35 @@ The gateway has its own configured port and the HTTP bind address. Recorder poli
 its feed. A robot disconnect flushes pending values before unannouncing every upstream topic, and
 new announcements allocate new gateway ids. Client publications are private acknowledgement sinks,
 never a second route to the robot or capture. Properties acknowledgements report unchanged facts.
+
+Completed provider writes also enter the gateway's bounded queue. Their declared type, value and
+already-established robot timestamp have one owner; forwarding never estimates their time again.
+One queued publication orders the declaration, a replacement metadata envelope and its value.
+The versioned `wpilog_context` property lets a downstream recorder retain canonical context names
+and provenance. A name alone supplies no provenance. Upstream declarations take precedence over
+local context on a collision. Disconnect clears both kinds of topic; rollover does not replay
+provider history to existing subscribers.
+
+Pulled text notifications occur only after the byte receipt and cursor commit, outside the store
+queue and cross-process lock. On the pull worker, the same clock reader used by system-log search
+maps the new committed lines. Kernel/journal cursors identify deltas; a changed immutable file
+snapshot compares the latest receipt for that remote path, so rotation to a shorter file does not
+select an older, longer version. It reuses only a byte-proven prefix, ending at its last complete line. The worker
+reads one bounded line at a time and hands off at most 64 lines or about 256 KiB of encoded text
+per batch. A single line can exceed that batch target but cannot exceed 64 KiB of characters.
+The capture loop preserves those mapped timestamps and yields between records after two
+milliseconds. The worker's delivery wait has a five-second deadline and a cancellation flag;
+a late callback cannot write after timeout, close or a change of recording. No text read or clock
+read runs on the NT4 loop, gateway fan-out loop or store queue. Per-update limits are 65,536 lines
+and 16 MiB of characters. Failure retains the original receipt and disconnects gateway views;
+history recovery stays a store read, not an unbounded network replay.
+
+Mapped JSON text uses `/Daemon/System/<source>` and its event timestamp. Unmapped lines use a
+separate `/unmapped` topic with a null event time and an explicit reason; only that topic uses
+receipt time, captured before file reads or capture-loop delay. Mapping uses the evidence available
+at publication and is not retroactively changed. File-prefix proof holds read leases on both files,
+so a concurrent move cannot race the comparison or strand an open handle.
+Closed or unassigned crash-file sessions do not publish into the active recording.
 
 The listener's bind lifecycle is independent of capture startup. A busy port retries with 1-second
 exponential backoff capped at 30 seconds, and topics remain in the gateway core while waiting. The

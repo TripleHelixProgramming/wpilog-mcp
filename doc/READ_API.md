@@ -363,7 +363,7 @@ remote visualization adapter is supplied yet. A follow reads one captured record
 rollover members, through the recording server or a configured store containing its final files.
 An open mirror cannot supply the originating writer's immutable index.
 
-Create with a durable `source_ref` and 1–256 distinct `(entry, field)` queries:
+Create with a durable, unqualified schema-1 `source_ref` and 1–256 distinct `(entry, field)` queries:
 
 ```json
 {"source_ref":{"kind":"session","origin_store_id":"11111111-1111-4111-8111-111111111111","session_id":"22222222-2222-4222-8222-222222222222","anchor_member":{"original_name":"capture.wpilog","recording_started_at":"2026-01-01T00:00:00Z"}},"queries":[{"entry":"NT:/voltage","order":"file"}]}
@@ -378,6 +378,11 @@ Copies, sync/merge receipts and mirrors retain aliases. An older writer may drop
 members; missing evidence returns `SOURCE_UNAVAILABLE` or `HISTORY_UNAVAILABLE`. It never selects
 the robot's current session. Multiple configured stores claiming the same origin require choosing
 one serving location rather than guessing between them.
+
+Raw creation rejects a schema-2 qualified `source_ref` or a top-level `scope_id` with 400
+`INVALID_REQUEST`, before reserving a lease or opening a source. It cannot validate a serving
+server/scope envelope and never unwraps one silently. For a qualified source, create a working
+view through visualization API 2 and use its `view_binding` as described below.
 
 A 201 response gives `id`, `server_epoch`, `cursor`, `source_ref`, `idle_timeout_sec: 60.0`,
 `max_wait_ms: 25000` and `api_version`. POST `{"cursor":"...","wait_ms":25000}` to
@@ -529,7 +534,9 @@ source, queries, windows and page limits come from the pinned configuration and 
 supplied alongside it. This form always uses 4,096 visited records, 1 MiB pages and
 `frontier_scope: "queries"`; it shares the raw route's 32 leases, 64 MiB encoded budget,
 long-poll workers, timeout, terminal acknowledgement and DELETE behavior. Raw source/query
-requests remain unchanged and do not require a visualization session.
+requests remain schema-1-only and do not require a visualization session. A view created with
+visualization API 2 retains its qualified server and scope through admission and every access
+recheck, including cached page retries. A missing selected mirror never falls back to its master.
 
 The server resolves all requirements from one admitted prefix and hands that same prefix to
 bootstrap. It checks the expected revision before and after admission and before publishing
@@ -559,13 +566,20 @@ other leases continue. Source grants and the opening session are checked even on
 A session expiry closes admission to that lease; DELETE remains available. If creation loses
 its response, the existing 60-second idle expiry bounds cleanup.
 
-For detached evidence only, use `POST /visualizations/v1/views/<view-id>/bindings` with
+For detached evidence only, use `POST /visualizations/v2/views/<view-id>/bindings` with
 `expected_revision`, or `visualization_view_bind` with `view_id`, `expected_revision` and
-`api_version: 1`. Those do not open a follow. A controller can create a follow directly and
-avoid a redundant compatibility check. The editor's recording panels remain gated.
+`api_version: 2`. The local compatibility route uses `v1` and `api_version: 1` for legacy
+sources. Those do not open a follow. A controller can create a follow directly and avoid a
+redundant compatibility check. The editor's recording panels remain gated.
 
 View-bound follow frontiers additionally include `clock`, using the same recorded estimate,
 last-sample, right-edge and waiting fields as the binding plan. It describes each newly admitted
 prefix, including finalization; continuation pages reuse that prefix's frontier. Raw follows
 retain their existing wire shape and do not acquire this optional clock field. Clients must not
 substitute receipt time for the reported clock evidence.
+
+API 2 remote view follows name `api_version: 2` inside `view_binding`, beside `view_id`
+and `expected_revision`. The pinned view retains its complete qualified source. Unknown
+versions refuse; explicit API 1 refuses a qualified view. Existing local bindings that omit
+this version retain their pre-API-2 behavior for both source forms. Omitting the version does
+not grant a remote caller access to the local compatibility route.

@@ -56,6 +56,7 @@ public final class OverviewServerFixture {
     };
   }
   public static void main(String[] args) throws Exception {
+    if (args.length > 3 && args[3].equals("restore")) { restore(args); return; }
     var fixture = new RecordingFixture(Path.of(args[0]), 0); int names = 20_000;
     boolean fields = args.length >= 3;
     var logs = LogManager.getInstance(); logs.addAllowedDirectory(fixture.root);
@@ -100,7 +101,14 @@ public final class OverviewServerFixture {
           if (args.length < 3) continue;
           var command = JsonParser.parseString(line).getAsJsonObject();
           var answer = new JsonObject(); answer.add("id", command.get("id"));
-          if (command.get("op").getAsString().equals("append")) {
+          if (command.get("op").getAsString().equals("restart")) {
+            // Replace the actual HTTP/session/workspace owners while the independent writer
+            // continues. Only durable working state survives, never inventory/follow handles.
+            int port = server.getPort(); server.stop();
+            registry = new ToolRegistry(); registry.serverIdentity(ServerIdentity.open(fixture.root.resolveSibling("fixture-state")));
+            VisualizationTools.registerAll(registry); server = new HttpTransport(registry, port);
+            server.setStoreDirectories(Set.of(fixture.root)); server.start();
+          } else if (command.get("op").getAsString().equals("append")) {
             long value = command.get("value").getAsLong();
             var entry = new Announce(RecordingFixture.name(0), 1, "int", null, new JsonObject());
             long timestamp = command.has("at_us") ? command.get("at_us").getAsLong() : 1_000_000;
@@ -117,6 +125,9 @@ public final class OverviewServerFixture {
             writer.value(entry, new ValueFrame(6, advance ? 120_000_000 : 1_250_000,
                 org.triplehelix.wpilogmcp.nt4.NtType.fromNt4("double[]").code(),
                 advance ? java.util.List.of(30.0, 34.0, 38.0) : java.util.List.of(26.0, 30.0, 34.0)), 0);
+          } else if (command.get("op").getAsString().equals("denseHistory")) {
+            var entry = new Announce(RecordingFixture.name(20), 21, "int", null, new JsonObject());
+            for (int i = 0; i < 5000; i++) writer.value(entry, new ValueFrame(21, i * 1000L, 2, i == 10 ? 10000L : 0L), 0);
           } else if (command.get("op").getAsString().equals("finalize")) {
             writer.close(); var before = StoreJson.JSON.fromJson(Files.readString(manifest), Session.class);
             var members = new java.util.ArrayList<>(before.files());
@@ -131,5 +142,14 @@ public final class OverviewServerFixture {
         }
       }
     } finally { server.stop(); writer.close(); logs.release(fixture.root); }
+  }
+  /** A genuinely fresh JVM after finalization, with only the durable store and working state. */
+  private static void restore(String[] args) throws Exception {
+    var root = Path.of(args[0]); var logs = LogManager.getInstance(); logs.addAllowedDirectory(root);
+    var registry = new ToolRegistry(); registry.serverIdentity(ServerIdentity.open(root.resolveSibling("fixture-state")));
+    VisualizationTools.registerAll(registry); var server = new HttpTransport(registry, Integer.parseInt(args[1]));
+    server.setStoreDirectories(Set.of(root)); server.start();
+    try { while (System.in.read() != -1) { } }
+    finally { server.stop(); logs.release(root); }
   }
 }

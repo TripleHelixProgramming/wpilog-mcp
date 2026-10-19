@@ -62,6 +62,23 @@ class FollowEndpointTest {
     logs.release(temp); logs.clearAllowedDirectories(); allowed.forEach(logs::addAllowedDirectory);
   }
   void append(long timestamp, long value) { writer.value(topic, new ValueFrame(1, timestamp, 2, value), 0); }
+  @Test void finalizedCapturedFileOpensWithoutEvictingItsWriterIndex() throws Exception {
+    String owner = client(); finalizeRecording(false);
+    try (var held = logs.acquire(file.toString())) {
+      assertInstanceOf(org.triplehelix.wpilogmcp.log.LiveLog.View.class, held.log());
+      assertNotNull(held.snapshot(), "The closed writer has a verified file boundary");
+      var identify = new JsonObject(); identify.addProperty("path", file.toString());
+      var summary = json(local(owner, "/visualizations/v2/source", identify), 200);
+      var request = new JsonObject(); request.add("source_ref", summary.get("source_ref"));
+      var inventory = json(local(owner, "/visualizations/v2/source/describe", request), 200);
+      var entry = inventory.getAsJsonArray("entries").asList().stream().map(JsonElement::getAsJsonObject)
+          .filter(row -> row.get("name").getAsString().equals("NT:/x")).findFirst().orElseThrow();
+      assertEquals(1, entry.get("sample_count").getAsInt());
+      request.addProperty("entry", "NT:/x");
+      var stats = json(local(owner, "/visualizations/v2/source/statistics", request), 200);
+      assertEquals(1, stats.get("count").getAsInt()); assertEquals(41, stats.get("mean").getAsDouble());
+    }
+  }
   @Test void recordingAnalysisReadsFreshFixedPrefixesDuringAppendAndAfterFinalization() throws Exception {
     String owner = client(); var input = new JsonObject();
     input.add("source_ref", JsonParser.parseString(creation()).getAsJsonObject().get("source_ref")); input.addProperty("entry", "NT:/x");
@@ -101,6 +118,45 @@ class FollowEndpointTest {
   JsonObject create() throws Exception {
     return json(call("POST", "/read/v1/follows", creation()), 201);
   }
+  @ParameterizedTest
+  @ValueSource(strings = {"foreign-server", "missing-scope", "local-master", "local-mirror", "top-level-scope"})
+  void rawFollowRefusesQualificationBeforeAdmittingALease(String selection) throws Exception {
+    var input = JsonParser.parseString(creation()).getAsJsonObject();
+    String scope = selection.equals("local-master") ? STORE : UUID.randomUUID().toString();
+    if (selection.equals("local-mirror")) mirror(scope);
+    var server = selection.equals("foreign-server") ? UUID.randomUUID() : registry.visualizations().views.serverId();
+    if (selection.equals("top-level-scope")) input.addProperty("scope_id", scope);
+    else input.add("source_ref", org.triplehelix.wpilogmcp.visualization.VisualizationContracts.qualify(
+        server, scope, input.getAsJsonObject("source_ref")));
+    var response = json(call("POST", "/read/v1/follows", input.toString()), 400);
+    assertEquals("INVALID_REQUEST", response.get("code").getAsString());
+    assertTrue(response.get("message").getAsString().contains("view_binding"), response.toString());
+    assertFalse(response.has("id")); assertEquals(0, endpoint().size()); assertEquals(0, endpoint().heldBytes());
+    if (!selection.equals("local-mirror")) {
+      var legacy = create();
+      var page = json(call("POST", nextPath(legacy), nextBody(legacy.get("cursor").getAsString(), 0)), 200);
+      assertEquals(41, page.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch")
+          .getAsJsonArray("samples").get(0).getAsJsonObject().getAsJsonObject("value").get("value").getAsLong());
+      assertEquals(204, call("DELETE", "/read/v1/follows/" + legacy.get("id").getAsString(), null).statusCode());
+    }
+  }
+  FollowEndpoint endpoint() throws Exception {
+    var field = HttpTransport.class.getDeclaredField("followEndpoint"); field.setAccessible(true);
+    return (FollowEndpoint) field.get(transport);
+  }
+  Path mirror(String id) throws Exception {
+    finalizeRecording(false);
+    var root = Files.createDirectory(temp.resolve("mirror"));
+    for (var original : List.of(file, manifest, temp.resolve("robots/fixture/robot.json"))) {
+      var target = root.resolve(temp.relativize(original)); Files.createDirectories(target.getParent()); Files.copy(original, target);
+    }
+    Files.writeString(root.resolve("store.json"), StoreJson.JSON.toJson(new Header(1, WHEN, id, List.of())
+        .withOrigin(new MirrorOrigin(STORE, "http://master.invalid", WHEN, List.of(), Map.of()))));
+    logs.addAllowedDirectory(root);
+    transport.stop(); registry = new ToolRegistry(); transport = new HttpTransport(registry, 0);
+    transport.setStoreDirectories(Set.of(temp, root)); transport.start();
+    base = URI.create("http://127.0.0.1:" + transport.getPort()); return root;
+  }
   String nextPath(JsonObject lease) { return "/read/v1/follows/" + lease.get("id").getAsString() + "/next"; }
   String nextBody(String cursor, int wait) { return "{\"cursor\":\"" + cursor + "\",\"wait_ms\":" + wait + "}"; }
 
@@ -132,6 +188,27 @@ class FollowEndpointTest {
   JsonObject boundRequest(JsonObject view) {
     var out = new JsonObject(); var binding = new JsonObject(); binding.add("view_id", view.get("view_id"));
     binding.add("expected_revision", view.get("revision")); out.add("view_binding", binding); return out;
+  }
+  @Test void qualifiedViewFollowKeepsSelectedMirrorAndRechecksItOnReplay() throws Exception {
+    String scope = UUID.randomUUID().toString(); var mirror = mirror(scope); String client = client();
+    var ref = org.triplehelix.wpilogmcp.visualization.VisualizationContracts.qualify(
+        registry.visualizations().views.serverId(), scope, JsonParser.parseString(creation()).getAsJsonObject().getAsJsonObject("source_ref"));
+    var input = new JsonObject(); input.add("source_ref", ref); input.addProperty("request_id", UUID.randomUUID().toString());
+    input.add("configuration", viewConfiguration("NT:/x"));
+    var view = json(local(client, "/visualizations/v2/views", input), 200);
+    var lease = json(local(client, "/read/v1/follows", boundRequest(view)), 201);
+    assertEquals(ref, lease.get("source_ref"));
+    String cursor = lease.get("cursor").getAsString();
+    var page = json(call("POST", nextPath(lease), nextBody(cursor, 0)), 200);
+    var batch = page.getAsJsonArray("batches").get(0).getAsJsonObject().getAsJsonObject("batch");
+    assertEquals(mirror.resolve(temp.relativize(file)).toString(), page.getAsJsonObject("frontier")
+        .getAsJsonArray("members").get(0).getAsJsonObject().getAsJsonObject("snapshot").get("path").getAsString());
+    assertEquals(41, batch.getAsJsonArray("samples").get(0).getAsJsonObject().getAsJsonObject("value").get("value").getAsLong());
+    // Revoking the selected root leaves the master configured; a cached reply cannot use it.
+    logs.clearAllowedDirectories(); logs.addAllowedDirectory(temp);
+    assertEquals(403, call("POST", nextPath(lease), nextBody(cursor, 0)).statusCode());
+    assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+    assertEquals(0, endpoint().size()); assertEquals(0, endpoint().heldBytes());
   }
   @Test void viewFollowPinsRevisionAndServerQueriesWithOneMiBQueriedPages() throws Exception {
     String client = client(); var view = createView(client); var input = boundRequest(view);

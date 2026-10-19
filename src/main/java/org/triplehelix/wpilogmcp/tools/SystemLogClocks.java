@@ -5,6 +5,11 @@
 package org.triplehelix.wpilogmcp.tools;
 
 import java.util.ArrayList;
+import java.io.IOException;
+import java.nio.file.Path;
+import com.google.gson.JsonArray;
+import org.triplehelix.wpilogmcp.store.SystemLogFiles;
+import org.triplehelix.wpilogmcp.store.StoreManifest;
 import java.util.Comparator;
 import java.util.List;
 import org.triplehelix.wpilogmcp.log.LogData;
@@ -14,9 +19,9 @@ import org.triplehelix.wpilogmcp.capture.pull.SystemLogTime;
 
 /** Written timestamps and measured pairs only. Kernel time may precede FPGA startup; a
  * boot-time guess would assign early kernel faults to a match that had not begun. */
-final class SystemLogClocks {
+public final class SystemLogClocks {
   record Pair(double source, double robot) {}
-  record Mapped(String written, Double seconds, String basis, String reason) {}
+  public record Mapped(String written, Double seconds, String basis, String reason) {}
   private final List<Pair> kernel = new ArrayList<>(), wall = new ArrayList<>();
   private final double start, end;
   SystemLogClocks(double start, double end) { this.start = start; this.end = end; }
@@ -33,7 +38,7 @@ final class SystemLogClocks {
   void addKernel(java.util.List<double[]> pairs) { for (var pair : pairs) kernel.add(new Pair(pair[0], pair[1])); }
   boolean hasWall() { return !wall.isEmpty(); }
   void sort() { kernel.sort(Comparator.comparingDouble(Pair::source)); wall.sort(Comparator.comparingDouble(Pair::source)); }
-  Mapped map(String line, String format) {
+  public Mapped map(String line, String format) {
     String written = SystemLogTime.written(line, format);
     boolean uptime = format.equals("dmesg");
     Double value = uptime ? KernelLines.seconds(line) : SystemLogTime.epoch(line, format);
@@ -44,6 +49,77 @@ final class SystemLogClocks {
     if (mapped == null || mapped < start || mapped > end) return new Mapped(written, null, null,
         uptime ? "Kernel timestamp is outside the measured uptime pairing or session; no extrapolation" : "Wall timestamp is outside this session's robot-clock range");
     return new Mapped(written, mapped, uptime ? "uptime_pairing" : "system_time", null);
+  }
+  public static SystemLogClocks read(LogData log, SystemLogFiles.Snapshot snapshot, JsonArray read,
+      org.triplehelix.wpilogmcp.read.server.ManagedLogAccess logAccess) throws IOException {
+    var session = snapshot.session(); var directory = snapshot.manifest().getParent();
+    // The session's robot time spans its WPILOGs, each placed by the offset recorded when it was
+    // matched. A REV log's span is on the REV log's own clock and says nothing about robot time.
+    double min = Double.POSITIVE_INFINITY, max = Double.NEGATIVE_INFINITY;
+    var searched = onRobotTime(Path.of(log.path()), snapshot);
+    if (searched.isPresent()) {
+      min = searched.get().applyAsDouble(log.minTimestamp()); max = searched.get().applyAsDouble(log.maxTimestamp());
+    }
+    for (var f : session.files()) {
+      if (!"wpilog".equals(f.kind())) continue;
+      var placed = onRobotTime(directory.resolve(f.path()), snapshot);
+      if (placed.isEmpty()) continue;
+      min = Math.min(min, placed.get().applyAsDouble(f.minTimestampSec())); max = Math.max(max, placed.get().applyAsDouble(f.maxTimestampSec()));
+    }
+    if (session.openCapture() != null) { min = Math.min(min, session.openCapture().minTimestampSec()); max = Math.max(max, session.openCapture().maxTimestampSec()); }
+    // A clock record stands in for its capture, which this copy may not hold, so the session's span
+    // and kernel pairs are the same either way. A capture listed with another hash outranks a stale record.
+    var covered = new java.util.HashSet<Path>();
+    var records = new java.util.ArrayList<org.triplehelix.wpilogmcp.store.ClockRecords.Facts>();
+    for (var clock : snapshot.clockRecords()) {
+      var facts = clock.facts(); var capture = directory.resolve(facts.capture()).normalize();
+      if (session.files().stream().anyMatch(f -> directory.resolve(f.path()).normalize().equals(capture) && !f.sha256().equals(facts.captureSha256()))) continue;
+      records.add(facts); covered.add(capture); read.add(clock.path().toString());
+      min = Math.min(min, facts.minTimestampSec()); max = Math.max(max, facts.maxTimestampSec());
+    }
+    var result = new SystemLogClocks(min, max);
+    for (var facts : records) result.addKernel(facts.uptime());
+    // Prefer the robot's systemTime when a pulled log supplies it, respecting its recorded offset.
+    for (Path path : snapshot.clocks()) {
+      if (!pulled(path, snapshot)) continue;
+      var placed = onRobotTime(path, snapshot);
+      if (placed.isEmpty()) continue;
+      try (var use = logAccess.acquire(path.toString())) {
+        result.add(use.log(), placed.get(), true, !covered.contains(path.normalize())); read.add(path.toString());
+      }
+    }
+    boolean wallFallback = !result.hasWall();
+    for (Path path : snapshot.clocks()) {
+      if (pulled(path, snapshot)) continue;
+      boolean kernel = !covered.contains(path.normalize());
+      // A capture whose record supplies its kernel pairs, beside a log that supplied the wall clock,
+      // has nothing to give: reading it would cost the whole capture and list it as a clock it is not.
+      if (!wallFallback && !kernel) continue;
+      var placed = onRobotTime(path, snapshot);
+      if (placed.isEmpty()) continue;
+      if (path.toString().equals(log.path())) result.add(log, placed.get(), wallFallback, kernel);
+      else try (var use = logAccess.acquire(path.toString())) { result.add(use.log(), placed.get(), wallFallback, kernel); }
+      read.add(path.toString());
+    }
+    result.sort(); return result;
+  }
+  private static StoreManifest.LogFile receipt(Path path, SystemLogFiles.Snapshot snapshot) {
+    var directory = snapshot.manifest().getParent();
+    return snapshot.session().files().stream().filter(f -> directory.resolve(f.path()).equals(path)).findFirst().orElse(null);
+  }
+  private static boolean pulled(Path path, SystemLogFiles.Snapshot snapshot) {
+    var receipt = receipt(path, snapshot);
+    return receipt != null && receipt.provenance().kind().equals("pulled");
+  }
+  /** A file's own time on the session's robot time, by the offset recorded when it was matched, or
+   * as it is when it was not matched. Empty when the recorded offset is invalid: a damaged record
+   * places nothing. */
+  private static java.util.Optional<java.util.function.DoubleUnaryOperator> onRobotTime(Path path, SystemLogFiles.Snapshot snapshot) {
+    var receipt = receipt(path, snapshot);
+    if (receipt == null || receipt.matching() == null) return java.util.Optional.of(t -> t);
+    var alignment = org.triplehelix.wpilogmcp.store.StoreCatalog.recordedAlignment(
+        new org.triplehelix.wpilogmcp.store.StoreCatalog.StoredFile(path, snapshot.manifest(), null, snapshot.session(), receipt));
+    return alignment.isSuccessful() ? java.util.Optional.of(alignment::toFpgaTime) : java.util.Optional.empty();
   }
   private static Double interpolate(List<Pair> pairs, double value, boolean bounded) {
     int low = 0, high = pairs.size();

@@ -59,7 +59,10 @@ class StoreInboxTest {
   private JsonObject listing() throws Exception {
     var tools = new ToolRegistry();
     CoreTools.registerAll(tools);
-    return tools.getTool("list_available_logs").execute(new JsonObject()).getAsJsonObject();
+    var request = new JsonObject();
+    request.addProperty("scope_id", LogDirectory.getInstance().sourceScopes().snapshot().stream()
+        .filter(scope -> scope.root().equals(root)).findFirst().orElseThrow().id());
+    return tools.getTool("list_available_logs").execute(request).getAsJsonObject();
   }
 
   private JsonObject inboxEntry() throws Exception {

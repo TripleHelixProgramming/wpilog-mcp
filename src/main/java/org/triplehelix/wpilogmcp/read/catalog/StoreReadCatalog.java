@@ -235,9 +235,21 @@ public final class StoreReadCatalog implements AutoCloseable {
     return org.triplehelix.wpilogmcp.store.RecordedClocks.origin(store);
   }
 
+  private List<StoreCatalog.Snapshot> selectedStores(String scopeId, String origin) throws IOException {
+    var stores = snapshot().stores().stream()
+        .filter(s -> scopeId == null ? origin.equals(originId(s)) : scopeId.equals(s.header().id())).toList();
+    if (stores.size() > 1) throw new IOException("SOURCE_SELECTION_REQUIRED: several serving stores match; ask the user to choose a scope_id");
+    if (!stores.isEmpty() && !origin.equals(originId(stores.get(0))))
+      throw new IOException("SOURCE_UNAVAILABLE: selected serving scope does not have the requested origin");
+    return stores;
+  }
+
   /** Recorded visualization references resolve by manifested content, never a similar filename. */
   public StoreFile resolveContent(String originStoreId, String sha256) throws IOException {
-    for (var store : snapshot().stores()) if (originStoreId.equals(originId(store))) {
+    return resolveContent(null, originStoreId, sha256);
+  }
+  public StoreFile resolveContent(String scopeId, String originStoreId, String sha256) throws IOException {
+    for (var store : selectedStores(scopeId, originStoreId)) {
       for (var file : store.allFiles()) if ("wpilog".equals(file.file().kind()) && sha256.equals(file.file().sha256())) {
         security.validate(file.path()); return new StoreFile(store.header().id(), store.root(), file);
       }
@@ -248,7 +260,10 @@ public final class StoreReadCatalog implements AutoCloseable {
   /** A session or alias only nominates candidates. One provenance anchor proves the recording;
    * measured alignment and a shared calendar never widen its rollover membership. */
   public Recording recording(RecordingReference reference) throws IOException {
-    var store = snapshot().stores().stream().filter(s -> reference.originStoreId().equals(originId(s))).toList();
+    return recording(null, reference);
+  }
+  public Recording recording(String scopeId, RecordingReference reference) throws IOException {
+    var store = selectedStores(scopeId, reference.originStoreId());
     if (store.size() != 1) throw new IOException("SOURCE_UNAVAILABLE: select one configured origin store or mirror for this recording");
     var selected = store.get(0);
     var sessions = selected.sessions().stream().filter(s -> s.session().names(reference.sessionId())).toList();

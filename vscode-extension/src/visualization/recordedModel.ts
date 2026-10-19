@@ -1,5 +1,9 @@
 import { Configuration, ViewSnapshot } from "./documentController";
-export interface SourceRef { kind: string; [key: string]: unknown; }
+export interface SourceRef { kind?: string; [key: string]: unknown; }
+/** Unwrap only to inspect content fields. Requests, cache keys, and equality keep qualification. */
+export function sourceContent<T extends { [key: string]: any }>(reference: T): T {
+  return reference.schema_version === 2 ? reference.content as T : reference;
+}
 export interface RecordedView extends ViewSnapshot {
   source_ref: SourceRef;
   initial_configuration: Configuration;
@@ -129,5 +133,5 @@ export function requireRecordedPreview(config: RecordedConfiguration): void {
 
 export interface Binding { requirement_id: string; state: "resolved" | "unresolved"; entry: string | null; field_path: string | null; reason: string; basis?: string; unit?: { symbol: string | null; basis: string }; warnings: string[]; }
 export interface Compatibility { compatibility: "compatible" | "partial" | "incompatible"; bindings: Binding[]; }
-export interface TemplateRef { origin: "bundled" | "store"; store_id?: string; template_id: string; revision: number; }
+export interface TemplateRef { origin: "bundled" | "store" | "library"; store_id?: string; server_instance_id?: string; library_id?: string; template_id: string; revision: number; }
 export interface TemplateItem { template_ref: TemplateRef; template: { name: string; description: string; configuration: RecordedConfiguration }; store_label?: string; }

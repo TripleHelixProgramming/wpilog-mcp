@@ -552,7 +552,7 @@ tasks.register('followBrokerTest', Exec) {
         environment 'WPILOG_FOLLOW_CLASSPATH', sourceSets.test.runtimeClasspath.asPath
         environment 'WPILOG_FOLLOW_JAVA', new File(System.getProperty('java.home'),
             System.getProperty('os.name').toLowerCase().startsWith('windows') ? 'bin/java.exe' : 'bin/java').absolutePath
-        commandLine extensionCompilerCommand()[0], '--test', 'out/test/liveBrokerReal.test.js'
+        commandLine extensionCompilerCommand()[0], '--test', 'out/test/liveBrokerReal.test.js', 'out/test/connectionsReal.test.js'
     }
 }
 

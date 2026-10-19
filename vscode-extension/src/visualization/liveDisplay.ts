@@ -8,6 +8,7 @@ export interface LiveRecord extends FollowSample { readonly member_id: string }
 interface Point { time: number; value: number | null; sequence: number }
 interface Selection { points: Point[]; records: LiveRecord[]; issues: { [key: string]: Json }[]; last?: LiveRecord; visited: number; problems: number; trimmed: number; unplottable: number }
 export interface LiveFrame {
+  receivedAtMs?: number;
   prefix: string; finalized: boolean; complete: boolean; binding: ViewFollowBinding;
   clock: RecordingClock & { display_basis?: string }; range?: { start: number; end: number };
   series: Record<string, { timestamps: number[]; values: (number | null)[]; count: number; bucketed: false; trimmed: number; duplicate_times: number; unplottable: number; problems: number }>;
@@ -97,7 +98,7 @@ export class LiveDisplay {
       values[b.requirement_id] = s.last ?? null;
       raw[b.requirement_id] = { samples: s.records, records_visited: s.visited, problems: s.problems, retained: s.records.length, issues: s.issues };
     }
-    const frame: LiveFrame = { prefix: delivery.page.prefix_id, finalized: delivery.frontier.finalized, complete: delivery.page.frontier_complete,
+    const frame: LiveFrame = { receivedAtMs: delivery.receivedAtMs, prefix: delivery.page.prefix_id, finalized: delivery.frontier.finalized, complete: delivery.page.frontier_complete,
       binding: this.binding, clock: { ...evidence, right_edge_sec: edge, display_basis: basis }, range, series, values, raw };
     const release = this.budget.reserve(decodedBytes({ selections: [...next.values()], frame }));
     this.release?.(); this.release = release; this.selections = next; this.frame = frame; this.previousCursor = delivery.page.cursor;

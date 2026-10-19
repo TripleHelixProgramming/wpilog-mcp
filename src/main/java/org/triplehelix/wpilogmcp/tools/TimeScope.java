@@ -71,7 +71,9 @@ public final class TimeScope {
     }
     double end = log.timeScopeEnd();
     var resolved = arguments.deepCopy(); resolved.remove("last_seconds");
-    resolved.addProperty("start_time", Math.max(log.minTimestamp(), end - seconds));
+    // A declaration-only source has the empty LogData origin of zero. A finite negative
+    // live clock is still valid evidence; do not manufacture an inverted interval from it.
+    resolved.addProperty("start_time", Math.min(end, Math.max(log.minTimestamp(), end - seconds)));
     resolved.addProperty("end_time", end);
     return resolved;
   }

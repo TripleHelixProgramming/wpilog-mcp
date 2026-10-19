@@ -5,7 +5,7 @@ import { Selection } from "./selection";
 export function notebook(selection: Selection, endpoint: string): Record<string, unknown> {
   if (!selection.entries.length) throw new Error("Select at least one entry for the notebook");
   const requests = selection.entries.map(name => {
-    const url = new URL(dataUrl(endpoint, { path: selection.path, names: [name],
+    const url = new URL(dataUrl(endpoint, { path: selection.path, names: [name], scopeId: selection.scopeId, serverInstanceId: selection.serverInstanceId,
       startTime: selection.start, endTime: selection.end, format: "arrow" }));
     url.searchParams.set("format", "arrow"); return [name, url.toString()];
   });

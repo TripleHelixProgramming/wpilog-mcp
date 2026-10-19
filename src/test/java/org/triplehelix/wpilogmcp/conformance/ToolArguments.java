@@ -311,6 +311,9 @@ final class ToolArguments {
         case "source_ref" -> args.add(param, com.google.gson.JsonParser.parseString("{\"kind\":\"unmanaged\",\"source_id\":\"00000000-0000-4000-8000-000000000001\"}"));
         case "entry" -> args.addProperty(param, log == null ? "/Missing/Entry" : pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
         case "template_ref" -> args.add(param, org.triplehelix.wpilogmcp.visualization.TemplateDefinition.reference(null, org.triplehelix.wpilogmcp.visualization.BundledTemplates.all().get(0)));
+        case "kind" -> args.addProperty(param, "view");
+        case "legacy_ref" -> args.add(param, com.google.gson.JsonParser.parseString("{\"store_id\":\"00000000-0000-4000-8000-000000000001\",\"saved_view_id\":\"00000000-0000-4000-8000-000000000002\",\"revision\":1}"));
+        case "saved_view_ref" -> args.add(param, com.google.gson.JsonParser.parseString("{\"server_instance_id\":\"00000000-0000-4000-8000-000000000001\",\"library_id\":\"00000000-0000-4000-8000-000000000002\",\"saved_view_id\":\"00000000-0000-4000-8000-000000000003\",\"revision\":1}"));
         case "envelope_json" -> args.addProperty(param, "{}"); // Invalid import exercises the adapter's refusal; the isolated workflow covers success.
         case "compare_path" -> {
           var other = all.stream()

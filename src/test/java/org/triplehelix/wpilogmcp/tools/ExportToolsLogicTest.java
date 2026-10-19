@@ -60,7 +60,7 @@ class ExportToolsLogicTest extends ToolTestBase {
   class GenerateReportBrownoutTests {
 
     @Test
-    @DisplayName("voltage 6.9V is NOT high brownout risk (above 6.8V threshold)")
+    @DisplayName("voltage 6.9V is NOT high brownout risk (above 6.3V threshold)")
     void testBrownoutNotHighAt6_9V() throws Exception {
       var log = new MockLogBuilder()
           .setPath("/test/brownout_safe.wpilog")
@@ -80,17 +80,18 @@ class ExportToolsLogicTest extends ToolTestBase {
       assertTrue(resultObj.has("battery"), "Should have battery section");
       var battery = resultObj.getAsJsonObject("battery");
       assertNotEquals("HIGH", battery.get("brownout_risk").getAsString(),
-          "6.9V min should NOT be HIGH brownout risk (threshold is 6.8V)");
+          "6.9V min should NOT be HIGH brownout risk (threshold is 6.3V)");
     }
 
-    @Test
-    @DisplayName("voltage 6.7V IS high brownout risk (below 6.8V threshold)")
-    void testBrownoutHighAt6_7V() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"6.2,HIGH", "6.7,MODERATE"})
+    @DisplayName("voltage crossings use the assumed 6.3V output-disable threshold")
+    void reportUsesOutputDisableThreshold(double low, String risk) throws Exception {
       var log = new MockLogBuilder()
           .setPath("/test/brownout_danger.wpilog")
           .addNumericEntry("/Robot/BatteryVoltage",
               new double[]{0, 1, 2, 3, 4},
-              new double[]{12.0, 11.5, 6.7, 10.0, 12.0})
+              new double[]{12.0, 11.5, low, 10.0, 12.0})
           .build();
       putLogInCache(log);
 
@@ -103,8 +104,8 @@ class ExportToolsLogicTest extends ToolTestBase {
       assertTrue(resultObj.get("success").getAsBoolean());
       assertTrue(resultObj.has("battery"), "Should have battery section");
       var battery = resultObj.getAsJsonObject("battery");
-      assertEquals("HIGH", battery.get("brownout_risk").getAsString(),
-          "6.7V min should be HIGH brownout risk (below 6.8V threshold)");
+      assertEquals(6.3, battery.get("brownout_threshold").getAsDouble());
+      assertEquals(risk, battery.get("brownout_risk").getAsString());
     }
   }
 

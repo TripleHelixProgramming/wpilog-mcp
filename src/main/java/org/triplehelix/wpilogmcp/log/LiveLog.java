@@ -99,7 +99,7 @@ public final class LiveLog implements LogData, AutoCloseable {
   }
   private record State(Map<String, Series> entries, Map<String, EntryInfo> infos, long sequence, double min, double max,
       int jumps, long firstJump, boolean open, long revision) {}
-  private record Publication(String writerId, long revision) {}
+  public record Publication(String writerId, long revision) {}
   private static final class Mapping {
     final ScopedLogReader reader;
     final long size;
@@ -137,7 +137,7 @@ public final class LiveLog implements LogData, AutoCloseable {
   /** A small immutable token cannot retain the index after a follower releases its prefix.
    * Followers allocate and compare it off the writer loop; publication only advances the
    * revision in the state replacement the writer already performs. */
-  public Object publication() { return new Publication(captureIdentity, state.revision()); }
+  public Publication publication() { return new Publication(captureIdentity, state.revision()); }
 
   public LiveLog(Path path, long hotWindowUs) { this(path, hotWindowUs, () -> null); }
 

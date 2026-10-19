@@ -190,13 +190,16 @@ final class RecordingAnalysis {
       List<TimestampedValue> samples, JsonObject summary, Problems problems) implements LogData {
     public Map<String, EntryInfo> entries() { return Map.of(entry.name(), entry); }
     public Map<String, List<TimestampedValue>> values() { return Map.of(entry.name(), samples); }
-    public double minTimestamp() { return summary.get("start_time_sec").isJsonNull() ? Double.NaN : summary.get("start_time_sec").getAsDouble(); }
-    public double maxTimestamp() { return summary.get("end_time_sec").isJsonNull() ? Double.NaN : summary.get("end_time_sec").getAsDouble(); }
+    // Empty LogData views use a zero scope origin. This is not measured clock evidence:
+    // sessionTimeRange and the published prefix must retain the absence of recorded bounds.
+    public double minTimestamp() { return summary.get("start_time_sec").isJsonNull() ? 0 : summary.get("start_time_sec").getAsDouble(); }
+    public double maxTimestamp() { return summary.get("end_time_sec").isJsonNull() ? 0 : summary.get("end_time_sec").getAsDouble(); }
     public double timeScopeEnd() {
       var estimate = summary.getAsJsonObject("clock").get("robot_time_sec");
-      return estimate.isJsonNull() ? maxTimestamp() : Math.max(maxTimestamp(), estimate.getAsDouble());
+      if (estimate.isJsonNull()) return maxTimestamp();
+      return summary.get("end_time_sec").isJsonNull() ? estimate.getAsDouble() : Math.max(maxTimestamp(), estimate.getAsDouble());
     }
-    public Optional<SessionTimeRange> sessionTimeRange() { return Double.isFinite(minTimestamp()) && Double.isFinite(maxTimestamp()) ? Optional.of(new SessionTimeRange(minTimestamp(), maxTimestamp())) : Optional.empty(); }
+    public Optional<SessionTimeRange> sessionTimeRange() { return !summary.get("start_time_sec").isJsonNull() && !summary.get("end_time_sec").isJsonNull() ? Optional.of(new SessionTimeRange(minTimestamp(), maxTimestamp())) : Optional.empty(); }
     public boolean truncated() { return summary.get("truncated").getAsBoolean(); }
     public boolean damaged() { return summary.get("damaged").getAsBoolean(); }
     public String truncationMessage() { return truncated() ? "An admitted recording member has an incomplete or damaged tail; inspect prefix.members" : null; }

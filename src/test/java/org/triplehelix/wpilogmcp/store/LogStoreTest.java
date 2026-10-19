@@ -115,7 +115,11 @@ class LogStoreTest {
   private JsonObject listing() throws Exception {
     var tools = new ToolRegistry();
     CoreTools.registerAll(tools);
-    return tools.getTool("list_available_logs").execute(new JsonObject()).getAsJsonObject();
+    var roots = LogDirectory.getInstance().getLogDirectories();
+    var selected = roots.contains(root) ? root : roots.get(0).toRealPath();
+    var request = new JsonObject(); request.addProperty("scope_id", LogDirectory.getInstance().sourceScopes().snapshot().stream()
+        .filter(scope -> scope.root().equals(selected)).findFirst().orElseThrow().id());
+    return tools.getTool("list_available_logs").execute(request).getAsJsonObject();
   }
 
   @ParameterizedTest
@@ -144,6 +148,7 @@ class LogStoreTest {
     // Import already understood this convention; the plain directory must give the same identity.
     var imported = run(List.of(file), false, null).files().get(0).path();
     assertTrue(imported.startsWith(root.resolve("robots").resolve("SYNTHETIC-A")));
+    LogDirectory.getInstance().setLogDirectory(root.toString());
     var stored = listing().getAsJsonArray("logs").asList().stream().map(e -> e.getAsJsonObject())
         .filter(r -> r.get("path").getAsString().equals(imported.toString())).findFirst().orElseThrow();
     assertEquals(row.getAsJsonObject("robot").get("serial_number"), stored.getAsJsonObject("robot").get("serial_number"));

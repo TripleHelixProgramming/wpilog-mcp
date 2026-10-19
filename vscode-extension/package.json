@@ -222,13 +222,6 @@
         "icon": "$(debug-pause)"
       },
       {
-        "command": "wpilog-mcp.explorer.showAllSources",
-        "enablement": "wpilog-mcp.dataStoreEnabled",
-        "title": "Toggle All Source Logs",
-        "category": "WPILog Explorer",
-        "icon": "$(files)"
-      },
-      {
         "command": "wpilog-mcp.explorer.organizeLogs",
         "title": "Organize Logs\u2026",
         "category": "WPILog Explorer",
@@ -387,11 +380,6 @@
           "command": "wpilog-mcp.explorer.pauseDataStore",
           "when": "view == wpilog-mcp.logs && wpilog-mcp.dataStoreEnabled",
           "group": "dataStore@4"
-        },
-        {
-          "command": "wpilog-mcp.explorer.showAllSources",
-          "when": "view == wpilog-mcp.logs && wpilog-mcp.dataStoreEnabled",
-          "group": "dataStore@5"
         }
       ],
       "view/item/context": [
@@ -468,10 +456,6 @@
         },
         {
           "command": "wpilog-mcp.explorer.pauseDataStore",
-          "when": "wpilog-mcp.dataStoreEnabled"
-        },
-        {
-          "command": "wpilog-mcp.explorer.showAllSources",
           "when": "wpilog-mcp.dataStoreEnabled"
         },
         {
@@ -602,7 +586,7 @@
           },
           "wpilog-mcp.mirror.enabled": {
             "type": "boolean",
-            "default": true,
+            "default": false,
             "markdownDescription": "Keep an offline mirror of the logs the pit pulled or was given when a pit server URL is set; has no effect without a URL. The local server performs the copying. [Sync Now](command:wpilog-mcp.syncNow).",
             "order": 60
           },
@@ -653,7 +637,7 @@
           },
           "wpilog-mcp.live.enabled": {
             "type": "boolean",
-            "default": true,
+            "default": false,
             "markdownDescription": "Record live NetworkTables from the pit server's gateway into a folder on this laptop when a pit server URL is set, so live views read local files. Has no effect without a URL.",
             "order": 122
           },
@@ -679,6 +663,49 @@
             "scope": "window",
             "order": 170,
             "markdownDescription": "Shared decoded-data allowance in MiB for recorded and live visualization previews in this window, including plot and table copies. Higher values permit more recorded samples before server reduction; lower values reduce sooner or refuse admission. Reload the window to apply a change. Encoded responses have a separate 64 MiB cap."
+          },
+          "wpilog-mcp.connections": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "default": null,
+            "order": 45,
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "label",
+                "kind"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9_-]{1,64}$"
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "local",
+                    "remote"
+                  ]
+                },
+                "url": {
+                  "type": "string"
+                },
+                "serverInstanceId": {
+                  "type": "string"
+                }
+              }
+            },
+            "markdownDescription": "Named server connections shown as collapsed Logs roots and agent servers. No default is chosen. Set a remote-only array to browse and visualize without starting a laptop server. Null keeps This laptop and the optional `pitServerUrl` connection. Server identity is pinned at first use; a replacement server needs a new connection id."
           }
         }
       }

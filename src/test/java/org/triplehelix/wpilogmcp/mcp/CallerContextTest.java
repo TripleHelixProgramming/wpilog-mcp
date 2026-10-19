@@ -68,10 +68,14 @@ class CallerContextTest {
     var remote = InetAddress.getByName("192.0.2.1");
     var wildcard = InetAddress.getByName("0.0.0.0");
     assertEquals(CallerContext.Authority.HTTP_LOCAL, CallerContext.http(loopback, loopback, true, false));
-    for (var authority : java.util.List.of(CallerContext.http(wildcard, loopback, true, false),
-        CallerContext.http(loopback, remote, true, false), CallerContext.http(loopback, loopback, false, false),
-        CallerContext.http(null, loopback, true, false), CallerContext.http(loopback, loopback, true, true)))
+    for (var authority : java.util.List.of(CallerContext.http(loopback, loopback, false, false),
+        CallerContext.http(null, loopback, true, false)))
       assertEquals(CallerContext.Authority.UNTRUSTED, authority);
+    for (var authority : java.util.List.of(CallerContext.http(wildcard, loopback, true, false),
+        CallerContext.http(loopback, remote, true, false), CallerContext.http(loopback, loopback, true, true))) {
+      assertEquals(CallerContext.Authority.HTTP_REMOTE, authority);
+      assertThrows(java.nio.file.AccessDeniedException.class, authority::requireLocal);
+    }
   }
 
   @Test void realLoopbackSingleAndBatchRequestsCarryAuthorityButWildcardListenerDoesNot() throws Exception {
@@ -88,14 +92,14 @@ class CallerContextTest {
           var response = client.send(HttpRequest.newBuilder(uri).header("Mcp-Session-Id", session)
               .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
           assertEquals(200, response.statusCode());
-          assertTrue(response.body().contains(bind.equals("127.0.0.1") ? "HTTP_LOCAL" : "UNTRUSTED"), response.body());
+          assertTrue(response.body().contains(bind.equals("127.0.0.1") ? "HTTP_LOCAL" : "HTTP_REMOTE"), response.body());
           // A same-host proxy connects from loopback, so a forwarding header, even one naming
           // loopback, withdraws local trust and never grants it.
           var forwarded = client.send(HttpRequest.newBuilder(uri).header("Mcp-Session-Id", session)
               .header("X-Forwarded-For", "127.0.0.1").POST(HttpRequest.BodyPublishers.ofString(body)).build(),
               HttpResponse.BodyHandlers.ofString());
           assertEquals(200, forwarded.statusCode());
-          assertTrue(forwarded.body().contains("UNTRUSTED") && !forwarded.body().contains("HTTP_LOCAL"), forwarded.body());
+          assertTrue(forwarded.body().contains("HTTP_REMOTE") && !forwarded.body().contains("HTTP_LOCAL"), forwarded.body());
         }
         var rejected = client.send(HttpRequest.newBuilder(uri).header("Mcp-Session-Id", session)
             .header("Origin", "https://untrusted.invalid").POST(HttpRequest.BodyPublishers.ofString(CALL)).build(),

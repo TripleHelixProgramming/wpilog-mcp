@@ -14,6 +14,22 @@ import org.triplehelix.wpilogmcp.nt4.ControlMessage.*;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 
 class GatewayCoreTest {
+  @Test void contextUpdatesAreOrderedAndAnUpstreamNameAlwaysWinsACollision() {
+    var core = new GatewayCore(); core.connect("c");
+    core.receive("c", sub(1, "/Daemon/", "{\"prefix\":true,\"all\":true}"), 0);
+    var first = JsonParser.parseString("{\"wpilog_context\":{\"version\":1,\"metadata\":{\"source\":\"ssh\",\"sampled\":true}}}").getAsJsonObject();
+    assertEquals(1, controls(core.context("/Daemon/x", "double", first), "c").size());
+    assertTrue(core.context("/Daemon/x", "double", first).isEmpty());
+    var changed = JsonParser.parseString("{\"wpilog_context\":{\"version\":1,\"metadata\":{\"source\":\"ssh\"}}}").getAsJsonObject();
+    assertEquals(List.of(new Properties("/Daemon/x", null, changed)), controls(core.context("/Daemon/x", "double", changed), "c"));
+    assertEquals(changed, core.topics().get("/Daemon/x").properties(), "Removed provider metadata must not linger");
+    assertThrows(IllegalArgumentException.class, () -> core.context("/Daemon/x", "int", first));
+    var controls = controls(core.announce("/Daemon/x", "int", new JsonObject()), "c");
+    assertInstanceOf(Unannounce.class, controls.get(0)); assertEquals("int", ((Announce) controls.get(1)).type());
+    assertNull(core.context("/Daemon/x", "double", first), "A provider cannot overwrite an upstream topic");
+    core.endSession(); assertNotNull(core.context("/Daemon/x", "double", first));
+    assertEquals(1, core.topics().size());
+  }
   static Subscribe sub(int uid, String topic, String options) {
     return new Subscribe(List.of(topic), uid, JsonParser.parseString(options).getAsJsonObject());
   }

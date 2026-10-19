@@ -41,6 +41,18 @@ export function claudePitCommandText(launcher: string, url: string, platform: No
   return ["claude", ...claudePitArgs(launcher, url, platform).map(quote)].join(" ");
 }
 
+/** Native HTTP registration has no Java, launcher, daemon or laptop data dependency. */
+export function claudeHttpArgs(name: string, url: string): string[] {
+  const parsed = new URL(url);
+  if (!/^[a-z0-9_-]+$/.test(name) || !["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.hash || parsed.search)
+    throw new Error("Invalid direct MCP registration");
+  return ["mcp", "add", "--scope", "user", name, "--transport", "http", url];
+}
+export function claudeHttpCommandText(name: string, url: string, platform: NodeJS.Platform): string {
+  const quote = (word: string) => platform === "win32" ? `"${word.replace(/"/g, '""')}"` : `'${word.replace(/'/g, "'\\''")}'`;
+  return ["claude", ...claudeHttpArgs(name, url).map(quote)].join(" ");
+}
+
 export type ClaudeRegistrationResult = "added" | "existing" | "conflict" | "failed";
 export interface ClaudeReply { ok: boolean; stdout: string; stderr: string }
 /** Only add diagnostics leave the runner; get can print another entry's credentials. */
@@ -50,7 +62,7 @@ export interface ClaudeRegistrationAttempt { result: ClaudeRegistrationResult; a
 export function claudeRegistrationFeedback(attempt: ClaudeRegistrationAttempt, name: string, command: string) {
   const { result, addOutput } = attempt;
   const pit = name === "wpilog-pit";
-  const summary = result === "existing" ? `Claude Code: ${name} already uses this launcher's user-scope bridge; remembered for this editor.`
+  const summary = result === "existing" ? `Claude Code: ${name} already uses this user-scope connection; remembered for this editor.`
     : result === "conflict" ? [
       `Claude Code registration conflict: ${name} has a different scope, command or arguments; left unchanged.`,
       `Inspect the entry: claude mcp get ${name}`,
@@ -98,7 +110,8 @@ function inspectClaudeRegistration(output: string, addArgs: readonly string[]): 
   if (!scope || (type === "stdio" ? !command || args === undefined
     : (type !== "http" && type !== "sse") || !field("URL"))) return "failed";
   return scope === "User config (available in all your projects)"
-    && type === "stdio" && command === bridge[0] && args === bridge.slice(1).join(" ")
+    && (addArgs[5] === "--transport" ? type === "http" && field("URL") === addArgs[7]
+      : type === "stdio" && command === bridge[0] && args === bridge.slice(1).join(" "))
     ? "existing" : "conflict";
 }
 

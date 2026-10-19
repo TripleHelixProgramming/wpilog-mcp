@@ -47,7 +47,8 @@ class LiveSourceTest {
     logs.addAllowedDirectory(temp);
     robot = robot(); second = robot();
     var registry = new ToolRegistry(); transport = new HttpTransport(registry, 0);
-    org.triplehelix.wpilogmcp.tools.LiveTools.registerFollowing(registry, transport.liveCapture()); transport.start();
+    org.triplehelix.wpilogmcp.tools.LiveTools.registerFollowing(registry, transport.liveCapture());
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry); transport.start();
   }
   @AfterEach void stop() throws Exception {
     try { if (transport != null) transport.stop(); } finally {
@@ -75,6 +76,58 @@ class LiveSourceTest {
     return JsonParser.parseString(reply.body()).getAsJsonObject();
   }
   String state() throws Exception { return status().get("state").getAsString(); }
+  String connect() throws Exception {
+    return send("POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}").headers().firstValue("Mcp-Session-Id").orElseThrow();
+  }
+  JsonObject visualization(String session, String route, JsonObject body) throws Exception {
+    var reply = send("POST", "/visualizations/v1" + route, body.toString(), "Mcp-Session-Id", session);
+    assertEquals(200, reply.statusCode(), reply.body()); return JsonParser.parseString(reply.body()).getAsJsonObject();
+  }
+  @Test void recordingHealthSeparatesQuietConnectionFromDisconnectAndNeverSelectsAnotherRecording() throws Exception {
+    String session = connect(); var root = temp.resolve("live");
+    assertEquals(202, send("POST", "/store/live/configure", source(robot, root)).statusCode());
+    HarnessHttp.await("recording", 15, () -> "recording".equals(state()));
+    robot.value("/value", 10_500_000, 1, 2.0).join(); HarnessHttp.await("value", 15, () -> records() == 1);
+    var identify = new JsonObject(); identify.add("path", status().getAsJsonObject("session").get("file"));
+    var ref = visualization(session, "/source", identify).getAsJsonObject("source_ref");
+    var request = new JsonObject(); request.add("source_ref", ref);
+    var quiet = visualization(session, "/source/health", request);
+    assertEquals("recording", quiet.get("acquisition_state").getAsString());
+    assertEquals("live", quiet.get("history_state").getAsString()); assertTrue(quiet.get("connected").getAsBoolean());
+    assertFalse(quiet.get("last_value_age_ms").isJsonNull()); assertEquals(ref, quiet.get("source_ref"));
+    // Silence is not evidence of disconnection. Health must not open a data prefix to find out.
+    Thread.sleep(120);
+    var later = visualization(session, "/source/health", request);
+    assertEquals("recording", later.get("acquisition_state").getAsString());
+    assertTrue(later.get("last_value_age_ms").getAsDouble() >= quiet.get("last_value_age_ms").getAsDouble() + 100);
+    int robotPort = robot.port(); robot.close(); robot = null;
+    HarnessHttp.await("disconnected", 15, () -> !transport.liveCapture().get().connected());
+    var lost = visualization(session, "/source/health", request);
+    assertEquals("reconnecting", lost.get("acquisition_state").getAsString()); assertFalse(lost.get("connected").getAsBoolean());
+    robot = new Nt4Gateway(new InetSocketAddress("127.0.0.1", robotPort), () -> System.nanoTime() / 1000 + offset);
+    robot.start().get(10, TimeUnit.SECONDS); robot.announce("/value", "double", new JsonObject()).join();
+    HarnessHttp.await("same robot clock resumed", 15, () -> "recording".equals(state()));
+    robot.value("/value", 10_600_000, 1, 3.0).join(); HarnessHttp.await("resumed value", 15, () -> records() == 2);
+    HarnessHttp.await("same anchored history live", 15, () -> "live".equals(visualization(session, "/source/health", request).get("history_state").getAsString()));
+    var resumed = visualization(session, "/source/health", request);
+    assertEquals("recording", resumed.get("acquisition_state").getAsString()); assertEquals(ref, resumed.get("source_ref"));
+    var exact = request.deepCopy(); exact.addProperty("entry", "NT:/value"); exact.addProperty("start_sec", 0); exact.addProperty("end_sec", 20);
+    var statistics = visualization(session, "/source/statistics", exact);
+    assertEquals(2, statistics.get("count").getAsInt()); assertEquals(2.5, statistics.get("mean").getAsDouble());
+    assertFalse(resumed.get("publication_timing").isJsonNull());
+    assertTrue(resumed.getAsJsonObject("publication_timing").get("receive_to_publication_ms").getAsDouble() >= 0);
+    assertEquals(202, send("POST", "/store/live/configure", source(second, root)).statusCode());
+    HarnessHttp.await("another recording", 15, () -> "recording".equals(state()));
+    var old = visualization(session, "/source/health", request);
+    assertEquals("inactive", old.get("acquisition_state").getAsString()); assertEquals("finalized", old.get("history_state").getAsString());
+    assertTrue(old.get("connected").isJsonNull(), "A different recording's connection cannot describe this one"); assertEquals(ref, old.get("source_ref"));
+    request.addProperty("api_version", 1);
+    var agent = tool("visualization_source_health", request.toString()); assertEquals("ok", agent.get("status").getAsString(), agent.toString());
+    assertEquals(old, agent.get("health"), "Adapters share the anchored health owner");
+    logs.clearAllowedDirectories();
+    var denied = send("POST", "/visualizations/v1/source/health", request.toString(), "Mcp-Session-Id", session);
+    assertNotEquals(200, denied.statusCode(), "Health rechecks grants"); logs.addAllowedDirectory(temp);
+  }
   /** One MCP tool call over HTTP, as an agent makes it, returning the tool's result object. */
   JsonObject tool(String name, String arguments) throws Exception {
     var initialized = send("POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}");

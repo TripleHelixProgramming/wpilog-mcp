@@ -74,3 +74,11 @@ test("MCP, plots, store discovery, upload and polling send the same scoped crede
     for (const route of ["/mcp", "/pit-credential", "/store", "/data/entries", "/store/import", "/store/import/one"]) assert.ok(seen.includes(route), route);
   } finally { await client.dispose(); await new Promise<void>(resolve => server.close(() => resolve())); await fs.rm(scratch, { recursive: true }); }
 });
+
+test("configured remote connections keep proxy credentials separate by origin", async () => {
+  const saved = new Map([[pitSecretKey("https://a.example/mcp"), "A"], [pitSecretKey("https://b.example/mcp"), "B"]]);
+  const headers = pitHeaders(() => ["https://a.example/mcp", "https://b.example/mcp"], { get: async key => saved.get(key) });
+  assert.deepEqual(await headers("https://a.example/data/entries"), { Authorization: "A" });
+  assert.deepEqual(await headers("https://b.example/read/v1/follows"), { Authorization: "B" });
+  assert.deepEqual(await headers("https://a.example:8443/data/entries"), {});
+});

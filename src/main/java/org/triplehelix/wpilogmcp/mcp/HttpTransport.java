@@ -191,6 +191,7 @@ public class HttpTransport {
   public HttpTransport(ToolRegistry toolRegistry, int port, String bindAddress,
       java.util.Set<String> allowedOriginHosts, String mcpPath, String configurationName) {
     this.toolRegistry = toolRegistry;
+    toolRegistry.captureSource(liveCapture());
     this.gson = new GsonBuilder().serializeNulls().create();
     this.sessionManager = new SessionManager(id -> {
       leases.remove(id);
@@ -257,12 +258,9 @@ public class HttpTransport {
   private void handleVisualization(HttpExchange exchange) throws IOException { handleVisualization(exchange, true); }
   private void handleVisualization(HttpExchange exchange, boolean inventoryAdmitted) throws IOException {
     var origin = exchange.getRequestHeaders().getFirst("Origin");
-    if (forwarded(exchange)) {
-      LocalIngestionEndpoint.error(exchange, 403, "ACCESS_DENIED", "Visualization preview requires a direct loopback connection; " + FORWARDED); return;
-    }
     var authority = CallerContext.http(server.getAddress().getAddress(), exchange.getRemoteAddress().getAddress(), origin == null || isAllowedOrigin(origin), forwarded(exchange));
     if (authority == CallerContext.Authority.UNTRUSTED) {
-      LocalIngestionEndpoint.error(exchange, 403, "ACCESS_DENIED", "Visualization preview requires loopback and an allowed Origin"); return;
+      LocalIngestionEndpoint.error(exchange, 403, "ACCESS_DENIED", "Visualization requires an allowed Origin"); return;
     }
     noteMcpActivity();
     var endpoint = visualization;
@@ -290,6 +288,10 @@ public class HttpTransport {
         streaming.handle(counted(e -> handleVisualization(e, false))));
     var visualizationControl = streaming.handle(counted(this::handleVisualization));
     server.createContext(VisualizationEndpoint.PATH, exchange -> {
+      if (InventoryRequests.httpRead(exchange.getRequestURI().getPath())) inventoryRead.handle(exchange);
+      else visualizationControl.handle(exchange);
+    });
+    server.createContext(VisualizationEndpoint.PATH_V2, exchange -> {
       if (InventoryRequests.httpRead(exchange.getRequestURI().getPath())) inventoryRead.handle(exchange);
       else visualizationControl.handle(exchange);
     });
@@ -866,7 +868,13 @@ public class HttpTransport {
       sendError(exchange, 403, "Forbidden: invalid origin");
       return;
     }
-    dataEndpoint.handle(exchange);
+    try {
+      var owners = DataEndpoint.query(exchange.getRequestURI().getRawQuery()).get("server_instance_id");
+      if (owners != null && (owners.size() != 1 || !toolRegistry.serverIdentity().id().toString().equals(owners.get(0)))) {
+        sendError(exchange, 409, "SOURCE_UNAVAILABLE: this data request belongs to another server identity"); return;
+      }
+    } catch (IllegalArgumentException invalid) { sendError(exchange, 400, "Invalid data query"); return; }
+    dataEndpoint.handle(exchange, source -> toolRegistry.visualizations().sources.resolve(source));
   }
 
   /** Native reads share the existing Origin and configured-directory admission policies. */
@@ -884,8 +892,7 @@ public class HttpTransport {
       sendError(exchange, 403, "Forbidden: invalid origin"); return;
     }
     followEndpoint.handle(exchange, body -> {
-      if (forwarded(exchange)) throw new java.nio.file.AccessDeniedException("View follow requires a direct loopback connection; " + FORWARDED);
-      var authority = callerAuthority(exchange); authority.requireLocal();
+      var authority = callerAuthority(exchange);
       String id = exchange.getRequestHeaders().getFirst("Mcp-Session-Id");
       var session = id == null ? null : sessionManager.getSession(id);
       if (session == null) throw new java.nio.file.AccessDeniedException("View follow requires an active Mcp-Session-Id; reconnect before binding");

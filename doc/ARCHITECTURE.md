@@ -6,6 +6,11 @@ Other documents cover what this one leaves out. [TOOLS.md](TOOLS.md) describes e
 
 The code is described here by what each part does, not by class names, which change. The [code map](#code-map) says which package holds each part. Where this document and the code disagree, the code is right; please fix the document.
 
+The [source and mirror implementation plan](SOURCE_AND_MIRROR_PLAN.md) specifies the next
+ownership changes: explicit serving scopes, direct remote visualization, a separate server
+definition library and preservation-based mirror admission. These are planned contracts;
+the sections below continue to describe the implemented owners until their checkpoints land.
+
 ## Goals
 
 wpilog-mcp exists so that an FRC team can ask an AI agent an engineering question about its robot, and get an answer that rests on the robot's own logs. The question may be why the robot browned out in a match, or whether a swerve module is slipping. The people asking are students and mentors, often in the pit between matches with little time, and afterwards with more.
@@ -900,7 +905,36 @@ No browser duplicates those deductions.
 
 `TemplateDefinition` validates the portable envelope and uses the Apache-licensed JCS library
 for RFC 8785 binary64 formatting/property order. SHA-256 covers the envelope without its digest.
-`TemplateMetadata` owns store template revisions and portable import proof. Metadata/receipts
+API 2 definitions belong to `VisualizationLibrary` under the server state directory, independent
+of log-store writes. The library's bounded single worker holds a cross-process transaction lock
+only during its own disk operation. Four admitted-operation slots also bound a separate completion
+executor, so caller callbacks cannot block the disk queue or run under the file lock. The workspace
+prepares a working intent, releases the working queue, commits the library record, then completes
+the original checkpoint. A retry after library commit uses the reserved configuration even if a
+later edit has changed the working view. No queue waits on another owner's work.
+
+Completed save receipts retain their original working snapshot. After an uncertain response,
+the editor retries the same UUID, then reads the current working view and checkpoint together
+before accepting recovery. It retains the UUID if that read fails and never installs a revision
+older than a notification it has already accepted. Edits outside the recovered checkpoint remain
+dirty; after native Save confirms its clean position, the controller emits those edits again
+with Undo targeting the actual checkpoint. A later Save uses a new intent for the newer edits.
+
+Objects retain bounded revision/import receipts and migration aliases in the same atomic record.
+The library reads records on demand instead of retaining whole configurations in a global index.
+A page keeps at most 257 candidate summaries while scanning. Library quotas count original and
+temporary replacement bytes, retained unreadable/quarantined files, and receipts. Serialization
+inputs and transport responses have separate bounded reservations. Existing over-quota state
+remains inspectable without deletion. These are accounted byte bounds, not total heap measurements;
+see the [standalone reference](STANDALONE.md) for the numerical limits.
+
+Unmanaged saved views copy their owner-local locator into private library metadata, so draft expiry
+cannot strand a durable definition. Opening restores the locator to working state, then uses the
+normal source owner to revalidate grants and fingerprint; no path is exported or granted by the
+reference. Source scopes remain unchanged by saving or migration. Native first-save asks for a
+library title and never enrolls a store. Legacy store copies and their original bytes remain intact.
+
+`TemplateMetadata` retains API 1 store template revisions and portable import proof. Metadata/receipts
 commit together; a complete bounded registry is required before import conflicts are decided.
 Template records are limited to 1 MiB/64 receipts per map, catalog reads to 1,024 files/8 MiB.
 The store reader reports a removed template as `TEMPLATE_UNAVAILABLE`; updates read the existing
@@ -935,8 +969,11 @@ authority. HTTP derives it from the actual loopback listener, loopback peer, and
 single or batch call, and withholds it from any request carrying a header that proxies add. A
 reverse proxy on the same machine connects from loopback too: the pit guide's nginx example once
 made everyone past its login a local caller, able to lease directories, import by server path and
-drive sync, mirror and visualization controls. Every loopback-only route applies the same rule,
-and a forwarding header can only withdraw trust. An omitted context is untrusted. The handler clears authority and session
+drive sync, mirror and legacy visualization administration. Every loopback-only route applies the same rule,
+and a forwarding header can only withdraw local trust. API 2 visualization has separate read,
+working-view and library admission: an Origin-admitted remote caller may use those operations,
+including view follows, but cannot perform local administration. The policy owner is
+`VisualizationAccess`, shared by HTTP and MCP. An omitted context is untrusted. The handler clears authority and session
 state in `finally`; queued mutations receive the captured value rather than reading a later
 thread-local. No new acquisition connection or telemetry pipeline is introduced.
 
@@ -1241,9 +1278,27 @@ explicit pan/zoom controls apply to the view. File requests use the existing red
 and recordings rebootstrap the requested interval through the same bound follow. Inspect History
 keeps the axis fixed as later prefixes arrive. Resume following returns to the editor's chosen
 window (kept in restored UI state while the saved policy is fixed); a newly opened fixed view
-starts with 30 seconds. Navigation exits display pause. No history cache or alternate numerical
-owner is introduced. Recording plots still retain only 4,096 recently delivered points per
-selection, so long historical windows are explicitly trimmed, not complete min/max reductions.
+starts with 30 seconds. Navigation exits display pause. Recording history uses a separate fresh prefix and the native reader's proven-clock merge and
+min/max/mean reducer. No decoded history cache or alternate numerical rule is introduced.
+Before opening a chronological cursor, the owner caps selected records at 4,194,304 (including
+out-of-window records); existing shared sort admission charges at most 12 bytes per record at
+peak. Two reductions can run concurrently, with 64 KiB per payload, 8 MiB merge lookahead
+payload, 4096 output buckets, 1 MiB result and a cooperative 10 s deadline. Prefix admission,
+reads, sorting and close run on bounded data workers, never on the capture loop or store queue.
+Access and boundaries are checked again before publication; refusals never return truncated
+success. Duplicate times retain member-ID/physical-ordinal order, and first/last are chronological.
+Numeric field conversion preserves signed/unsigned integral representations through the plot
+range check, including enum wrappers. Absent projected leaves, nonfinite values and unsafe
+plot integers become counted gaps; no interpolation or angle unwrapping is implied. Exact statistics continue through the original-sample owner.
+
+The window analysis scheduler admits reductions for fixed/full recording history, coalescing
+complete-prefix refreshes at one Hz. Thus late backward samples recompute their old buckets.
+Follow keeps its 4096-point incremental display. The renderer keeps history buckets separate
+from incoming follow frames, labels the independent prefix and keeps the requested axis.
+Before I/O the client reserves encoded/decoded bytes for every displayed copy and selects
+`max_points` and `max_bytes` from that allowance. Pause, hide, close and query changes cancel
+pending reads; acknowledged replacement/clear releases retained display charges. Presentation
+edits keep the same query. This remains bounded re-reading, not a sustained-performance claim.
 
 Panel models retain bounded native rows and a separate numeric display projection. Plot/raw panels
 publish a completed selected frontier together, including its per-prefix recorded-clock facts.
@@ -1259,6 +1314,11 @@ display copy. Active statistics and charts use 1–300-second windows; trailing 
 on the server's newly admitted clock. Finalized views use their recorded interval, including Full.
 The 15-second request deadline and five-second renderer-acknowledgement deadline bound a queue
 turn. Data-generation and per-kind tokens reject late replies even if cancellation loses a race.
+Inventory creation is logically cancelled without aborting an already-dispatched request: its
+opaque handle must arrive so cancellation can close it in the original session. The existing
+15-second transport deadline still applies; ordinary page/detail reads abort immediately.
+Cancellation before admission sends no create. A lost response on network failure still relies
+on the server's inventory expiry, rather than guessing an unknown handle.
 Presentation-only revisions retain the same query; selector/time/source or multiplicity changes
 replace its owner before I/O. Pause cancels analysis and freezes its display while follow
 acquisition continues. Hide cancels immediately, then clears acknowledged retained data after
@@ -1373,9 +1433,8 @@ There is no encoded history cache or per-consumer frame copy. Parsed frames limi
 the negotiated page byte budget in nodes, counting primitives, and 96 levels of nesting. Every JSON
 node requires at least one encoded byte, so the traversal bound admits every byte-bounded page
 within that depth, including full pages of tagged arrays. These are acquisition bounds, **not** an aggregate JavaScript heap or display
-budget. The local panel preview now connects the broker to the shared decoded-buffer owner
-described above. Configured remote routing, recording-history reduction and measured
-display/resource workloads remain Stage 3 work.
+budget. The connected panel preview now connects the broker to the shared decoded-buffer owner
+described above. Measured display/resource workloads and the remaining Stage 3 acceptance gates remain open.
 
 
 ## Known Limits
@@ -1417,3 +1476,84 @@ before replacing the last readable manifest. Move aliases follow a bounded chain
 detection, so successive store moves keep earlier paths usable. Sync-cache counts are checked
 against the remaining serialized bytes before allocation, in addition to the version and CRC.
 The cache format is 12 to invalidate the former drift explanation's incorrect ms/hour unit.
+
+### Recording health and recovery ownership
+
+Recording health has one workspace operation for HTTP and MCP. It resolves the anchored catalog
+membership, rechecks grants and compares the capture's published original start and collecting
+store. It performs no log payload read and holds no prefix, mapping or store queue slot. Catalog
+inventory cost still grows with store size and belongs in the season-sized performance gate.
+Acquisition, manifested history, transport failures and last-received-value age are separate
+facts: none treats a quiet change-only stream as a lost connection or silently follows a new boot.
+The bounded inventory dispatch pool and raw request cap also cover health.
+
+The window shares health polling by visible source, independently of data leases. Completion of
+a finalized lease stops data polling, while health can notice that the same recording reopened.
+Rebootstrap replaces the old buffers and keeps the source anchor. Session resynchronization
+invalidates data generations before asynchronous registration and reattachment; stale replies
+cannot restore an older generation. The complete recovery retries, not only SSE reconnection.
+The durable working UUID/configuration and local pause intent survive, while sample buffers,
+inventory handles and follow cursors do not. Missing owners/sources remain unavailable rather
+than causing implicit recreation. Each view owns cancellation; peers retain their own jobs.
+
+Capture receipt and index publication use one monotonic scheduler clock, including deferred
+admission time. Only the latest writer/revision measurement is retained. The host separately
+measures final-page receipt through a matching renderer acknowledgement; the renderer reports
+its own elapsed time through animation-frame scheduling. No subtraction crosses clock epochs,
+and these observations do not establish an end-to-end percentile or physical display latency.
+Hiding, replacing or closing a pending frame releases its acknowledgement without claiming a
+paint; suspended animation callbacks cannot consume the renderer's five-second deadline.
+
+## Explicit source selection
+
+`SourceScopes` owns configured read choices separately from import destination policy. Store
+scopes use their own UUID, even when multiple mirrors share an origin and content hash.
+Directory UUIDs derive from canonical roots without writing store metadata. Missing or unreadable
+configured roots remain unavailable choices; ambiguity is resolved before content filtering.
+`StoreDoor` isolates discovery failures per configured root and retains them with cached discovery.
+`SourceScopes` preserves known store identities across these failures; an unrelated failed root
+does not prevent explicitly selecting a healthy source. `StoreReadCatalog`
+resolves a selected serving UUID and origin together, never the first matching copy.
+
+`ManagedLogAccess` enforces relative-path selection and scoped membership before and after alias
+resolution. The log-tool base rechecks selected membership before publishing a result.
+Absolute server-local paths are explicit file choices, preserving multi-input analysis.
+`RecordedSources` validates the schema-2 server/scope envelope before opening content; recording
+access guards recheck it on cached pages. Shared verified hashes retain their existing owner.
+Directory leases remain session-owned shared grants across clients; this adds no authentication
+or session-private directory model. Metadata discovery does filesystem work outside shared locks.
+Scope descriptor pages are bounded. Selection refreshes store discovery once per scoped request
+so a newly created nested store cannot be mistaken for part of an ordinary directory. The admitted
+scope travels with the managed read; post-open and post-call checks read its configuration,
+store identity and file ancestry without rescanning trees. Recording access tickets use those
+same bounded checks on cached pages and follows. Discovery publication remains immutable and
+all filesystem work stays outside shared locks.
+
+A local macOS warm-cache probe on 2026-10-19 used two directory roots, one 100-sample WPILOG and
+100 unrelated folders holding 2,000 then 20,000 text files, with five warm-ups and twenty timed
+`get_statistics` calls. Scoped means fell from 32.229 / 207.337 ms to 7.952 / 55.954 ms; absolute
+path means were 0.387 / 0.332 ms before and 0.333 / 0.326 ms after. These measure this one
+warm-cache setup, not
+season-sized stores, sustained throughput, cold storage or heap use. One full discovery remains
+proportional to tree size; future scan caching still needs explicit invalidation evidence.
+
+Visualization API 2 negotiates qualified references while API 1 remains legacy-only. Working
+view source identities are immutable and version admission precedes edits, including retry
+receipts. Raw v1 follows refuse qualification before lease admission; view-bound follows retain
+the complete source reference through `RecordedSources` and cached-page access checks.
+
+### Connection and view ownership
+
+The extension's `ConnectionRegistry` owns lazy immutable `SourceContext` objects keyed by
+configured connection id and serving scope. Capabilities establish persistent owner UUID and
+process epoch before directories or data are admitted. Remote contexts never call the local
+launcher or register local directories/keys. Configuration replacement retires the context;
+late replies are refused. Same-owner session recovery rechecks capabilities before replay.
+
+`ConnectedPreviews` registers one native provider and routes each document to its fixed
+context. Its children share one `VisualizationBudgets` and `AnalysisQueue`, so adding servers
+does not multiply the window's sample allowance or analysis workers. Source URIs contain only
+a configured connection id, owner, scope and server-side path/reference, never an arbitrary
+network destination. Qualified references remain intact in request/cache identities. Only
+source-kind inspection unwraps content. Legacy offline translation is removed: another copy
+is a separately selected source/document. Mirror transfer ownership remains unchanged here.

@@ -1,4 +1,6 @@
-import { RecordedPreview } from "./visualization/recordedPreview";
+import { ConnectedPreviews } from "./visualization/connectedPreviews";
+import { ConnectionDefinition, ConnectionRegistry, SourceContext, connectionDefinitions } from "./connections";
+import { readSourceUri, sourceUri } from "./sourceUri";
 import { EntryInfo } from "./explorer/entryInfo";
 import { HttpHeaders, noHeaders } from "./pitCredential";
 /**
@@ -19,12 +21,12 @@ import { McpClient, ToolError, LocalControlError } from "./mcpClient";
 import { SessionRegistration } from "./directoryLease";
 import { DaemonSpec, ServerManager } from "./serverManager";
 import { EntryGrouping, EntryListing, EntryNode, ListedEntry, buildEntryTree, buildFieldNodes, elementNodes, elementPaths } from "./explorer/entriesTree";
-import { ListedLog, LogListing, LogNode, buildLogTree } from "./explorer/logsTree";
+import { ListedLog, LogListing, LogNode, buildLogTree, folderSynchronization } from "./explorer/logsTree";
 import { Choices, MOVE_CHOICES, ORGANIZE_CHOICES, OrganizeOffer, containsPath, importDestinationError, importPlan, offerFor, organizeFolders, rememberChoice, robotItems, robotNameError, withImportDirectory } from "./explorer/organize";
 import { completeListing, progressText, resultDetails, resultSummary, runImport, sameRobotMessages } from "./explorer/importJobs";
 import { organizeSources } from "./explorer/organizeSources";
 import { DATA_STORE_ENABLED_CONTEXT, IngestionPolicy, IngestionSource, IngestionStatus, LocalIngestionClient, dataStoreDisabled, ingestionPolicyError, ingestionReview, sourceCandidates, temporaryDirectoryRoots } from "./explorer/localIngestion";
-import { MirrorStatus, PitOverview, mirroredCopy, originOf, pitEndpoint, pitLogTree, pitOverview, readRemoteLogUri, remoteLogUri } from "./explorer/pitServer";
+import { MirrorStatus, pitEndpoint, readRemoteLogUri, remoteLogUri } from "./explorer/pitServer";
 import { SESSION_END_MS, endWithin } from "./sessionEnd";
 import { Selection, parseExplorerUri, openValidated, selectionPrompt } from "./explorer/selection";
 import { notebook } from "./explorer/notebook";
@@ -45,7 +47,7 @@ const ELEMENTS_PLOTTED = 16;
 const CONSOLE_LIMIT = 500;
 
 /** A log open in the editor: its file, the server that read it, and its listing. */
-export type ExplorerSpec = DaemonSpec | { kind: "pit"; name: string; url: string };
+export type ExplorerSpec = (DaemonSpec | { kind: "pit"; name: string; url: string }) & { connectionId?: string; scopeId?: string; owner?: string };
 
 interface OpenLog {
   path: string;
@@ -64,7 +66,8 @@ export class Explorer implements vscode.Disposable {
   readonly entries: EntriesProvider;
   private readonly entriesView: EntriesView;
   readonly editor: ExplorerEditorProvider;
-  readonly preview: RecordedPreview;
+  readonly preview: ConnectedPreviews;
+  readonly connections: ConnectionRegistry;
   private readonly disposables: vscode.Disposable[] = [];
   private choices: Choices;
   /** The mirror's state, which extension.ts polls; a pit file's overview reports its progress. */
@@ -92,19 +95,27 @@ export class Explorer implements vscode.Disposable {
     this.entries = new EntriesProvider(this, context.workspaceState);
     this.entriesView = new EntriesView(this.entries, context.extensionUri);
     this.editor = new ExplorerEditorProvider(this);
-    let previewLog: OpenLog | undefined;
-    this.preview = new RecordedPreview({ context, client: () => this.clientFor(this.spec()),
-      entries: (file, target) => {
-        if (previewLog?.path !== file) previewLog = file ? { path: file, spec: this.spec() } : undefined;
-        this.entries.setActive(previewLog, target);
+    this.connections = new ConnectionRegistry({ version: this.extensionVersion,
+      localEndpoint: async () => { const endpoint = await serverManager.ensure(this.spec()); if (!endpoint) throw new Error("The local server could not be started"); return endpoint; },
+      registration, headersFor,
+      pinned: id => context.globalState.get<string>(`wpilog-mcp.connectionOwner.${id}`),
+      pin: async (id, owner) => { await context.globalState.update(`wpilog-mcp.connectionOwner.${id}`, owner); },
+    });
+    this.configureConnections();
+    const previewLogs = new Map<SourceContext, OpenLog>();
+    this.preview = new ConnectedPreviews({ context, source: uri => this.resolveSource(uri),
+      entries: (source, file, target) => {
+        // Only the active owner's callback is allowed to change this window's Entries target.
+        const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+        if (!(input instanceof vscode.TabInputCustom)) return;
+        const selected = new URLSearchParams(input.uri.query);
+        const address = input.uri.scheme === "wpilog-source" ? readSourceUri(input.uri.toString()) : undefined;
+        const connection = address?.connection ?? selected.get("connection"), scope = address?.scope ?? selected.get("scope");
+        if (connection !== source.definition.id || scope !== source.scopeId) return;
+        let log = previewLogs.get(source);
+        if (!log || log.path !== file) { log = file ? { path: file, spec: this.sourceSpec(source) } : undefined; if (log) previewLogs.set(source, log); }
+        this.entries.setActive(log, target);
       },
-      grantStore: async folder => {
-        const key = `wpilog-mcp.visualizationStores.${this.spec().name}`;
-        const roots = context.workspaceState.get<string[]>(key) ?? [];
-        if (!roots.includes(folder)) await context.workspaceState.update(key, [...roots, folder]);
-        await (await this.clientFor(this.spec())).refreshRegistration();
-      },
-      pitOverview: (uri, listed) => this.pitOverview(uri, listed),
     });
     this.disposables.push(this.preview,
       // Custom editor URIs are documents, not paths on this laptop. No file contents cross this provider.
@@ -119,7 +130,7 @@ export class Explorer implements vscode.Disposable {
         delete: () => { throw vscode.FileSystemError.NoPermissions(); },
         rename: () => { throw vscode.FileSystemError.NoPermissions(); },
       }, { isReadonly: true, isCaseSensitive: true }),
-      vscode.window.registerTreeDataProvider(LOGS_VIEW, this.logs),
+      this.registerLogs(),
       this.entriesView,
       vscode.window.registerWebviewViewProvider(ENTRIES_VIEW, this.entriesView, {
         webviewOptions: { retainContextWhenHidden: true },
@@ -135,7 +146,6 @@ export class Explorer implements vscode.Disposable {
         void vscode.window.showInformationMessage("Data-store scan requested. Pending files appear in the Logs view.");
       })),
       vscode.commands.registerCommand("wpilog-mcp.explorer.pauseDataStore", () => this.storeAction(() => this.pauseDataStore())),
-      vscode.commands.registerCommand("wpilog-mcp.explorer.showAllSources", () => this.storeAction(async () => this.logs.toggleSources())),
       vscode.commands.registerCommand("wpilog-mcp.explorer.organizeLogs", () => this.organizeOnDemand()),
       vscode.commands.registerCommand("wpilog-mcp.explorer.importLogs", (item?: LogItem) => this.importItem(item)),
       vscode.commands.registerCommand("wpilog-mcp.explorer.assignRobot", (item?: LogItem) => this.importItem(item, true)),
@@ -149,13 +159,7 @@ export class Explorer implements vscode.Disposable {
       vscode.window.registerUriHandler({ handleUri: async uri => {
         try {
           const selection = parseExplorerUri(uri.toString());
-          try { await this.openLog(selection.path); }
-          catch (localError) {
-            const pit = this.pitSpec(); if (!pit) throw localError;
-            // The URL carries no server or credentials. Only the configured pit may be tried.
-            try { await this.openLog(selection.path, pit); }
-            catch (pitError) { throw new Error(`${messageOf(localError)}; pit server: ${messageOf(pitError)}`); }
-          }
+          await this.openLog(selection.path);
           await this.editor.applySelection(selection);
         }
         catch (error) { void vscode.window.showErrorMessage(messageOf(error)); }
@@ -184,6 +188,12 @@ export class Explorer implements vscode.Disposable {
     );
   }
 
+  private registerLogs(): vscode.Disposable {
+    const tree = vscode.window.createTreeView(LOGS_VIEW, { treeDataProvider: this.logs });
+    const collapsed = tree.onDidCollapseElement(event => this.logs.cancel(event.element));
+    return new vscode.Disposable(() => { collapsed.dispose(); this.logs.refresh(); tree.dispose(); });
+  }
+
   /** The Logs tree and URI handler share server admission before opening a document. */
   private async routeEntry(name: string, details: boolean): Promise<void> {
     try {
@@ -192,11 +202,14 @@ export class Explorer implements vscode.Disposable {
     } catch (error) { void vscode.window.showErrorMessage(messageOf(error)); }
   }
 
-  async openLog(logPath: string, spec: ExplorerSpec = this.spec(), listed?: ListedLog): Promise<void> {
+  async openLog(logPath: string, spec?: ExplorerSpec, listed?: ListedLog): Promise<void> {
+    const selected = spec?.connectionId && spec.scopeId ? this.connections.context(spec.connectionId, spec.scopeId)
+      : (await this.resolveSource(spec?.kind === "pit" ? vscode.Uri.parse(remoteLogUri(spec.url, logPath)) : vscode.Uri.file(logPath))).context;
+    const fixed = this.sourceSpec(selected), client = await selected.client();
     await openValidated({ path: logPath, entries: [], kind: "time_series" },
-      async file => (await this.clientFor(spec)).callTool("list_entries", { path: file, limit: 1 }),
-      async () => { await vscode.commands.executeCommand("vscode.openWith", spec.kind === "pit"
-        ? vscode.Uri.parse(remoteLogUri(spec.url, logPath, listed?.session)) : vscode.Uri.file(logPath), EDITOR_VIEW_TYPE); });
+      async file => client.callTool("list_entries", { path: file, limit: 1 }),
+      async () => { await vscode.commands.executeCommand("vscode.openWith", vscode.Uri.parse(sourceUri({ connection: fixed.connectionId!,
+        owner: selected.facts!.server_instance_id, scope: fixed.scopeId!, path: logPath })), EDITOR_VIEW_TYPE); });
   }
 
   /** Discovery may offer setup, but only a completed review authorizes persistent ingestion. */
@@ -339,13 +352,12 @@ export class Explorer implements vscode.Disposable {
     const choice = await vscode.window.showQuickPick([
       { label: "Review store and source folders…", action: "configure" }, { label: "Sync now", action: "sync" },
       { label: status.policy.enabled ? "Pause synchronization" : "Resume synchronization", action: "pause" },
-      { label: "Show source status", action: "status" }, { label: "Show all sources / preferred store", action: "view" },
+      { label: "Show source status", action: "status" },
     ], { title: "Manage Data Store", placeHolder: status.policy.store });
     if (!choice) return;
     if (choice.action === "configure") await this.setupDataStore();
     if (choice.action === "sync") { await control.scan(); this.logs.refresh(); }
     if (choice.action === "pause") await this.pauseDataStore();
-    if (choice.action === "view") this.logs.toggleSources();
     if (choice.action === "status") {
       const detail = [status.policy.enabled ? "Synchronization enabled" : "Synchronization paused", status.policy.store,
         ...(status.sources ?? []).map(source => `${source.path}: ${source.state ?? "unknown"}${source.reason ? ` — ${source.reason}` : ""}`)].join("\n");
@@ -527,12 +539,61 @@ export class Explorer implements vscode.Disposable {
     return this.windowSpec();
   }
 
+  private configureConnections(): void {
+    try { this.connections.configure(connectionDefinitions(vscode.workspace.getConfiguration("wpilog-mcp").get("connections"), this.pitUrl())); }
+    catch (error) { this.connections.configure([]); this.log(messageOf(error)); void vscode.window.showErrorMessage(messageOf(error)); }
+  }
+  connectionSpec(definition: ConnectionDefinition): ExplorerSpec {
+    return definition.kind === "remote" ? { kind: "pit", name: `connection:${definition.id}`, url: definition.url!, connectionId: definition.id }
+      : { ...this.spec(), name: `connection:${definition.id}`, connectionId: definition.id };
+  }
+  sourceSpec(context: SourceContext): ExplorerSpec {
+    return { ...this.connectionSpec(context.definition), name: `connection:${context.definition.id}:${context.scopeId ?? "scopes"}`,
+      scopeId: context.scopeId, owner: context.facts?.server_instance_id };
+  }
+  /** A URI selects an existing configuration, never an arbitrary network endpoint. Unqualified
+   * legacy documents ask once when there is a choice; failures never choose another source. */
+  async resolveSource(uri?: vscode.Uri): Promise<{ context: SourceContext; uri: vscode.Uri }> {
+    if (!uri) throw new Error("Choose a log in the Logs view first");
+    if (uri.scheme === "wpilog-source" || uri.scheme === "wpilog-view") {
+      const query = new URLSearchParams(uri.query);
+      const address = uri.scheme === "wpilog-source" ? readSourceUri(uri.toString()) : {
+        connection: query.get("connection") ?? "", scope: query.get("scope") ?? "", owner: uri.authority,
+      };
+      if (!address.connection || !address.scope) throw new Error("Reopen this legacy view from its original source overview to choose its connection explicitly");
+      const context = this.connections.context(address.connection, address.scope);
+      await context.client();
+      if (context.facts!.server_instance_id !== address.owner) throw new Error("This document belongs to another server identity");
+      return { context, uri };
+    }
+    const remote = uri.scheme === "wpilog-pit" ? readRemoteLogUri(uri) : undefined;
+    if (!remote && uri.scheme !== "file") throw new Error("Choose a log in a configured source");
+    const choices = this.connections.definitions.filter(item => remote ? item.url === remote.url : item.kind === "local");
+    if (!choices.length) throw new Error("This source has no configured connection. Configure it or choose a log in Logs");
+    const picked = choices.length === 1 ? choices[0] : (await vscode.window.showQuickPick(choices.map(definition => ({ label: definition.label, definition })),
+      { title: "Choose the log's server", placeHolder: "No default server is selected" }))?.definition;
+    if (!picked) throw new Error("Source selection cancelled");
+    const discovery = this.connections.context(picked.id), scopes = await discovery.scopes();
+    const scope = scopes.length === 1 ? scopes[0] : (await vscode.window.showQuickPick(scopes.map(scope => ({ label: scope.path,
+      description: scope.available ? scope.kind : "Unavailable", scope })), { title: "Choose the source", placeHolder: "Unavailable sources remain choices; no automatic fallback" }))?.scope;
+    if (!scope) throw new Error("Choose a configured source before opening the log");
+    const context = this.connections.context(picked.id, scope.scope_id); await context.client();
+    return { context, uri: vscode.Uri.parse(sourceUri({ connection: picked.id, scope: scope.scope_id,
+      owner: context.facts!.server_instance_id, path: remote?.path ?? uri.fsPath })) };
+  }
+
   /**
    * A client to the server, which is started first when it is not running. One client, replaced
    * when the server's URL changes (a port taken by another program), so a session is never
    * aimed at a port nobody answers on.
    */
   async clientFor(spec: ExplorerSpec): Promise<McpClient> {
+    if (spec.connectionId) {
+      const context = this.connections.context(spec.connectionId, spec.scopeId);
+      const client = await context.client();
+      if (spec.owner && context.facts?.server_instance_id !== spec.owner) throw new Error("This document belongs to another server identity");
+      return client;
+    }
     const url = spec.kind === "pit" ? spec.url : await this.serverManager.ensure(spec);
     if (!url) {
       throw new Error("The server could not be started; the WPILog Analyzer output says why.");
@@ -560,32 +621,9 @@ export class Explorer implements vscode.Disposable {
     return url ? { kind: "pit", name: `pit:${url}`, url } : undefined;
   }
 
-  /** A pit file's overview opens on this laptop: the pit's listing says what the file is, this
-   * window's listing what the laptop holds. A REV item opens the log it is listed under. */
-  async pitOverview(uri: vscode.Uri, listed?: ListedLog): Promise<PitOverview> {
-    const remote = readRemoteLogUri(uri)!; const pit = this.pitSpec();
-    if (!pit) return { message: "Set wpilog-mcp.pitServerUrl to read the pit's files on this laptop.", actions: [] };
-    const origin = originOf(remote.url);
-    const changed: PitOverview = { message: "This log belongs to a different pit server, or the configured connection changed. Restore wpilog-mcp.pitServerUrl to this log's server, or open a log from the configured pit.", actions: [] };
-    const current = () => { const configured = this.pitSpec(); return configured && originOf(configured.url) === origin; };
-    if (originOf(pit.url) !== origin) return changed;
-    const target = listed?.kind === "revlog" && listed.wpilog ? listed.wpilog : remote.path;
-    const pitListing = await this.logs.listing(pit);
-    if (!current()) return changed;
-    const name = target.replace(/\\/g, "/").split("/").pop() ?? target;
-    const file = pitListing.logs?.find(log => log.path === target)
-      ?? { path: target, filename: name, friendly_name: name, session: listed?.session ?? remote.session };
-    const local = await this.logs.listing(this.spec());
-    if (!current()) return changed;
-    return pitOverview(file, local, origin, this.mirrorStatus(), Date.now());
-  }
-
-  async offlineCopy(source: ListedLog, url: string): Promise<ListedLog | undefined> {
-    return mirroredCopy(source, await this.logs.listing(this.spec()), originOf(url));
-  }
-
   /** Called when the server was started again or its URL changed: listings may have changed. */
   serversChanged(): void {
+    this.configureConnections();
     this.logs.refresh();
   }
 
@@ -598,7 +636,7 @@ export class Explorer implements vscode.Disposable {
   endSessions(boundMs: number): Promise<boolean> {
     const clients = [...this.clients.values()].map(entry => entry.client);
     this.clients.clear();
-    return endWithin(clients.map(client => client.dispose()), boundMs);
+    return endWithin([...clients.map(client => client.dispose()), this.connections.dispose()], boundMs);
   }
 
   dispose(): void {
@@ -626,7 +664,8 @@ class LogItem extends vscode.TreeItem {
   constructor(
     readonly node: LogNode,
     readonly spec: ExplorerSpec,
-    collapsibleState: vscode.TreeItemCollapsibleState
+    collapsibleState: vscode.TreeItemCollapsibleState,
+    readonly sourceRoot?: "connection" | "scope"
   ) {
     super(node.label, collapsibleState);
     switch (node.kind) {
@@ -652,12 +691,12 @@ class LogItem extends vscode.TreeItem {
         this.contextValue = node.group === "unassigned" ? "wpilogUnassignedGroup" : "wpilogImportGroup";
         break;
       case "importFile":
-        this.resourceUri = vscode.Uri.file(node.file.path);
+        this.resourceUri = spec.connectionId && spec.scopeId && spec.owner ? vscode.Uri.parse(sourceUri({ connection: spec.connectionId, scope: spec.scopeId, owner: spec.owner, path: node.file.path })) : vscode.Uri.file(node.file.path);
         this.description = node.description;
         this.tooltip = node.tooltip;
         this.contextValue = node.group === "unassigned" ? "wpilogUnassigned" : "wpilogImportFile";
         if (node.file.kind === "wpilog" || path.extname(node.file.path).toLowerCase() === ".wpilog") {
-          this.command = { command: "wpilog-mcp.explorer.openLog", title: "Open in WPILog Explorer", arguments: [node.file.path] };
+          this.command = { command: "wpilog-mcp.explorer.openLog", title: "Open in WPILog Explorer", arguments: [node.file.path, spec] };
         }
         break;
       case "event":
@@ -667,7 +706,8 @@ class LogItem extends vscode.TreeItem {
         this.iconPath = new vscode.ThemeIcon("history");
         break;
       case "log":
-        this.resourceUri = spec.kind === "pit" ? vscode.Uri.parse(remoteLogUri(spec.url, node.log.path, node.log.session)) : vscode.Uri.file(node.log.path);
+        this.resourceUri = spec.connectionId && spec.scopeId && spec.owner ? vscode.Uri.parse(sourceUri({ connection: spec.connectionId, scope: spec.scopeId, owner: spec.owner, path: node.log.wpilog ?? node.log.path }))
+          : spec.kind === "pit" ? vscode.Uri.parse(remoteLogUri(spec.url, node.log.path, node.log.session)) : vscode.Uri.file(node.log.path);
         this.description = node.description;
         this.tooltip = node.tooltip;
         this.contextValue = node.log.store || node.log.kind === "revlog" ? "wpilogLog" : "wpilogPlainLog";
@@ -692,21 +732,25 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
   private readonly changed = new vscode.EventEmitter<LogItem | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
   private readonly listings = new Map<string, Promise<LogListing>>();
+  private readonly browsing = new Map<string, AbortController>();
   private filter = "";
-  private allSources = false;
-
-  toggleSources(): void {
-    this.allSources = !this.allSources; this.refresh();
-    void vscode.window.showInformationMessage(this.allSources ? "Showing all source files, including imported originals." : "Showing the preferred store and sources still awaiting import.");
-  }
-
   constructor(private readonly explorer: Explorer) {}
 
   refresh(): void {
+    for (const abort of this.browsing.values()) abort.abort();
+    this.browsing.clear();
     this.listings.clear();
     this.changed.fire(undefined);
   }
 
+  cancel(item: LogItem): void {
+    for (const [key, abort] of this.browsing) if (key === item.spec.name || item.sourceRoot === "connection" && key.startsWith(item.spec.name + ":")) {
+      abort.abort(); this.browsing.delete(key); this.listings.delete(key);
+    }
+  }
+  private begin(name: string): AbortController {
+    this.browsing.get(name)?.abort(); const abort = new AbortController(); this.browsing.set(name, abort); return abort;
+  }
   setFilter(filter: string): void {
     this.filter = filter;
     void vscode.commands.executeCommand("setContext", "wpilog-mcp.logFilter", filter.trim() !== "");
@@ -727,13 +771,40 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
   }
 
   async getChildren(element?: LogItem): Promise<LogItem[]> {
-    if (!element) {
-      const local = this.explorer.spec(), pit = this.explorer.pitSpec();
-      if (!pit || pit.kind !== "pit") return this.nodesOf(local);
-      const [here, there] = await Promise.all([this.listing(local), this.listing(pit)]);
-      return [new LogItem({ kind: "directory", label: "This laptop", folder: "", children: buildLogTree(here, this.filter) }, local, vscode.TreeItemCollapsibleState.Expanded),
-        new LogItem({ kind: "directory", label: "Pit server", folder: pit.url, children: pitLogTree(there, here, originOf(pit.url), this.filter) }, pit, vscode.TreeItemCollapsibleState.Expanded)];
+    if (!element) return this.explorer.connections.definitions.map(definition => new LogItem(
+      { kind: "directory", label: definition.label, folder: definition.url ?? "This laptop", children: [] },
+      this.explorer.connectionSpec(definition), vscode.TreeItemCollapsibleState.Collapsed, "connection"));
+    if (element.sourceRoot === "connection") {
+      try {
+        const abort = this.begin(element.spec.name);
+        const context = this.explorer.connections.context(element.spec.connectionId!), scopes = await context.scopes(abort.signal);
+        if (abort.signal.aborted) return [];
+        const children = scopes.map(scope => new LogItem({ kind: "directory", label: scope.path, folder: scope.path, children: [],
+          description: scope.available ? scope.kind : "Unavailable", tooltip: scope.reason ?? scope.path },
+          { ...element.spec, scopeId: scope.scope_id, owner: context.facts!.server_instance_id, name: `${element.spec.name}:${scope.scope_id}` },
+          vscode.TreeItemCollapsibleState.Collapsed, "scope"));
+        if (context.definition.kind === "local") {
+          let status: IngestionStatus | undefined;
+          try {
+            const control = new LocalIngestionClient(await context.client());
+            status = await control.status();
+            if (abort.signal.aborted) return [];
+            const page = status.policy?.store ? await control.files() : undefined;
+            const group = folderSynchronization(status, page, this.filter);
+            if (group) children.push(new LogItem(group, element.spec, vscode.TreeItemCollapsibleState.Collapsed));
+          } catch (error) {
+            if (!dataStoreDisabled(error)) {
+              const message = `Folder synchronization: ${messageOf(error)}`;
+              const group = status && folderSynchronization(status, undefined, this.filter, message);
+              children.push(new LogItem(group ?? { kind: "note", label: message }, element.spec,
+                group ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None));
+            }
+          }
+        }
+        return abort.signal.aborted ? [] : children;
+      } catch (error) { return [new LogItem({ kind: "note", label: messageOf(error) }, element.spec, vscode.TreeItemCollapsibleState.None)]; }
     }
+    if (element.sourceRoot === "scope") return this.nodesOf(element.spec);
     if ("children" in element.node) {
       return element.node.children.map(
         (child, index) =>
@@ -767,10 +838,11 @@ export class LogsProvider implements vscode.TreeDataProvider<LogItem> {
 
   private async fetch(spec: ExplorerSpec): Promise<LogListing> {
     try {
-      const client = await this.explorer.clientFor(spec);
-      const listing = await completeListing(args => client.callTool("list_available_logs", this.allSources ? { ...args, view: "all" } : args) as Promise<LogListing>);
+      const abort = this.begin(spec.name), client = await this.explorer.clientFor(spec);
+      const listing = await completeListing(args => client.callTool("list_available_logs", args, { signal: abort.signal, timeoutMs: 10000 }) as Promise<LogListing>);
+      if (abort.signal.aborted) return { status: "error", error: "Source browsing cancelled" };
       // Do not hold up the tree while the person considers an offer.
-      if (spec.kind !== "pit") void this.explorer.offerOrganizing(listing);
+      if (spec.kind !== "pit" && !spec.scopeId) void this.explorer.offerOrganizing(listing);
       return listing;
     } catch (error) {
       if (error instanceof ToolError && error.result) return error.result as LogListing;
@@ -1004,7 +1076,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
     return new LogDocument(uri);
   }
 
-  resolveCustomEditor(document: LogDocument, panel: vscode.WebviewPanel): void {
+  async resolveCustomEditor(document: LogDocument, panel: vscode.WebviewPanel): Promise<void> {
     const key = panel.webview.toString() + document.uri.toString();
     const media = vscode.Uri.joinPath(this.explorer.extensionUri, "media");
     panel.webview.options = { enableScripts: true, localResourceRoots: [media] };
@@ -1020,13 +1092,13 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       data: { scriptUri: asset("dataPane.mjs"), styleUri: asset("vendor", "perspective", "pro.css") },
       nonce: crypto.randomBytes(16).toString("hex"),
     });
-    const remote = readRemoteLogUri(document.uri);
+    const selected = await this.explorer.resolveSource(document.uri);
+    const address = readSourceUri(selected.uri.toString());
+    panel.title = `${selected.context.definition.label} · ${path.basename(address.path)}`;
     let loadedResolve!: () => void;
     const loaded = new Promise<void>(resolve => { loadedResolve = resolve; });
-    const editor: Editor = { panel, loaded, loadedResolve, requests: new Map(), log: remote ? { path: remote.path,
-      spec: { kind: "pit", name: `pit:${remote.url}`, url: remote.url },
-      source: { path: remote.path, filename: remote.path.replace(/\\/g, "/").split("/").pop()!, friendly_name: "Pit session", session: remote.session } }
-      : { path: document.uri.fsPath }, ready: false };
+    const editor: Editor = { panel, loaded, loadedResolve, requests: new Map(),
+      log: { path: address.path, spec: this.explorer.sourceSpec(selected.context) }, ready: false };
     this.editors.set(key, editor);
     panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
       switch (message.type) {
@@ -1107,6 +1179,10 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
     try {
       const client = await this.explorer.clientFor(spec);
       post({ type: "loading", name, path: logPath, text: "Reading the log…" });
+      if (spec.kind === "pit") {
+        const sources = await this.explorer.logs.listing(spec);
+        editor.log.source = sources.logs?.find(source => (source.wpilog ?? source.path) === logPath);
+      }
       const listing = (await client.callTool("list_entries", { path: logPath })) as EntryListing;
       editor.log = { ...editor.log, path: logPath, spec, listing };
       post({ type: "log", name, path: logPath, listing, copy: editor.log.copy ?? (spec.kind === "pit" ? "Reading the pit server" : "Reading this laptop"), live: spec.kind === "pit" && editor.log.source?.session?.open === true });
@@ -1116,14 +1192,8 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       const hint = error instanceof ToolError ? (error.result?.hint as string | undefined) : undefined;
       firstError = { message: messageOf(error), hint };
       this.explorer.log(`Explorer: the server could not read ${logPath}: ${messageOf(error)}`);
-      if (spec.kind === "pit" && editor.log.source && !(error instanceof ToolError && error.result)) {
-        const copy = await this.explorer.offlineCopy(editor.log.source, spec.url);
-        if (copy) {
-          editor.log = { path: copy.path, spec: this.explorer.spec(), source: copy,
-            copy: `Reading the offline mirror · last synchronized ${copy.session?.last_sync ?? "unknown"}` };
-          await this.load(editor); return;
-        }
-      }
+      // Keep this document on its selected owner. A different source is a new document.
+      void vscode.window.showWarningMessage("The selected source is unavailable. Open another source from Logs to create a separate binding.");
     }
     post({
       type: "error",
@@ -1180,7 +1250,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
     try {
       const client = await this.explorer.clientFor(spec);
       const response = await this.explorer.data.fetch(client.endpoint, {
-        path: editor.log.path,
+        path: editor.log.path, scopeId: editor.log.spec?.scopeId, serverInstanceId: editor.log.spec?.owner,
         names: [name],
         startTime: typeof message.startTime === "number" ? message.startTime : undefined,
         endTime: typeof message.endTime === "number" ? message.endTime : undefined,
@@ -1369,7 +1439,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       editor.requests.set(requestId, message => { clearTimeout(timer); resolve(message.selection!); });
       void editor.panel.webview.postMessage({ type: "getSelection", requestId, kind });
     });
-    return { editor, selection: { ...selection, path: editor.log.path } };
+    return { editor, selection: { ...selection, path: editor.log.path, connectionId: editor.log.spec?.connectionId, scopeId: editor.log.spec?.scopeId, serverInstanceId: editor.log.spec?.owner } };
   }
 
   async openNotebook(): Promise<void> {
@@ -1380,7 +1450,7 @@ export class ExplorerEditorProvider implements vscode.CustomReadonlyEditorProvid
       const arrow = require("../media/arrowStream.js");
       const inputs: Record<string, unknown> = {};
       for (const name of selection.entries) {
-        const response = await this.explorer.data.fetch(client.endpoint, { path: selection.path, names: [name], startTime: selection.start, endTime: selection.end });
+        const response = await this.explorer.data.fetch(client.endpoint, { path: selection.path, scopeId: editor.log.spec.scopeId, serverInstanceId: editor.log.spec.owner, names: [name], startTime: selection.start, endTime: selection.end });
         inputs[name] = arrow.parsedMetadata(arrow.read(response.bytes)).inputs;
       }
       const content = JSON.stringify(notebook({ ...selection, inputs }, client.endpoint), null, 2) + "\n";

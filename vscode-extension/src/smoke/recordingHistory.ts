@@ -25,6 +25,13 @@ export async function recordingHistory(preview: RecordedPreview, driver: Recorde
     const selector = `document.body?.dataset.viewId === ${JSON.stringify(view.view_id)}`;
     const read = (code: string) => driver.evaluate(selector, code);
     let page: any;
+    const originalCall = preview.backend.call.bind(preview.backend);
+    const reductions: { body: any; result: any }[] = [];
+    preview.backend.call = (async (route: string, body: any, ...rest: any[]) => {
+      const result = await (originalCall as any)(route, body, ...rest);
+      if (route === "/source/reduction") reductions.push({ body, result });
+      return result;
+    }) as typeof preview.backend.call;
     try {
       await until("history view ready", () => !!(page = (preview as any).pages.get(view.view_id))?.ready);
       await until("history plot probe installed", async () => await read(`(() => {
@@ -42,6 +49,24 @@ export async function recordingHistory(preview: RecordedPreview, driver: Recorde
       await page.document.controller.edit(config, "Set up synthetic history fixture"); (preview as any).paint(page.document);
       const plot = "window.__historyPlots.map(r => r.deref()).find(p => p?.root?.isConnected)";
       const points = () => read(`(() => { const p = ${plot}; return p ? p.data.map(a => Array.from(a)) : []; })()`);
+      let expected = [[1, 2], [1, 8], [1.5, 20], [2, 14], [120, 30]];
+      // Independent integer bucket oracle from the generated input, not the server's output.
+      const reduced = async () => {
+        const range = page.document.controller.snapshot.configuration.time.recorded;
+        const response = reductions.filter(r => r.body.start_time === range.start_sec && r.body.end_time === range.end_sec).at(-1);
+        if (!response) return false;
+        const start = Math.round(range.start_sec * 1e6), end = Math.round(range.end_sec * 1e6), n = response.body.max_points;
+        const groups = new Map<number, number[]>();
+        for (const [at, value] of expected) { const time = Math.round(at * 1e6); if (time < start || time > end) continue;
+          const index = end === start ? 0 : Math.min(n - 1, Math.floor((time - start) * n / (end - start)));
+          const group = groups.get(index) ?? []; group.push(value); groups.set(index, group);
+        }
+        const keys = [...groups.keys()].sort((a, b) => a - b), values = keys.map(k => groups.get(k)!);
+        const oracle = [keys.map(k => (start + Math.ceil(k * (end - start) / n)) / 1e6),
+          values.map(v => v.reduce((a, b) => a + b, 0) / v.length), values.map(v => Math.max(...v)), values.map(v => Math.min(...v))];
+        return response.result.sample_count === values.reduce((sum, v) => sum + v.length, 0)
+          && JSON.stringify(await points()) === JSON.stringify(oracle);
+      };
       const settled = () => until("history gesture painted", async () => !page.document.controller.pending
         && await read("document.body.dataset.revision") === String(page.document.controller.snapshot.revision)
         && await read("document.body.dataset.generation") === page.key);
@@ -55,10 +80,9 @@ export async function recordingHistory(preview: RecordedPreview, driver: Recorde
       if (recording) {
         assert.deepEqual(await points(), [[120], [30]]);
         for (let i = 0; i < 3; i++) await mutate("time-zoom-out");
-        await until("zoom reaches old samples beyond the rolling buffer", async () => (await points())[0]?.includes(1));
-        const p = await points(); assert.deepEqual(p[0], [1, 1.5, 2, 120]); assert.equal(p[1][1], 20); assert.equal(p[1][2], 14); assert.equal(p[1][3], 30);
+        await until("zoom reduces old samples beyond the rolling buffer", reduced);
         assert.match(await read("document.getElementById('time-mode').textContent"), /Inspect History/);
-        mark("native keyboard zoom reboots three historical intervals and recovers samples discarded from the 45-second rolling display");
+        mark("native keyboard zoom reboots three historical intervals and recovers every original sample in independently checked buckets beyond the 45-second rolling display");
       } else {
         await mutate("time-zoom-in"); await until("file zoom narrowed samples", async () => (await points())[0]?.length === 300);
         const p = await points(); assert.equal(Math.round(p[0][0] * 1e6), 150000); assert.equal(Math.round(p[0].at(-1) * 1e6), 449000);
@@ -66,7 +90,7 @@ export async function recordingHistory(preview: RecordedPreview, driver: Recorde
         mark("native file Zoom in requests the exact 0.14975–0.44925 interval: 300 original x=i samples");
       }
       await read(`(document.getElementById('start').value = '0', document.getElementById('end').value = '${recording ? 3 : 0.6}', true)`);
-      await mutate("range"); await until("range samples", async () => (await points())[0]?.some((t: number) => Math.round(t * 1e6) === (recording ? 2000000 : 599000)));
+      await mutate("range"); await until("range samples", recording ? reduced : async () => (await points())[0]?.some((t: number) => Math.round(t * 1e6) === 599000));
       const beforeDrag = page.document.controller.snapshot.revision;
       // Drive uPlot's real mouse handlers, with geometry taken from its real CSS-pixel plot.
       await read(`(async () => { const p = ${plot}; p.root.scrollIntoView({ block: 'center' });
@@ -88,13 +112,13 @@ export async function recordingHistory(preview: RecordedPreview, driver: Recorde
       assert.ok(Math.abs(actual.start_sec - drag.start * span) <= 0.000001);
       assert.ok(Math.abs(actual.end_sec - drag.end * span) <= 0.000001);
       const times = recording ? [1, 1.5, 2] : Array.from({ length: 600 }, (_, i) => i / 1000).filter(t => t >= actual.start_sec && t <= actual.end_sec);
-      await until("drag reloaded original values", async () => (await points())[0]?.length === times.length);
-      assert.deepEqual((await points())[0].map((t: number) => Math.round(t * 1e6)), times.map(t => Math.round(t * 1e6)));
+      await until("drag reloaded original values", recording ? reduced : async () => (await points())[0]?.length === times.length);
+      if (!recording) assert.deepEqual((await points())[0].map((t: number) => Math.round(t * 1e6)), times.map(t => Math.round(t * 1e6)));
       mark(`native ${recording ? "recording" : "file"} horizontal uPlot drag persists its clock interval and reloads data through the product reader`);
       if (recording) {
         const range = structuredClone(actual); await command("historyLate");
-        await until("late historical record", async () => (await points())[0]?.includes(1.25));
-        const p = await points(); assert.equal(p[1][p[0].indexOf(1.25)], 26);
+        expected.push([1.25, 26]);
+        await until("late historical record recomputes old buckets", reduced);
         assert.deepEqual(page.document.controller.snapshot.configuration.time.recorded, range);
         const axes = await read(`(() => { const p = ${plot}; return [p.scales.x.min, p.scales.x.max]; })()`);
         assert.deepEqual(axes, [range.start_sec, range.end_sec]);
@@ -112,6 +136,16 @@ export async function recordingHistory(preview: RecordedPreview, driver: Recorde
         assert.deepEqual(page.document.controller.snapshot.configuration.time.live, { mode: "follow", window_sec: 45 });
         await until("following samples restored", async () => (await points())[0]?.length === 1 && (await points())[0][0] === 120);
         mark("late in-window record updates Inspect History without moving its axis; navigation exits Pause and Resume following restores 45 seconds");
+        await command("denseHistory");
+        const dense = addSignals(addPanel(blank, "dense", "time_series"), "dense",
+          [{ name: "NT:/signal/00020", type: "int64", sample_count: 5003 }], randomUUID);
+        dense.time.live = { mode: "fixed", start_sec: 0, end_sec: 5 }; dense.time.recorded = { mode: "fixed", start_sec: 0, end_sec: 5 };
+        expected = [[1, 20], [1, 20], [2, 21], ...Array.from({ length: 5000 }, (_, i) => [i / 1000, i === 10 ? 10000 : 0])];
+        await page.document.controller.edit(dense, "Inspect dense synthetic history"); (preview as any).paint(page.document); await settled();
+        await until("dense full-history extrema and means match independent buckets", reduced);
+        assert.ok((await points())[2].includes(10000), "early peak beyond the old 4096-point tail survives");
+        assert.match(await read("document.querySelector('.panel-note').textContent"), /5,003 original samples/);
+        mark("dense 5003-record native history preserves the early 10000 spike and every count/mean/min/max against an independent bucket oracle");
       } else {
         await mutate("time-later"); const range = page.document.controller.snapshot.configuration.time.recorded;
         assert.ok(Math.abs(range.start_sec - 0.3) < 0.01); assert.ok(Math.abs(range.end_sec - 0.6) < 0.01);
@@ -129,6 +163,6 @@ export async function recordingHistory(preview: RecordedPreview, driver: Recorde
       assert.ok(preview.budgets.decoded.reserved <= preview.budgets.decoded.maximum);
     } catch (error) { fs.writeFileSync(path.join(root, "history-diagnostics.json"), JSON.stringify({ recording, snapshot: page?.document.controller.snapshot,
       body: await read("document.body.innerText"), errors: driver.errors }, null, 2)); throw error; }
-    finally { page?.panel.dispose(); }
+    finally { preview.backend.call = originalCall; page?.panel.dispose(); }
   }
 }

@@ -23,29 +23,31 @@ test("a pit URL adds a second definition even while the local daemon is unavaila
   assert.equal(pitEndpoint("  "), undefined);
   for (const bad of ["ssh://pit", "http://user:secret@pit", "http://pit/#fragment", "http://pit/?key=x"]) assert.throws(() => pitEndpoint(bad));
 });
-test("mirror defaults activate only with a pit and the person's explicit off wins", () => {
+test("mirror and live capture require explicit opt-in even with a configured pit", () => {
+  assert.equal(mirrorRequest("http://pit:2363", {}, "/storage", path.posix), undefined);
   assert.equal(mirrorRequest(undefined, {}, "/storage", path.posix), undefined);
   assert.equal(mirrorRequest("http://pit:2363", { enabled: false }, "/storage", path.posix), undefined);
-  assert.deepEqual(mirrorRequest("http://pit:2363/mcp", {}, "/storage", path.posix), {
+  assert.deepEqual(mirrorRequest("http://pit:2363/mcp", { enabled: true }, "/storage", path.posix), {
     origin: "http://pit:2363", folder: "/storage/mirror", days: 14, max_size_gb: 20, robots: [], events: [], interval_sec: 30,
   });
-  const settings = { folder: "D:\\Logs\\Mirror", days: 4, maxSizeGb: 2.5, robots: ["RIO"], events: ["District"], intervalSec: 12 };
+  const settings = { enabled: true, folder: "D:\\Logs\\Mirror", days: 4, maxSizeGb: 2.5, robots: ["RIO"], events: ["District"], intervalSec: 12 };
   assert.deepEqual(mirrorRequest("https://pit/mcp", settings, "C:\\Storage", path.win32), {
     origin: "https://pit", folder: "D:\\Logs\\Mirror", days: 4, max_size_gb: 2.5, robots: ["RIO"], events: ["District"], interval_sec: 12,
   });
-  for (const value of [{ folder: "relative" }, { days: -1 }, { days: 2.2 }, { maxSizeGb: 0 }, { intervalSec: 0 }]) assert.throws(() => mirrorRequest("http://pit", value, "/storage", path.posix));
+  for (const value of [{ folder: "relative" }, { days: -1 }, { days: 2.2 }, { maxSizeGb: 0 }, { intervalSec: 0 }]) assert.throws(() => mirrorRequest("http://pit", { ...value, enabled: true }, "/storage", path.posix));
 });
 test("the live source records the pit's gateway on the pit's own host, into a laptop folder", () => {
+  assert.equal(liveRequest("http://pit:2363", {}, "/storage", path.posix), undefined);
   assert.equal(liveRequest(undefined, {}, "/storage", path.posix), undefined);
   assert.equal(liveRequest("http://pit:2363", { enabled: false }, "/storage", path.posix), undefined);
-  assert.deepEqual(liveRequest("http://pit:2363/mcp", {}, "/storage", path.posix), { robot: { host: "pit", port: 5810 }, store: "/storage/live" });
+  assert.deepEqual(liveRequest("http://pit:2363/mcp", { enabled: true }, "/storage", path.posix), { robot: { host: "pit", port: 5810 }, store: "/storage/live" });
   // A proxy prefix and port belong to HTTP; the gateway listens on the pit's host on its own port.
-  assert.deepEqual(liveRequest("https://pit.example:8443/pit/mcp", { gatewayPort: 5811 }, "/storage", path.posix),
+  assert.deepEqual(liveRequest("https://pit.example:8443/pit/mcp", { enabled: true, gatewayPort: 5811 }, "/storage", path.posix),
     { robot: { host: "pit.example", port: 5811 }, store: "/storage/live" });
-  assert.deepEqual(liveRequest("http://[fd00::2]:2363/mcp", {}, "/storage", path.posix), { robot: { host: "fd00::2", port: 5810 }, store: "/storage/live" });
-  assert.deepEqual(liveRequest("http://10.23.63.5:2363", { folder: "D:\\Logs\\Live" }, "C:\\Storage", path.win32),
+  assert.deepEqual(liveRequest("http://[fd00::2]:2363/mcp", { enabled: true }, "/storage", path.posix), { robot: { host: "fd00::2", port: 5810 }, store: "/storage/live" });
+  assert.deepEqual(liveRequest("http://10.23.63.5:2363", { enabled: true, folder: "D:\\Logs\\Live" }, "C:\\Storage", path.win32),
     { robot: { host: "10.23.63.5", port: 5810 }, store: "D:\\Logs\\Live" });
-  for (const value of [{ folder: "relative" }, { gatewayPort: 0 }, { gatewayPort: 65536 }, { gatewayPort: 5810.5 }]) assert.throws(() => liveRequest("http://pit", value, "/storage", path.posix));
+  for (const value of [{ folder: "relative" }, { gatewayPort: 0 }, { gatewayPort: 65536 }, { gatewayPort: 5810.5 }]) assert.throws(() => liveRequest("http://pit", { ...value, enabled: true }, "/storage", path.posix));
 });
 test("status distinguishes synchronization, remaining bytes, offline age and incomplete work", () => {
   assert.equal(mirrorStatusText({ state: "synchronized" }), "$(check) Mirror synchronized");

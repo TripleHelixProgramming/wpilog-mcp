@@ -80,7 +80,7 @@ class ForwardedRequestTest {
           var text = JsonParser.parseString(reply.body()).getAsJsonObject().getAsJsonObject("result")
               .getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString();
           checks.add(() -> assertTrue(text.contains("ACCESS_DENIED"), name + " ran a local-only tool: " + text));
-        } else checks.add(() -> assertTrue(reply.statusCode() == 403 && reply.body().contains("forwarded by a proxy"),
+        } else checks.add(() -> assertTrue(reply.statusCode() == 403 && (reply.body().contains("forwarded by a proxy") || reply.body().contains("ACCESS_DENIED")),
             name + " passed a local gate: " + reply.statusCode() + " " + reply.body()));
       }
       checks.add(() -> assertFalse(ClientLeases.getInstance().directories().stream().anyMatch(d -> d.path().equals(lease)),

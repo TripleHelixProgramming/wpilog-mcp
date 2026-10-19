@@ -81,5 +81,15 @@ export async function recordingFields(preview: RecordedPreview, driver: Recorded
     await pause(150); fs.writeFileSync(path.join(root, "field-picker.png"), await driver.screenshot());
     await read("(document.getElementById('recording-picker').open = false, document.querySelector('.recorded-statistics').scrollIntoView({ block: 'center' }), true)");
     await pause(150); fs.writeFileSync(path.join(root, "field-workbench.png"), await driver.screenshot());
+  } catch (error) {
+    fs.writeFileSync(path.join(root, "field-diagnostics.json"), JSON.stringify({ error: String(error),
+      visible: page?.panel.visible, recovering: page?.recovering, inventory: page?.recordingInventory?.snapshot,
+      delivery: { flight: page?.delivery?.flight?.id, pending: !!page?.delivery?.pending, stalled: page?.delivery?.stalled },
+      owners: [...(preview as any).pages.values(), ...(preview as any).overviews.values()].map((owner: any) => ({
+        view_id: owner.document?.controller.snapshot.view_id, visible: owner.panel.visible, closed: owner.closed,
+        inventory: (owner.recordingInventory ?? owner.inventory)?.snapshot,
+      })),
+      body: await read("document.body.innerText") }, null, 2));
+    throw error;
   } finally { page?.panel.dispose(); }
 }

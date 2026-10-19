@@ -144,7 +144,7 @@ result, and three fields in it decide how far to trust it.
 Things that are often misread:
 
 - **Brownouts.** `BROWNOUT_START` in `get_ds_timeline` is the battery voltage crossing a
-  threshold (the log's own `BrownoutVoltage`, else 6.8 V, stated as an assumption). Only
+  threshold (the log's own `BrownoutVoltage`, else 6.3 V, stated as an assumption). Only
   `RIO_BROWNOUT_START`, from a logged flag such as AdvantageKit's `/SystemStats/BrownedOut`,
   means the roboRIO cut its outputs. A log without the flag cannot say whether that happened.
 - **The log ends early.** A file that stops mid-phase says "log ends at X s", not "the match
@@ -309,9 +309,14 @@ needed. The [extension guide](../vscode-extension/README.md#exploring-logs) has 
    quick charts and CSV export.
 5. **WPILog Explorer: Ask about this selection** sends the path, entries and window to chat.
    **Open in Notebook** writes a Python notebook that fetches the same samples.
+For remote-only use, configure `wpilog-mcp.connections` with a remote endpoint and leave
+mirror/live services disabled. Expand its Logs root, then its source scope. No laptop daemon
+or local log copy is needed. Add a local or another remote connection as a separate root;
+there is no default across multiple choices. See the [connection setup](../vscode-extension/README.md#choosing-local-and-remote-sources).
+
 #### 5.1 Recorded visualization preview
 
-1. On a local WPILOG in Logs, choose **Open Source Overview (Preview)**. Source facts appear
+1. Expand the chosen connection and source scope in Logs. On its WPILOG, choose **Open Source Overview (Preview)**. Source facts appear
    before signal indexing completes. Missing robot, session or match information says unavailable.
    Ordinary open still uses the existing Explorer editor during the preview.
 2. Choose **Blank layout**, then **Add plot**, **Add value table**, **Add statistics** or **Add raw table**. Expand **Add signals**,
@@ -323,28 +328,33 @@ needed. The [extension guide](../vscode-extension/README.md#exploring-logs) has 
    cursor, its robot timestamp and any skipped-record count.
 4. Use **Duplicate and Open Beside** to make an independent view of the same source; open another
    source overview to work with a different recording at the same time. Native Split moves a view.
-5. **Save view…** offers stores by label and path. **Create store…** asks for a local directory
-   and creates metadata through an empty import, without enabling automatic ingestion. Canceling
-   leaves the draft. Promotion clears draft undo; later changes use native Save and Undo/Redo.
+5. **Save view…** asks for a title in the connected server's visualization library. It works
+   for an ordinary folder or mirror without creating or modifying a log store. An ephemeral
+   server explains that durable save is unavailable. Canceling leaves the draft. Promotion
+   clears draft undo; later changes use native Save and Undo/Redo.
+   If a save response is lost, retry Save to recover that checkpoint. Edits made after it remain
+   visible and dirty; use Save again to checkpoint those newer edits. Recovery does not repeat
+   the original library write.
    Save As remains unavailable and points to Save view.
 6. Return to the overview to resume an Unsaved view (detached drafts expire after 30 days) or open
-   a new working copy of a Saved view. A durable named server retains these across restart.
+   a new working copy of a Saved view. Use **Next saved-view page** and **First saved-view page**
+   for more results. A durable named server retains these across restart.
    Invalid/newer saved files are reported beside the readable ones and left intact. If an unmanaged
    file's fingerprint changed or the source is no longer allowed, the view reports unavailability
    rather than selecting a similar file. The fingerprint checks file attributes, not its content;
    see the [standalone reference](STANDALONE.md) for this limit and locator recovery. Older
    fingerprints are listed as unavailable; configuration remains readable through MCP.
-7. Expand **Reusable templates**, search by name/description and select a built-in or store
-   template. Its compatibility reports exact names or resolver roles, accepted types and unit
+7. Expand **Reusable templates**, search by name/description and select a built-in or server-library
+   template. Use **Next template page** for more matches. Its compatibility reports exact names or resolver roles, accepted types and unit
    reasons. **Open new view** keeps the current layout; **Replace this layout…** offers Save or
    Discard. Unresolved signals remain explained and are not guessed from similar names.
 8. **Save template…** stores the configuration without source files or local paths. Exact names
    are the default; keeping explicit roles is a choice. **Update selected template…** compares
    its revision; open views keep their pinned configurations. Export the definition to JSON,
-   then Import it into a writable store. Identical reimports are no-ops. Same revision/different
+   then Import it into the connected server library. Identical reimports are no-ops. Same revision/different
    content is a conflict; newer known content offers Import copy or an explicit Update existing.
-   If the selected store template file has been removed, `TEMPLATE_UNAVAILABLE` asks you to
-   refresh the catalog or save a new template from an existing view. Open views keep their layout.
+   If a selected definition is missing or its revision changed, refresh the catalog or save a
+   new template from an existing view. Open views keep their layout.
 9. Statistics summarize original samples in the selected interval, not plot buckets. Raw tables
    retain physical ordinals and integer timestamps in bounded replacement pages. Use First/Next
    page to inspect more; duplicate or backward timestamps do not collapse records.
@@ -378,7 +388,7 @@ a reason and retain the old rows and snapshot timestamp. A known-expired snapsho
 expired, with paging, filtering and Inspect disabled, until a replacement page is admitted.
 Retry becomes available after a bounded delay; it does not spin in the background. Hiding or
 closing cancels pending initialization and releases the handle and rows, and reveal opens fresh. A server without paged inventory
-support shows an update hint. **Blank layout**, templates and Resume/Open now enter the local recording-panel preview. An agent can prepare a recording layout with
+support shows an update hint. **Blank layout**, templates and Resume/Open now enter the connected recording-panel preview. An agent can prepare a recording layout with
 `visualization_view_create` using the anchored source and a configuration or pinned template,
 then use the existing view edit/save tools. This stores intent even when requirements are still
 unresolved. Saved reopen and clone recheck the source; previously stored metadata remains
@@ -397,9 +407,18 @@ and the [list/get/close operations](TOOLS.md#visualization_source_entries_list).
 default full mode is unchanged. Recording panels reuse bounded discovery; timestamps
 remain the recorded robot timestamps, separate from the inspection clock evidence.
 
-#### 5.2 Recording-panel preview
+Legacy store definitions remain intact. An API 2 Save of an already-open legacy view copies
+its checkpoint into the server library before saving the current configuration. For other
+legacy definitions, list them through the API 1 template catalog or source-view route, then
+call [visualization_library_migrate](TOOLS.md#visualization_library_migrate) with the exact
+store/object/revision reference. Refresh the library catalog and open its pinned reference.
+A repeated migration returns the original copy reference, which may be older than later edits;
+use the catalog to obtain the current revision. An unavailable source stays unresolved.
+Oversized legacy files remain at their original locations for inspection/export.
 
-Open Source Overview on a locally configured recording member and choose **Blank layout**.
+### 5.2 Recording-panel preview
+
+Open Source Overview on a recording member in the selected connection and choose **Blank layout**.
 Add a plot, value table, statistics panel or raw table, then open **Recording signals**. Search, **Inspect** the
 exact signal, choose the target panel, and **Add inspected signal to target panel**. Expired,
 conflicting or unavailable rows cannot be added. The picker handles large inventories one
@@ -442,11 +461,14 @@ independent lease, so closing or changing one does not restart the other. Hide c
 work immediately and clears its retained buffers after 30 seconds; reveal bootstraps the same
 recording. Finalization drains it and ends polling. **Retry recording** reopens that same source.
 
-Plots retain at most 4,096 recently delivered samples per selected signal, with explicit trimming counts.
-Historical recording intervals keep that same limit; they are not complete min/max reductions.
-Narrow the interval for detail. Recorded files instead use server reduction when their point
-allowance requires it.
-They sort for display and collapse equal timestamps to the last delivered point; these points
+Follow plots retain at most 4,096 recently delivered samples per selected signal, with explicit trimming counts.
+Inspect History and Full recording instead request server min/max bands and means across the
+whole admitted interval. Their notes show original-sample counts, gaps, decode problems and
+the independent catalog prefix. Their bucket count fits the shared byte allowance, at most
+4,096; zoom in for detail. An admission or work limit is an explained refusal, retried by
+**Retry recording**. Late historical samples refresh the fixed interval without moving its axis.
+Recorded files use their existing server reduction when their point allowance requires it.
+Follow points sort for display and collapse equal timestamps to the last delivered point; these points
 are never analysis input. Unsafe integers and non-finite numbers are plot gaps. Value tables
 show the server's **latest by timestamp** with exact integer text, member and ordinal. Use
 **Recorded time and cursor**, enter robot time and **Read at cursor** to read the last original
@@ -520,8 +542,9 @@ allowance; `visualization_capabilities_get` reports the default/range and each a
 client-reported allowance under an opaque window ID, with `current_session` marking your own. Changing Settings alone does not resize an active window's budget.
 Encoded acquisition remains separately capped at 64 MiB. Recorded plots ask the server for a
 budget-sized reduction, up to 65,536 points per signal; signal count and repeated plot/table copies reduce
-that allowance. Adding or removing repeated displays re-admits that view at its new allowance. Increasing it can retain more exact samples before bucketing. Live plots retain
-their 4,096-sample limit.
+that allowance. Adding or removing repeated displays re-admits that view at its new allowance. Increasing it can retain more exact samples before bucketing. Follow plots retain
+their 4,096-sample limit; recording history requests at most 4,096 server buckets, sized for
+the same allowance and every repeated plot copy.
 
 Exhaustion refuses further work before downloading samples, with a reason. Use fewer signals,
 close another view and Retry, or increase the setting and reload. Hidden samples clear after
@@ -655,10 +678,11 @@ and the client registration, and delete the disk cache:
 
 Continuous imports are experimental and off by default. After explicitly
 [enabling the feature and restarting the server](STANDALONE.md#keeping-a-data-store-up-to-date),
-use **Set Up Data Store…** for continuous imports from selected folders. The store is the default
-place to browse, with pending or refused source files kept visible. **Show All Sources** reveals
-originals. **Manage Data Store…** shows the shared policy, per-source status and refusal reasons;
-**Sync Data Store Now** requests a scan and **Pause/Resume Data Store Sync** stops or resumes
+use **Set Up Data Store…** for continuous imports from selected folders. Import policy does not select a default MCP read source: select one with `list_source_scopes`
+and `scope_id`. In Explorer, expand a connection root and select its source scope. In
+**Manage Data Store…**, choose **Show source status** for per-source states and refusal reasons.
+The output channel shows the first 100 file receipts and, when more exist, the total and the
+endpoint's paging parameters. **Sync Data Store Now** requests a scan and **Pause/Resume Data Store Sync** stops or resumes
 future imports. The server continues working when the editor closes, while the server runs.
 Temporary and project folders require explicit selection. New folders never join automatically.
 See [Keeping a data store up to date](STANDALONE.md#keeping-a-data-store-up-to-date).
@@ -729,3 +753,42 @@ the server; the HTTP route is `POST /store/assign`
 
 More: [Troubleshooting](STANDALONE.md#troubleshooting) in the standalone guide and
 [Troubleshooting](../vscode-extension/README.md#troubleshooting) in the extension guide.
+
+### Read recording health and recover a view
+
+In the recording preview, read acquisition status beside follow progress. A large last-value
+age is normal for unchanged signals; “reconnecting” means the acquisition connection was lost.
+History can be finalized during a disconnect and resume under the same robot clock. The view
+keeps its anchor and does not switch to a new recording after a robot restart; open that new
+recording's overview deliberately.
+
+Leave a view open through a local server restart. Its old reads stop, its window and attachment
+are restored, and fresh buffers are loaded for the same layout. A paused display stays paused;
+use Resume display after recovery. A transient restoration refusal retries automatically.
+A changed server identity or missing view/source remains visible with the configuration retained;
+reconnect to the original owner or restore access rather than expecting a new view to be created.
+The timing line measures host/render scheduling only, not network or robot-to-screen latency.
+Agents can use `visualization_source_health` with the view's anchored `source_ref` for the same
+acquisition/history facts without reading sample data.
+
+## Select a server source for MCP reads
+
+1. Call `list_source_scopes` and follow `next_offset` if present. When several choices exist,
+   ask the user which source to use, even if only one is online or has a matching filename.
+   An unreadable directory stays listed as unavailable; explicitly selecting a healthy source
+   still works. Restore the failed directory's access to make it available again.
+2. Call `list_available_logs` with that `scope_id`. Expect `source_scope` and logs from only
+   that source. `SOURCE_UNAVAILABLE` means the chosen source needs attention, not permission
+   to switch to another copy.
+3. Use a listed absolute `path`, or pass `scope_id` with a relative path, to analysis tools.
+   An already selected file or working view remains selected; do not ask again for each read.
+4. For source-qualified visualization calls, use `api_version: 2` and
+   `visualization_source_inspect` with the path and scope. Retain the complete returned
+   `source_ref`, including its server and scope. API 1 clients cannot edit these qualified views.
+   For an ordinal follow, use the API 2 working view's
+   [view binding](READ_API.md#following-a-recording-view); raw `/read/v1/follows` source/query
+   requests reject qualification instead of discarding it.
+
+This is the server selection checkpoint. The current Explorer source picker and direct remote
+visualization migration are pending; this checkpoint does not promise the new multiple-root UI.
+Import destination preferences and old Show All Sources controls cannot override MCP selection.

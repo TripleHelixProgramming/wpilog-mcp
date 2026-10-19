@@ -21,8 +21,8 @@ import org.triplehelix.wpilogmcp.log.LogData;
  *
  * <ul>
  *   <li>The brownout threshold: the roboRIO's own setting when logged (AdvantageKit
- *       {@code /SystemStats/BrownoutVoltage}), otherwise the roboRIO 1 default of 6.8 V, stated as
- *       an assumption (a roboRIO 2 defaults to 6.3 V, which the log does not reveal).
+ *       {@code /SystemStats/BrownoutVoltage}), otherwise the roboRIO 1 default of 6.3 V, stated as
+ *       an assumption (a roboRIO 2 defaults to a configurable 6.75 V; without a logged setting the controller is unknown).
  *   <li>The roboRIO's brownout flag (AdvantageKit {@code /SystemStats/BrownedOut}): when it is
  *       logged, its true intervals are the brownouts — the times the roboRIO actually disabled
  *       outputs — as opposed to voltage threshold crossings.
@@ -34,8 +34,9 @@ final class PowerFacts {
 
   private PowerFacts() {}
 
-  /** roboRIO 1 default brownout threshold. */
-  static final double DEFAULT_THRESHOLD = 6.8;
+  /** roboRIO 1 output-disable threshold, not the earlier 6.8 V rail-drop stage.
+   * See <a href="https://docs.wpilib.org/en/stable/docs/software/roborio-info/roborio-brownouts.html#settable-brownout">WPILib's brownout reference</a>. */
+  static final double DEFAULT_THRESHOLD = 6.3;
 
   /** A threshold and where it came from. */
   record Threshold(double volts, String basis, String entry) {
@@ -75,8 +76,8 @@ final class PowerFacts {
           && Double.isFinite(n.doubleValue()) && n.doubleValue() > 0);
       if (last.isPresent()) return new Threshold(((Number) last.get().value()).doubleValue(), "logged", e.name());
     }
-    return new Threshold(DEFAULT_THRESHOLD, "default: roboRIO 1 (6.8 V); a roboRIO 2 defaults "
-        + "to 6.3 V, and this log does not record which is installed", null);
+    return new Threshold(DEFAULT_THRESHOLD, "default: roboRIO 1 (6.3 V); a roboRIO 2 defaults "
+        + "to configurable 6.75 V, and this log does not record which is installed", null);
   }
 
   /**

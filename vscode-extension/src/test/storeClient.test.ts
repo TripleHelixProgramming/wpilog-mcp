@@ -18,7 +18,7 @@ test("mirror requests use local controls and exact configuration and session IDs
     response.end(JSON.stringify({ state: "synchronized", age_sec: 2 }));
   });
   try {
-    const client = new StoreClient(host.url); const config = mirrorRequest("http://pit:2363", {}, "/storage", path.posix)!;
+    const client = new StoreClient(host.url); const config = mirrorRequest("http://pit:2363", { enabled: true }, "/storage", path.posix)!;
     assert.equal((await client.configure(config)).state, "synchronized"); await client.status(); await client.syncNow();
     await client.pin("boot-1", true); await client.pin("boot-1", false); await client.disable();
     assert.deepEqual(seen, [

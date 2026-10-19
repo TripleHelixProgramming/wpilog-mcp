@@ -48,7 +48,10 @@ class VisualizationEndpointTest {
   }
   String base() { return "http://127.0.0.1:" + server.getPort(); }
   HttpResponse<String> raw(String route, String body, String owner, String origin) throws Exception {
-    var builder = HttpRequest.newBuilder(URI.create(base() + "/visualizations/v1" + route))
+    return rawVersion(1, route, body, owner, origin);
+  }
+  HttpResponse<String> rawVersion(int version, String route, String body, String owner, String origin) throws Exception {
+    var builder = HttpRequest.newBuilder(URI.create(base() + "/visualizations/v" + version + route))
         .timeout(Duration.ofSeconds(15)).header("Content-Type", "application/json")
         .method(body == null ? "GET" : "POST", body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
     if (owner != null) builder.header("Mcp-Session-Id", owner);
@@ -79,6 +82,268 @@ class VisualizationEndpointTest {
   String route(JsonObject view) { return "/views/" + view.get("view_id").getAsString(); }
   /** The workspace's public ID for a session's window; ownership itself stays with the session. */
   String windowId(String owner) throws Exception { return registry.visualizations().views.windowIds().forSession(owner); }
+
+  @Test void remoteApi2SharesSourceReadsAndLibraryEditsButCannotUseLocalAdministration() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var path = fixture("remote", 3);
+    var caps = proxyVisualization(2, "/capabilities", null);
+    assertEquals(200, caps.statusCode(), caps.body());
+    assertTrue(JsonParser.parseString(caps.body()).getAsJsonObject().get("remote_visualization").getAsBoolean());
+    var window = proxyVisualization(2, "/window", "{\"decoded_buffer_budget_bytes\":67108864}");
+    assertEquals(200, window.statusCode(), window.body());
+    assertEquals(67108864, JsonParser.parseString(window.body()).getAsJsonObject().get("decoded_buffer_budget_bytes").getAsLong());
+    assertEquals(400, proxyVisualization(2, "/window", "{\"decoded_buffer_budget_bytes\":67108864,\"client_id\":\"other\"}").statusCode());
+    assertEquals(403, proxyVisualization(1, "/capabilities", null).statusCode());
+    assertEquals(403, proxyVisualization(2, "/library/migrate", "{}").statusCode());
+    assertEquals(403, proxyVisualization(2, "/stores", null).statusCode());
+    var identified = proxyVisualization(2, "/source", obj("path", path.toString()).toString());
+    assertEquals(200, identified.statusCode(), identified.body());
+    var ref = JsonParser.parseString(identified.body()).getAsJsonObject().getAsJsonObject("source_ref");
+    assertEquals(2, ref.get("schema_version").getAsInt());
+    var args = object("source_ref", ref); args.addProperty("entry", "/value");
+    var stats = proxyVisualization(2, "/source/statistics", args.toString());
+    assertEquals(200, stats.statusCode(), stats.body());
+    assertEquals(12, JsonParser.parseString(stats.body()).getAsJsonObject().get("mean").getAsDouble());
+    args.addProperty("api_version", 2);
+    var message = new JsonObject(); message.addProperty("jsonrpc", "2.0"); message.addProperty("id", 20); message.addProperty("method", "tools/call");
+    var params = obj("name", "visualization_source_statistics"); params.add("arguments", args); message.add("params", params);
+    var mcp = http.send(HttpRequest.newBuilder(URI.create(base() + "/mcp"))
+        .header("Mcp-Session-Id", session).header("Forwarded", "for=192.0.2.1").header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(message.toString())).build(), HttpResponse.BodyHandlers.ofString());
+    var text = JsonParser.parseString(mcp.body()).getAsJsonObject().getAsJsonObject("result").getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString();
+    var result = JsonParser.parseString(text).getAsJsonObject(); assertEquals("ok", result.get("status").getAsString(), text);
+    assertEquals(12, result.getAsJsonObject("statistics").get("mean").getAsDouble());
+    var create = object("source_ref", ref); create.addProperty("request_id", UUID.randomUUID().toString());
+    var created = proxyVisualization(2, "/views", create.toString()); assertEquals(200, created.statusCode(), created.body());
+    var view = JsonParser.parseString(created.body()).getAsJsonObject();
+    assertEquals(200, proxyVisualization(2, route(view) + "/attach", "{}").statusCode());
+    var save = obj("request_id", UUID.randomUUID().toString()); save.add("revision", view.get("revision")); save.addProperty("title", "Remote layout");
+    var saved = proxyVisualization(2, route(view) + "/save", save.toString()); assertEquals(200, saved.statusCode(), saved.body());
+    assertTrue(JsonParser.parseString(saved.body()).getAsJsonObject().getAsJsonObject("saved_view_ref").has("library_id"));
+    for (String admin : List.of("/directories", "/tba-key", "/pit-credential")) {
+      var denied = http.send(HttpRequest.newBuilder(URI.create(base() + admin)).header("Forwarded", "for=192.0.2.1")
+          .header("Mcp-Session-Id", session).POST(HttpRequest.BodyPublishers.ofString("{}")).build(), HttpResponse.BodyHandlers.ofString());
+      assertEquals(403, denied.statusCode(), admin);
+    }
+    assertEquals(403, rawVersion(2, "/capabilities", null, session, "https://denied.invalid").statusCode());
+  }
+
+  private HttpResponse<String> proxyVisualization(int version, String route, String body) throws Exception {
+    return http.send(HttpRequest.newBuilder(URI.create(base() + "/visualizations/v" + version + route))
+        .header("Mcp-Session-Id", session).header("Forwarded", "for=192.0.2.1").header("Content-Type", "application/json")
+        .method(body == null ? "GET" : "POST", body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body))
+        .build(), HttpResponse.BodyHandlers.ofString());
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"reduction", "histogram", "scatter"})
+  void remoteApi2ChartsUseQualifiedContent(String chart) throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var identified = proxyVisualization(2, "/source", obj("path", fixture("remote-chart", 3).toString()).toString());
+    assertEquals(200, identified.statusCode(), identified.body());
+    var ref = JsonParser.parseString(identified.body()).getAsJsonObject().getAsJsonObject("source_ref");
+    var args = object("source_ref", ref);
+    if (chart.equals("scatter")) { args.addProperty("x_entry", "/value"); args.addProperty("y_entry", "/value"); }
+    else args.addProperty("entry", "/value");
+    var reply = proxyVisualization(2, "/source/" + chart, args.toString());
+    assertEquals(200, reply.statusCode(), reply.body());
+    var result = JsonParser.parseString(reply.body()).getAsJsonObject();
+    assertEquals("ok", result.get("status").getAsString(), result.toString());
+    assertEquals(ref, result.getAsJsonObject("inputs").get("source_ref"));
+    args.addProperty("api_version", 2);
+    assertEquals(result, tool("visualization_source_" + chart, args).get(chart));
+  }
+
+  @Test void dataSourceSelectionRefusalRetainsChoicesAndRemedy() throws Exception {
+    var path = fixture("unknown-data-scope", 3);
+    var choices = LogManager.getInstance().sourceScopes().snapshot();
+    var uri = URI.create(base() + "/data/entries?names=/value&format=csv&path="
+        + java.net.URLEncoder.encode(path.toString(), java.nio.charset.StandardCharsets.UTF_8)
+        + "&scope_id=" + UUID.randomUUID());
+    var reply = http.send(HttpRequest.newBuilder(uri).GET().build(), HttpResponse.BodyHandlers.ofString());
+    assertEquals(409, reply.statusCode(), reply.body());
+    var body = JsonParser.parseString(reply.body()).getAsJsonObject();
+    assertEquals("SOURCE_UNAVAILABLE", body.get("code").getAsString());
+    assertEquals(choices.size(), body.getAsJsonArray("source_scopes").size());
+    assertEquals(choices.get(0).id(), body.getAsJsonArray("source_scopes").get(0).getAsJsonObject().get("scope_id").getAsString());
+    assertTrue(body.get("hint").getAsString().contains("list_source_scopes"));
+  }
+
+  @Test void dataSourceMissingFileStillReturnsNotFound() throws Exception {
+    var uri = URI.create(base() + "/data/entries?names=/value&path="
+        + java.net.URLEncoder.encode(temp.resolve("missing.wpilog").toString(), java.nio.charset.StandardCharsets.UTF_8));
+    var reply = http.send(HttpRequest.newBuilder(uri).GET().build(), HttpResponse.BodyHandlers.ofString());
+    assertEquals(404, reply.statusCode(), reply.body());
+  }
+
+  @Test void dataStreamKeepsTheSelectedServerScopeAndSourceEvenForCachedReplies() throws Exception {
+    var path = fixture("remote-data", 3); var other = fixture("other-data", 7);
+    var identified = proxyVisualization(2, "/source", obj("path", path.toString()).toString());
+    var ref = JsonParser.parseString(identified.body()).getAsJsonObject().getAsJsonObject("source_ref");
+    String query = "/data/entries?names=/value&format=csv&source_ref=" + java.net.URLEncoder.encode(ref.toString(), java.nio.charset.StandardCharsets.UTF_8);
+    java.util.function.Function<Path, URI> url = file -> URI.create(base() + query + "&path=" + java.net.URLEncoder.encode(file.toString(), java.nio.charset.StandardCharsets.UTF_8));
+    var reply = http.send(HttpRequest.newBuilder(url.apply(path)).GET().build(), HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, reply.statusCode(), reply.body()); assertTrue(reply.body().contains("12.0"), reply.body());
+    assertEquals(409, http.send(HttpRequest.newBuilder(url.apply(other)).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+    assertEquals(409, http.send(HttpRequest.newBuilder(URI.create(url.apply(path) + "&server_instance_id=" + UUID.randomUUID())).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+    assertEquals(400, http.send(HttpRequest.newBuilder(URI.create(url.apply(path) + "&scope_id=" + UUID.randomUUID())).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+    java.nio.file.Files.writeString(path, "changed synthetic bytes");
+    var stale = http.send(HttpRequest.newBuilder(url.apply(path)).header("If-None-Match", reply.headers().firstValue("ETag").orElseThrow()).GET().build(), HttpResponse.BodyHandlers.ofString());
+    assertEquals(409, stale.statusCode(), stale.body());
+  }
+
+  @Test void serverLibrarySharesHttpMcpPersistenceWithoutAnyLogStoreDestination() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var body = obj("request_id", UUID.randomUUID().toString()); body.addProperty("name", "Library parity"); body.addProperty("description", "Synthetic"); body.add("configuration", VisualizationContracts.blank());
+    var reply = rawVersion(2, "/templates/create", body.toString(), session, null); assertEquals(200, reply.statusCode(), reply.body());
+    var created = JsonParser.parseString(reply.body()).getAsJsonObject(); var get = object("template_ref", created.get("template_ref")); get.addProperty("api_version", 2);
+    assertEquals(created, tool("visualization_template_get", get).get("definition"));
+    get.addProperty("api_version", 1);
+    assertEquals(400, rawVersion(1, "/templates/get", get.toString(), session, null).statusCode());
+    assertEquals("error", tool("visualization_template_get", get).get("status").getAsString());
+    get.addProperty("api_version", 2);
+    body.addProperty("unexpected", true); assertEquals(400, rawVersion(2, "/templates/create", body.toString(), session, null).statusCode()); body.remove("unexpected");
+    body.addProperty("store_id", UUID.randomUUID().toString()); assertEquals(400, rawVersion(2, "/templates/create", body.toString(), session, null).statusCode());
+    var view = create(source(fixture("library", 1))); call(route(view) + "/attach", new JsonObject());
+    var save = obj("request_id", UUID.randomUUID().toString()); save.add("revision", view.get("revision")); save.addProperty("title", "No store");
+    var savedReply = rawVersion(2, route(view) + "/save", save.toString(), session, null); assertEquals(200, savedReply.statusCode(), savedReply.body());
+    var saved = JsonParser.parseString(savedReply.body()).getAsJsonObject(); assertTrue(saved.getAsJsonObject("saved_view_ref").has("library_id"));
+    assertEquals(400, rawVersion(1, route(view), null, session, null).statusCode());
+    assertEquals(saved, JsonParser.parseString(rawVersion(2, route(view) + "/save", save.toString(), session, null).body()));
+    var open = object("saved_view_ref", saved.get("saved_view_ref")); open.addProperty("api_version", 2); open.addProperty("request_id", UUID.randomUUID().toString());
+    var reopened = tool("visualization_saved_view_open", open); assertEquals("ok", reopened.get("status").getAsString());
+    assertEquals(saved.get("configuration"), reopened.getAsJsonObject("view").get("configuration"));
+    var list = obj("kind", "view"); list.addProperty("api_version", 2); list.addProperty("limit", 1);
+    var listed = tool("visualization_library_list", list); assertEquals(1, listed.getAsJsonObject("catalog").get("total_matching").getAsInt());
+    assertEquals(1, listed.getAsJsonObject("limits").getAsJsonObject("catalog.items").get("total").getAsInt());
+    list.addProperty("query", "missing"); assertEquals("no_match", tool("visualization_library_list", list).get("status").getAsString());
+    assertEquals(403, rawVersion(2, "/library/list", list.toString(), session, "https://foreign.invalid").statusCode());
+    assertEquals(400, rawVersion(2, "/library/list", "{\"kind\":\"view\",\"kind\":\"template\"}", session, null).statusCode());
+    LogManager.getInstance().clearAllowedDirectories(); LogManager.getInstance().addAllowedDirectory(temp.resolve("state"));
+    var refused = tool("visualization_saved_view_open", open); assertEquals("error", refused.get("status").getAsString());
+    assertFalse(Files.exists(temp.resolve("store.json")));
+  }
+
+  @Test void libraryTemplateLimitsCountTemplatesSeparatelyFromUnavailableRows() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var directory = Files.createDirectories(temp.resolve("state/library/objects"));
+    var damaged = directory.resolve("template-" + UUID.randomUUID() + ".json");
+    Files.writeString(damaged, "broken synthetic record");
+    var args = obj("query", ""); args.addProperty("api_version", 2);
+    var reply = tool("visualization_template_list", args); var catalog = reply.getAsJsonObject("catalog");
+    var limits = reply.getAsJsonObject("limits").getAsJsonObject("catalog.templates");
+    assertEquals(catalog.getAsJsonArray("templates").size(), limits.get("returned").getAsInt());
+    assertEquals(catalog.getAsJsonArray("templates").size(), limits.get("total").getAsInt());
+    assertEquals(1, catalog.getAsJsonArray("unreadable").size()); assertEquals("partial", reply.get("status").getAsString());
+    assertEquals("broken synthetic record", Files.readString(damaged));
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.CsvSource({
+      "http, 1, false, false", "mcp, 1, false, false",
+      "http, 1, true, false", "mcp, 1, true, false",
+      "http, 2, false, false", "mcp, 2, false, false",
+      "http, 2, false, true", "mcp, 2, false, true"})
+  void nestedDirectorySourceSelectionKeepsLegacyAbsolutePaths(String adapter, int version,
+      boolean relative, boolean selected) throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    // Keep the fixture on the working directory's volume so its relative spelling works on Windows.
+    var outer = Files.createTempDirectory(Path.of("build"), "nested-source-").toRealPath();
+    var inner = Files.createDirectory(outer.resolve("2026"));
+    var logs = LogManager.getInstance();
+    try {
+      var path = Files.move(fixture("nested", 3), inner.resolve("source.wpilog"));
+      logs.clearAllowedDirectories(); logs.addAllowedDirectory(outer); logs.addAllowedDirectory(inner);
+      String scopeId = logs.sourceScopes().snapshot().stream().filter(s -> s.root().equals(inner))
+          .findFirst().orElseThrow().id();
+      var request = obj("path", (relative ? Path.of("").toRealPath().relativize(path) : path).toString());
+      if (selected) request.addProperty("scope_id", scopeId);
+      boolean accepted = version == 1 ? !relative : selected;
+      JsonObject result;
+      if (adapter.equals("http")) {
+        var reply = rawVersion(version, "/source", request.toString(), session, null);
+        assertEquals(accepted ? 200 : 409, reply.statusCode(), reply.body());
+        result = JsonParser.parseString(reply.body()).getAsJsonObject();
+      } else {
+        request.addProperty("api_version", version);
+        result = tool("visualization_source_inspect", request);
+        assertEquals(accepted ? "ok" : "error", result.get("status").getAsString(), result.toString());
+        if (accepted) result = result.getAsJsonObject("source");
+      }
+      if (accepted) {
+        var reference = result.getAsJsonObject("source_ref");
+        if (version == 1) assertFalse(reference.has("schema_version"));
+        else assertEquals(scopeId, reference.get("scope_id").getAsString());
+      } else {
+        assertEquals("SOURCE_SELECTION_REQUIRED", result.get("code").getAsString(), result.toString());
+        assertEquals(2, result.getAsJsonArray("source_scopes").size());
+        if (version == 1) {
+          String hint = result.get("hint").getAsString();
+          assertTrue(hint.contains("absolute path"), hint);
+          assertTrue(hint.contains("list_available_logs"), hint);
+          assertTrue(hint.contains("api_version 2 with scope_id"), hint);
+        }
+      }
+    } finally {
+      logs.release(outer);
+      try (var files = Files.walk(outer)) {
+        for (var file : files.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(file);
+      }
+    }
+  }
+
+  @Test void qualifiedSourcesHaveHttpMcpParityWithoutRelaxingV1OrRemoteAdmission() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var first = Files.createDirectory(temp.resolve("first"));
+    var second = Files.createDirectory(temp.resolve("second"));
+    var path = Files.move(fixture("first", 1), first.resolve("same.wpilog"));
+    Files.move(fixture("second", 10), second.resolve("same.wpilog"));
+    var logs = LogManager.getInstance(); logs.clearAllowedDirectories(); logs.addAllowedDirectory(first); logs.addAllowedDirectory(second);
+    var choices = rawVersion(2, "/source/scopes", "{}", session, null);
+    assertEquals(200, choices.statusCode(), choices.body());
+    var scopes = JsonParser.parseString(choices.body()).getAsJsonObject().getAsJsonArray("source_scopes");
+    assertEquals(2, scopes.size());
+    for (String invalid : List.of("{\"offset\":0.5}", "{\"limit\":\"2\"}", "{\"unknown\":1}"))
+      assertEquals(400, rawVersion(2, "/source/scopes", invalid, session, null).statusCode());
+    String scope = java.util.stream.StreamSupport.stream(scopes.spliterator(), false).map(JsonElement::getAsJsonObject)
+        .filter(row -> row.get("path").getAsString().equals(first.toString())).findFirst().orElseThrow().get("scope_id").getAsString();
+    var identify = obj("path", path.toString()); identify.addProperty("scope_id", scope);
+    var identified = rawVersion(2, "/source", identify.toString(), session, null);
+    assertEquals(200, identified.statusCode(), identified.body());
+    var ref = JsonParser.parseString(identified.body()).getAsJsonObject().getAsJsonObject("source_ref");
+    assertEquals(2, ref.get("schema_version").getAsInt()); assertEquals(scope, ref.get("scope_id").getAsString());
+    identify.addProperty("api_version", 2);
+    var inspection = tool("visualization_source_inspect", identify);
+    assertEquals(2, inspection.get("api_version").getAsInt());
+    assertEquals(ref, inspection.getAsJsonObject("source").get("source_ref"));
+    var args = object("source_ref", ref); args.addProperty("api_version", 2); args.addProperty("entry", "/value");
+    var response = rawVersion(2, "/source/statistics", args.toString(), session, null);
+    assertEquals(200, response.statusCode(), response.body());
+    var stats = JsonParser.parseString(response.body()).getAsJsonObject();
+    assertEquals(4.0, stats.get("mean").getAsDouble()); assertEquals(3, stats.get("count").getAsInt());
+    assertEquals(stats, tool("visualization_source_statistics", args).get("statistics"));
+    assertEquals(400, rawVersion(1, "/source/statistics", args.toString(), session, null).statusCode());
+    args.addProperty("api_version", 1);
+    assertEquals("error", tool("visualization_source_statistics", args).get("status").getAsString());
+    args.addProperty("api_version", 2);
+    assertEquals(403, rawVersion(2, "/source/statistics", args.toString(), session, "https://denied.invalid").statusCode());
+    var create = object("source_ref", ref); create.addProperty("request_id", UUID.randomUUID().toString());
+    var created = rawVersion(2, "/views", create.toString(), session, null);
+    assertEquals(200, created.statusCode(), created.body());
+    var view = JsonParser.parseString(created.body()).getAsJsonObject();
+    assertEquals(400, rawVersion(1, route(view), null, session, null).statusCode());
+    var get = obj("view_id", view.get("view_id").getAsString()); get.addProperty("api_version", 1);
+    assertEquals("error", tool("visualization_view_get", get).get("status").getAsString());
+    var update = get.deepCopy(); update.addProperty("expected_revision", 1);
+    update.addProperty("request_id", UUID.randomUUID().toString()); update.addProperty("configuration_json", VisualizationContracts.blank().toString());
+    assertEquals("error", tool("visualization_view_update", update).get("status").getAsString());
+    get.addProperty("api_version", 2);
+    assertEquals(1, tool("visualization_view_get", get).getAsJsonObject("view").get("revision").getAsInt(), "Refused v1 edit made no mutation");
+    logs.clearAllowedDirectories(); logs.addAllowedDirectory(second);
+    assertEquals(409, rawVersion(2, "/source/statistics", args.toString(), session, null).statusCode());
+    var refused = tool("visualization_source_statistics", args);
+    assertEquals("SOURCE_UNAVAILABLE", refused.get("code").getAsString()); assertEquals(2, refused.get("api_version").getAsInt());
+  }
 
   @Test void windowBudgetsAreReportedSeparatelyAndExpireWithTheirSession() throws Exception {
     var caps = call("/capabilities", null);
@@ -186,6 +451,268 @@ class VisualizationEndpointTest {
     assertEquals(400, raw("/window", "{\"decoded_buffer_budget_bytes\":67108864,\"client_id\":\"other\"}", session, null).statusCode());
     assertEquals(403, raw("/window", "{\"decoded_buffer_budget_bytes\":67108864}", session, "https://untrusted.invalid").statusCode());
     assertTrue(call("/capabilities", null).getAsJsonArray("attached_windows").isEmpty());
+  }
+
+  @Test void denseHistoryKeepsEarlyExtremesAndEveryMemberWithHttpMcpParity() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("dense-recording"), 0);
+    for (int member = 0; member < 2; member++) {
+      int part = member;
+      recording.rewrite(member, w -> {
+        int id = w.start("/value", "double", "", 0);
+        // Backward physical timestamps force the shared chronological ordering. The spike
+        // lies outside the last 4096 samples, and equal times span both recording members.
+        for (int i = 4999; i >= 0; i--) w.append(id, i * 1000L, WpilogWriter.encodeDouble(i == 10 && part == 0 ? 10000 : part * 2));
+      });
+    }
+    call("/stores", null);
+    var args = object("source_ref", recording.reference); args.addProperty("api_version", 1); args.addProperty("entry", "/value");
+    args.addProperty("start_time", 0); args.addProperty("end_time", 5); args.addProperty("max_points", 5);
+    var result = call("/source/reduction", args);
+    assertEquals("ok", result.get("status").getAsString()); assertEquals(10000, result.get("sample_count").getAsInt());
+    assertEquals(10000, result.get("finite_count").getAsInt()); assertEquals(10000, result.get("records_visited").getAsInt());
+    var buckets = result.getAsJsonArray("buckets"); assertEquals(5, buckets.size());
+    for (int i = 0; i < 5; i++) {
+      var b = buckets.get(i).getAsJsonObject();
+      assertEquals(Long.toString(i * 1_000_000L), b.get("start_us").getAsString());
+      assertEquals(Long.toString((i + 1) * 1_000_000L), b.get("end_us").getAsString());
+      assertEquals(2000, b.get("count").getAsInt()); assertEquals(2000, b.get("finite_count").getAsInt());
+      assertEquals(0, b.get("min").getAsDouble()); assertEquals(i == 0 ? 10000 : 2, b.get("max").getAsDouble());
+      assertEquals(i == 0 ? 6 : 1, b.get("mean").getAsDouble());
+      assertEquals(0, b.get("first").getAsDouble()); assertEquals(2, b.get("last").getAsDouble());
+    }
+    assertEquals(recording.reference, result.getAsJsonObject("inputs").get("source_ref"));
+    assertEquals(2, result.getAsJsonObject("prefix").getAsJsonArray("members").size());
+    assertEquals(result, tool("visualization_source_reduction", args).get("reduction"));
+    assertTrue(call("/capabilities", null).get("source_reduction").getAsBoolean());
+  }
+
+  @Test void reducedHistoryEmptyAndUnsafeValuesAreExplicitWithInclusiveEdges() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var path = temp.resolve("reduction-gaps.wpilog");
+    try (var w = new WpilogWriter(path, "")) {
+      int id = w.start("/value", "int64", "", 0);
+      w.append(id, 1_000_000, WpilogWriter.encodeInt64(9007199254740993L));
+      w.append(id, 2_000_000, WpilogWriter.encodeInt64(4));
+    }
+    var args = object("source_ref", source(path)); args.addProperty("api_version", 1); args.addProperty("entry", "/value");
+    args.addProperty("start_time", 1); args.addProperty("end_time", 2); args.addProperty("max_points", 2);
+    var result = call("/source/reduction", args); assertEquals(2, result.get("sample_count").getAsInt());
+    assertEquals(1, result.get("finite_count").getAsInt()); assertEquals(1, result.get("unplottable_count").getAsInt());
+    var first = result.getAsJsonArray("buckets").get(0).getAsJsonObject();
+    for (var key : List.of("min", "max", "mean", "first", "last")) assertTrue(first.get(key).isJsonNull(), key);
+    assertEquals(4, result.getAsJsonArray("buckets").get(1).getAsJsonObject().get("mean").getAsInt());
+    args.addProperty("start_time", 3); args.addProperty("end_time", 4);
+    var empty = call("/source/reduction", args); assertEquals("no_match", empty.get("status").getAsString());
+    assertEquals(0, empty.get("sample_count").getAsInt()); assertTrue(empty.getAsJsonArray("buckets").isEmpty());
+    assertTrue(empty.has("hint")); assertEquals("no_match", tool("visualization_source_reduction", args).get("status").getAsString());
+  }
+
+  @Test void reductionRelativeWindowUsesTheSharedSourceClockAndKeepsInputImmutable() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var args = object("source_ref", source(fixture("reduction-relative", 1))); args.addProperty("api_version", 1); args.addProperty("entry", "/value");
+    args.addProperty("last_seconds", .5); args.addProperty("max_points", 1); var before = args.deepCopy();
+    var result = call("/source/reduction", args); assertEquals(2, result.get("sample_count").getAsInt());
+    assertEquals("1500000", result.getAsJsonObject("window").get("start_us").getAsString()); assertEquals("2000000", result.getAsJsonObject("window").get("end_us").getAsString());
+    var b = result.getAsJsonArray("buckets").get(0).getAsJsonObject(); assertEquals(5, b.get("mean").getAsDouble()); assertEquals(4, b.get("min").getAsDouble()); assertEquals(6, b.get("max").getAsDouble());
+    assertEquals(before, args); assertEquals(result, tool("visualization_source_reduction", args).get("reduction"));
+    args.addProperty("start_time", 1); assertEquals(400, raw("/source/reduction", args.toString(), session, null).statusCode()); args.remove("start_time");
+    for (var invalid : List.of("0", "-1", "true", "\"1\"", "1e400")) { args.add("last_seconds", JsonParser.parseString(invalid)); assertEquals(400, raw("/source/reduction", args.toString(), session, null).statusCode()); }
+  }
+
+  @Test void reductionLeavesKeepAvailableArrayElementsAndAccountForMissingOnBothAdapters() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("array-leaves"), 0);
+    recording.rewrite(0, w -> {
+      int id = w.start("/n", "double[]", "", 0);
+      w.append(id, 1_000_000, java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.LITTLE_ENDIAN).putDouble(3).putDouble(5).array());
+      w.append(id, 2_000_000, new byte[0]);
+    });
+    recording.rewrite(1, w -> {
+      int id = w.start("/n", "double[]", "", 0);
+      w.append(id, 3_000_000, java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.LITTLE_ENDIAN).putDouble(7).putDouble(11).array());
+    });
+    call("/stores", null);
+    var args = object("source_ref", recording.reference); args.addProperty("api_version", 1); args.addProperty("entry", "/n"); args.addProperty("field", "[1]"); args.addProperty("max_points", 1);
+    var result = call("/source/reduction", args); assertEquals(result, tool("visualization_source_reduction", args).get("reduction"));
+    assertEquals(3, result.get("sample_count").getAsInt()); assertEquals(2, result.get("finite_count").getAsInt()); assertEquals(1, result.get("unplottable_count").getAsInt());
+    var bucket = result.getAsJsonArray("buckets").get(0).getAsJsonObject();
+    assertEquals(5, bucket.get("min").getAsDouble()); assertEquals(11, bucket.get("max").getAsDouble()); assertEquals(8, bucket.get("mean").getAsDouble());
+    args.addProperty("start_time", 2); args.addProperty("end_time", 2);
+    result = call("/source/reduction", args); assertEquals(result, tool("visualization_source_reduction", args).get("reduction"));
+    assertEquals(1, result.get("sample_count").getAsInt()); assertEquals(0, result.get("finite_count").getAsInt()); assertEquals(1, result.get("unplottable_count").getAsInt());
+    bucket = result.getAsJsonArray("buckets").get(0).getAsJsonObject();
+    for (String key : List.of("min", "max", "mean", "first", "last")) assertTrue(bucket.get(key).isJsonNull(), key);
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"int64", "enum", "uint64", "uint64_enum"})
+  void reductionLeavesCheckExactIntegerBoundariesBeforeConversionOnBothAdapters(String type) throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    long safe = 9_007_199_254_740_991L;
+    boolean unsigned = type.startsWith("uint64");
+    long[] values = unsigned ? new long[]{0, safe - 1, safe, safe + 1, safe + 2, Long.MAX_VALUE, -1}
+        : new long[]{-safe - 2, -safe - 1, -safe, -safe + 1, 0, 1, safe - 1, safe, safe + 1, safe + 2};
+    var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("integral-leaves"), 0);
+    for (int member = 0; member < 2; member++) {
+      int part = member;
+      recording.rewrite(member, w -> {
+        if (!type.equals("int64")) {
+          int schema = w.start("/.schema/struct:Scalar", "structschema", "", 0);
+          w.append(schema, 0, ((type.contains("enum") ? "enum {Off=0, On=1} " : "") + (unsigned ? "uint64" : "int64") + " x;").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        int id = w.start("/n", type.equals("int64") ? "int64" : "struct:Scalar", "", 0);
+        for (int i = part; i < values.length; i += 2) w.append(id, i * 1_000_000L, WpilogWriter.encodeInt64(values[i]));
+      });
+    }
+    call("/stores", null);
+    var args = object("source_ref", recording.reference); args.addProperty("api_version", 1); args.addProperty("entry", "/n");
+    if (!type.equals("int64")) args.addProperty("field", ".x");
+    args.addProperty("start_time", 0); args.addProperty("end_time", values.length); args.addProperty("max_points", values.length);
+    var result = call("/source/reduction", args); assertEquals(result, tool("visualization_source_reduction", args).get("reduction"));
+    assertEquals(values.length, result.get("sample_count").getAsInt()); assertEquals(values.length, result.getAsJsonArray("buckets").size());
+    int finite = 0;
+    for (int i = 0; i < values.length; i++) {
+      boolean exact = values[i] >= -safe && values[i] <= safe && (!unsigned || values[i] >= 0);
+      if (exact) finite++;
+      var bucket = result.getAsJsonArray("buckets").get(i).getAsJsonObject();
+      assertEquals(1, bucket.get("count").getAsInt()); assertEquals(exact ? 1 : 0, bucket.get("finite_count").getAsInt(), "ordinal " + i);
+      for (String key : List.of("min", "max", "mean", "first", "last")) {
+        if (exact) assertEquals((double) values[i], bucket.get(key).getAsDouble(), key + " ordinal " + i);
+        else assertTrue(bucket.get(key).isJsonNull(), key + " ordinal " + i);
+      }
+    }
+    assertEquals(finite, result.get("finite_count").getAsInt()); assertEquals(values.length - finite, result.get("unplottable_count").getAsInt());
+    var rawArgs = object("source_ref", recording.reference); rawArgs.addProperty("entry", "/n");
+    if (!type.equals("int64")) rawArgs.addProperty("field", ".x");
+    var exactValue = call("/source/value", rawArgs).getAsJsonObject("value");
+    assertEquals(unsigned ? "18446744073709551615" : "9007199254740993", exactValue.get("value").getAsString(),
+        "Rejecting unsafe plot values must leave their original raw integers available");
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"int64", "uint64"})
+  void reductionLeavesUseNumericEnumMeansAcrossMembers(String type) throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("enum-means"), 0);
+    for (int member = 0; member < 2; member++) {
+      int value = member;
+      recording.rewrite(member, w -> {
+        int schema = w.start("/.schema/struct:Scalar", "structschema", "", 0);
+        w.append(schema, 0, ("enum {Off=0, On=1} " + type + " x;").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int id = w.start("/n", "struct:Scalar", "", 0); w.append(id, (value + 1) * 1_000_000L, WpilogWriter.encodeInt64(value));
+      });
+    }
+    call("/stores", null);
+    var args = object("source_ref", recording.reference); args.addProperty("api_version", 1);
+    args.addProperty("entry", "/n"); args.addProperty("field", ".x"); args.addProperty("max_points", 1);
+    var result = call("/source/reduction", args); assertEquals(result, tool("visualization_source_reduction", args).get("reduction"));
+    var bucket = result.getAsJsonArray("buckets").get(0).getAsJsonObject();
+    assertEquals(2, bucket.get("count").getAsInt()); assertEquals(2, bucket.get("finite_count").getAsInt());
+    assertEquals(0, bucket.get("min").getAsDouble()); assertEquals(1, bucket.get("max").getAsDouble());
+    assertEquals(.5, bucket.get("mean").getAsDouble()); assertEquals(0, result.get("unplottable_count").getAsInt());
+  }
+
+  @Test void reductionRequestLimitsAndAuthorityAreTheSameOnBothAdapters() throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var r = object("source_ref", source(fixture("reduction-admission", 1))); r.addProperty("api_version", 1); r.addProperty("entry", "/value");
+    assertEquals(3, call("/source/reduction", r).get("sample_count").getAsInt());
+    assertEquals(403, raw("/source/reduction", r.toString(), session, "https://untrusted.invalid").statusCode());
+    assertEquals(400, raw("/source/reduction", r.toString(), null, null).statusCode());
+    assertEquals(400, raw("/source/reduction", "{broken", session, null).statusCode());
+    r.addProperty("max_points", 0); assertEquals(400, raw("/source/reduction", r.toString(), session, null).statusCode());
+    assertEquals("error", tool("visualization_source_reduction", r).get("status").getAsString()); r.remove("max_points");
+    assertEquals(413, raw("/source/reduction", " ".repeat(65536) + r, session, null).statusCode());
+    var rpc = "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"visualization_source_reduction\",\"arguments\":" + r + "}}";
+    var reply = http.send(HttpRequest.newBuilder(URI.create(base() + "/mcp")).header("Content-Type", "application/json").header("Mcp-Session-Id", session)
+        .POST(HttpRequest.BodyPublishers.ofString(" ".repeat(65536) + rpc)).build(), HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, reply.statusCode());
+    var envelope = JsonParser.parseString(reply.body()).getAsJsonObject().getAsJsonObject("result");
+    assertTrue(envelope.get("isError").getAsBoolean()); assertTrue(reply.body().contains("64 KiB"));
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.CsvSource({"statistics,file", "histogram,file", "scatter,file", "reduction,file",
+      "statistics,finalized", "histogram,finalized", "scatter,finalized", "reduction,finalized",
+      "statistics,clock", "histogram,clock", "scatter,clock", "reduction,clock",
+      "statistics,no-clock", "histogram,no-clock", "scatter,no-clock", "reduction,no-clock",
+      "statistics,negative-clock", "histogram,negative-clock", "scatter,negative-clock", "reduction,negative-clock"})
+  void emptySourceRelativeWindowsRecoverAfterFirstSampleOnBothAdapters(String operation, String mode) throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("empty-relative"), 0);
+    boolean active = !mode.equals("file") && !mode.equals("finalized");
+    var clock = new java.util.concurrent.atomic.AtomicReference<Double>(mode.equals("no-clock") ? null : mode.equals("negative-clock") ? -3_000_000.0 : 3_000_000.0);
+    var path = recording.directory.resolve("capture.wpilog");
+    org.triplehelix.wpilogmcp.capture.CaptureWriter writer = null;
+    var topic = new org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce("/x", 1, "int", null, new JsonObject());
+    try {
+      if (active) {
+        Files.delete(path);
+        var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex((address, start) -> path, LogManager.getInstance(), 10_000_000, clock::get);
+        writer = new org.triplehelix.wpilogmcp.capture.CaptureWriter(java.time.Clock.fixed(java.time.Instant.parse(org.triplehelix.wpilogmcp.fixtures.RecordingFixture.WHEN), java.time.ZoneOffset.UTC),
+            new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler(), org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, index);
+        writer.connected(org.triplehelix.wpilogmcp.nt4.client.RobotAddress.uri("127.0.0.1", 5810, "empty-fixture"), "networktables.first.wpi.edu");
+        writer.timeSync(1_000_000, 0); writer.announce(topic);
+        var manifest = recording.directory.resolve("session.json"); var state = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+        var old = state.getAsJsonArray("files").remove(0).getAsJsonObject();
+        var provenance = org.triplehelix.wpilogmcp.store.StoreJson.JSON.fromJson(old.get("provenance"), org.triplehelix.wpilogmcp.store.StoreManifest.Provenance.class);
+        var open = org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJsonTree(new org.triplehelix.wpilogmcp.store.StoreManifest.OpenCapture("capture.wpilog", provenance, Files.size(path), 0, 0));
+        state.add("open_capture", open); Files.writeString(manifest, state.toString()); LogManager.getInstance().catalogPublished();
+      } else recording.rewrite(0, w -> w.start("NT:/x", "int64", "", 0));
+      call("/stores", null);
+      var source = mode.equals("file") ? source(path) : recording.reference;
+      var args = object("source_ref", source); args.addProperty("api_version", 1); args.addProperty("last_seconds", 30);
+      if (operation.equals("scatter")) { args.addProperty("x_entry", "NT:/x"); args.addProperty("y_entry", "NT:/x"); }
+      else args.addProperty("entry", "NT:/x");
+      var result = call("/source/" + operation, args);
+      assertEquals("no_match", result.get("status").getAsString()); assertTrue(result.has("hint"));
+      var mcp = tool("visualization_source_" + operation, args); assertEquals("no_match", mcp.get("status").getAsString()); assertEquals(result, mcp.get(operation));
+      assertFalse(result.has("session_time_range"), "No observed time span may be invented for an empty recording");
+      if (operation.equals("statistics") || operation.equals("reduction")) {
+        var window = operation.equals("reduction") ? result.getAsJsonObject("window") : result.getAsJsonObject("inputs").getAsJsonObject("window");
+        double end = window.get(operation.equals("reduction") ? "end_us" : "end").getAsDouble() / (operation.equals("reduction") ? 1e6 : 1);
+        assertEquals(active && clock.get() != null ? clock.get() / 1e6 : 0, end);
+      } else {
+        assertTrue(result.getAsJsonObject("prefix").getAsJsonObject("clock").get("last_sample_time_sec").isJsonNull());
+        for (var window : result.getAsJsonObject("inputs").getAsJsonObject("window").getAsJsonArray("windows"))
+          for (var bound : window.getAsJsonArray()) assertTrue(Double.isFinite(bound.getAsDouble()));
+      }
+      if (active) {
+        long timestamp = mode.equals("negative-clock") ? -3_500_000 : 2_500_000;
+        writer.value(topic, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, timestamp, 2, 41L), 0);
+        result = call("/source/" + operation, args); assertEquals("ok", result.get("status").getAsString(), result.toString());
+        assertEquals(result, tool("visualization_source_" + operation, args).get(operation));
+        if (operation.equals("statistics")) { assertEquals(1, result.get("count").getAsInt()); assertEquals(41, result.get("mean").getAsDouble()); }
+        if (operation.equals("reduction")) { assertEquals(1, result.get("finite_count").getAsInt()); assertEquals(41, result.getAsJsonArray("buckets").get(0).getAsJsonObject().get("mean").getAsDouble()); }
+      }
+    } finally { if (writer != null) writer.close(); }
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"histogram", "scatter"})
+  void activeChartNullRelativeArgumentMatchesOmittedOnBothAdapters(String operation) throws Exception {
+    org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    var recording = new org.triplehelix.wpilogmcp.fixtures.RecordingFixture(temp.resolve("active-null"), 2);
+    var path = recording.directory.resolve("capture.wpilog"); Files.delete(path);
+    var logs = LogManager.getInstance(); var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex((address, start) -> path, logs, 10_000_000, () -> 3_000_000.0);
+    try (var writer = new org.triplehelix.wpilogmcp.capture.CaptureWriter(java.time.Clock.fixed(java.time.Instant.parse(org.triplehelix.wpilogmcp.fixtures.RecordingFixture.WHEN), java.time.ZoneOffset.UTC),
+        new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler(), org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, index)) {
+      writer.connected(org.triplehelix.wpilogmcp.nt4.client.RobotAddress.uri("127.0.0.1", 5810, "null-fixture"), "networktables.first.wpi.edu"); writer.timeSync(1_000_000, 0);
+      var topic = new org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce("/x", 1, "int", null, new JsonObject()); writer.announce(topic);
+      writer.value(topic, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 2_500_000, 2, 41L), 0);
+      var manifest = recording.directory.resolve("session.json"); var state = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+      var old = state.getAsJsonArray("files").remove(0).getAsJsonObject();
+      var provenance = org.triplehelix.wpilogmcp.store.StoreJson.JSON.fromJson(old.get("provenance"), org.triplehelix.wpilogmcp.store.StoreManifest.Provenance.class);
+      state.add("open_capture", org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJsonTree(new org.triplehelix.wpilogmcp.store.StoreManifest.OpenCapture("capture.wpilog", provenance, Files.size(path), 0, 0)));
+      Files.writeString(manifest, state.toString()); logs.catalogPublished(); call("/stores", null);
+      var args = object("source_ref", recording.reference); args.addProperty("api_version", 1); args.addProperty("start_time", 0); args.addProperty("end_time", 5);
+      if (operation.equals("scatter")) { args.addProperty("x_entry", "NT:/x"); args.addProperty("y_entry", "NT:/x"); }
+      else args.addProperty("entry", "NT:/x");
+      var expected = call("/source/" + operation, args); assertEquals("ok", expected.get("status").getAsString());
+      assertEquals(expected, tool("visualization_source_" + operation, args).get(operation));
+      args.add("last_seconds", JsonNull.INSTANCE);
+      assertEquals(expected, call("/source/" + operation, args)); assertEquals(expected, tool("visualization_source_" + operation, args).get(operation));
+    }
   }
 
   @Test void chartHistogramUsesOriginalSamplesWithHttpMcpParityForFilesAndRecordings() throws Exception {

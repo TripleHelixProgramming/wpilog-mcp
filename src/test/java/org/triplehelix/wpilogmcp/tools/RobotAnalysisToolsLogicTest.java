@@ -694,7 +694,7 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       assertTrue(resultObj.get("success").getAsBoolean());
       assertEquals("/SystemStats/BatteryVoltage",
           resultObj.getAsJsonObject("voltage_analysis").get("entry").getAsString());
-      assertEquals(6.8, resultObj.getAsJsonObject("voltage_analysis").get("brownout_threshold").getAsDouble(), 1e-9);
+      assertEquals(6.3, resultObj.getAsJsonObject("voltage_analysis").get("brownout_threshold").getAsDouble(), 1e-9);
       assertEquals(4, resultObj.get("current_entries_analyzed").getAsInt());
 
       var channels = resultObj.getAsJsonArray("channel_analysis");
@@ -1020,7 +1020,7 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       assertEquals("partial", resultObj.get("status").getAsString());
       assertTrue(resultObj.getAsJsonArray("skipped").toString().contains("channel_analysis"));
       var v = resultObj.getAsJsonObject("voltage_analysis");
-      assertEquals(6.8, v.get("brownout_threshold").getAsDouble());
+      assertEquals(6.3, v.get("brownout_threshold").getAsDouble());
       assertTrue(v.get("brownout_threshold_basis").getAsString().startsWith("default"));
     }
 

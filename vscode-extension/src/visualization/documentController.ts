@@ -5,7 +5,7 @@ export interface ViewSnapshot {
   revision: number;
   configuration: Configuration;
   checkpoint_configuration: Configuration | null;
-  saved_view_ref: { store_id: string; saved_view_id: string; revision: number } | null;
+  saved_view_ref: ({ store_id: string } | { server_instance_id: string; library_id: string }) & { saved_view_id: string; revision: number } | null;
 }
 export interface Backend {
   read(id: string): Promise<ViewSnapshot>;
@@ -80,6 +80,16 @@ export class DocumentController {
       redo: () => this.queue(() => this.mutate(copy(after), `Redo ${label}`, false, false)),
     });
   }
+  private acceptSaved(result: ViewSnapshot): void {
+    // A notification may have already installed an edit newer than the recovery read.
+    if (result.revision >= this.snapshot.revision) this.snapshot = copy(result);
+  }
+  private markUnsavedChanges(): void {
+    const checkpoint = this.snapshot.checkpoint_configuration;
+    if (checkpoint && !same(checkpoint, this.snapshot.configuration)) {
+      this.emitEdit(checkpoint, this.snapshot.configuration, "Edits after saved checkpoint");
+    }
+  }
   async undoDraft(): Promise<void> {
     if (this.snapshot.saved_view_ref) throw new Error("Draft undo ends at Save view; use native Undo");
     return this.queue(async () => {
@@ -99,8 +109,9 @@ export class DocumentController {
   async promote(): Promise<void> {
     return this.queue(async () => {
       if (this.pending) throw new Error("Pending edits must reach the server before Save view");
-      this.snapshot = copy(await this.backend.save(this.snapshot.view_id, this.snapshot.revision));
+      this.acceptSaved(await this.backend.save(this.snapshot.view_id, this.snapshot.revision));
       this.undo = []; this.redo = [];
+      this.markUnsavedChanges();
     });
   }
   async save(): Promise<void> {
@@ -111,7 +122,7 @@ export class DocumentController {
     try {
       if (this.pending && this.deferred.length === 0) throw new Error("Pending edits must reach the server before Save");
       const result = await this.backend.save(this.snapshot.view_id, this.saveBase.revision);
-      this.snapshot = copy(result);
+      this.acceptSaved(result);
       // VS Code normally confirms its saved position through the clean-tab event. A lost
       // event must not strand all later edits; bound only this acknowledgement wait.
       if (!this.disposed) {
@@ -135,6 +146,10 @@ export class DocumentController {
     if (!this.saving) return;
     this.cancelCleanEventTimer();
     this.saving = false;
+    // Recovering an older Save can leave acknowledged edits outside its checkpoint.
+    // Re-emit them after the workbench marks Save clean, preserving native Undo/Redo.
+    this.markUnsavedChanges();
+    if (this.incoming && this.incoming.revision <= this.snapshot.revision) this.incoming = undefined;
     if (this.incoming && this.deferred.length) {
       this.warning = "REVISION_CONFLICT: agent changes and pending local gestures need comparison";
       throw new Error(this.warning);

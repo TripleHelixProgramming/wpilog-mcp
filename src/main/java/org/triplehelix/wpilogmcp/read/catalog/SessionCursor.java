@@ -11,7 +11,7 @@ import org.triplehelix.wpilogmcp.read.*;
 
 /** Bounded merge of proven clocks: small source batches share an 8 MiB payload allowance.
  * Original coordinates accompany every value, including exact ties between source files. */
-final class SessionCursor implements SampleCursor {
+public final class SessionCursor implements SampleCursor {
   private static final long MAX_LOOKAHEAD_BYTES = 8L << 20;
   static final class Child {
     final SampleCursor cursor;
@@ -27,6 +27,15 @@ final class SessionCursor implements SampleCursor {
   private boolean closed;
   private long lookaheadBytes;
   SessionCursor(List<Child> children, ReadQuery query) { this.children = List.copyOf(children); this.query = query; }
+  /** Merge cursors already proven to share one clock, in caller-supplied tie order. The
+   * caller owns admission and checks; closing this cursor closes every supplied cursor.
+   * This reuses the session union's bounded merge rather than duplicating its tie rules. */
+  public static SampleCursor onCommonClock(java.util.Map<String, SampleCursor> ordered, ReadQuery query) {
+    if (query.order() != ReadQuery.Order.TIME) throw new IllegalArgumentException("A merged reduction requires time order");
+    var children = new ArrayList<Child>();
+    ordered.forEach((id, cursor) -> children.add(new Child(cursor, new ReadSnapshot.SourceFile(id, null, null, List.of()))));
+    return new SessionCursor(children, query);
+  }
   private Sample mapped(Sample sample, ReadSnapshot.SourceFile source) throws IOException {
     long time = sample.timestampUs();
     try {

@@ -92,6 +92,10 @@ assertion that fresh values were published throughout that window.
 - [Visualization Tools](#visualization-tools)
   - [visualization_capabilities_get](#visualization_capabilities_get)
   - [visualization_source_inspect](#visualization_source_inspect)
+  - [visualization_source_health](#visualization_source_health)
+  - [visualization_library_list](#visualization_library_list)
+  - [visualization_library_migrate](#visualization_library_migrate)
+  - [visualization_saved_view_open](#visualization_saved_view_open)
   - [visualization_template_list](#visualization_template_list)
   - [visualization_template_get](#visualization_template_get)
   - [visualization_template_check](#visualization_template_check)
@@ -104,6 +108,7 @@ assertion that fresh values were published throughout that window.
   - [visualization_view_bind](#visualization_view_bind)
   - [visualization_source_value](#visualization_source_value)
   - [visualization_source_statistics](#visualization_source_statistics)
+  - [visualization_source_reduction](#visualization_source_reduction)
   - [visualization_source_histogram](#visualization_source_histogram)
   - [visualization_source_scatter](#visualization_source_scatter)
   - [visualization_view_create](#visualization_view_create)
@@ -320,32 +325,47 @@ with `not_applicable` and `reason`. Waiting blocks its HTTP request, never the N
 
 ## Core Tools
 
-### `list_available_logs`
-List WPILOG files in the configured log directories with user-friendly names, newest first.
+### `list_source_scopes`
+
+List this server's source choices without searching their files. When several exist, ask the
+user which to use; unavailable choices still count. Scope IDs are locators, not access grants.
 
 **Parameters:**
+
+- `offset` (optional, integer): Scopes to skip, default 0; must be nonnegative.
+- `limit` (optional, integer): Maximum descriptors, default and maximum 64; minimum 1.
+
+**Returns:** `server_instance_id`, `source_scopes` with `scope_id`, `kind`, `path`, `available`
+and optional `reason`; `total`, `returned`, `offset`, `has_more`, optional `next_offset`, and
+true-total `limits.source_scopes`. Pages are also shortened to a 64 KiB JSON budget. No configured
+scopes gives `no_match`, `looked_for` and a configuration `hint`. More than 1,024 discovered
+scopes refuses with `RESOURCE_LIMIT`. Pages describe current configuration, not a frozen snapshot;
+restart enumeration if configuration changes. This is not a catalog-scan performance guarantee.
+
+### `list_available_logs`
+
+List WPILOG files in one selected source with user-friendly names, newest first.
+
+**Parameters:**
+
+- `scope_id` (optional): Explicit source from `list_source_scopes`; required when several sources are configured, including unavailable ones.
 - `name` (optional): Only logs whose file or friendly name contains this (case-insensitive)
 - `event` (optional): Only logs from this event code (case-insensitive exact match, e.g. `VACHE`)
 - `match_type` (optional): `p`, `q` (or `qm`), `qf`, `sf`, `f`, or `e`; anything else is an error. A log with no match (a file named for an event only) has no match type and matches none of them
 - `since` (optional): Only logs from this date on (`2026-03-20`, midnight UTC), or from an ISO-8601 instant
-- `view` (optional): `default` searches the preferred store and enrolled pending/refused sources, hiding verified original duplicates before counts and paging; `all` includes originals and other readable folders. Without an opted-in policy, or while the experimental data-store feature is disabled, both retain the existing listing.
+- `view` (optional): Legacy `default`/`all` spellings; both remain within the selected source. Neither permits searching other sources.
 - `offset`, `limit` (optional): Paging (default limit 50, max 500)
 
 **Returns:** `log_directories`, `log_directory_paths`, `log_count` (logs matching the filters), `total_logs` (in all the directories), `offset`, `returned`, `has_more`, `tba_enrichment`, `metadata_cache`, `logs` (the page), and `limits.logs`. Only the listed page is enriched with TBA data. When no log matches the filters, the status is `no_match`. A directory that could not be read makes the result `partial`, with an entry in `skipped` (`section: "logs"`, `directory`, `reason`). When no directory can be read, the call is an error naming each directory and why.
 
-With the [experimental data-store feature enabled](STANDALONE.md#keeping-a-data-store-up-to-date)
-and a configured preferred store, `preferred_store_id` identifies it. `source_sync` carries the
-policy, overall state, pending/active counts, per-source counts and errors; `source_files` is a
-bounded page of original paths with state, destination, hash, size and refusal reason, with its
-true total in `limits.source_files`. Successful receipts are not pending work. No policy means
-these fields are absent. `total_logs` counts the selected view before name/time filters. The
-native read catalog also identifies the preferred store; explicit path reads remain unchanged.
-
-Only when the default view leaves out other configured or leased roots, `excluded_directories`
-lists their `path` and `origin` (`configured` or `leased`), with the total in
-`limits.excluded_directories`. The accompanying `hint` names `view: all` to search those folders
-too. These additions are omitted without a preferred store, with `view: all`, or when no
-directory was excluded.
+`source_scope` identifies the selected source. With multiple configured scopes, omission of
+`scope_id` returns `error`, `code: SOURCE_SELECTION_REQUIRED`, bounded choices and an instruction
+to ask the user, before filtering or scanning logs. Unavailable choices remain in that decision.
+A selected unavailable source returns `SOURCE_UNAVAILABLE`; another source is never substituted.
+`total_logs` counts that source before filters; a directory source excludes nested managed stores.
+Import policy and pending-file facts remain available from the local-ingestion controls, not this
+listing. Listed absolute paths explicitly select files for later tool calls. Relative paths with
+multiple choices require `scope_id`; a scoped path and its move alias must remain in that scope.
 
 **Example Response:**
 ```json
@@ -517,6 +537,8 @@ List the log files currently loaded in the server's cache, and the cache status.
 List the entries in a log, optionally only those whose name contains `pattern`. Returns `no_match`, naming the pattern, when it matches no entry (or the log has none).
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `pattern` (optional): Only entries whose name contains this (case-insensitive)
 
@@ -526,6 +548,8 @@ List the entries in a log, optionally only those whose name contains `pattern`. 
 Describe one entry: what it is, how it decodes, and what it looks like. An unknown name is an error, with up to five `suggestions` whose names contain it.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `name` (required): The entry name (e.g., `/Drive/Odometry/Pose`)
 
@@ -575,6 +599,8 @@ Describe one entry: what it is, how it decodes, and what it looks like. An unkno
 Read an entry's values in time order, one page at a time, optionally within a time range. A NaN or infinite value is returned as the string `NaN`, `Infinity`, or `-Infinity` (JSON has no such numbers, and `null` would read as missing). One page is not the whole signal: use `get_statistics`, `find_condition`, or `find_peaks` for claims about a window.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `name` (required): The entry name
 - `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
@@ -647,6 +673,8 @@ A runtime without headless imaging returns the measurements with `status: partia
 image reason in `skipped`. No plotting dependency or native library is installed by the server.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Log file, including an open capture.
 - `name` (optional): One entry or numeric field path; mutually exclusive with `entries`.
 - `entries` (optional): One to sixteen entry names or numeric field paths in drawing order. Pass this or `name`.
@@ -786,6 +814,8 @@ The conventions use exact paths after stripping the `NT:` and `/AdvantageKit` wr
 | `gyro_yaw` | a yaw entry under a gyro, Pigeon, NavX, Canandgyro, IMU, or AHRS path | none |
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `roles` (optional): Only these roles, as an array of role names (default: all). An unknown role is an error that lists them, and so is anything but an array of names, or an empty array
 
@@ -828,6 +858,8 @@ Search and filter log data. Find specific entries, types, and events.
 Search for entries by type, name, and sample count. Returns `no_match`, naming the criteria, when no entry matches.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `type` (optional): Only entries whose type contains this (case-sensitive, e.g., `Pose3d`, `double`)
 - `pattern` (optional): Only entries whose name contains this (case-insensitive)
@@ -839,6 +871,8 @@ Search for entries by type, name, and sample count. Returns `no_match`, naming t
 List the data types in the log and which entries use each.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 
 **Returns:** `type_count` and `types` (by type name), each with `type`, `entry_count`, and `entries` (sorted). A log with no entries is `no_match`.
@@ -847,6 +881,8 @@ List the data types in the log and which entries use each.
 Find when a numeric or boolean entry satisfies a condition, or several entries at once, and for how long. It answers questions like "When did battery voltage drop below 11V, and for how long?" or "When was the robot disabled and stationary?" `samples_evaluated` counts the samples of the condition entries in scope, so zero transitions can be read against them.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `name`: Entry name (e.g., `/Robot/BatteryVoltage`); double, float, int64, or boolean (read as 1/0), or a number inside a struct or array by [field path](#field-paths) (thresholds apply to angles as logged)
 - `field` (optional): The field path, instead of appending it to `name`
@@ -906,6 +942,8 @@ List or search the text a log holds, completely and in time order across all ent
 - `json` entries: the string values of each sample, one per line.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `pattern` (optional): Case-insensitive substring, or a Java regular expression when `regex` is true. Omit to list every string sample (narrow with `level`, `entry_pattern`, or a time window)
 - `regex` (optional): Treat `pattern` as a Java regex, case-insensitive (Unicode-aware) with `^`/`$` anchoring to lines of a multi-line sample; `.` does not cross a line break. Default `false`. An invalid regex is an error; so is a pattern that backtracks for more than a second on one value (nested quantifiers on long text), which would otherwise hang the server
@@ -969,6 +1007,8 @@ contacts the robot. The pulled file is the exact record; `/Daemon/Tail` entries 
 `search_strings` are the timely copy, stamped at receipt. They can contain the same text.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Any log of the session: its capture, or a log pulled into it
 - `source` (optional): `kernel`, `syslog`, `program`, `jvm_crash`, or `all` (default)
 - `pattern` (optional): Case-insensitive substring; omit to list every line
@@ -1056,6 +1096,8 @@ Differences, spikes, peaks, and, in the tools that measure one signal, angle unw
 Statistics of a numeric entry or field over the finite samples in scope, with data quality and analysis directives. A scope with no finite sample returns `no_match`, `count: 0`, `looked_for` and a hint to widen the interval or wait for samples. Its reason says how many values the log and scope hold; `inputs` and `data_quality` remain present, and no mean or other computed statistic is supplied. Invalid selectors and nonnumeric entries remain errors.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `name` (required): The entry name, optionally with a [field path](#field-paths)
 - `field` (optional): The field path, instead of appending it to `name`
@@ -1093,6 +1135,8 @@ Statistics of a numeric entry or field over the finite samples in scope, with da
 Compare two numeric entries or fields, such as a setpoint and a measurement, or `/RealOutputs` and `/ReplayOutputs` copies of one value.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `name1` (required): First entry name, optionally with a [field path](#field-paths)
 - `name2` (required): Second entry name, optionally with a field path
@@ -1108,6 +1152,8 @@ Compare two numeric entries or fields, such as a setpoint and a measurement, or 
 Detect anomalies in a numeric entry within an optional time window: outliers outside Tukey fences (Q1 − k·IQR, Q3 + k·IQR, with linearly interpolated percentiles), and, when `spike_threshold` is given, spikes (sample-to-sample jumps larger than the threshold). Fewer than 4 finite samples in scope is an error.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `name` (required): Entry name to analyze, optionally with a [field path](#field-paths) (a struct entry without one is an error listing its numeric fields)
 - `field` (optional): The field path, instead of appending it to `name`
@@ -1146,6 +1192,8 @@ Detect anomalies in a numeric entry within an optional time window: outliers out
 Find local maxima and minima (peaks and valleys) in numeric data. A sample is a peak when it is strictly above (or below) both neighbors; its `height_diff` is the larger of its differences from them. Peaks are listed in time order. `samples_analyzed` counts the samples in scope the search ran over, so zero peaks can be read against them. A window needs at least 3 finite samples.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `name` (required): Entry name to analyze, optionally with a [field path](#field-paths)
 - `field` (optional): The field path, instead of appending it to `name`
@@ -1186,6 +1234,8 @@ Find local maxima and minima (peaks and valleys) in numeric data. A sample is a 
 The derivative of numeric data, dv/dt, in the signal's units per second: velocity from position, acceleration from velocity, or how fast any value changes. Each difference is divided by the actual time between its samples; a difference over zero time is skipped.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `name` (required): Entry name to analyze, optionally with a [field path](#field-paths)
 - `field` (optional): The field path, instead of appending it to `name`
@@ -1224,6 +1274,8 @@ Pearson correlation between two numeric entries, with a p-value. Each of the fir
 A common rule of thumb for |r|: 0.9 and up is very strong, 0.7 strong, 0.5 moderate, 0.3 weak, and below 0.3 little linear relationship. Whether r differs from zero beyond chance is what `p_value` answers.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `name1` (required): First entry name, optionally with a [field path](#field-paths)
 - `name2` (required): Second entry name, optionally with a field path
@@ -1236,7 +1288,7 @@ A common rule of thumb for |r|: 0.9 and up is very strong, 0.7 strong, 0.5 moder
 - `max_lag_sec` (optional): Also search for the time shift with the strongest correlation, positive or negative, from −max to +max (a positive lag means the second signal follows the first). At most 401 lags are evaluated; the step widens if needed
 - `lag_step_sec` (optional): Lag search step in seconds (default: the first signal's median sample interval)
 
-**Returns:** `correlation`, `sample_count`, `lag1_autocorrelation` (`entry1`, `entry2`), `effective_sample_size`, `p_value`, `p_value_basis`, `inputs`, `data_quality` (of the lower-quality signal), and `server_analysis_directives`. Consecutive samples of a signal are not independent, so the p-value is a two-sided t test on the correlation with the effective sample size n(1 − r1ₓr1ᵧ)/(1 + r1ₓr1ᵧ) (Bretherton et al. 1999), computed exactly (regularized incomplete beta). The lag-1 autocorrelations pair consecutive samples within a window, never the two on either side of the time between windows, and the sample rates are measured within the windows too. Warnings say when fewer than 30 samples overlap, when fewer than 30 effective samples remain, and when the two sample rates differ more than tenfold. When either entry is constant over the window (near-zero variance), correlation is undefined: `correlation` and `p_value` are `null`, and a warning names the constant entry.
+**Returns:** `correlation`, `sample_count`, `lag1_autocorrelation` (`entry1`, `entry2`), `effective_sample_size`, `p_value`, `p_value_basis`, `inputs`, `data_quality` (of the lower-quality signal), and `server_analysis_directives`. Consecutive samples of a signal are not independent, so the p-value is a two-sided t test on the correlation with the effective sample size n(1 − r1ₓr1ᵧ)/(1 + r1ₓr1ᵧ) (Bretherton et al. 1999), computed exactly (regularized incomplete beta). The lag-1 autocorrelations pair consecutive samples within a window, never the two on either side of the time between windows, and the sample rates are measured within the windows too. Warnings say when fewer than 30 samples overlap, when fewer than 30 effective samples remain, and when the two sample rates differ more than tenfold. When either entry's range is within four ulps of its largest absolute value, it is constant at floating-point precision: `correlation` and `p_value` are `null`, and a warning names the constant entry. This relative rule applies at every lag too. Centered deviations are scaled independently before computing correlation and lag-1 autocorrelation, so changing units does not cause underflow or overflow. Non-finite correlation arithmetic is refused with null correlation and p-value and an explanatory warning.
 
 With `max_lag_sec`, `lag_search` gives `lags_evaluated`, `lag_step_sec`, `max_lag_sec`, `best_lag_sec`, `correlation_at_best_lag`, `samples_at_best_lag`, `correlation_at_zero_lag`, and a `note`. The best lag is the one where the correlation is strongest in either direction, and `correlation_at_best_lag` keeps its sign. Two signals that move oppositely, such as battery voltage and a motor's current, have a negative correlation at every lag, and the strongest is the most negative. Among equally strong lags, the one nearest zero is reported.
 
@@ -1267,6 +1319,8 @@ If the sign at the best lag differs from the sign at zero lag, the relationship 
 Sample several numeric signals at common times, to read them side by side or to measure one against another. Returns `no_match` when no sample time falls in scope.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `names` (required): 1 to 8 signals, each an entry name optionally with a [field path](#field-paths) appended (no `[*]`)
 - `at` (optional): The entry whose record times are the sample times (default: the first signal's own samples)
@@ -1303,6 +1357,8 @@ Find when the robot was enabled, in which mode, and, when the log holds a match,
 - `season` is the year the log was recorded, from the log's own clock (`/SystemStats/EpochTimeMicros` or `systemTime`), then `/RealMetadata/BuildDate`, then a year in the file name, then the current year; `basis` says which.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 
 **Returns:** `segments`, `enabled_segment_count`, `enabled_time_sec`, `matches`, `phases`, `match_duration`/`auto_duration`/`teleop_duration` (first match), `season`, `log_start`/`log_end`/`log_duration`, `inputs.entries` (the DriverStation entries used), `source` (`"DriverStation"`), `notes`, and `warnings` (never enabled; log ends while enabled; incomplete match).
@@ -1369,6 +1425,8 @@ Analyze swerve modules from `SwerveModuleState` entries: speed magnitudes per mo
 - Per-module `struct:SwerveModuleState` entries are analyzed one module per call, by passing that module's `measured_entry` and `setpoint_entry`.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `module_prefix` (optional): Only consider module state entries under this prefix
 - `measured_entry`, `setpoint_entry` (optional): The module state entries (an array, or one module's entry; both of the same shape). An entry named here that is missing or not module states is an error
@@ -1427,7 +1485,7 @@ Any other entry named `voltage` (an input or bus voltage, say) is never used. Wh
 
 Names such as `Current Angle Degrees`, `CurrentLimit`, or `CurrentState` are excluded, and so is anything containing "voltage". `power_prefix` narrows the candidates but does not bypass the rule.
 
-**Brownout threshold** (shared with `predict_battery_health`, `get_ds_timeline`, and `generate_report`): the `brownout_threshold` argument when given; otherwise the roboRIO's own setting when the log records it (a numeric entry named `BrownoutVoltage`, e.g. AdvantageKit `/SystemStats/BrownoutVoltage`); otherwise 6.8 V, the roboRIO 1 default, with `brownout_threshold_basis` saying that a roboRIO 2 (6.3 V) cannot be ruled out.
+**Brownout threshold** (shared with `predict_battery_health`, `get_ds_timeline`, and `generate_report`): the `brownout_threshold` argument when given; otherwise the roboRIO's own setting when the log records it (a numeric entry named `BrownoutVoltage`, e.g. AdvantageKit `/SystemStats/BrownoutVoltage`); otherwise 6.3 V, the roboRIO 1 output-disable threshold, with `brownout_threshold_basis` saying that the controller is unknown. The roboRIO 2 default is configurable and starts at 6.75 V. The earlier 6.8 V rail-drop stage is not output-disable brownout. See [WPILib's brownout reference](https://docs.wpilib.org/en/stable/docs/software/roborio-info/roborio-brownouts.html#settable-brownout).
 
 **roboRIO brownouts:** when the log has the roboRIO's brownout flag (a boolean named `BrownedOut` or `IsBrownedOut`, e.g. `/SystemStats/BrownedOut`), `rio_brownouts` lists each interval it was true, with start, end, and duration. Those are the times the roboRIO actually disabled outputs. Voltage statistics against the threshold are a separate, weaker signal.
 
@@ -1437,13 +1495,15 @@ Names such as `Current Angle Degrees`, `CurrentLimit`, or `CurrentState` are exc
 - **LOW**: the minimum stayed more than 1 V above the threshold
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `power_prefix` (optional): Entry path prefix for power data (e.g., `/PDP`, `/PDH`, `/PowerDistribution`)
 - `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `scope` (optional): `all`, `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` ([Scopes and windows](#scopes-and-windows)); default `enabled` when the log records enabled state, else `all`
 - `start_time`, `end_time` (optional): Clip the scope to a time range (seconds)
 - `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
-- `brownout_threshold` (optional): Voltage threshold (default: the logged `BrownoutVoltage`, else 6.8V)
+- `brownout_threshold` (optional): Voltage threshold (default: the logged `BrownoutVoltage`, else 6.3V)
 - `channel_limit` (optional): Maximum number of current entries/channels to return, sorted by peak (default: 30; values below 1 are treated as 1)
 
 **Status:** `no_match` (with `looked_for`) when the log has no voltage, current, or brownout flag entries. `no_match` with `scope` when it has them but there is nothing to measure in the scope. That happens when the scope holds no time (`enabled` on a log where the robot was never enabled, or a `start_time`/`end_time` outside the data), or when no finite voltage or current sample falls in it and no brownout flag is logged. A logged flag holds its value, so it covers any time the scope has.
@@ -1541,6 +1601,8 @@ CAN bus health from two sources: console and message text that reports CAN failu
 `assessment_basis` states the fact that decided the level.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 
 **Returns:** `error_counts_by_entry` (per text entry: `total`, `while_enabled`, `while_disabled`, `state_unknown`), `total_can_errors`, `errors_while_enabled`, `errors_while_disabled` (when DriverStation data exists), `errors_state_unknown` (when any), `first_errors_while_enabled` (up to 5 lines with time and entry), `bus_counters[]` (`bus`, `tec_max`, `tec_max_time_sec`, `tec_max_while_enabled`, the same for `rec`, `bus_off_increase`, `bus_off_increase_while_enabled`), `health_assessment`, `assessment_basis`, `inputs.entries`, and `warnings`.
@@ -1619,6 +1681,8 @@ Compare one numeric signal across two log files, over the same phase of each.
 Extract code metadata from string entries whose leaf name is `GitSHA`, `GitBranch`, `GitDirty`, `GitDate`, `BuildDate`, `ProjectName`, or `Version` (case-insensitive; `Version` only under a path containing "metadata"). AdvantageKit records these from the generated `BuildConstants`, for example `/RealMetadata/GitSHA`. When several entries hold the same key (e.g. `/RealMetadata/` and `/ReplayMetadata/`), the lowest entry id wins and a warning says when their values differ.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 
 **Returns:** `metadata` (key → the entry's first value; `"unknown"` when the entry has no samples) and `sources` (key → entry name).
@@ -1651,6 +1715,8 @@ Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a D
 **Physics model:** `G × motor_count × kt × I = J × α + B × ω`
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `velocity_entry` (required): Entry path for mechanism velocity (rad/s, or m/s if `wheel_radius` given)
 - `current_entry` (required): Entry path for motor current (A)
@@ -1681,6 +1747,8 @@ Estimate moment of inertia J (kg·m²) and viscous damping B (Nm·s/rad) for a D
 Analyze CAN bus health from the counters the log records, per bus: utilization, the transmit and receive error counters, and bus-off and TX-full counts. Run it when you see intermittent motor controller disconnects, sensor reading timeouts, or "CAN timeout" errors in the Driver Station.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `bus_name` (optional): Bus to analyze: `"rio"`, a CANivore name such as `"CANHD"`, or a path prefix (default: every bus found)
 - `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
@@ -1741,12 +1809,14 @@ A chronological timeline of robot events: enable/disable transitions, match phas
 DriverStation entries are recognized under both the `/DriverStation/...` (AdvantageKit) and `DS:...` (WPILib DataLogManager) naming conventions. Returns `not_applicable` when the log has none of the entries a timeline is built from (DriverStation state, a battery voltage entry, a roboRIO brownout flag, text entries). The result carries no `data_quality` block: its fields are observed events and exact counts, not statistics.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time` (optional): Start timestamp in seconds
 - `end_time` (optional): End timestamp in seconds
 - `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
-- `brownout_threshold` (optional): Voltage threshold for BROWNOUT_START/END crossings (default: the log's `BrownoutVoltage` entry when logged, else 6.8V for roboRIO 1; reported as `brownout_threshold` with `brownout_threshold_basis`)
+- `brownout_threshold` (optional): Voltage threshold for BROWNOUT_START/END crossings (default: the log's `BrownoutVoltage` entry when logged, else 6.3V for roboRIO 1; reported as `brownout_threshold` with `brownout_threshold_basis`)
 
 **Returns:** `event_count`; chronologically sorted `events`, each with `category`, `type`, `timestamp`, and `source` entry; `summary` (count per category); `inputs.entries` (the DriverStation, voltage, and brownout flag entries used); `brownout_threshold` and `brownout_threshold_basis`; `brownout_voltage_entry` (the voltage entry scanned for threshold crossings, selected exactly as `power_analysis` selects it, or a warning instead when the log has none); `rio_brownout_flag_logged` (whether the log contains a boolean roboRIO brownout flag entry) and, when it does, `rio_brownout_flag_entry`; `text_event_counts`, `text_event_summary`, and `text_event_groups_total` (see below); and `warnings`.
 
@@ -1846,6 +1916,8 @@ Analyze vision data: pose observation streams, target streams, pose sets, has-ta
 | `pose_estimates` | the only scalar pose under a vision, camera, PhotonVision, or Limelight path | those poses, when there are several |
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `vision_prefix` (optional): Only vision entries under this prefix (case-insensitive). It limits vision entries only; the robot pose can live elsewhere, and so can entries passed as `vision_entries`
 - `vision_entries` (optional): Entries to analyze besides the conventional ones. Each is analyzed by its shape: a boolean or a number as a has-target flag (above 0.5 means a target), a `Pose2d[]` or `Pose3d[]` as a pose set, a scalar pose as a pose estimate checked for jumps, a struct array holding a timestamp and a pose as an observation stream, a struct with yaw and pitch as a target stream. An entry that is missing or has another shape is an error
@@ -1926,6 +1998,8 @@ Pose jumps can point to ambiguous AprilTag detections, tag misidentification, po
 The difference between two pose streams (`struct:Pose2d` or `Pose3d`, the latter projected on the floor): pose minus reference, sampled at the records of `pose_entry` with `reference_entry` interpolated there.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `reference_entry` (required): The pose measured against, e.g. a path setpoint (`/PathPlanner/targetPose`), another estimator, or a camera's pose estimate
 - `pose_entry` (optional): The pose measured; default: the `robot_pose` role (a conventional name, else the only `Pose2d`; several others are listed to confirm, not guessed)
@@ -1963,6 +2037,8 @@ it may be a setpoint. Its type alone does not establish measured motion; confirm
 the robot source or pass the correct entry.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `pose_entry` (optional): The pose, e.g. a pose estimator's output; default: the `robot_pose` role
 - `odometry_pose_entry` (optional): A pose from wheel odometry alone; when given, its change is the prediction
@@ -2009,6 +2085,8 @@ A residual is the pose estimator's change beyond odometry: vision corrections, b
 Profile one closed-loop mechanism from the entries passed for its roles: following error, step response, stalls, and motor temperature.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `setpoint_entry`, `measurement_entry`, `velocity_entry`, `current_entry`, `temperature_entry` (optional): The mechanism's entries (scalar numbers). Only entries passed here are analyzed. The setpoint and the measurement must be in the same units
 - `mechanism_name` (optional if role entries are given): Text the mechanism's entry names contain (case-insensitive, anywhere in the name; e.g. `Elevator`, or `ModuleFrontLeft/Drive`). It finds candidates; it does not choose entries
@@ -2068,6 +2146,8 @@ With `mechanism_name` alone, the result is `no_match` with `needs_confirmation` 
 Analyze every autonomous period in the log: when it started and ended, which routine was selected, and how closely the robot followed its path.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `auto_prefix` (optional): Entry name prefix to search for the path setpoint and actual pose entries
 - `chooser_entry` (optional): String entry holding the selected routine (default: the one chooser whose key contains `auto`)
@@ -2118,6 +2198,8 @@ Game piece cycle times from a mechanism's state entry: complete and incomplete c
 - `start_to_end`: from `cycle_start_state` to the next `cycle_end_state`. Suits a workflow with distinct start and end states.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `state_entry` (required): The mechanism's state entry
 - `cycle_mode` (optional, default `start_to_start`): `start_to_start` or `start_to_end`
@@ -2214,6 +2296,8 @@ Validate AdvantageKit deterministic replay. Run it on a replay output log (the `
 **How it compares:** every `/RealOutputs/X` entry with a `/ReplayOutputs/X` counterpart, sample by sample, with timestamps matched within 1 ms. Numbers are equal within `relative_tolerance` (default 1e-9 of their magnitude, and 1e-12 absolute); arrays and structs are compared element by element; strings and booleans exactly.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the replay output log
 - `relative_tolerance` (optional): Relative tolerance for numbers (default 1e-9)
 - `limit` (optional): Maximum divergent entries to list (default 20)
@@ -2254,12 +2338,14 @@ When replay outputs do not match real outputs, the entries that diverge first us
 Battery and power-delivery evidence, with a heuristic health score and risk level. The facts come first; the score, kept by design for decisions in the pit at competition, summarizes them and is reported beside them.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `scope` (optional): `all`, `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (default: `enabled` when the log records enabled state, else `all`, so averages do not mix in idle time); combined with `start_time`/`end_time`
 - `start_time`, `end_time` (optional): Clip the scope to a time range (seconds)
 - `nominal_voltage` (optional): Expected full battery voltage (default: 12.6V)
-- `brownout_threshold` (optional): Brownout threshold (default: the logged `BrownoutVoltage`, else 6.8V; see `power_analysis`)
+- `brownout_threshold` (optional): Brownout threshold (default: the logged `BrownoutVoltage`, else 6.3V; see `power_analysis`)
 - `warning_threshold` (optional): Voltage below which a dip is reported (default: 9.0V)
 - `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
 - `total_current_entry` (optional): Total robot current for the load line (default: a leaf named `TotalCurrent`)
@@ -2323,6 +2409,8 @@ Threshold crossings, dips, and recovery times are found within each window of th
 How often robot code exceeded the loop period, and the distribution of loop times.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `entry` (optional): The loop time entry (default: discovered, below)
 - `threshold_ms` (optional): Loop time threshold for violations in milliseconds (default: 20 ms, the standard 50 Hz period)
@@ -2429,6 +2517,8 @@ only after writing succeeds; failures remove the temporary file and leave any pr
 untouched. The replacement is atomic when the filesystem supports atomic moves.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `name` (required): Entry to export
 - `output_path` (optional): File name or path **inside the export directory**. A bare name (`pose.csv`) or relative path (`run1/pose.csv`) is resolved inside it, and subdirectories are created; an absolute path must already lie inside it. Default: a name generated from the log and entry (`<log>__<entry>.csv`)
@@ -2477,6 +2567,8 @@ unrecovered interval is held to the window end and marked `open_at_scope_end`, w
 `open_at_log_end` retained as a same-value compatibility alias.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `voltage_entry` (optional): Battery voltage entry (default: `BatteryVoltage`, or `Voltage` under `PowerDistribution`, `PDH`, `PDP`, or `Battery`; see [The server does not guess](#the-server-does-not-guess))
 
@@ -2753,6 +2845,8 @@ A custom DBC file replaces the built-in signal definitions: `rev_spark.dbc` in `
 List the signals in the wpilog's REV logs, with device, unit, sample count, and synchronization status. Returns `not_applicable`, listing the buses for `set_revlog_offset`, when no REV log could be synchronized, and `no_match` when the filters match no signal.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `device_filter` (optional): Only devices whose key contains this (case-insensitive, e.g., "SparkMax_1")
 - `signal_filter` (optional): Only signals whose name contains this (case-insensitive, e.g., "velocity")
@@ -2812,6 +2906,8 @@ Read a REV log signal with its timestamps converted to FPGA time, like `read_ent
 - Debug motor controller communication issues
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `signal_key` (required): Signal key from `list_revlog_signals` (e.g., `REV/SparkMax_1/AppliedOutput`, or `REV/rio/SparkMax_1/Velocity` when the wpilog has several REV logs)
 - `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
@@ -2854,6 +2950,8 @@ Read a REV log signal with its timestamps converted to FPGA time, like `read_ent
 Synchronization status for each REV log of the wpilog: confidence, offset, drift, and optionally the signal pairs used.
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `include_signal_pairs` (optional): Include the signal pairs used for correlation
 
@@ -2921,6 +3019,8 @@ Set the synchronization offset for one REV log by hand, replacing the automatic 
 - The recording started with the robot disabled for a long time and correlation was poor
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `offset_ms` (required): Milliseconds to add to revlog timestamps to convert them to FPGA time. Example: if a revlog event appears 500 ms after the same event in the wpilog, set `offset_ms` to -500
 - `can_bus` (optional): The bus whose REV log gets the offset (e.g., "rio"). If omitted, the first REV log. An unknown bus is an error that lists the buses
@@ -2949,6 +3049,8 @@ Wait for background REV log synchronization to finish. Synchronization runs in t
 - When `sync_status` shows `sync_in_progress: true`, or a revlog tool's reason says synchronization is still running
 
 **Parameters:**
+
+- `scope_id` (optional): Serving scope from `list_source_scopes`; an absolute listed path already identifies its file. Relative paths need a scope when several sources are configured.
 - `path` (required): Path to the log file
 - `timeout_ms` (optional): Maximum time to wait in milliseconds (default: 30000, capped at 120000)
 
@@ -2979,7 +3081,11 @@ the capture is the record, and tools reading it analyze a fixed prefix of that r
 
 ## Visualization Tools
 
-The recorded preview has the following local-only MCP operations. Every call names `api_version: 1`.
+Visualization operations name `api_version: 1` or `2`. API 1 is local-only compatibility.
+API 2 accepts remote source reads, working views and server-library operations, retaining the
+qualified server and scope. Legacy library migration remains local-only. Choose the MCP server
+explicitly when several are configured; on that server, choose a scope when its source listing
+requires selection. No availability, timestamp or naming rule chooses for the user.
 Definitions travel as JSON text so duplicate keys are checked before parsing loses them.
 Mutations require a UUID request id and the expected revision of an existing object. Keep the
 same request id and arguments after a lost response; never retry against a newer revision automatically.
@@ -2993,6 +3099,8 @@ template is not revision zero.
 ### `visualization_capabilities_get`
 
 Supported configuration schema, type and role vocabulary, persistent identity, budgets and preview limits.
+`remote_visualization` advertises direct API 2 support; `server_epoch` changes on server restart,
+while `server_instance_id` identifies the persistent owner. Neither field grants access.
 `capabilities.decoded_buffer_budget` describes the window setting, default/range and reload
 requirement. `attached_windows` lists each window's `client_id`, `current_session`, `decoded_buffer_budget_bytes`
 and `basis: client_reported`. These are client allowance reports, not server allocations or
@@ -3004,17 +3112,51 @@ allowance across recorded/live sample buffers and paged inventory, with separate
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 
 **Returns:** `api_version`, `status`, `capabilities` on success; `code` and `error` on refusal.
+
+### `visualization_source_health`
+
+Observe an anchored recording's acquisition separately from its manifested history. This reads
+catalog identity and current grants, without opening, hashing or decoding the log payload.
+It does not replace data admission: a subsequent follow still proves writer identity and bytes.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
+- `source_ref` (required, object): Durable anchored `session` reference.
+
+**Returns:** `api_version`, `status`, `health` on success; `code` and `error` on refusal.
+
+`health` contains `source_ref`, `acquisition_state` (`recording`, `reconnecting`,
+`waiting_for_time_sync`, `waiting_for_recording`, or `inactive`), `history_state` (`live` or
+`finalized`), and `reason`. `connected`, `clock_synchronized` and `last_value_age_ms` are null
+when no matching acquisition is running. A quiet change-only signal is not disconnection;
+receipt age is freshness evidence, never the sample's robot timestamp. Finalized history can
+resume if the same robot clock reconnects. Another recording is never substituted.
+`publication_timing` is null without a matching measurement, otherwise it reports
+`writer_identity`, `publication_revision`, and `receive_to_publication_ms` for the latest
+observed NT value publication. This is a duration in the server's monotonic clock domain,
+including admission wait, not an end-to-end measurement or a percentile over all records.
+The HTTP equivalents are `POST /visualizations/v1/source/health` and
+`POST /visualizations/v2/source/health`. API 1 requires trusted local authority; API 2 admits
+remote callers. Both adapters share the bounded inventory request pool and 64 KiB raw request limit.
 
 ### `visualization_source_inspect`
 
 Inspect a recorded file or captured recording by an admitted path or durable source_ref. Returns identity, entry types, schemas, sample counts and clock bounds. Inspection of a recording does not yet enable live visualization panels.
 
+API 1 accepts an absolute path as an explicit selection, including under nested configured
+directories. With several source scopes, an API 1 relative path is refused: pass an absolute
+path returned by `list_available_logs`, or use API 2 with `scope_id`. API 2 still requires a
+scope choice when an absolute path belongs to multiple configured directories.
+
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `scope_id` (optional, API 2): Serving scope for path identification or qualification of a legacy reference; ambiguity requires a user choice.
+
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `inventory_mode` (optional, string): `full` (default) or `paged` for a recording source.
 - `path` (optional, string): Allowed local WPILOG file; alternative to source_ref.
 - `source_ref` (optional, object): Durable recorded, unmanaged or anchored session identity from source inspection.
@@ -3053,7 +3195,7 @@ case folding; types match exact declared strings. Order is exact UTF-16 name ord
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `inventory_id` (required, string): Handle from a paged inspection in this session.
 - `cursor` (optional, string): Opaque continuation; omit query, types, unavailable and limit when supplied.
 - `query` (optional, string): Name substring, at most 256 Unicode code points.
@@ -3077,7 +3219,7 @@ writer identity and selected name/type/metadata evidence; it is not the old inve
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `inventory_id` (required, string): Handle from this session.
 - `row_ids` (required, array): 1 to 32 distinct opaque row IDs from this inventory; never save them in a view.
 
@@ -3096,7 +3238,7 @@ server epoch succeeds without returning contents; another session cannot close t
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `inventory_id` (required, string): Handle from this session.
 
 **Returns:** `api_version`, `status`, `inventory` containing `inventory_id` and `closed: true`.
@@ -3108,7 +3250,7 @@ fresh fixed-prefix read; it does not inspect the Explorer's plotted buffers or h
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `source_ref` (required, object): Durable file or anchored recording reference.
 - `entry` (required, string): Exact declared name; no role or name guessing.
 - `field` (optional, string): Scalar field or array index. Recording fields require a numeric witness and refuse wildcards.
@@ -3132,7 +3274,7 @@ no file is preferred and no plot bucket becomes a statistical input.
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `source_ref` (required, object): Durable file or anchored recording reference.
 - `entry` (required, string): Exact declared numeric entry.
 - `field` (optional, string): Numeric scalar field or array index. Recording reads refuse wildcards.
@@ -3149,8 +3291,38 @@ and a hint on both adapters, retaining inputs, quality and recording-prefix evid
 statistics and analysis directives are absent. Nonnumeric data and invalid selectors still
 refuse, as do resource limits rather than approximate. Non-finite filtering is counted.
 Decode failures give `partial` with `skipped`; sample count and timing bound confidence and one
-recording cannot establish a general cause. These operations require trusted local authority;
+recording cannot establish a general cause. API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local;
 slot pressure is retryable with a one-second delay, and permanent limits have no retry delay.
+
+### `visualization_source_reduction`
+
+Draw min/max/mean time buckets from one proven file or anchored recording prefix.
+
+**Parameters:**
+- `api_version` (required): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
+- `source_ref` (required): Durable file or anchored recording identity.
+- `entry` (required): Exact numeric or boolean entry name.
+- `field` (optional): Scalar numeric field or array index; no wildcard.
+- `start_time` (optional): Inclusive robot-clock seconds, default source start.
+- `end_time` (optional): Inclusive robot-clock seconds, default source end.
+- `last_seconds` (optional): Positive finite recent duration on the admitted clock; mutually exclusive with `start_time`/`end_time`. The result reports absolute bounds.
+- `max_points` (optional): Maximum time buckets, 1–4096, default 1024.
+- `max_bytes` (optional): Result byte allowance, 4096–1048576, default 1048576.
+
+**Returns:** `api_version`, `status`, `reduction`, `inputs`. The reduction contains
+`buckets` with decimal-string `start_us`/`end_us`, `count`, `finite_count`, `min`, `max`,
+`mean`, `first` and `last`; `sample_count`, `finite_count`, `unplottable_count`, `max_points`,
+`window`, `reduction_rule`, `basis`, `prefix`, `records_visited`, `problem_count`, `problems`
+and `problems_truncated`. Empty buckets are omitted; an empty window is `no_match` with
+`looked_for` and a `hint`. Bounds are inclusive; buckets are equal-width in time with the
+right endpoint assigned to the final bucket. Duplicate timestamps remain samples, ordered
+by member ID then physical ordinal. Nonfinite values, absent projected leaves and integers
+outside ±(2^53−1) count as unplottable gaps; unavailable numbers are null. Signed and unsigned
+integers, including enum fields, are checked before conversion. Booleans use 0/1; enums use
+their stored numeric values.
+First/last describe chronological values, without interpolation or unwrapping. Plot summaries
+are not inputs to statistics or evidence of a cause. Admission refuses conflicting declarations,
+revoked access, changed files and work limits. See the standalone guide for capacity and retry.
 
 ### `visualization_source_histogram`
 
@@ -3160,7 +3332,7 @@ time; a change-only signal's long hold contributes one sample.
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `source_ref` (required, object): Durable file or anchored recording reference.
 - `entry` (required, string): Exact numeric entry; booleans use 0/1.
 - `field` (optional, string): Scalar numeric field or array index; no wildcard.
@@ -3186,7 +3358,7 @@ is no interpolation, nearest-time match or automatic clock alignment.
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `source_ref` (required, object): Durable file or anchored recording reference.
 - `x_entry` (required, string): Exact horizontal numeric entry.
 - `y_entry` (required, string): Exact vertical numeric entry; may equal `x_entry`.
@@ -3208,14 +3380,67 @@ combining pages across appends. An empty page is `no_match` with a hint even if 
 contain matches. Sample counts and non-finite filtering bound confidence; a scatter plot does
 not establish causation. Both chart operations require trusted local authority.
 
-### `visualization_template_list`
+### `visualization_library_list`
 
-Search immutable bundled and configured-store templates by query. Returns templates, unreadable records and listing_incomplete.
+Page this server's library summaries. Definitions remain independent of recording stores.
+Unreadable records remain listed and retained; a page holds at most 256 rows and fits the
+encoded reply budget. `next` is passed back as `after`. Pages reflect current library metadata,
+not a fixed snapshot; edits between pages may change titles or totals.
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
-- `query` (optional, string): Case-insensitive substring in template name or description.
+- `api_version` (required, integer): Must be `2`; API 2 admits remote callers. Legacy migration stays local.
+- `kind` (required, string): `view` or `template`.
+- `query` (optional, string): Case-insensitive title substring.
+- `after` (optional, string): Previous page's continuation key.
+- `limit` (optional, integer): 1 through 256; default 256.
+
+**Returns:** `api_version`, `status`, `catalog` with `items`, `total_matching`, `returned`,
+`limit` and `next`. Unreadable rows are included even when their title cannot be checked.
+MCP `limits` reports the true row total; an empty catalog returns `no_match` with a remedy.
+
+### `visualization_library_migrate`
+
+Copy one pinned legacy view or template into this server's library. Canonical content and
+revision are verified; the copied object and old-reference alias commit atomically. Store
+identities namespace collisions. Originals remain intact, and changed legacy revisions
+refuse rather than overwrite a migrated object. Oversized definitions remain at their
+original locations for inspection/export; they are never truncated.
+
+**Parameters:**
+
+- `api_version` (required, integer): Must be `2`; trusted local authority is required.
+- `kind` (required, string): `view` or `template`.
+- `legacy_ref` (required, object): Pinned store reference: `store_id`, object UUID and `revision`; templates also carry `origin: "store"`.
+
+**Returns:** `api_version`, `status`, `definition`: `saved_view_ref` and `saved_view`, or
+`template_ref` and `template`. Repeating the same migration returns its original result,
+including its original library revision if the copy has since been edited.
+
+### `visualization_saved_view_open`
+
+Open a pinned library view as a new working view. Revalidates the original source and current
+grants; it cannot choose another source if that source is unavailable. Owner-local locators
+can restore an ordinary-file reference after its working draft expires.
+
+**Parameters:**
+
+- `api_version` (required, integer): Must be `2`; API 2 admits remote callers. Legacy migration stays local.
+- `request_id` (required, string): UUID reused only for an identical retry.
+- `saved_view_ref` (required, object): `server_instance_id`, `library_id`, `saved_view_id` and `revision`.
+
+**Returns:** `api_version`, `status`, `view` with its new working identity and checkpoint.
+
+### `visualization_template_list`
+
+API 2 searches built-in and server-library template names/descriptions in bounded pages. API 1 retains the legacy store name/description search. Returns templates, unreadable records and listing_incomplete; API 2 also returns next, total_matching, returned and limit.
+
+**Parameters:**
+
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
+- `query` (optional, string): Case-insensitive template name/description substring.
+- `after` (optional, string): API 2 continuation key from the preceding page.
+- `limit` (optional, integer): API 2 page size, 1 through 256.
 
 **Returns:** `api_version`, `status`, `catalog` on success; `code` and `error` on refusal.
 
@@ -3225,7 +3450,7 @@ Read an exact pinned template_ref; a changed revision refuses rather than silent
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `template_ref` (required, object): Origin, template UUID and pinned revision; store origins also name a store ID.
 
 **Returns:** `api_version`, `status`, `definition` on success; `code` and `error` on refusal.
@@ -3236,7 +3461,7 @@ Check exact entries or explicit shared-resolver roles against a recorded file or
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `source_ref` (required, object): Recorded, unmanaged or anchored recording identity from source inspection.
 - `template_ref` (optional, object): Origin, template UUID and pinned revision; store origins also name a store ID.
 - `configuration_json` (optional, string): Strict configuration JSON text; mutually exclusive with a template or working-view input.
@@ -3245,13 +3470,13 @@ Check exact entries or explicit shared-resolver roles against a recorded file or
 
 ### `visualization_template_create`
 
-Create a store template from configuration_json or a pinned working view. Returns template_ref and portable template. No source bytes or paths are stored in templates; no writable store yields NO_WRITABLE_STORE.
+Create a library (API 2) or store (API 1) template from configuration_json or a pinned working view. Returns template_ref and portable template. No source bytes or paths are stored in templates; API 2 requires durable server state and no store ID.
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `request_id` (required, string): UUID identifying this exact intent.
-- `store_id` (required, string): ID of a configured writable local store.
+- `store_id` (optional, string): API 1 requires this; API 2 rejects it. ID of a configured writable local store.
 - `name` (required, string): Template name, 1–256 characters.
 - `description` (required, string): Template description, up to 4096 characters.
 - `configuration_json` (optional, string): Strict configuration JSON text; mutually exclusive with a template or working-view input.
@@ -3262,11 +3487,11 @@ Create a store template from configuration_json or a pinned working view. Return
 
 ### `visualization_template_update`
 
-Explicitly update a store template at expected_revision. Returns template_ref and template; existing views keep pinned configurations. Bundled definitions are immutable.
+Explicitly update a library (API 2) or store (API 1) template at expected_revision. Returns template_ref and template; existing views keep pinned configurations. Bundled definitions are immutable.
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `request_id` (required, string): UUID identifying this exact intent.
 - `template_ref` (required, object): Origin, template UUID and pinned revision; store origins also name a store ID.
 - `expected_revision` (required, integer): Current revision to compare before mutation.
@@ -3282,9 +3507,9 @@ Validate a portable envelope_json and RFC 8785 SHA-256 before an atomic import. 
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `request_id` (required, string): UUID identifying this exact intent.
-- `store_id` (required, string): ID of a configured writable local store.
+- `store_id` (optional, string): API 1 requires this; API 2 rejects it. ID of a configured writable local store.
 - `envelope_json` (required, string): Strict portable template envelope JSON, including its RFC 8785 digest.
 - `mode` (optional, string): copy (default) or update; update requires a newer portable revision and the current local expected_revision.
 - `expected_revision` (optional, integer): Current revision to compare before mutation.
@@ -3297,7 +3522,7 @@ Return envelope_json with format, schema_version, template and content_sha256. C
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `template_ref` (required, object): Origin, template UUID and pinned revision; store origins also name a store ID.
 
 **Returns:** `api_version`, `status`, `export` on success; `code` and `error` on refusal.
@@ -3308,7 +3533,7 @@ List unexpired working views, optionally for source_ref. Returns views with revi
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `source_ref` (optional, object): Durable recorded, unmanaged or anchored recording identity from source inspection.
 
 **Returns:** `api_version`, `status`, `workspace` on success; `code` and `error` on refusal.
@@ -3319,7 +3544,7 @@ Read one working view: revision, configuration, source_ref, checkpoint, saved/te
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `view_id` (required, string): Working view UUID.
 
 **Returns:** `api_version`, `status`, `view` on success; `code` and `error` on refusal.
@@ -3332,7 +3557,7 @@ time policy and server-owned follow queries. It does not open a follow or displa
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `view_id` (required, string): Working recording view UUID.
 - `expected_revision` (required, integer): Current working revision; an edit during admission returns `REVISION_CONFLICT`.
 
@@ -3351,7 +3576,7 @@ Create an independent working view from source_ref and configuration_json or tem
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `request_id` (required, string): UUID identifying this exact intent.
 - `source_ref` (required, object): Durable recorded, unmanaged or anchored recording identity from source inspection.
 - `configuration_json` (optional, string): Strict configuration JSON text; mutually exclusive with a template or working-view input.
@@ -3365,7 +3590,7 @@ CAS edit a working view with strict configuration_json at expected_revision. Ret
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `request_id` (required, string): UUID identifying this exact intent.
 - `view_id` (required, string): Working view UUID.
 - `expected_revision` (required, integer): Current revision to compare before mutation.
@@ -3379,7 +3604,7 @@ Create another working UUID from the pinned expected_revision. Returns an indepe
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `request_id` (required, string): UUID identifying this exact intent.
 - `view_id` (required, string): Working view UUID.
 - `expected_revision` (required, integer): Current revision to compare before mutation.
@@ -3388,11 +3613,11 @@ Create another working UUID from the pinned expected_revision. Returns an indepe
 
 ### `visualization_view_save`
 
-Save source-bound configuration at expected_revision into a local store and advance its checkpoint. First save requires store_id and title; existing saves retain their destination. A concurrent edit remains uncheckpointed. Returns the view.
+Save source-bound configuration at expected_revision into the API 2 server library (or API 1 store) and advance its checkpoint. First save requires title; API 1 also requires store_id; existing saves retain their destination. A concurrent edit remains uncheckpointed. Returns the view.
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `request_id` (required, string): UUID identifying this exact intent.
 - `view_id` (required, string): Working view UUID.
 - `expected_revision` (required, integer): Current revision to compare before mutation.
@@ -3407,7 +3632,7 @@ CAS restore the checkpoint or initial draft layout at expected_revision. Returns
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `request_id` (required, string): UUID identifying this exact intent.
 - `view_id` (required, string): Working view UUID.
 - `expected_revision` (required, integer): Current revision to compare before mutation.
@@ -3423,7 +3648,7 @@ and source files remain intact; close an attached editor first. Returns the dele
 
 **Parameters:**
 
-- `api_version` (required, integer): `1`.
+- `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
 - `request_id` (required, string): UUID identifying this exact intent.
 - `view_id` (required, string): Working view UUID.
 - `expected_revision` (required, integer): Current revision to compare before mutation.

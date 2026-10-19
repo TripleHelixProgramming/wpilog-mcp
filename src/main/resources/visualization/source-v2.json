@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WPILog source reference v2",
+  "type": "object",
+  "properties": {
+    "schema_version": { "enum": [2] },
+    "server_instance_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "maxLength": 36
+    },
+    "scope_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "maxLength": 36
+    },
+    "content": { "$ref": "contracts-v1.json#/$defs/source_ref" }
+  },
+  "required": ["schema_version", "server_instance_id", "scope_id", "content"],
+  "additionalProperties": false
+}

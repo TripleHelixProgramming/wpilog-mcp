@@ -4,10 +4,14 @@
   const api = acquireVsCodeApi(), overview = document.body.dataset.overview === "true";
   const get = id => document.getElementById(id);
   const el = (tag, text, className) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (className) e.className = className; return e; };
-  let liveFrame, pendingServer = false, navigationPending = false, restoredWindowFor;
+  let liveFrame, pendingLiveAck, pendingServer = false, navigationPending = false, restoredWindowFor;
   const selectionEvents = new WeakMap();
   function selectedRange() {
-    if (recording() && liveFrame?.range) return liveFrame.range;
+    if (historical()) {
+      const windows = [...reductions.values()].filter(r => r.window && r.status !== "error").map(r => r.window);
+      if (windows.length) return { start: Math.min(...windows.map(w => Number(w.start_us) / 1e6)), end: Math.max(...windows.map(w => Number(w.end_us) / 1e6)) };
+    }
+    if (!historical() && recording() && liveFrame?.range) return liveFrame.range;
     const policy = recording() ? liveFrame?.finalized ? snapshot.configuration.time.recorded : snapshot?.configuration.time.live : snapshot?.configuration.time.recorded;
     if (policy?.mode === "fixed") return { start: policy.start_sec, end: policy.end_sec };
     if (recording() && !liveFrame) return;
@@ -34,10 +38,13 @@
     const value = Number(get("live-window").value);
     if (Number.isFinite(value) && value >= 1 && value <= 300) api.setState?.({ view_id: snapshot.view_id, following_window_sec: value });
   }
-  let analysisEpochs = { value: 0, statistics: 0, histogram: 0, scatter: 0 }, analysisPaused = false;
-  const recording = () => snapshot?.source_ref?.kind === "session";
+  let analysisEpochs = { value: 0, statistics: 0, histogram: 0, scatter: 0, reduction: 0 }, analysisPaused = false, history = false;
+  const sourceKind = ref => (ref?.schema_version === 2 ? ref.content : ref)?.kind;
+  const recording = () => sourceKind(snapshot?.source_ref) === "session";
+  const historical = () => recording() && (history
+    || (liveFrame?.finalized ? snapshot.configuration.time.recorded : snapshot.configuration.time.live).mode !== "follow");
   let snapshot, inventory, generation = "", source, visible = true, cursorTimer;
-  const charts = new Map(), panels = new Map(), data = new Map(), values = new Map();
+  const charts = new Map(), panels = new Map(), data = new Map(), values = new Map(), reductions = new Map();
   const cursorEvents = new WeakMap(), bindings = new Map(), statistics = new Map(), raw = new Map(), histograms = new Map(), scatters = new Map();
   let templates = [], selectedTemplate, inventoryGeneration = 0, inventoryRetryTimer, inventoryFilterKey;
   let grid, applying = false;
@@ -62,11 +69,11 @@
     get("cursor").value = at === undefined ? "" : String(at); send("cursor", { at });
   }
   function facts(summary) {
-    source = summary; const recording = summary.source_ref.kind === "session";
-    get("title").textContent = summary.label; get("source").textContent = recording ? "Recording · inspection preview" : "Recorded source · local preview";
+    source = summary; const recording = sourceKind(summary.source_ref) === "session";
+    get("title").textContent = summary.label; get("source").textContent = recording ? "Recording · inspection preview" : "Recorded source · preview";
     for (const id of ["blank", "template-open"]) if (get(id)) get(id).disabled = false;
     get("warning").textContent = recording ? "Recording panel preview: plots and raw rows follow completed prefixes. Values and statistics read independent server prefixes." : "";
-    const catalog = summary.catalog, rows = [["Source", summary.label], ["Identity", recording ? "Anchored recording" : summary.source_ref.kind === "recorded" ? "Managed recorded content" : "Local file fingerprint"]];
+    const catalog = summary.catalog, rows = [["Source", summary.label], ["Identity", recording ? "Anchored recording" : sourceKind(summary.source_ref) === "recorded" ? "Managed recorded content" : "File fingerprint"]];
     rows.push(["Robot", catalog?.robot?.name ?? catalog?.robot?.serial_number ?? "Unavailable: not recorded"]);
     rows.push(["Session", catalog?.session?.started_at ?? "Unavailable: no recorded session"]);
     rows.push(["Match", catalog?.session?.match_number == null ? "Unavailable: not recorded" : `${catalog.session.match_type ?? ""} ${catalog.session.match_number}`]);
@@ -328,9 +335,13 @@
       const problems = spec.series.reduce((n, s) => n + (values.get(s.requirement_id)?.problem_count ?? 0), 0);
       panel.note.textContent = `Last logged value at or before cursor; no interpolation.${recording() ? " Ties use member identity then physical ordinal. Independent server reads may be newer than the plot; exact integer text is retained." : ""}${problems ? ` ${problems} records could not be decoded in the selected signals.` : ""}`;
     } else {
+      const plotted = historical() ? new Map([...reductions].filter(([, r]) => r.status !== "error").map(([id, r]) => [id, {
+        bucketed: true, count: r.buckets.length, timestamps: r.buckets.map(b => Number(b.start_us) / 1e6), values: r.buckets.map(b => b.mean),
+        data: { columns: { max: r.buckets.map(b => b.max), min: r.buckets.map(b => b.min) } }
+      }])) : data;
       const definitions = [{ label: "Robot time (s)" }], tables = [], bands = [];
       for (const s of spec.series) {
-        const item = data.get(s.requirement_id); if (!item) continue;
+        const item = plotted.get(s.requirement_id); if (!item) continue;
         const req = snapshot.configuration.requirements.find(r => r.id === s.requirement_id);
         const index = definitions.length;
         definitions.push({ label: (bindings.get(req.id)?.entry ?? req.entry ?? req.role) + (req.field_path ?? ""), stroke: s.color, width: spec.display.line_width, points: { show: item.count < 100 } });
@@ -341,7 +352,13 @@
           tables.push([Array.from(item.timestamps), values, Array.from(item.data.columns.max), Array.from(item.data.columns.min)]);
         } else tables.push([Array.from(item.timestamps), values]);
       }
-      if (!tables.length) { panel.note.textContent = spec.series.length ? "Loading recorded samples…" : "Add signals to this plot"; return; }
+      const historyNotes = () => spec.series.map(s => {
+        const r = reductions.get(s.requirement_id);
+        return !r ? "Loading full-interval history…" : r.status === "error" ? r.error + ". Use Retry." : r.status === "no_match" ? r.hint
+          : `${r.sample_count.toLocaleString()} original samples in ${r.buckets.length} server min/max/mean buckets; ${r.unplottable_count} unplottable, ${r.problem_count} undecoded. Catalog ${r.prefix.catalog_revision ?? "file"}; independent of the follow frontier.`;
+      }).join(" ");
+      if (!tables.length) { charts.get(id)?.destroy(); charts.delete(id); panel.body.replaceChildren();
+        panel.note.textContent = spec.series.length ? historical() ? historyNotes() : "Loading recorded samples…" : "Add signals to this plot"; return; }
       const points = uPlot.join(tables), signature = JSON.stringify(definitions);
       let chart = charts.get(id);
       if (!chart || chart.previewSignature !== signature) {
@@ -375,7 +392,7 @@
       const range = selectedRange();
       if (range && range.end > range.start) chart.setScale("x", { min: range.start, max: range.end });
       timeControls();
-      panel.note.textContent = recording() ? "At most 4,096 recent plot samples per signal. Equal timestamps display the last delivered value; unsafe integers and non-finite values are gaps. " + spec.series.map(s => { const d = data.get(s.requirement_id); return d ? `${d.trimmed} trimmed, ${d.duplicate_times} equal-time points collapsed, ${d.unplottable} unplottable, ${d.problems ?? 0} undecoded records (time may be unknown).` : ""; }).join(" ") : [...data.values()].some(d => d.bucketed) ? "Server min/max bands and means; drag or use Zoom in for detail." : "Recorded samples · robot time in seconds";
+      panel.note.textContent = historical() ? historyNotes() + " Buckets are drawing summaries, not inputs to statistics." : recording() ? "At most 4,096 recent plot samples per signal. Equal timestamps display the last delivered value; unsafe integers and non-finite values are gaps. " + spec.series.map(s => { const d = data.get(s.requirement_id); return d ? `${d.trimmed} trimmed, ${d.duplicate_times} equal-time points collapsed, ${d.unplottable} unplottable, ${d.problems ?? 0} undecoded records (time may be unknown).` : ""; }).join(" ") : [...data.values()].some(d => d.bucketed) ? "Server min/max bands and means; drag or use Zoom in for detail." : "Recorded samples · robot time in seconds";
     }
     send("rendered", { panels: panels.size, plots: charts.size, rows: [...panels.values()].reduce((n, p) => n + p.body.querySelectorAll(".recorded-values tr").length, 0), width: panel.body.clientWidth, height: panel.body.clientHeight,
       axis_colors: [...charts.values()].map(c => c.axes[0].stroke(c, 0)), foreground: getComputedStyle(document.body).color });
@@ -385,11 +402,13 @@
     if (message.type === "templates") {
       templates = message.catalog.templates; selectedTemplate = undefined;
       get("templates")?.replaceChildren(...templates.map((item, i) => {
-        const ref = item.template_ref, option = el("option", `${item.template.name} · ${ref.origin === "bundled" ? "Built-in" : item.store_label ?? ref.store_id} · r${ref.revision} · ${ref.template_id.slice(0, 8)}`); option.value = String(i); return option;
+        const ref = item.template_ref, option = el("option", `${item.template.name} · ${ref.origin === "bundled" ? "Built-in" : ref.origin === "library" ? "Server library" : item.store_label ?? ref.store_id} · r${ref.revision} · ${ref.template_id.slice(0, 8)}`); option.value = String(i); return option;
       }));
+      const next = message.catalog.next;
+      if (get("template-next")) { get("template-next").hidden = !next; get("template-next").onclick = () => send("templateSearch", { query: get("template-search").value, after: next }); }
       if (get("template-status")) get("template-status").textContent = "Select a template to check compatibility before opening.";
-      get("template-problems")?.replaceChildren(...(message.catalog.unreadable ?? []).map(p => el("p", `${p.file}: ${p.reason}`)));
-      if (message.catalog.listing_incomplete) get("template-problems")?.append(el("p", "Template listing is incomplete at its metadata budget."));
+      get("template-problems")?.replaceChildren(...(message.catalog.unreadable ?? []).map(p => el("p", `${p.file ?? p.key}: ${p.reason}`)));
+      if (message.catalog.listing_incomplete) get("template-problems")?.append(el("p", "More templates are available on the next page."));
       return;
     }
     if (message.type === "templateCompatibility") {
@@ -473,15 +492,18 @@
     }
     if (message.type === "lists" && overview) {
       get("unavailable")?.replaceChildren(...(message.lists.unavailable_views ?? []).map(v => el("p", `Unavailable view ${v.view_id}: ${v.reason}`)));
-      get("unreadable").replaceChildren(...(message.lists.unreadable ?? []).map(p => el("p", `${p.file}: ${p.reason} (store ${p.store_id})`)));
-      if (message.lists.listing_incomplete) get("unreadable").append(el("p", "Saved-view listing is incomplete at its metadata budget. Known saved views can still be opened directly."));
+      get("unreadable").replaceChildren(...(message.lists.unreadable ?? []).map(p => el("p", `${p.file ?? p.key}: ${p.reason}`)));
+      get("saved-next").hidden = !message.lists.next;
+      get("saved-next").onclick = () => send("savedPage", { after: message.lists.next });
+      get("saved-first").onclick = () => send("savedPage");
+      if (message.lists.listing_incomplete) get("unreadable").append(el("p", "More saved views are available on the next page."));
       for (const [id, views] of [["saved", message.lists.saved_views], ["drafts", message.lists.working_views.filter(v => !v.saved_view_ref)]]) {
         get(id).replaceChildren(...views.map(v => {
           const row = el("div", undefined, "view-row"); row.append(el("span", v.title ?? `Unsaved view ${v.view_id.slice(0, 8)}`));
           if (id === "drafts") row.append(el("p", v.attached_client_id ? "Open in a window" : `Expires ${v.detached_expires_at}`));
-          const recording = source?.source_ref.kind === "session";
+          const recording = sourceKind(source?.source_ref) === "session";
           const open = button(id === "saved" ? "Open new view" : "Resume", () => {
-            send(id === "saved" ? "openSaved" : "resume", { saved_view_id: v.saved_view_id, store_id: v.store_id, view_id: v.view_id });
+            send(id === "saved" ? "openSaved" : "resume", { saved_view_ref: v.saved_view_ref, view_id: v.view_id });
           });
           row.append(open);
 
@@ -503,7 +525,7 @@
       snapshot = message.snapshot; generation = message.generation; document.body.dataset.viewId = snapshot.view_id; document.body.dataset.revision = String(snapshot.revision); document.body.dataset.generation = generation;
       get("title").textContent = message.title; get("source").textContent = message.label;
       get("budget").textContent = message.decoded_buffer_budget_bytes ? `Window sample allowance: ${message.decoded_buffer_budget_bytes / 1048576} MiB. Shared by recorded and live views; reload after changing the setting.` : "";
-      get("warning").textContent = message.warning ?? ""; get("status").textContent = message.pending ? "Pending server" : snapshot.saved_view_ref ? "Saved view · edits use native Save" : "Draft saved on server · Save view to choose a destination";
+      get("warning").textContent = message.warning ?? ""; get("status").textContent = message.pending ? "Pending server" : snapshot.saved_view_ref ? "Saved view · edits use native Save" : "Draft saved on server · Save view to add it to the library";
       for (const id of ["undo", "redo", "reset"]) get(id).hidden = !!snapshot.saved_view_ref;
       get("save").textContent = snapshot.saved_view_ref ? "Save view" : "Save view…";
       get("live-controls").hidden = !recording(); get("recording-picker").hidden = !recording(); get("picker").hidden = recording();
@@ -519,15 +541,18 @@
       if (range.mode === "follow") { get("live-window").value = range.window_sec; rememberWindow(); }
       if (range.mode === "fixed") { get("start").value = range.start_sec; get("end").value = range.end_sec; }
       if (changedQuery) {
-        analysisEpochs = { value: 0, statistics: 0, histogram: 0, scatter: 0 }; analysisPaused = false;
+        pendingLiveAck?.(false);
+        analysisEpochs = { value: 0, statistics: 0, histogram: 0, scatter: 0, reduction: 0 }; analysisPaused = false; history = false; reductions.clear();
         liveFrame = undefined; data.clear(); values.clear(); bindings.clear(); statistics.clear(); raw.clear(); histograms.clear(); scatters.clear();
         clearSampleDisplays();
       }
       layout(); timeControls(); return;
     }
-    if (message.type === "visibility") { visible = message.visible; timeControls(); if (!visible) cancelField(); if (visible) for (const id of panels.keys()) draw(id); return; }
+    if (message.type === "visibility") { visible = message.visible; timeControls(); if (!visible) { pendingLiveAck?.(false); cancelField(); } if (visible) for (const id of panels.keys()) draw(id); return; }
     if (message.type === "liveFrame") {
+      const received = performance.now();
       if (message.generation === generation) {
+        pendingLiveAck?.(false);
         liveFrame = message.frame; data.clear(); raw.clear(); bindings.clear();
         if (liveFrame) {
           get("live-follow").disabled = liveFrame.finalized; get("full").disabled = !liveFrame.finalized;
@@ -536,18 +561,31 @@
           for (const b of liveFrame.binding.compatibility.bindings) bindings.set(b.requirement_id, b);
           get("clock").textContent = `Displayed prefix ${liveFrame.prefix} · ${liveFrame.finalized ? "Finalized" : "Recording"} · ${liveFrame.clock.display_basis === "held_robot_edge" ? "Held robot edge; waiting for time sync" : recordingClock(liveFrame.clock)} · right edge ${liveFrame.clock.right_edge_sec ?? "unavailable"} s`;
         } else {
-          values.clear(); statistics.clear(); histograms.clear(); scatters.clear();
+          values.clear(); statistics.clear(); histograms.clear(); scatters.clear(); reductions.clear();
           clearSampleDisplays();
           get("clock").textContent = "No retained recording display";
         }
         for (const id of panels.keys()) draw(id); timeControls();
       }
-      send("liveRendered", { delivery_id: message.delivery_id }); return;
+      let acknowledged = false;
+      const ack = rendered => {
+        if (acknowledged) return;
+        acknowledged = true; if (pendingLiveAck === ack) pendingLiveAck = undefined;
+        send("liveRendered", { delivery_id: message.delivery_id, rendered, render_elapsed_ms: performance.now() - received });
+      };
+      // Hidden webviews suspend animation frames. Release immediately on hide/replacement;
+      // a delayed callback must neither acknowledge twice nor claim that a frame was painted.
+      if (visible && message.generation === generation && message.frame) {
+        pendingLiveAck = ack;
+        requestAnimationFrame(() => { if (!acknowledged) requestAnimationFrame(() => ack(visible && message.generation === generation)); });
+      }
+      else ack(false);
+      return;
     }
     if (message.type === "analysisClear") {
       if (message.generation === generation) {
-        values.clear(); statistics.clear(); histograms.clear(); scatters.clear();
-        for (const [id, panel] of panels) if (["latest", "statistics", "histogram", "scatter"].includes(snapshot.configuration.panels.find(p => p.panel_id === id)?.type)) {
+        values.clear(); statistics.clear(); histograms.clear(); scatters.clear(); reductions.clear();
+        for (const [id, panel] of panels) if (["latest", "statistics", "histogram", "scatter", ...(historical() ? ["time_series"] : [])].includes(snapshot.configuration.panels.find(p => p.panel_id === id)?.type)) {
           charts.get(id)?.destroy(); charts.delete(id); panel.body.replaceChildren(); panel.note.textContent = "No retained analysis"; draw(id);
         }
       }
@@ -555,7 +593,7 @@
     }
     if (message.type === "recordedClear") {
       if (message.generation === generation) {
-        data.clear(); values.clear(); statistics.clear(); histograms.clear(); scatters.clear(); raw.clear();
+        data.clear(); values.clear(); statistics.clear(); histograms.clear(); scatters.clear(); reductions.clear(); raw.clear();
         clearSampleDisplays();
         for (const id of panels.keys()) draw(id);
       }
@@ -563,18 +601,23 @@
     }
     if (message.generation !== generation) { if (message.delivery_id) send("recordedRendered", { delivery_id: message.delivery_id }); return; }
     if (message.type === "analysisState") {
-      analysisEpochs = { value: message.value_epoch, statistics: message.statistics_epoch, histogram: message.histogram_epoch, scatter: message.scatter_epoch }; analysisPaused = message.paused === true;
+      analysisEpochs = { value: message.value_epoch, statistics: message.statistics_epoch, histogram: message.histogram_epoch, scatter: message.scatter_epoch, reduction: message.reduction_epoch }; history = message.history === true; analysisPaused = message.paused === true;
       for (const id of ["cursor", "at", "latest"]) get(id).disabled = analysisPaused;
       if (message.clear_values) { values.clear(); for (const spec of snapshot.configuration.panels) if (spec.type === "latest") draw(spec.panel_id); }
-      for (const spec of snapshot.configuration.panels) if (["histogram", "scatter"].includes(spec.type)) draw(spec.panel_id);
+      for (const spec of snapshot.configuration.panels) if (["histogram", "scatter", "time_series"].includes(spec.type)) draw(spec.panel_id);
       return;
     }
     if (message.analysis_epoch !== undefined && message.analysis_epoch !== analysisEpochs[message.type]) {
       send("recordedRendered", { delivery_id: message.delivery_id }); return;
     }
+    if (message.type === "liveTiming") {
+      get("live-timing").textContent = `Host page receipt to render acknowledgement: ${message.timing.receipt_to_ack_ms.toFixed(1)} ms · renderer: ${message.timing.renderer_elapsed_ms.toFixed(1)} ms. Includes message/paint scheduling; not source-to-screen latency.`;
+      return;
+    }
     if (message.type === "liveState") {
       const state = message.state;
-      get("live-status").textContent = `${state.paused ? "Display paused · " : ""}${state.kind}: ${state.reason}`;
+      const health = state.health, acquisition = health?.kind === "ok" ? `${health.health.acquisition_state}: ${health.reason}${health.health.last_value_age_ms === null ? "" : ` · last received value ${(health.health.last_value_age_ms / 1000).toFixed(1)} s ago (quiet signals are normal)`}` : health ? `health unavailable: ${health.reason}` : "Checking acquisition health";
+      get("live-status").textContent = `${state.paused ? "Display paused · " : ""}${state.kind}: ${state.reason} · ${acquisition}`;
       get("live-pause").disabled = state.paused; get("live-resume").disabled = !state.paused;
       if (state.binding) {
         for (const b of state.binding.compatibility.bindings) bindings.set(b.requirement_id, b);
@@ -588,6 +631,7 @@
       data.set(message.requirement_id, decoded);
     }
     if (message.type === "value") values.set(message.requirement_id, message.result);
+    if (message.type === "reduction") reductions.set(message.requirement_id, message.result);
     if (message.type === "statistics") statistics.set(message.requirement_id, message.result);
     if (message.type === "histogram") histograms.set(message.requirement_id, message.result);
     if (message.type === "scatter") scatters.set(JSON.stringify(message.pair), message.result);
@@ -599,6 +643,6 @@
     for (const id of panels.keys()) draw(id);
     if (message.delivery_id) send("recordedRendered", { delivery_id: message.delivery_id });
   });
-  window.addEventListener("unload", () => { clearTimeout(cursorTimer); clearTimeout(inventoryRetryTimer); for (const id of [...panels.keys()]) destroyPanel(id); grid?.destroy(false); });
+  window.addEventListener("unload", () => { pendingLiveAck?.(false); clearTimeout(cursorTimer); clearTimeout(inventoryRetryTimer); for (const id of [...panels.keys()]) destroyPanel(id); grid?.destroy(false); });
   send("ready");
 })();

@@ -8,16 +8,18 @@ import { createInterface } from "node:readline";
 import { FollowClient } from "../visualization/followClient";
 import { LiveBroker, FollowDelivery, FollowState } from "../visualization/liveBroker";
 import { FollowSource } from "../visualization/followProtocol";
+import { AnalysisQueue, LiveAnalysis } from "../visualization/liveAnalysis";
+import { VisualizationBudgets } from "../visualization/byteBudget";
 
 const classpath = process.env.WPILOG_FOLLOW_CLASSPATH;
 const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 async function until(fn: () => boolean, label: string): Promise<void> {
   for (let n = 0; n < 1500; n++) { if (fn()) return; await wait(10); } assert.fail(`Timed out: ${label}`);
 }
-async function realFixture(t: import("node:test").TestContext, cleanup: () => Promise<void> | void) {
+async function realFixture(t: import("node:test").TestContext, cleanup: () => Promise<void> | void, emptyAnalysis = false) {
   const temp = await mkdtemp(join(tmpdir(), "wpilog-broker-")), replies: any[] = [], stderr: string[] = [];
   const child = spawn(process.env.WPILOG_FOLLOW_JAVA ?? "java", ["-Xmx256m", `-Duser.home=${temp}`, "-cp", classpath!,
-    "org.triplehelix.wpilogmcp.fixtures.FollowBrokerFixture", join(temp, "store")],
+    "org.triplehelix.wpilogmcp.fixtures.FollowBrokerFixture", join(temp, "store"), ...(emptyAnalysis ? ["empty-analysis"] : [])],
     { env: { ...process.env, WPILOG_DISK_CACHE_DIR: join(temp, "cache"), TBA_API_KEY: "" }, stdio: ["pipe", "pipe", "pipe"] });
   let exited = false; child.once("exit", () => exited = true); child.on("error", error => stderr.push(String(error)));
   const lines = createInterface({ input: child.stdout }); lines.on("line", line => { if (line.startsWith("BROKER ")) replies.push(JSON.parse(line.slice(7))); });
@@ -29,15 +31,56 @@ async function realFixture(t: import("node:test").TestContext, cleanup: () => Pr
     lines.close(); await rm(temp, { recursive: true, force: true });
   });
   await until(() => replies.length > 0 || exited, "fixture startup"); assert.ok(replies.length, stderr.join(""));
-  const port = replies.shift().port;
+  const ready = replies.shift(), port = ready.port;
   const command = async (request: object) => {
     child.stdin.write(JSON.stringify(request) + "\n"); await until(() => replies.length > 0 || exited, JSON.stringify(request));
     assert.ok(replies.length, stderr.join("")); return replies.shift();
   };
   const source: FollowSource = { kind: "session", origin_store_id: "11111111-1111-4111-8111-111111111111",
     session_id: "22222222-2222-4222-8222-222222222222", anchor_member: { original_name: "capture.wpilog", recording_started_at: "2026-01-01T00:00:00Z" } };
-  return { port, command, source };
+  return { port, command, source, configuration: ready.configuration };
 }
+
+test("declaration-only live analysis returns no_match then refreshes from the first real sample", { skip: !classpath, timeout: 60000 }, async t => {
+  let analysis: LiveAnalysis | undefined;
+  const { port, command, source, configuration } = await realFixture(t, () => analysis?.dispose(), true);
+  const base = `http://127.0.0.1:${port}`;
+  const hello = await fetch(base + "/mcp", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize",
+    params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "empty-analysis-test", version: "1" } } }) });
+  assert.equal(hello.status, 200); await hello.text();
+  const session = hello.headers.get("Mcp-Session-Id")!;
+  const request = async (route: string, body: object, signal?: AbortSignal): Promise<any> => {
+    const response = await fetch(base + "/visualizations/v1" + route, { method: "POST", signal,
+      headers: { "Content-Type": "application/json", "Mcp-Session-Id": session }, body: JSON.stringify(body) });
+    const result: any = await response.json();
+    if (!response.ok) throw Object.assign(new Error(result.error), result);
+    return result;
+  };
+  configuration.requirements = [{ id: "x", selector_kind: "entry", entry: "NT:/x", accepted_entry_types: ["int64"], value_type: "number", field_path: null, unit: null }];
+  const view = await request("/views", { request_id: "11111111-1111-4111-8111-111111111112", source_ref: source, configuration });
+  const binding = await request(`/views/${view.view_id}/bindings`, { expected_revision: view.revision });
+  assert.equal(binding.follow_ready, true); assert.equal(binding.clock.robot_time_sec, 3); assert.equal(binding.clock.last_sample_time_sec, null);
+  // Panel selection is controller input. Binding and every analysis reply come from the real
+  // server. Reuse this exact binding after append, as the existing follow lease does.
+  view.configuration.panels = ["statistics", "histogram", "scatter"].map(type => ({ panel_id: type, type,
+    series: Array.from({ length: type === "scatter" ? 2 : 1 }, () => ({ requirement_id: "x" })) }));
+  const messages: any[] = [], calls: string[] = [], budgets = new VisualizationBudgets(16);
+  analysis = new LiveAnalysis(view, "empty-source", budgets, new AnalysisQueue(), async (route, body, signal) => {
+    calls.push(route); return request(route, body, signal);
+  }, message => { messages.push(message); if (message.delivery_id) queueMicrotask(() => analysis!.acknowledge(message.delivery_id)); }, error => assert.fail(String(error)), 10);
+  const results = () => messages.filter(m => ["statistics", "histogram", "scatter"].includes(m.type));
+  analysis.complete(binding, false); await until(() => results().length === 3, "empty server analysis replies");
+  assert.deepEqual(results().map(m => m.result.status), ["no_match", "no_match", "no_match"]);
+  assert.ok(results().every(m => typeof m.result.hint === "string" && !m.result.error));
+  await command({ op: "analysis-append" });
+  analysis.complete(binding, false); await until(() => results().length === 6, "ordinary prefix refresh after first sample");
+  assert.equal(calls.length, 6);
+  const latest = results().slice(3); assert.ok(latest.every(m => m.result.status === "ok"));
+  const stats = latest.find(m => m.type === "statistics").result; assert.equal(stats.count, 1); assert.equal(stats.mean, 41);
+  const histogram = latest.find(m => m.type === "histogram").result; assert.equal(histogram.summary.count, 1); assert.equal(histogram.summary.mean, 41);
+  const scatter = latest.find(m => m.type === "scatter").result; assert.deepEqual(scatter.points, [[41, 41, 2.5]]);
+  analysis.dispose(); assert.equal(budgets.encoded.reserved, 0); assert.equal(budgets.decoded.reserved, 0);
+});
 test("queried one-MiB broker follows a large two-member recording through growth and finalization", { skip: !classpath, timeout: 60000 }, async t => {
   let broker: LiveBroker | undefined;
   const { port, command, source } = await realFixture(t, () => broker?.dispose());

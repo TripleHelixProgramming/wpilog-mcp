@@ -27,6 +27,22 @@ import org.triplehelix.wpilogmcp.tools.VisualizationTools;
  * to make a control request succeed. */
 class InventoryRefusalTest {
   @TempDir Path temp;
+  @ParameterizedTest @CsvSource({"http,false,false", "http,true,false", "http,false,true", "http,true,true",
+      "mcp,false,false", "mcp,true,false", "mcp,false,true", "mcp,true,true"})
+  void healthSharesRawLimitsAndInventoryCapacity(String adapter, boolean busy, boolean oversized) throws Exception {
+    try (var h = new Harness(busy)) {
+      var body = new JsonObject(); body.add("source_ref", h.reference);
+      String wire = adapter.equals("mcp") ? rpc("visualization_source_health", body, 1).toString() : body.toString();
+      if (oversized) wire = " ".repeat(65537) + wire;
+      var reply = h.send(adapter.equals("mcp") ? "/mcp" : "/visualizations/v1/source/health", wire, h.session);
+      assertEquals(adapter.equals("mcp") ? 200 : busy || oversized ? 413 : 200, reply.statusCode(), reply.body());
+      var parsed = JsonParser.parseString(reply.body()).getAsJsonObject();
+      if (adapter.equals("mcp")) parsed = toolBody(parsed);
+      if (busy || oversized) assertRefusal(parsed, !oversized);
+      else assertEquals("inactive", (adapter.equals("mcp") ? parsed.getAsJsonObject("health") : parsed).get("acquisition_state").getAsString());
+      assertEquals(200, h.send("/mcp", ping(2).toString(), h.session).statusCode());
+    }
+  }
   @ParameterizedTest @CsvSource({"spaces,false", "duplicate,false", "unicode,false", "batch,false",
       "spaces,true", "duplicate,true", "unicode,true", "batch,true"})
   void rawBytesSurviveJsonNormalization(String encoding, boolean busy) throws Exception {
@@ -158,10 +174,11 @@ class InventoryRefusalTest {
     final LogManager logs = LogManager.getInstance(); final Set<Path> old = logs.getConfiguredDirectories();
     final HttpClient http = HttpClient.newHttpClient(); final CountDownLatch release = new CountDownLatch(1);
     final ArrayList<CompletableFuture<HttpResponse<String>>> calls = new ArrayList<>();
-    final ToolRegistry registry; final HttpTransport server; final RecordingInventories inventories; final String session, base; final JsonObject id;
+    final ToolRegistry registry; final HttpTransport server; final RecordingInventories inventories; final String session, base; final JsonObject id, reference;
     Harness(boolean busy) throws Exception {
       temp = temp.toRealPath(); logs.clearAllowedDirectories(); logs.addAllowedDirectory(temp);
       var fixture = new RecordingFixture(temp.resolve("store"), 4);
+      reference = fixture.reference;
       registry = new ToolRegistry(); registry.serverIdentity(ServerIdentity.ephemeral()); VisualizationTools.registerAll(registry);
       var workspace = registry.visualizations(); var block = new AtomicBoolean(); var entered = new CountDownLatch(4);
       inventories = new RecordingInventories(ref -> {

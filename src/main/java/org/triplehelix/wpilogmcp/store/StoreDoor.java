@@ -37,9 +37,10 @@ public final class StoreDoor {
   public record Selected(Path root, Description description, SecurityValidator security) {}
   public record Unreadable(String path, String reason) {}
   public record Inventory(List<Selected> stores, List<Unreadable> unreadable) {}
-  private record Discovery(Set<Path> configured, List<Path> roots, long at) {}
+  private record Discovery(Set<Path> configured, List<Path> roots, List<Unreadable> unreadable, long at) {}
   private final Supplier<Set<Path>> configured;
   private volatile Discovery discovered;
+  private final java.util.concurrent.atomic.AtomicLong discoveryWalks = new java.util.concurrent.atomic.AtomicLong();
 
   public StoreDoor(Supplier<Set<Path>> configured) { this.configured = configured; }
 
@@ -59,27 +60,44 @@ public final class StoreDoor {
     var security = new SecurityValidator(); directories.forEach(security::addAllowedDirectory);
     var seen = discovered;
     if (seen == null || !seen.configured().equals(directories) || System.nanoTime() - seen.at() > 5_000_000_000L) {
-      var roots = new ArrayList<Path>();
-      for (var directory : directories) roots.addAll(StoreCatalog.discover(directory));
-      seen = new Discovery(directories, roots.stream().distinct().sorted().toList(), System.nanoTime());
+      var roots = new ArrayList<Path>(); var failures = new ArrayList<Unreadable>();
+      for (var directory : directories) {
+        try { discoveryWalks.incrementAndGet(); roots.addAll(StoreCatalog.discover(directory)); }
+        catch (IOException failure) { failures.add(new Unreadable(directory.toString(), failure.getMessage())); }
+      }
+      // Retain failed roots with the cached discovery: losing a neighbor must neither hide
+      // healthy stores nor silently remove a source choice on the next inventory request.
+      seen = new Discovery(directories, roots.stream().distinct().sorted().toList(), List.copyOf(failures), System.nanoTime());
       discovered = seen;
     }
     var result = new ArrayList<Selected>();
-    var unreadable = new ArrayList<Unreadable>();
+    var unreadable = new ArrayList<>(seen.unreadable());
     for (var root : seen.roots()) {
       try {
-        security.validate(root);
-        var header = new StoreFiles(root, security).read(root.resolve("store.json"), StoreManifest.Header.class);
-        if (header.formatVersion() != StoreManifest.FORMAT_VERSION || header.id() == null) {
-          throw new IOException("Unsupported or incomplete store manifest");
-        }
-        result.add(new Selected(root, new Description(header.id(), header.formatVersion(), Version.VERSION, header.mirror()), security));
+        result.add(inspect(root, security));
       } catch (IOException e) {
         unreadable.add(new Unreadable(root.toString(), e.getMessage()));
       }
     }
     return new Inventory(List.copyOf(result), List.copyOf(unreadable));
   }
+
+  /** Read one known store's identity without walking any catalog or neighboring root. */
+  public Description describe(Path root) throws IOException {
+    var security = new SecurityValidator(); configured.get().forEach(security::addAllowedDirectory);
+    return inspect(root, security).description();
+  }
+  private static Selected inspect(Path root, SecurityValidator security) throws IOException {
+    security.validate(root);
+    var header = new StoreFiles(root, security).read(root.resolve("store.json"), StoreManifest.Header.class);
+    if (header.formatVersion() != StoreManifest.FORMAT_VERSION || header.id() == null) {
+      throw new IOException("Unsupported or incomplete store manifest");
+    }
+    return new Selected(root, new Description(header.id(), header.formatVersion(), Version.VERSION, header.mirror()), security);
+  }
+
+  /** Full root walks started by this door; bounded rechecks must not restart discovery. */
+  public long discoveryWalks() { return discoveryWalks.get(); }
 
   /** A local first-store mutation invalidates the discovery cache immediately. */
   public void refresh() { discovered = null; }

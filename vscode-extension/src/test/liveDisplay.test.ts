@@ -69,14 +69,63 @@ test("stalled renderer stops acquisition and retains charged bytes until close",
   p.offer({ prefix: "a" } as any); await sleep(30); p.offer({ prefix: "b" } as any);
   assert.equal(failures.length, 1); assert.equal(sent.length, 1); assert.ok(b.reserved > 0); p.dispose(); assert.equal(b.reserved, 0);
 });
-function controller(bind = async () => binding(), hiddenMs = 20, analysis?: { complete(binding: any, finalized: boolean): void; invalidate(): void }) {
+test("frame latency uses host receipt to matching render acknowledgement and renderer-local duration", () => {
+  let now = 1000; const sent: string[] = [], measurements: any[] = [];
+  const p: LivePresentation = new (LivePresentation as any)(new ByteBudget(), (id: string) => sent.push(id), () => {}, 1, 100, 0,
+    (value: any) => measurements.push(value), () => now);
+  try {
+    p.offer({ prefix: "prefix-a", receivedAtMs: 990 } as any); now = 1020;
+    (p.acknowledge as any)("foreign", { rendered: true, render_elapsed_ms: 3 }); assert.equal(measurements.length, 0);
+    (p.acknowledge as any)(sent[0], { rendered: true, render_elapsed_ms: 3 });
+    assert.equal(measurements.length, 1);
+    assert.deepEqual(measurements[0], { prefix_id: "prefix-a", delivery_id: sent[0], receipt_to_ack_ms: 30, post_to_ack_ms: 20, renderer_elapsed_ms: 3 });
+    p.offer(null); (p.acknowledge as any)(sent[1], { rendered: true, render_elapsed_ms: 1 }); assert.equal(measurements.length, 1);
+  } finally { p.dispose(); }
+});
+function controller(bind = async () => binding(), hiddenMs = 20, analysis?: { complete(binding: any, finalized: boolean): void; invalidate(): void }, health?: any) {
   const sinks: any[] = [], closed: number[] = [], states: any[] = [], frames: any[] = [], budget = new ByteBudget();
   const broker: any = { subscribeView: (_s: any, _r: any, sink: any) => { const i = sinks.length; sinks.push(sink); return { dispose: () => closed.push(i) }; } };
   let p: LivePresentation;
   p = new LivePresentation(budget, (id, frame) => { frames.push(frame); queueMicrotask(() => p.acknowledge(id)); }, () => {}, 1, 100);
-  const c = new LiveView(broker, budget, p, bind, s => states.push(s), 5, hiddenMs, analysis);
+  const c: LiveView = new (LiveView as any)(broker, budget, p, bind, (s: any) => states.push(s), 5, hiddenMs, analysis, health);
   return { c, sinks, closed, states, frames, budget };
 }
+test("health reopens a drained same-recording follow but never switches to another recording", async () => {
+  const listeners: ((value: any) => void)[] = []; let released = 0;
+  const health = { watch: (_: any, changed: (v: any) => void) => { listeners.push(changed); return { dispose: () => released++ }; } };
+  const f = controller(undefined, 20, undefined, health);
+  try {
+    f.c.update(view()); assert.equal(listeners.length, 1, "Visible views observe independent source health");
+    f.sinks[0].binding(binding()); f.sinks[0].page(delivery("a", [sample(0, 98)], undefined, true));
+    f.sinks[0].state({ kind: "ended", reason: "Drained" }); f.c.pause(true);
+    listeners[0]({ kind: "ok", health: { acquisition_state: "reconnecting", history_state: "finalized" }, reason: "Disconnected" });
+    assert.equal(f.sinks.length, 1);
+    listeners[0]({ kind: "ok", health: { acquisition_state: "recording", history_state: "live" }, reason: "Same recording resumed" });
+    assert.equal(f.sinks.length, 2, "A completed lease cannot see the reopened member on its own");
+    assert.equal(f.states.at(-1).paused, true); assert.equal(listeners.length, 1, "Rebootstrap does not restart the health owner");
+    f.sinks[1].binding(binding()); f.sinks[1].page(delivery("b", [sample(0, 98), sample(1, 99)]));
+    await sleep(); f.c.pause(false); await sleep();
+    assert.deepEqual(f.frames.at(-1).raw.r.samples.map((s: any) => s.ordinal), [0, 1], "Rebootstrap replaces buffers rather than appending duplicates");
+    f.sinks[1].state({ kind: "ended", reason: "Finalized" });
+    listeners[0]({ kind: "ok", health: { acquisition_state: "inactive", history_state: "finalized" }, reason: "Another recording" });
+    assert.equal(f.sinks.length, 2);
+    f.c.hide(); assert.equal(released, 1);
+    listeners[0]({ kind: "ok", health: { acquisition_state: "recording", history_state: "live" }, reason: "Late" });
+    assert.equal(f.sinks.length, 2);
+    f.c.show(); assert.equal(listeners.length, 2);
+    const afterReveal = f.states.length;
+    listeners[0]({ kind: "unavailable", reason: "Reply from the retired watcher" });
+    assert.equal(f.states.length, afterReveal, "Old health replies cannot label a revealed generation");
+  } finally { f.c.dispose(); }
+  assert.equal(released, 2); assert.equal(f.budget.reserved, 0);
+});
+test("health admission pressure stays visible without failing an independent data follow", () => {
+  const f = controller(undefined, 20, undefined, { watch() { throw new Error("Health source capacity reached"); } });
+  try {
+    assert.doesNotThrow(() => f.c.update(view())); assert.equal(f.sinks.length, 1);
+    assert.equal(f.states.at(-1).health.kind, "unavailable"); assert.match(f.states.at(-1).health.reason, /capacity/);
+  } finally { f.c.dispose(); }
+});
 test("presentation revisions reuse acquisition; selection changes invalidate old callbacks", async () => {
   const f = controller(); let v = view(); f.c.update(v); f.sinks[0].binding(binding());
   const key = liveDataKey(v); v = structuredClone(v); v.revision++; v.configuration.panels[0].title = "Rename"; f.c.update(v);
@@ -112,6 +161,17 @@ test("pause consumes completed frontiers without publishing and resumes at the n
   f.sinks[0].page(delivery("complete", [sample(1, 99)])); await sleep(); assert.equal(f.frames.length, before);
   f.c.pause(false); await sleep(); assert.equal(f.frames.at(-1).prefix, "complete"); assert.equal(f.frames.at(-1).raw.r.records_visited, 2);
   assert.equal(f.sinks.length, 1); f.c.dispose(); assert.equal(f.budget.reserved, 0);
+});
+test("resuming a paused display preserves a disconnected or finalized acquisition state", () => {
+  const f = controller();
+  try {
+    f.c.update(view()); f.sinks[0].binding(binding());
+    f.sinks[0].state({ kind: "retrying", reason: "Connection lost; retaining the cursor" });
+    f.c.pause(true); f.c.pause(false);
+    assert.equal(f.states.at(-1).kind, "retrying"); assert.match(f.states.at(-1).reason, /Connection lost/);
+    f.sinks[0].state({ kind: "ended", reason: "Finalized recording drained" });
+    f.c.pause(true); f.c.pause(false); assert.equal(f.states.at(-1).kind, "ended");
+  } finally { f.c.dispose(); }
 });
 test("hide cancels immediately, ages out display, and close rejects every late callback", async () => {
   const f = controller(); f.c.update(view()); f.sinks[0].binding(binding()); f.sinks[0].page(delivery("a", [sample(0, 99)])); await sleep();

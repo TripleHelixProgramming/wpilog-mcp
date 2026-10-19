@@ -102,7 +102,7 @@ export class VisualizationEditorProvider implements vscode.CustomEditorProvider<
   }
   async saveCustomDocument(document: ViewDocument): Promise<void> { await document.controller.save(); }
   async saveCustomDocumentAs(document: ViewDocument, destination: vscode.Uri): Promise<void> {
-    if (!this.resources.saveAs) throw new Error("Use Save view… to select a store and title");
+    if (!this.resources.saveAs) throw new Error("Use Save view… to choose a title in the server library");
     await this.resources.saveAs(document.controller.snapshot, destination);
   }
   async revertCustomDocument(document: ViewDocument): Promise<void> { await document.controller.revert(); this.paint(document); }

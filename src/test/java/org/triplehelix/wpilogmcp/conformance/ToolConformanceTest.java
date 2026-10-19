@@ -203,29 +203,28 @@ class ToolConformanceTest {
         calls.add(evaluate(tool, "-", variant, false));
       }
     }
-    // Optional listing fields must be produced by a real configured ingestion policy, not
-    // removed from the description checks because ordinary fixture servers have no policy.
+    // Explicitly visit each synthetic serving scope so store, mirror and plain-directory
+    // claims are all exercised without making multi-source discovery choose for a caller.
+    var listingTool = tools.stream().filter(tool -> tool.name().equals("list_available_logs")).findFirst().orElseThrow();
+    for (var scope : LogDirectory.getInstance().sourceScopes().snapshot()) {
+      var request = new com.google.gson.JsonObject(); request.addProperty("scope_id", scope.id());
+      calls.add(evaluate(listingTool, "-", new ToolArguments.Variant("scope-" + scope.id(), request), false));
+    }
+    // An import destination is not a read default. Check both refusal and an explicit
+    // selection through the same real policy that used to select the preferred-store view.
     try (var ingestion = org.triplehelix.wpilogmcp.store.LocalIngestionFixture.create(
         FixtureLogs.defaultDirectory().resolve("source-ingestion"), logManager)) {
       var listing = tools.stream().filter(tool -> tool.name().equals("list_available_logs")).findFirst().orElseThrow();
       var call = evaluate(listing, "source-ingestion", new ToolArguments.Variant(
-          "configured-store", new com.google.gson.JsonObject()), false);
+          "unqualified-store", new com.google.gson.JsonObject()), false);
       calls.add(call);
-      var result = call.result().getAsJsonObject();
-      for (var field : List.of("preferred_store_id", "source_sync", "source_files", "excluded_directories")) {
-        assertTrue(result.has(field), "configured ingestion listing must report " + field);
-      }
-      var excluded = result.getAsJsonArray("excluded_directories");
-      assertFalse(excluded.isEmpty(), "The fixture directory is outside the preferred store view");
-      assertEquals(excluded.size(), result.getAsJsonObject("limits")
-          .getAsJsonObject("excluded_directories").get("total").getAsInt());
-      assertTrue(result.get("hint").getAsString().contains("view: all"));
-      assertEquals(ingestion.service().preferredStoreId(), result.get("preferred_store_id").getAsString());
-      assertEquals("watching", result.getAsJsonObject("source_sync").get("state").getAsString());
-      var sources = result.getAsJsonArray("source_files");
-      assertEquals(1, sources.size());
-      assertEquals("imported", sources.get(0).getAsJsonObject().get("state").getAsString());
-      assertEquals(ingestion.original().toString(), sources.get(0).getAsJsonObject().get("path").getAsString());
+      assertEquals("SOURCE_SELECTION_REQUIRED", call.result().getAsJsonObject().get("code").getAsString());
+      var selected = new com.google.gson.JsonObject(); selected.addProperty("scope_id", ingestion.service().preferredStoreId());
+      var explicit = evaluate(listing, "source-ingestion", new ToolArguments.Variant("selected-store", selected), false);
+      calls.add(explicit);
+      assertEquals(ingestion.service().preferredStoreId(), explicit.result().getAsJsonObject()
+          .getAsJsonObject("source_scope").get("scope_id").getAsString());
+      assertFalse(explicit.result().getAsJsonObject().has("source_sync"));
     }
     for (var fixture : fixtures) {
       String path = fixture.path().toString();

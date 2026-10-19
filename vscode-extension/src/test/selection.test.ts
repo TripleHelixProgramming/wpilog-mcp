@@ -20,3 +20,9 @@ test("selection prompts name the evidence and choose the first tool by the actua
     assert.ok(prompt.includes(JSON.stringify(selection.entries[1]))); assert.ok(prompt.includes("-2 to 4.5 seconds"));
   }
 });
+
+test("agent selections identify their server and scope instead of proposing an unqualified path", () => {
+  const prompt = selectionPrompt({ path: "/same.wpilog", entries: ["/x"], kind: "time_series", connectionId: "pit", serverInstanceId: "owner-a", scopeId: "scope-a" });
+  assert.match(prompt, /connection "pit", server_instance_id "owner-a" and scope_id "scope-a"/);
+  assert.match(prompt, /Include scope_id/);
+});

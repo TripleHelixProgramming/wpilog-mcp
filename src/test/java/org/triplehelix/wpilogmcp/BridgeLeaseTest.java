@@ -73,8 +73,7 @@ class BridgeLeaseTest {
       assertNotNull(initialized, Files.readString(temp.resolve("bridge.log")));
       assertFalse(JsonParser.parseString(initialized).getAsJsonObject().has("error"), initialized);
       assertEquals(homePort, Integer.parseInt(Files.readAllLines(pidFile).get(1)));
-      send(child, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_available_logs\",\"arguments\":{}}}");
-      var listing = result(pool.submit(reader::readLine).get(10, TimeUnit.SECONDS));
+      var listing = scopedListing(child, pool, reader, List.of(permanent, flagLogs, projectLogs));
       assertEquals(List.of(permanent.toString(), flagLogs.toString(), projectLogs.toString()),
           listing.getAsJsonArray("log_directory_paths").asList().stream().map(v -> v.getAsString()).toList());
       assertEquals(List.of(22, 22), listing.getAsJsonArray("logs").asList().stream()
@@ -94,8 +93,7 @@ class BridgeLeaseTest {
         for (int round = 0; round < 2; round++) {
           send(byUrl, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}");
           assertNotNull(pool.submit(lines::readLine).get(10, TimeUnit.SECONDS));
-          send(byUrl, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_available_logs\",\"arguments\":{}}}");
-          var fromProject = result(pool.submit(lines::readLine).get(10, TimeUnit.SECONDS));
+          var fromProject = scopedListing(byUrl, pool, lines, List.of(permanent, flagLogs, projectLogs));
           assertEquals(List.of(11, 11), fromProject.getAsJsonArray("logs").asList().stream()
               .map(log -> log.getAsJsonObject().get("team_number").getAsInt()).toList());
         }
@@ -141,4 +139,23 @@ class BridgeLeaseTest {
     return JsonParser.parseString(JsonParser.parseString(message).getAsJsonObject().getAsJsonObject("result")
         .getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString()).getAsJsonObject();
   }
+  /** Explicitly visit the fixture's known roots while retaining each lease's team and origin. */
+  private JsonObject scopedListing(Process child, java.util.concurrent.ExecutorService pool,
+      BufferedReader reader, List<Path> roots) throws Exception {
+    send(child, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_available_logs\",\"arguments\":{}}}");
+    var choices = result(pool.submit(reader::readLine).get(10, TimeUnit.SECONDS));
+    assertEquals("SOURCE_SELECTION_REQUIRED", choices.get("code").getAsString());
+    var combined = new JsonObject();
+    for (String key : List.of("log_directory_paths", "log_directories", "logs")) combined.add(key, new com.google.gson.JsonArray());
+    for (var root : roots) {
+      String id = choices.getAsJsonArray("source_scopes").asList().stream().map(v -> v.getAsJsonObject())
+          .filter(row -> row.get("path").getAsString().equals(root.toString())).findFirst().orElseThrow().get("scope_id").getAsString();
+      var args = new JsonObject(); args.addProperty("scope_id", id);
+      send(child, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"list_available_logs\",\"arguments\":" + args + "}}");
+      var page = result(pool.submit(reader::readLine).get(10, TimeUnit.SECONDS));
+      for (String key : List.of("log_directory_paths", "log_directories", "logs")) page.getAsJsonArray(key).forEach(combined.getAsJsonArray(key)::add);
+    }
+    return combined;
+  }
+
 }

@@ -42,6 +42,7 @@ public final class GatewayCore {
 
   private final Map<String, Client> clients = new LinkedHashMap<>();
   private final Map<String, Announce> topics = new LinkedHashMap<>();
+  private final Set<String> contextTopics = new HashSet<>();
   private final Map<Integer, ValueFrame> latest = new HashMap<>();
   private int nextId;
   private long sequence;
@@ -69,14 +70,27 @@ public final class GatewayCore {
   }
 
   public synchronized List<Delivery> announce(String name, String type, JsonObject properties) {
+    var out = new ArrayList<Delivery>();
+    // Preserve the upstream stream on a name collision; a provider may never relabel robot data.
+    if (contextTopics.contains(name)) out.addAll(unannounce(name));
     if (topics.containsKey(name)) throw new IllegalArgumentException("Topic already exists: " + name);
     var topic = new Announce(name, nextId++, type, null, properties);
     topics.put(name, topic);
-    var out = new ArrayList<Delivery>();
     clients.forEach((id, c) -> {
       if (c.subscriptions.values().stream().anyMatch(s -> s.matches(name))) announce(out, id, c, topic);
     });
     return List.copyOf(out);
+  }
+
+  /** Null means the upstream owns this name. Otherwise declaration/metadata precedes the value. */
+  synchronized List<Delivery> context(String name, String type, JsonObject properties) {
+    var existing = topics.get(name);
+    if (existing != null && !contextTopics.contains(name)) return null;
+    if (existing == null) {
+      var result = announce(name, type, properties); contextTopics.add(name); return result;
+    }
+    if (!existing.type().equals(type)) throw new IllegalArgumentException("Provider topic changed type: " + name);
+    return existing.properties().equals(properties) ? List.of() : properties(name, properties);
   }
 
   public synchronized List<Delivery> properties(String name, JsonObject update) {
@@ -90,6 +104,7 @@ public final class GatewayCore {
   }
 
   public synchronized List<Delivery> unannounce(String name) {
+    contextTopics.remove(name);
     var topic = topics.remove(name);
     if (topic == null) return List.of();
     latest.remove(topic.id());

@@ -241,6 +241,21 @@ public final class Nt4Gateway implements AutoCloseable {
       };
     });
   }
+  /** Provider samples already carry robot-clock timestamps. One queued action orders the
+   * declaration, metadata and value, using the same bounds and slow-peer policy as upstream. */
+  public void context(String name, String type, Object value, long timestampUs, JsonObject metadata) {
+    enqueue(512L + name.length() * 2L + metadata.toString().length() * 2L + retainedBytes(value), () -> {
+      var properties = org.triplehelix.wpilogmcp.nt4.ContextTopic.properties(metadata);
+      var frame = new ValueFrame(0, timestampUs, org.triplehelix.wpilogmcp.nt4.NtType.fromNt4(type).code(), value);
+      return () -> {
+        var declarations = core.context(name, type, properties);
+        if (declarations == null) return;
+        send(declarations);
+        for (String client : core.value(name, timestampUs, frame.typeCode(), frame.value()))
+          drop(client, "NT4 client fell behind: pending subscription queue limit");
+      };
+    });
+  }
   public CompletableFuture<Void> unannounce(String name) {
     return enqueue(() -> send(core.unannounce(name)));
   }

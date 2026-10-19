@@ -184,3 +184,15 @@ including large REV files, the configured byte cap and disabled/enabled transiti
 30 ms RTT measurements establish the removed per-block cost, not robot CPU, storage performance,
 post-copy verification time or power-loss filesystem behavior. Keep the configured rate and
 existing bounds until the shop supplies that evidence.
+
+## Collected context publication follow-up
+
+The gateway now serves provider samples and newly committed system text with the collecting
+server's clock mapping. Confirm real NI kernel/FPGA pairs, wall-clock corrections, JMX timing,
+disabled-state pull latency and dashboard all-change subscriptions in the shop. Measure large
+text bursts alongside robot traffic before claiming a latency or throughput bound. Full log
+history remains a store/mirror read; binary WPILOG/REV contents are not replayed through NT4.
+Publication is best effort after durable commit: a disconnected subscriber or a publication
+limit may miss events, and reconnect does not replay them. Lines published as unmapped are not
+republished automatically when later clock evidence becomes available; store queries can use
+that evidence. A durable acknowledged event replay protocol would be separate work.

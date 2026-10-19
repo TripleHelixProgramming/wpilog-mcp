@@ -43,6 +43,7 @@ public final class CoreTools {
    * Registers all core tools with the MCP server.
    */
   public static void registerAll(ToolRegistry registry) {
+    registry.registerTool(new ListSourceScopesTool(registry));
     registry.registerTool(new ListAvailableLogsTool());
     registry.registerTool(new ListEntriesTool());
     registry.registerTool(new GetEntryInfoTool());
@@ -55,6 +56,38 @@ public final class CoreTools {
     // GetGameInfoTool is registered in FrcDomainTools to match the discovery catalog category
   }
 
+  static final class ListSourceScopesTool extends ToolBase {
+    private final ToolRegistry registry;
+    ListSourceScopesTool(ToolRegistry registry) { this.registry = registry; }
+    public String name() { return "list_source_scopes"; }
+    public String description() {
+      return "List this server's configured source choices before reading logs. No default exists: when several choices exist, ask the user. "
+          + "Returns server_instance_id and source_scopes (scope_id, kind, path, available, and reason when unavailable), total, returned, offset, has_more, next_offset when shortened, and limits. "
+          + "Unavailable directories remain choices; a name match or a reachable neighbor does not choose for the user. "
+          + "Pass the chosen scope_id to list_available_logs; absolute listed paths then identify explicit files. This lists metadata only.";
+    }
+    public JsonObject inputSchema() {
+      return new SchemaBuilder().addIntegerProperty("offset", "Scopes to skip", false, 0)
+          .addIntegerProperty("limit", "Maximum scope descriptors, 1..64", false, 64).build();
+    }
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
+      var page = new JsonObject();
+      if (arguments.has("offset")) page.add("offset", arguments.get("offset"));
+      if (arguments.has("limit")) page.add("limit", arguments.get("limit"));
+      for (var key : arguments.keySet()) if (!java.util.Set.of("offset", "limit").contains(key))
+        throw new IllegalArgumentException("Unknown source scope argument " + key);
+      var result = logDirectory.sourceScopes().describe(page);
+      result.addProperty("success", true); result.addProperty("status", "ok");
+      result.addProperty("server_instance_id", registry.serverIdentity().id().toString());
+      if (result.get("total").getAsInt() == 0) {
+        result.addProperty("status", "no_match"); result.addProperty("reason", "No source scopes are configured");
+        var looked = new JsonArray(); looked.add("Configured and leased source roots"); result.add("looked_for", looked);
+        result.addProperty("hint", "Configure a log directory or store on this server");
+      }
+      return result;
+    }
+  }
+
   static class ListAvailableLogsTool extends ToolBase {
     @Override
     public String name() {
@@ -63,12 +96,11 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "List WPILOG files available in the configured log directories with friendly names, "
-          + "newest first, paged: log_count is the number matching the filters, offset/limit "
+      return "List WPILOG files in the selected source scope with friendly names, newest first, "
+          + "paged: log_count is the number matching the filters, offset/limit "
           + "select a page (default 50), has_more says whether another page exists. "
-          + "With an opted-in data store, view default searches that store and enrolled sources, hiding verified source duplicates before counting; view all keeps originals. "
-          + "Only when configured, preferred_store_id identifies that store, source_sync reports policy, state, per-source counts and errors, and bounded source_files reports original paths, state, destination, hash and refusal reasons. "
-          + "When the default view leaves other directories out, excluded_directories gives their path and origin with limits, and hint names view: all to search them too. "
+          + "Choose scope_id from list_source_scopes when several sources are configured; ask the user rather than choosing by availability or matching names. "
+          + "The selected scope is returned as source_scope. Import destination preferences never select a read source. "
           + "log_directories names the directories searched with path, origin (configured or leased), and team; "
           + "log_directory_paths keeps their plain paths; one that could not be read (a drive "
           + "not mounted, no permission) is listed in skipped with the reason, and the result is "
@@ -113,7 +145,8 @@ public final class CoreTools {
               false)
           .addProperty("since", "string", "Only logs from this date on: 2026-03-20, or an "
               + "ISO-8601 instant", false)
-          .addProperty("view", "string", "default uses the preferred store and pending/refused enrolled source files; all includes original sources (no preference means unchanged listing)", false)
+          .addProperty("view", "string", "Legacy default/all spelling; both stay within the selected scope", false)
+          .addProperty("scope_id", "string", "Explicit source from list_source_scopes; required when several sources are configured", false)
           .addIntegerProperty("offset", "Logs to skip", false, 0)
           .addIntegerProperty("limit", "Maximum logs to return (max 500)", false, DEFAULT_LIMIT)
           .build();
@@ -149,16 +182,11 @@ public final class CoreTools {
 
       var view = getOptString(arguments, "view", "default");
       if (!java.util.Set.of("default", "all").contains(view)) throw new IllegalArgumentException("view must be default or all");
-      var scan = logDirectory.scanLogs(view.equals("all"));
+      var selected = logDirectory.sourceScopes().select(getOptString(arguments, "scope_id", null));
+      var scan = logDirectory.scanLogs(selected);
       var directoryPaths = new JsonArray();
       scan.directories().forEach(dir -> directoryPaths.add(dir.toString()));
-      var searched = scan.directories().stream().map(java.nio.file.Path::toString).collect(java.util.stream.Collectors.toSet());
-      var origins = logDirectory.directoryOrigins();
-      var directories = StoreJson.JSON.toJsonTree(origins.stream().filter(d -> searched.contains(d.path())).toList());
-      var ingestion = logManager.stores().localIngestion();
-      var excluded = view.equals("default") && ingestion != null && ingestion.preferredStore() != null
-          ? origins.stream().filter(d -> !searched.contains(d.path())).toList()
-          : java.util.List.<org.triplehelix.wpilogmcp.log.LogDirectory.DirectoryOrigin>of();
+      var directories = StoreJson.JSON.toJsonTree(scan.directories().stream().map(logDirectory::directoryOrigin).toList());
       if (scan.noneReadable()) {
         var result = new JsonObject();
         result.addProperty("success", false);
@@ -170,7 +198,7 @@ public final class CoreTools {
         result.add("log_directory_paths", directoryPaths);
         result.addProperty("hint", "Check that each directory exists and can be read (a "
             + "removable drive may not be mounted)");
-        addExcludedDirectories(result, excluded);
+        result.add("source_scope", selected.describe());
         return result;
       }
 
@@ -290,6 +318,7 @@ public final class CoreTools {
 
       var result = new JsonObject();
       result.addProperty("success", true);
+      result.add("source_scope", selected.describe());
       result.add("log_directories", directories);
       result.add("log_directory_paths", directoryPaths);
       result.addProperty("log_count", logs.size());
@@ -371,12 +400,6 @@ public final class CoreTools {
         ResultContract.addLimitedList(result, "unassigned", unassigned, unassigned.size(), unassigned.size());
         ResultContract.addLimitedList(result, "moved_to", moved, moved.size(), moved.size());
       }
-      if (ingestion != null && ingestion.preferredStore() != null) {
-        result.addProperty("preferred_store_id", ingestion.preferredStoreId());
-        result.add("source_sync", StoreJson.JSON.toJsonTree(ingestion.snapshot()));
-        var files = ingestion.files(0, 100);
-        ResultContract.addLimitedList(result, "source_files", StoreJson.JSON.toJsonTree(files.files()).getAsJsonArray(), files.total(), 100);
-      }
       ResultContract.addLimitedList(result, "logs", logsArray,
           Math.max(0, logs.size() - Math.min(offset, logs.size())), limit);
       // A directory that could not be read leaves its logs out of the list: said, not silent
@@ -399,25 +422,10 @@ public final class CoreTools {
       } else if (!scan.unavailable().isEmpty()) {
         result.addProperty("status", "partial");
       }
-      addExcludedDirectories(result, excluded);
+      logDirectory.sourceScopes().recheck(selected);
       return result;
     }
 
-    /** Preference narrows discovery, not access: name the omitted roots instead of hiding them. */
-    private static void addExcludedDirectories(JsonObject result,
-        java.util.List<org.triplehelix.wpilogmcp.log.LogDirectory.DirectoryOrigin> excluded) {
-      if (excluded.isEmpty()) return;
-      var items = new JsonArray();
-      for (var directory : excluded) {
-        var item = new JsonObject();
-        item.addProperty("path", directory.path());
-        item.addProperty("origin", directory.origin());
-        items.add(item);
-      }
-      ResultContract.addLimitedList(result, "excluded_directories", items, items.size(), items.size());
-      var hint = "Use view: all to include the excluded directories and original source files.";
-      result.addProperty("hint", result.has("hint") ? result.get("hint").getAsString() + ". " + hint : hint);
-    }
   }
 
   static class ListEntriesTool extends LogRequiringTool {

@@ -1,6 +1,9 @@
 /** Portable selection shared by links, notebooks and assistant prompts. No editor API or execution. */
 export interface Selection {
   path: string;
+  connectionId?: string;
+  serverInstanceId?: string;
+  scopeId?: string;
   entries: string[];
   start?: number;
   end?: number;
@@ -32,5 +35,7 @@ export async function openValidated(selection: Selection, validate: (path: strin
 export function selectionPrompt(selection: Selection): string {
   const tool = selection.kind === "console" ? "search_strings" : selection.selected ? "get_statistics" : "render_chart";
   const window = selection.start === undefined && selection.end === undefined ? "the whole recorded log" : `${selection.start ?? "start"} to ${selection.end ?? "end"} seconds on the robot clock`;
-  return `Analyze this ${selection.kind} ${selection.selected ? "selection" : "pane"} from ${JSON.stringify(selection.path)}.\nEntries: ${selection.entries.map(name => JSON.stringify(name)).join(", ") || "use the logged console convention"}.\nWindow: ${window}.\nFirst call ${tool} with that path, entries and window. Use the recorded evidence and name anything the log cannot establish.`;
+  const owner = selection.serverInstanceId && selection.scopeId
+    ? `Use connection ${JSON.stringify(selection.connectionId)}, server_instance_id ${JSON.stringify(selection.serverInstanceId)} and scope_id ${JSON.stringify(selection.scopeId)}. Include scope_id on each log tool request. Do not substitute another server or source.\n` : "";
+  return owner + `Analyze this ${selection.kind} ${selection.selected ? "selection" : "pane"} from ${JSON.stringify(selection.path)}.\nEntries: ${selection.entries.map(name => JSON.stringify(name)).join(", ") || "use the logged console convention"}.\nWindow: ${window}.\nFirst call ${tool} with that path, entries and window. Use the recorded evidence and name anything the log cannot establish.`;
 }

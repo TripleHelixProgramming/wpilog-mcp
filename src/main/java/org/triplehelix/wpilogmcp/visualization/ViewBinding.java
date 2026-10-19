@@ -26,7 +26,7 @@ public final class ViewBinding {
 
   public Prepared prepare(UUID id, long revision, BooleanSupplier alive) throws IOException {
     var view = current(id, revision); var source = view.getAsJsonObject("source_ref");
-    if (!source.get("kind").getAsString().equals("session")) throw new IOException("SOURCE_UNAVAILABLE: view binding requires an anchored recording; use the recorded preview for a file");
+    if (!VisualizationContracts.kind(source).equals("session")) throw new IOException("SOURCE_UNAVAILABLE: view binding requires an anchored recording; use the recorded preview for a file");
     var config = view.getAsJsonObject("configuration"); var bound = bindings.admit(source, config);
     try {
       var prefix = bound.admission().prefix(); var summary = RecordingInventory.summary(prefix);

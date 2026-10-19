@@ -55,6 +55,9 @@ class RecordingViewsTest {
     var path = fixture.directory.resolve("capture.wpilog"); var bytes = Files.readAllBytes(path); bytes[bytes.length - 1] ^= 1;
     Files.write(path, bytes); Files.setLastModifiedTime(path, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 2000));
   }
+  @Test void healthRequiresLocalAuthorityBeforeResolvingAnIdentity() {
+    assertThrows(java.nio.file.AccessDeniedException.class, () -> workspace.health(Authority.UNTRUSTED, new JsonObject()));
+  }
   @Test void recordingDraftsKeepIdentityAndIndependentConfigurationsWithoutSourceLeases() throws Exception {
     var first = create(request()); var second = create(request());
     assertEquals(fixture.reference, first.get("source_ref")); assertNotEquals(first.get("view_id"), second.get("view_id"));

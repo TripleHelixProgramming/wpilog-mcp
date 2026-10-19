@@ -632,7 +632,7 @@ public final class RobotAnalysisTools {
           + "is a same-value compatibility alias), even when that "
           + "boundary is before the log end; whole-log scope uses the log end, not the last "
           + "voltage sample. The threshold comes from the log's BrownoutVoltage entry when logged, else "
-          + "6.8V for roboRIO 1, with the basis stated), brownout_risk with its basis (HIGH only "
+          + "6.3V for roboRIO 1, with the basis stated), brownout_risk with its basis (HIGH only "
           + "from the roboRIO's logged brownout flag, or from crossings when no flag is logged; "
           + "MODERATE for crossings the logged flag did not confirm, or a minimum within 1 V; "
           + "LOW otherwise), the roboRIO's own brownouts in scope when its "
@@ -662,7 +662,7 @@ public final class RobotAnalysisTools {
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
           .addProperty("voltage_entry", "string", "Battery voltage entry to use (default: BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery; other voltage entries are never guessed: when the log has only those, they are listed to confirm and pass here)", false)
-          .addNumberProperty("brownout_threshold", "Voltage threshold (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V)", false, null)
+          .addNumberProperty("brownout_threshold", "Voltage threshold (default: the log's BrownoutVoltage entry when logged, else 6.3V for roboRIO 1; roboRIO 2 defaults to configurable 6.75V)", false, null)
           .addIntegerProperty("channel_limit", "Maximum number of current entries/channels to return, sorted by peak current (default: 30, minimum: 1)", false, 30)
           .build();
     }

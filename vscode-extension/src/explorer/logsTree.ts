@@ -1,3 +1,4 @@
+import type { IngestionStatus, IngestionFiles } from "./localIngestion";
 /**
  * The Logs view's model, built from `list_available_logs` results (EXPLORER_PLAN.md §4): in a
  * plain directory, the logs grouped by event and then by date, each showing its friendly name,
@@ -55,9 +56,6 @@ export interface LogListing {
   unmanaged?: StoreFile[];
   log_directories?: (string | { path: string; origin: "configured" | "leased"; team: number | null })[];
   log_directory_paths?: string[];
-  preferred_store_id?: string | null;
-  source_sync?: { policy?: { enabled: boolean; store: string | null } | null; state?: string; error?: string | null; pending?: number };
-  source_files?: { source?: string; path: string; state: string; destination?: string | null; reason?: string | null; size_bytes?: number }[];
   log_count?: number;
   returned?: number;
   offset?: number;
@@ -254,17 +252,21 @@ function inside(folder: string, file: string): boolean {
 
 /** Stores use manifest identities and clocks. Plain folders retain their event/date grouping. */
 export function buildLogTree(listing: LogListing, filter = ""): LogNode[] {
-  const nodes = catalogTree(listing, filter);
-  const policy = listing.source_sync?.policy;
-  if (!policy?.store) return nodes;
-  const children: LogNode[] = (listing.source_files ?? []).filter(file => !["imported", "present"].includes(file.state))
+  return catalogTree(listing, filter);
+}
+
+/** Local enrollment belongs to the connection, not to any one of its catalog scopes. */
+export function folderSynchronization(status: IngestionStatus, page?: IngestionFiles, filter = "", error?: string): Extract<LogNode, { kind: "sourceSync" }> | undefined {
+  const policy = status.policy;
+  if (!policy?.store) return undefined;
+  const children: LogNode[] = (page?.files ?? []).filter(file => !["imported", "present"].includes(file.state))
     .filter(file => !filter.trim() || `${file.path} ${file.state} ${file.reason ?? ""}`.toLowerCase().includes(filter.trim().toLowerCase()))
     .map(file => ({ kind: "note", label: `${path.basename(file.path)} · ${file.state}`,
       tooltip: [file.path, file.reason].filter(Boolean).join("\n") }));
-  if (listing.source_sync?.error) children.unshift({ kind: "note", label: listing.source_sync.error });
-  if (!children.length) children.push({ kind: "note", label: !policy.enabled ? "Synchronization is paused" : (listing.source_sync?.pending ?? 0) > 0
-    ? `${listing.source_sync!.pending} files pending; use Manage Data Store for source details` : "No pending files on this receipt page" });
-  return [...nodes, { kind: "sourceSync", label: "Folder synchronization", tooltip: `${policy.store}\n${policy.enabled ? "Enabled" : "Paused"} · ${listing.source_sync?.state ?? "unknown"}`, children }];
+  if (error) children.unshift({ kind: "note", label: error });
+  if (!children.length) children.push({ kind: "note", label: !policy.enabled ? "Synchronization is paused" : (status.pending ?? 0) > 0
+    ? `${status.pending} files pending; use Manage Data Store for source details` : "No pending files on this receipt page" });
+  return { kind: "sourceSync", label: "Folder synchronization", tooltip: `${policy.store}\n${policy.enabled ? "Enabled" : "Paused"}`, children };
 }
 
 function catalogTree(listing: LogListing, filter: string): LogNode[] {

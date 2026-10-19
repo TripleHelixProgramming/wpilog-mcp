@@ -71,6 +71,14 @@ listing, and unreadable same-size store files prove candidates come from persist
 checks use synthetic exact fingerprints, ambiguity, contradictory hints, and CAN inventories. No
 identity or value comes from a robot log.
 
+**Collected context over NT4.** Loopback tests check provider values, types, timestamps and
+metadata through the gateway and a remote recorder; kernel/journal/file lines are compared with
+independently calculated robot times. Repeated receipts and byte-identical prefixes must emit
+only new complete lines, and callbacks must follow the durable commit outside the store queue.
+Protocol tests cover explicit provenance, unknown versions, metadata replacement, upstream name
+collisions, latest-value delivery and disconnect cleanup. Text bounds cover individual lines,
+total characters and line count. These tests do not establish real robot collection latency.
+
 **NT4 protocol and gateway.** `./gradlew test --tests '*.nt4.*'` checks the pure codec against
 hand-encoded JSON/MessagePack frames from the NT4 and MessagePack specifications, both directions of
 the type table, malformed input, and the time-sync arithmetic. The pure gateway tests drive explicit

@@ -107,6 +107,24 @@ class RecordingAnalysisTest {
       r.addProperty(key, 2); assertTrue(assertThrows(IllegalArgumentException.class, () -> workspace.statistics(r)).getMessage().contains(key)); r.remove(key);
     }
   }
+  @ParameterizedTest @org.junit.jupiter.params.provider.NullSource @ValueSource(strings = {"-3", "3"})
+  void emptyHistoryScopeDoesNotInventMeasuredSessionBounds(String clock) throws Exception {
+    for (int member = 0; member < 2; member++) fixture.rewrite(member, w -> w.start("/empty", "double", "", 0));
+    try (var admission = workspace.sources.admitRecording(fixture.reference).prefix()) {
+      var summary = RecordingInventory.summary(admission);
+      assertTrue(summary.get("start_time_sec").isJsonNull()); assertTrue(summary.get("end_time_sec").isJsonNull());
+      if (clock != null) summary.getAsJsonObject("clock").addProperty("robot_time_sec", Double.parseDouble(clock));
+      var first = admission.members().get(0).snapshot();
+      var history = new RecordingAnalysis.History(admission.recordingId(), first.entries().get("/empty"), first.schemas(), List.of(), summary, new RecordingAnalysis.Problems());
+      assertTrue(history.sessionTimeRange().isEmpty(), "A usable empty scope is not an observed session duration");
+      assertEquals(0, history.minTimestamp()); assertEquals(0, history.maxTimestamp());
+      assertEquals(clock == null ? 0 : Double.parseDouble(clock), history.timeScopeEnd());
+      summary.addProperty("start_time_sec", -5); summary.addProperty("end_time_sec", -4);
+      var range = history.sessionTimeRange().orElseThrow();
+      assertEquals(-5, range.startSec()); assertEquals(-4, range.endSec());
+      assertEquals(clock == null ? -4 : Math.max(-4, Double.parseDouble(clock)), history.timeScopeEnd());
+    }
+  }
   @Test void scalarStructProjectionKeepsTheExistingAngleStatisticsOwner() throws Exception {
     fixture.rewrite(0, w -> { int id = w.start("/angle", "struct:Rotation2d", "", 0); w.append(id, 2_000_000, WpilogWriter.encodeDouble(Math.toRadians(-179))); });
     fixture.rewrite(1, w -> { int id = w.start("/angle", "struct:Rotation2d", "", 0); w.append(id, 1_000_000, WpilogWriter.encodeDouble(Math.toRadians(179))); });

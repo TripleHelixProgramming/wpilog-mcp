@@ -13,9 +13,11 @@ export async function pitRegistration(url: string | undefined, secrets: SecretRe
   const endpoint = pitEndpoint(url);
   return { url: endpoint ?? "", authorization: endpoint ? await secrets.get(pitSecretKey(endpoint)) ?? null : null };
 }
-export function pitHeaders(url: () => string | undefined, secrets: SecretReader): HttpHeaders {
+export function pitHeaders(url: () => string | readonly string[] | undefined, secrets: SecretReader): HttpHeaders {
   return async (request): Promise<Record<string, string>> => {
-    const endpoint = pitEndpoint(url());
+    const configured = url();
+    const endpoint = (Array.isArray(configured) ? configured : [configured]).map(value => pitEndpoint(value))
+      .find(value => value && new URL(request).origin === new URL(value).origin);
     if (!endpoint || new URL(request).origin !== new URL(endpoint).origin) return {};
     const auth = await secrets.get(pitSecretKey(endpoint));
     return auth ? { Authorization: auth } : {};

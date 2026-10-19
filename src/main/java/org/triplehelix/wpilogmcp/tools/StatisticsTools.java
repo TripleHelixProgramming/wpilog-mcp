@@ -946,13 +946,8 @@ public final class StatisticsTools {
         throw new IllegalArgumentException("Not enough overlapping data");
       }
 
-      double meanX = x.stream().mapToDouble(v -> v).average().orElse(0);
-      double meanY = y.stream().mapToDouble(v -> v).average().orElse(0);
-      double num = 0, denX = 0, denY = 0;
-      for (int i = 0; i < x.size(); i++) {
-        double dx = x.get(i) - meanX, dy = y.get(i) - meanY;
-        num += dx * dy; denX += dx * dx; denY += dy * dy;
-      }
+      var moments = centeredMoments(x.size(), x::get, y::get);
+      double num = moments.covariance(), denX = moments.xSquares(), denY = moments.ySquares();
 
       var builder = success();
 
@@ -983,19 +978,22 @@ public final class StatisticsTools {
         builder.addData("lag_search", correlationLagSearch(arguments, d1, d2Full));
       }
 
-      // Handle edge case: zero variance means correlation is undefined (NaN).
-      // Use a relative threshold (variance = denX / n < 1e-15) to avoid
-      // scale-dependent false positives with unnormalized sum-of-squares.
-      double varianceThreshold = 1e-15 * x.size();
-      if (denX < varianceThreshold || denY < varianceThreshold) {
+      boolean constantX = effectivelyConstant(x.size(), x::get);
+      boolean constantY = effectivelyConstant(y.size(), y::get);
+      double corr = num / Math.sqrt(denX * denY);
+      if (constantX || constantY) {
         // Undefined, not zero: null (NaN is not valid JSON), with the reason in a warning
         builder.addData("correlation", com.google.gson.JsonNull.INSTANCE);
         builder.addData("p_value", com.google.gson.JsonNull.INSTANCE);
         builder.addWarning("Correlation undefined: " +
-            (denX < varianceThreshold && denY < varianceThreshold ? "both entries" : (denX < varianceThreshold ? "first entry" : "second entry")) +
-            " has near-zero variance (all values are effectively identical)");
+            (constantX && constantY ? "both entries are" : (constantX ? "first entry is" : "second entry is")) +
+            " constant at floating-point precision (range within 4 ulps of the largest magnitude)");
+      } else if (!Double.isFinite(corr)) {
+        builder.addData("correlation", com.google.gson.JsonNull.INSTANCE);
+        builder.addData("p_value", com.google.gson.JsonNull.INSTANCE);
+        builder.addWarning("Correlation undefined: non-finite paired values or centered moments after interpolation");
       } else {
-        double corr = Math.max(-1.0, Math.min(1.0, num / Math.sqrt(denX * denY)));
+        corr = Math.max(-1.0, Math.min(1.0, corr));
         builder.addProperty("correlation", corr);
         // Consecutive samples of a signal are not independent: test with the effective number
         double r1x = lag1AutocorrelationWithin(xWindows);
@@ -1293,6 +1291,56 @@ public final class StatisticsTools {
     }
   }
 
+  private record CenteredMoments(double covariance, double xSquares, double ySquares) {}
+
+  /** Four ulps allow a few representational rounding steps without imposing a variance floor
+   * in the signal's units. Exact constants, including their linear interpolation, remain
+   * bit-identical; a small but genuinely varying signal must not be mistaken for one. */
+  private static boolean effectivelyConstant(int n, java.util.function.IntToDoubleFunction values) {
+    var range = java.util.stream.IntStream.range(0, n).mapToDouble(values).summaryStatistics();
+    double magnitude = Math.max(Math.abs(range.getMin()), Math.abs(range.getMax()));
+    return Double.isFinite(magnitude) && range.getMax() - range.getMin() <= 4 * Math.ulp(magnitude);
+  }
+
+  private record DeviationScale(int exponent, double mean, double maximum) {
+    double normalized(double value) {
+      return maximum == 0 ? 0 : (Math.scalb(value, -exponent) - mean) / maximum;
+    }
+  }
+
+  /** Normalize deviations by their largest absolute value, so a nonconstant series contributes
+   * a square of one and every other square is at most one, regardless of units. A power-of-two
+   * prescale also keeps the mean and subtraction finite at the ends of the double range without
+   * losing the small differences around a large offset to an inexact unit conversion. */
+  private static DeviationScale deviationScale(java.util.function.Supplier<java.util.stream.DoubleStream> values) {
+    var range = values.get().summaryStatistics();
+    double magnitude = Math.max(Math.abs(range.getMin()), Math.abs(range.getMax()));
+    if (!Double.isFinite(magnitude)) return new DeviationScale(0, Double.NaN, Double.NaN);
+    if (range.getMin() == range.getMax()) return new DeviationScale(0, range.getMin(), 0);
+    int exponent = Math.getExponent(magnitude);
+    double mean = values.get().map(v -> Math.scalb(v, -exponent)).average().orElse(0);
+    double maximum = values.get().map(v -> Math.abs(Math.scalb(v, -exponent) - mean)).max().orElse(0);
+    return new DeviationScale(exponent, mean, maximum);
+  }
+
+  /** Both the main Pearson result and every lag use centered, independently scaled products.
+   * Raw second moments cancel at large offsets; unscaled centered products overflow or
+   * underflow at large or small magnitudes even though Pearson correlation is scale invariant. */
+  private static CenteredMoments centeredMoments(int n, java.util.function.IntToDoubleFunction x,
+      java.util.function.IntToDoubleFunction y) {
+    var scaleX = deviationScale(() -> java.util.stream.IntStream.range(0, n).mapToDouble(x));
+    var scaleY = deviationScale(() -> java.util.stream.IntStream.range(0, n).mapToDouble(y));
+    // Limit summation error near |r| = 1, where a single lost ulp can change a small-df p-value.
+    var covariance = new java.util.DoubleSummaryStatistics();
+    var xSquares = new java.util.DoubleSummaryStatistics();
+    var ySquares = new java.util.DoubleSummaryStatistics();
+    for (int i = 0; i < n; i++) {
+      double dx = scaleX.normalized(x.applyAsDouble(i)), dy = scaleY.normalized(y.applyAsDouble(i));
+      covariance.accept(dx * dy); xSquares.accept(dx * dx); ySquares.accept(dy * dy);
+    }
+    return new CenteredMoments(covariance.getSum(), xSquares.getSum(), ySquares.getSum());
+  }
+
   /**
    * Pearson correlation of the first signal at its times with the second at time + lag, for each
    * lag of the grid: the lag with the highest correlation, and the correlation at zero lag.
@@ -1305,22 +1353,21 @@ public final class StatisticsTools {
     double bestLag = Double.NaN;
     int bestN = 0;
     Double zeroR = null;
+    double[] x = new double[first.size()], yValues = new double[first.size()];
     for (double lag : lags) {
-      double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
       int n = 0;
       for (var tv : first) {
         var y = getValueAtTimeLinear(secondFull, tv.timestamp() + lag);
         if (y == null) continue;
-        double xv = ((Number) tv.value()).doubleValue();
-        sx += xv; sy += y; sxx += xv * xv; syy += y * y; sxy += xv * y;
+        x[n] = ((Number) tv.value()).doubleValue(); yValues[n] = y;
         n++;
       }
-      if (n < 3) continue;
-      double cov = sxy - sx * sy / n;
-      double vx = sxx - sx * sx / n;
-      double vy = syy - sy * sy / n;
-      if (vx <= 1e-15 * n || vy <= 1e-15 * n) continue;
-      double r = Math.max(-1, Math.min(1, cov / Math.sqrt(vx * vy)));
+      if (n < 3 || effectivelyConstant(n, i -> x[i]) || effectivelyConstant(n, i -> yValues[i])) continue;
+      var moments = centeredMoments(n, i -> x[i], i -> yValues[i]);
+      double cov = moments.covariance(), vx = moments.xSquares(), vy = moments.ySquares();
+      double r = cov / Math.sqrt(vx * vy);
+      if (!Double.isFinite(r)) continue;
+      r = Math.max(-1, Math.min(1, r));
       if (Math.abs(lag) < 1e-12) zeroR = r;
       // Best is the strongest relationship in either direction: when the signals move
       // oppositely every r is negative, and the highest r is the weakest match. Among equally
@@ -1447,17 +1494,16 @@ public final class StatisticsTools {
   static double lag1AutocorrelationWithin(List<? extends List<Double>> windows) {
     int n = windows.stream().mapToInt(List::size).sum();
     if (n < 3) return 0.0;
-    double mean = windows.stream().flatMap(List::stream).mapToDouble(Double::doubleValue)
-        .average().orElse(0);
+    var scale = deviationScale(() -> windows.stream().flatMap(List::stream).mapToDouble(Double::doubleValue));
     double num = 0;
     double den = 0;
     int pairs = 0;
     for (var v : windows) {
       for (int i = 0; i < v.size(); i++) {
-        double d = v.get(i) - mean;
+        double d = scale.normalized(v.get(i));
         den += d * d;
         if (i + 1 < v.size()) {
-          num += d * (v.get(i + 1) - mean);
+          num += d * scale.normalized(v.get(i + 1));
           pairs++;
         }
       }

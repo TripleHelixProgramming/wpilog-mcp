@@ -628,75 +628,52 @@ class CoreToolsLogicTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("lists the logs of several directories together and names the directories")
+    @DisplayName("several directories require selection before filters and retain per-source ordering")
     void severalDirectories(@TempDir Path tempDir) throws Exception {
-      var ours = tempDir.resolve("ours");
-      var theirs = tempDir.resolve("theirs");
-      writeLogs(Files.createDirectories(ours.resolve("vache")));
-      Files.createDirectories(theirs);
+      var ours = Files.createDirectories(tempDir.resolve("ours"));
+      var theirs = Files.createDirectories(tempDir.resolve("theirs"));
+      writeLogs(ours);
       Files.write(theirs.resolve("akit_26-03-21_12-00-00_vache_q11.wpilog"), new byte[] {0});
-      LogDirectory.getInstance().setLogDirectories(
-          List.of(ours.toString(), theirs.toString()));
-
-      var r = list();
-      assertEquals("ok", r.get("status").getAsString(), r.toString());
-      assertEquals(6, r.get("log_count").getAsInt(), r.toString());
-      var dirs = r.getAsJsonArray("log_directories");
-      assertEquals(2, dirs.size());
-      assertEquals(ours.toString(), dirs.get(0).getAsJsonObject().get("path").getAsString());
-      assertEquals(theirs.toString(), dirs.get(1).getAsJsonObject().get("path").getAsString());
-      assertFalse(r.has("skipped"), r.toString());
-      // Newest first across both directories: theirs' log (03-21 12:00) sits between ours'
-      // (bench 04-10 by mtime, 04-03, 04-02 | 03-21 11:00, 03-20)
-      var names = new java.util.ArrayList<String>();
-      r.getAsJsonArray("logs").forEach(l -> names.add(
-          l.getAsJsonObject().get("filename").getAsString()));
-      assertEquals(3, names.indexOf("akit_26-03-21_12-00-00_vache_q11.wpilog"), names.toString());
-      assertEquals(3, list("event", "vache").get("log_count").getAsInt());
+      LogDirectory.getInstance().setLogDirectories(List.of(ours.toString(), theirs.toString()));
+      assertEquals("SOURCE_SELECTION_REQUIRED", list().get("code").getAsString());
+      assertEquals("SOURCE_SELECTION_REQUIRED", list("event", "vache").get("code").getAsString());
+      for (var scope : LogDirectory.getInstance().sourceScopes().snapshot()) {
+        var r = list("scope_id", scope.id());
+        assertEquals("ok", r.get("status").getAsString(), r.toString());
+        assertEquals(scope.root().equals(ours.toRealPath()) ? 5 : 1, r.get("log_count").getAsInt());
+        assertEquals(1, r.getAsJsonArray("log_directories").size());
+        assertTrue(r.getAsJsonArray("logs").asList().stream().allMatch(row ->
+            Path.of(row.getAsJsonObject().get("path").getAsString()).toAbsolutePath().normalize().startsWith(
+                scope.root().getFileName().toString().equals("ours") ? ours.toAbsolutePath().normalize() : theirs.toAbsolutePath().normalize())));
+      }
     }
 
     @Test
-    @DisplayName("a directory that cannot be read makes the listing partial, with the reason")
+    @DisplayName("an unavailable directory remains a choice and never selects its neighbor")
     void unreadableDirectoryIsPartial(@TempDir Path tempDir) throws Exception {
-      var present = tempDir.resolve("present");
-      var missing = tempDir.resolve("usb");
-      writeLogs(Files.createDirectories(present));
-      LogDirectory.getInstance().setLogDirectories(
-          List.of(missing.toString(), present.toString()));
-
-      var r = list();
-      assertTrue(r.get("success").getAsBoolean(), r.toString());
-      assertEquals("partial", r.get("status").getAsString(), r.toString());
-      assertEquals(5, r.get("log_count").getAsInt());
-      assertEquals(2, r.getAsJsonArray("log_directories").size());
-      var skipped = r.getAsJsonArray("skipped");
-      assertEquals(1, skipped.size(), r.toString());
-      var entry = skipped.get(0).getAsJsonObject();
-      assertEquals("logs", entry.get("section").getAsString());
-      assertEquals(missing.toString(), entry.get("directory").getAsString());
-      assertTrue(entry.get("reason").getAsString().contains("does not exist"), entry.toString());
-
-      // Filters that match nothing still say no_match, with the skipped directory alongside
-      var none = list("event", "nope");
-      assertEquals("no_match", none.get("status").getAsString(), none.toString());
-      assertTrue(none.has("skipped"), none.toString());
+      var present = Files.createDirectories(tempDir.resolve("present"));
+      var missing = tempDir.resolve("usb"); writeLogs(present);
+      LogDirectory.getInstance().setLogDirectories(List.of(missing.toString(), present.toString()));
+      var r = list(); assertEquals("SOURCE_SELECTION_REQUIRED", r.get("code").getAsString());
+      assertEquals(2, r.getAsJsonArray("source_scopes").size());
+      for (var scope : LogDirectory.getInstance().sourceScopes().snapshot()) {
+        var chosen = list("scope_id", scope.id());
+        if (scope.available()) assertEquals(5, chosen.get("log_count").getAsInt());
+        else assertEquals("SOURCE_UNAVAILABLE", chosen.get("code").getAsString());
+      }
     }
 
     @Test
-    @DisplayName("when no configured directory can be read, the error names each and why")
+    @DisplayName("unreadable choices each report unavailability")
     void noDirectoryReadable(@TempDir Path tempDir) throws Exception {
-      var missing = tempDir.resolve("missing");
-      var file = Files.createFile(tempDir.resolve("notes.txt"));
+      var missing = tempDir.resolve("gone"); var file = Files.writeString(tempDir.resolve("file"), "x");
       LogDirectory.getInstance().setLogDirectories(List.of(missing.toString(), file.toString()));
-
-      var r = list();
-      assertFalse(r.get("success").getAsBoolean(), r.toString());
-      assertEquals("error", r.get("status").getAsString());
-      var error = r.get("error").getAsString();
-      assertTrue(error.contains(missing + " does not exist"), error);
-      assertTrue(error.contains(file + " is not a directory"), error);
-      assertEquals(2, r.getAsJsonArray("log_directories").size());
-      assertTrue(r.has("hint"), r.toString());
+      var r = list(); assertEquals("SOURCE_SELECTION_REQUIRED", r.get("code").getAsString());
+      assertEquals(2, r.getAsJsonArray("source_scopes").size());
+      for (var scope : LogDirectory.getInstance().sourceScopes().snapshot()) {
+        assertFalse(scope.available()); assertNotNull(scope.reason());
+        assertEquals("SOURCE_UNAVAILABLE", list("scope_id", scope.id()).get("code").getAsString());
+      }
     }
 
     @Test

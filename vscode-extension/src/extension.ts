@@ -1,4 +1,6 @@
-import { PIT_SECRET_PREFIX, basicCredential, pitBridgeUrl, pitHeaders, pitRegistration, pitSecretKey } from "./pitCredential";
+import { claudeHttpArgs, claudeHttpCommandText } from "./claudeRegistration";
+import { connectionDefinitions } from "./connections";
+import { PIT_SECRET_PREFIX, basicCredential, pitHeaders, pitRegistration, pitSecretKey } from "./pitCredential";
 import { execFile } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
@@ -12,10 +14,10 @@ import { ServerManager, StandaloneDaemonSpec } from "./serverManager";
 import { STANDALONE_SERVER, findStandaloneInstall, LauncherCommand } from "./standaloneServer";
 import { InstallSummary, installAction, installArgs, launcherVersion, parseInstallSummary } from "./standaloneInstall";
 import { directoryRegistration, LEASE_SETTINGS, SessionRegistration } from "./directoryLease";
-import { claudeArgs, claudeCommandText, claudePitArgs, claudePitCommandText, findClaude, registerWithClaude, ClaudeReply, ClaudeRegistrationAttempt, claudeRegistrationFeedback } from "./claudeRegistration";
+import { claudeArgs, claudeCommandText, findClaude, registerWithClaude, ClaudeReply, ClaudeRegistrationAttempt, claudeRegistrationFeedback } from "./claudeRegistration";
 import { GitStatus, PROJECT_FILE, ignoreProjectFile, projectFileOffer, projectFileText } from "./projectFile";
 import { legacyCleanupAction, retireLegacyEntry } from "./legacyMigration";
-import { MirrorStatus, liveRequest, mirrorRequest, mirrorStatusText, peerUrl, pitEndpoint, serverDefinitions, sessionPicks } from "./explorer/pitServer";
+import { MirrorStatus, liveRequest, mirrorRequest, mirrorStatusText, peerUrl, pitEndpoint, sessionPicks } from "./explorer/pitServer";
 import { SESSION_END_MS } from "./sessionEnd";
 import { uploadLog } from "./explorer/upload";
 import { resultSummary, resultDetails, progressText } from "./explorer/importJobs";
@@ -263,7 +265,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 
   const projects = () => localFolders().map(folder => ({ folderPath: folder.uri.fsPath, own: projectSettings(folder) }));
   const pitUrl = () => vscode.workspace.getConfiguration("wpilog-mcp").get<string>("pitServerUrl");
-  const proxyHeaders = pitHeaders(pitUrl, context.secrets);
+  const proxyHeaders = pitHeaders(() => connectionDefinitions(vscode.workspace.getConfiguration("wpilog-mcp").get("connections"), pitUrl())
+    .filter(connection => connection.kind === "remote").map(connection => connection.url!), context.secrets);
   const mirrorSettings = () => {
     const config = vscode.workspace.getConfiguration("wpilog-mcp");
     return { enabled: config.get<boolean>("mirror.enabled"), folder: config.get<string>("mirror.folder"),
@@ -284,9 +287,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
       user.logDirectory = wellKnownLogDirectory();
     }
     const directories = directoryRegistration(user, projects());
-    const mirror = mirrorRequest(pitUrl(), { ...mirrorSettings(), enabled: true }, context.globalStorageUri.fsPath);
+    const mirror = mirrorRequest(pitUrl(), mirrorSettings(), context.globalStorageUri.fsPath);
     if (mirror && !directories.paths.some(p => p.path === mirror.folder)) directories.paths.push({ path: mirror.folder, team: null });
-    const live = liveRequest(pitUrl(), { ...liveSettings(), enabled: true }, context.globalStorageUri.fsPath);
+    const live = liveRequest(pitUrl(), liveSettings(), context.globalStorageUri.fsPath);
     if (live && !directories.paths.some(p => p.path === live.store)) directories.paths.push({ path: live.store, team: null });
     return { directories, key: await context.secrets.get(TBA_SECRET) || null, pitCredential: await pitRegistration(pitUrl(), context.secrets) };
   }
@@ -298,10 +301,12 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
   endWindowSessions = () => explorer.endSessions(SESSION_END_MS);
 
   /** Registration finishes before an agent receives its URL; a third session can then read the lease. */
+  let localConnected = false;
   async function connectWindow(): Promise<string | undefined> {
     try {
       const client = await explorer.clientFor(standaloneSpec());
       await client.refreshRegistration();
+      localConnected = true;
       return client.endpoint;
     } catch (error) {
       outputChannel.appendLine(`Could not register this window's directories: ${error instanceof Error ? error.message : String(error)}`);
@@ -311,19 +316,23 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
   let refreshing = Promise.resolve();
   function refreshLease() {
     refreshing = refreshing.then(async () => {
-      if (await connectWindow()) explorer.serversChanged();
+      await explorer.connections.refreshLocalRegistrations();
+      if (localConnected && await connectWindow()) explorer.serversChanged();
     }).catch(error => outputChannel.appendLine(`Could not refresh this window's lease: ${String(error)}`));
     return refreshing;
   }
 
   const provider: vscode.McpServerDefinitionProvider = {
     onDidChangeMcpServerDefinitions: didChangeEmitter.event,
-    provideMcpServerDefinitions: async () => {
-      const url = await connectWindow();
-      return Promise.all(serverDefinitions(url, pitUrl()).map(async server => new vscode.McpHttpServerDefinition(server.label,
-        vscode.Uri.parse(server.url), await proxyHeaders(server.url), context.extension.packageJSON.version)));
+    provideMcpServerDefinitions: () => explorer.connections.definitions.map(connection => new vscode.McpHttpServerDefinition(
+      `WPILog: ${connection.label} [${connection.id}]`, vscode.Uri.parse(connection.url ?? "http://127.0.0.1:0/mcp"), {}, context.extension.packageJSON.version)),
+    resolveMcpServerDefinition: async server => {
+      const connection = explorer.connections.definitions.find(item => server.label === `WPILog: ${item.label} [${item.id}]`);
+      if (!connection) throw new Error("This connection changed; refresh the MCP server list");
+      const client = await explorer.connections.context(connection.id).client();
+      if (connection.kind === "local") localConnected = true;
+      return new vscode.McpHttpServerDefinition(server.label, vscode.Uri.parse(client.endpoint), await proxyHeaders(client.endpoint), context.extension.packageJSON.version);
     },
-    resolveMcpServerDefinition: async server => server,
   };
   context.subscriptions.push(
     vscode.lm.registerMcpServerDefinitionProvider(PROVIDER_ID, provider),
@@ -409,6 +418,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
   }
   function scheduleProjectOffers(requested = false) {
     projectOffers = projectOffers.then(async () => {
+      if (!requested && !localConnected) return;
       await migrateLegacy();
       await retireOpenProjects();
       await registerClaude(requested);
@@ -449,7 +459,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     } finally { mirrorPolling = false; }
   }
   async function configureMirror() {
-    const client = await storeClient(), config = mirrorConfiguration();
+    const config = mirrorConfiguration();
+    if (!config && !lastConfigured) return;
+    const client = await storeClient();
     if (config) {
       await client.configure(config); lastConfigured = JSON.stringify(config);
     } else if (lastConfigured) { await client.disable(); lastConfigured = undefined; }
@@ -461,7 +473,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
   /** Sets or stops the server's live source; a gateway that cannot be reached yet is the source's state, not an error. */
   async function configureLive() {
     try {
-      const client = await storeClient(), config = liveConfiguration();
+      const config = liveConfiguration();
+      if (!config && !liveConfigured) return;
+      const client = await storeClient();
       if (config) {
         const status = await client.configureLive(config); liveConfigured = JSON.stringify(config);
         outputChannel.appendLine(`Live source: ${status.state}, recording ${config.robot.host}:${config.robot.port} into ${config.store}`);
@@ -540,29 +554,30 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     });
     explorer.serversChanged();
   }
-  let pitRegistrationOffered = "";
   async function registerPitClaude(requested: boolean) {
-    const url = pitEndpoint(pitUrl()); if (!url) { if (requested) throw new Error("Set wpilog-mcp.pitServerUrl first."); return; }
-    if (!requested && (pitRegistrationOffered === url || context.globalState.get<string>("wpilog-mcp.claudePitUrl") === url)) return;
-    pitRegistrationOffered = url;
-    if (!requested && await vscode.window.showInformationMessage("Register the pit server with Claude Code for your user account?", "Register", "Not now") !== "Register") return;
-    const spec = await prepareStandalone(); if (!spec) return;
+    const choices = explorer.connections.definitions.filter(item => item.kind === "remote");
+    if (!choices.length) { if (requested) throw new Error("Configure a remote connection first"); return; }
+    if (!requested) return; // Configuration alone never installs software or registers an agent.
+    const chosen = choices.length === 1 ? choices[0] : (await vscode.window.showQuickPick(choices.map(connection => ({ label: connection.label, connection })),
+      { title: "Choose the connection to register with Claude Code" }))?.connection;
+    if (!chosen) return;
+    const url = chosen.url!, name = chosen.id === "pit" ? "wpilog-pit" : `wpilog-${chosen.id}`;
+    await explorer.connections.context(chosen.id).client();
     const cli = findClaude(process.env.PATH ?? "", process.platform, file => {
       try { fs.accessSync(file, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK); return fs.statSync(file).isFile(); } catch { return false; }
     });
     const credential = await pitRegistration(url, context.secrets);
-    const local = credential.authorization ? await connectWindow() : undefined;
-    if (credential.authorization && !local) throw new Error("Start the local server to lease the pit proxy credential.");
-    const bridgeUrl = local ? pitBridgeUrl(local, url) : url;
-    const text = claudePitCommandText(spec.launcher, bridgeUrl, process.platform);
+    if (credential.authorization) throw new Error("Configure proxy authentication in Claude Code for this direct HTTP connection. SecretStorage credentials are not copied into CLI arguments or a local bridge.");
+    const text = claudeHttpCommandText(name, url, process.platform);
     if (!cli) {
       outputChannel.appendLine(text);
       if (await vscode.window.showInformationMessage("Claude Code CLI was not found. Copy its user registration command?", "Copy Command") === "Copy Command") await vscode.env.clipboard.writeText(text);
       return;
     }
-    const result = await registerWithClaude(cli, claudePitArgs(spec.launcher, bridgeUrl, process.platform), process.platform, runClaude);
-    await finishClaudeRegistration(result, "wpilog-pit", "wpilog-mcp.claudePitUrl", url, text);
+    const result = await registerWithClaude(cli, claudeHttpArgs(name, url), process.platform, runClaude);
+    await finishClaudeRegistration(result, name, `wpilog-mcp.claudeConnection.${chosen.id}`, url, text);
   }
+
   async function changePitCredential(clear: boolean) {
     const url = pitEndpoint(pitUrl()); if (!url) throw new Error("Set wpilog-mcp.pitServerUrl first.");
     if (clear) await context.secrets.delete(pitSecretKey(url));
@@ -575,7 +590,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     }
     await refreshLease(); didChangeEmitter.fire(); explorer.serversChanged();
     void vscode.window.showInformationMessage(clear ? "Pit proxy credential cleared. Re-register Claude Code to use the direct pit URL."
-      : "Pit proxy credential saved in SecretStorage. Re-register Claude Code to use its credential-free local bridge URL.");
+      : "Pit proxy credential saved in SecretStorage for direct Explorer and VS Code agent requests. Configure Claude Code authentication independently.");
   }
   context.subscriptions.push(context.secrets.onDidChange(event => {
     if (event.key.startsWith(PIT_SECRET_PREFIX)) { void refreshLease(); didChangeEmitter.fire(); explorer.serversChanged(); }
@@ -625,7 +640,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
       const liveChanged = event.affectsConfiguration("wpilog-mcp.pitServerUrl") || event.affectsConfiguration("wpilog-mcp.live");
       const mirrorChanged = event.affectsConfiguration("wpilog-mcp.pitServerUrl") || event.affectsConfiguration("wpilog-mcp.mirror");
       if (liveChanged || mirrorChanged) void configureServices(liveChanged, mirrorChanged);
-      if (mirrorChanged) {
+      if (mirrorChanged || event.affectsConfiguration("wpilog-mcp.connections")) {
         didChangeEmitter.fire(); explorer.serversChanged();
         if (event.affectsConfiguration("wpilog-mcp.pitServerUrl")) void command(() => registerPitClaude(false))();
       }
@@ -639,10 +654,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
 
   const ready = (async () => {
     await moveTbaKeyNow();
-    await updateStandaloneAtActivation();
-    if (await connectWindow()) { void explorer.offerOrganizing(); await configureServices(true, true); }
-    void scheduleProjectOffers();
-    void command(() => registerPitClaude(false))();
+    // Opening Logs or enumerating agent servers is network-free. Local services are opt-in.
+    await configureServices(true, true);
   })();
   outputChannel.appendLine("WPILog Analyzer extension activated.");
   return { ready, logs: { getChildren: explorer.logs.getChildren.bind(explorer.logs) },

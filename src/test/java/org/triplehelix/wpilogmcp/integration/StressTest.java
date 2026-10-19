@@ -160,35 +160,36 @@ class StressTest {
   void listAvailableLogs() throws Exception {
     var tool = findTool("list_available_logs");
     availableLogPaths = new ArrayList<>();
-    int logCount = -1;
-    // Every log, page by page: a page holds at most 500
+    // The opt-in harness explicitly requests all configured sources. Production discovery
+    // asks the user; it must never make this traversal on the user's behalf.
+    var scopes = new ArrayList<com.google.gson.JsonObject>();
     for (int offset = 0; ; ) {
-      var listArgs = new JsonObject();
-      listArgs.addProperty("limit", 500);
-      listArgs.addProperty("offset", offset);
-      var result = executeTool(tool, listArgs);
-      assertTrue(result.has("success") && result.get("success").getAsBoolean(),
-          "list_available_logs failed: " + result);
-      if (logCount < 0) {
-        logCount = result.get("log_count").getAsInt();
-        System.out.println("Found " + logCount + " log files");
-        assertEquals(logDirectories.size(), result.getAsJsonArray("log_directories").size(),
-            "every configured directory is named: " + result.get("log_directories"));
-        if (result.has("skipped")) {
-          System.out.println("Directories not read: " + result.get("skipped"));
-        }
-      }
-      var logsArray = result.getAsJsonArray("logs");
-      for (var logEntry : logsArray) {
-        var logObj = logEntry.getAsJsonObject();
-        availableLogPaths.add(logObj.get("path").getAsString());
-        System.out.println("  - " + logObj.get("friendly_name").getAsString() +
-            " (" + formatBytes(logObj.get("size_bytes").getAsLong()) + ")");
-      }
-      offset += logsArray.size();
-      if (logsArray.isEmpty() || !result.get("has_more").getAsBoolean()) break;
+      var request = new JsonObject(); request.addProperty("offset", offset);
+      var page = executeTool(findTool("list_source_scopes"), request);
+      assertEquals("ok", page.get("status").getAsString(), page.toString());
+      page.getAsJsonArray("source_scopes").forEach(row -> scopes.add(row.getAsJsonObject()));
+      if (!page.get("has_more").getAsBoolean()) break;
+      offset = page.get("next_offset").getAsInt();
     }
-    assertEquals(logCount, availableLogPaths.size(), "the pages together list every log");
+    var seenPaths = new java.util.LinkedHashSet<String>();
+    for (var scope : scopes) {
+      if (!scope.get("available").getAsBoolean()) { System.out.println("Unavailable source: " + scope); continue; }
+      int count = -1, returned = 0;
+      for (int offset = 0; ; ) {
+        var listArgs = new JsonObject(); listArgs.addProperty("limit", 500); listArgs.addProperty("offset", offset);
+        listArgs.add("scope_id", scope.get("scope_id"));
+        var result = executeTool(tool, listArgs);
+        assertTrue(result.get("success").getAsBoolean(), result.toString());
+        if (count < 0) count = result.get("log_count").getAsInt();
+        var rows = result.getAsJsonArray("logs"); returned += rows.size();
+        rows.forEach(row -> seenPaths.add(row.getAsJsonObject().get("path").getAsString()));
+        offset += rows.size(); if (!result.get("has_more").getAsBoolean()) break;
+        assertFalse(rows.isEmpty(), "A shortened page must make progress");
+      }
+      assertEquals(count, returned, "Source traversal must return its true total");
+    }
+    availableLogPaths.addAll(seenPaths);
+    System.out.println("Found " + availableLogPaths.size() + " distinct log paths across explicit source selections");
 
     assumeTrue(!availableLogPaths.isEmpty(), "No log files found in directory");
   }
@@ -1147,6 +1148,7 @@ class StressTest {
             + " struct types"));
     var logsArgs = new JsonObject();
     logsArgs.addProperty("limit", 5);
+    logsArgs.addProperty("scope_id", LogDirectory.getInstance().sourceScopes().forPath(Path.of(logPath), null).id());
     testTool("list_available_logs", logsArgs, result ->
         System.out.println("  list_available_logs: " + result.get("log_count").getAsInt()
             + " logs, has_more=" + result.get("has_more").getAsBoolean()));

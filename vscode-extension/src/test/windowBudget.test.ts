@@ -55,7 +55,7 @@ test("recorded hidden expiry clears through its acknowledgement owner and reveal
   const preview=Object.create(Preview.prototype);let changed=()=>{};let clears=0;
   const document={controller:{snapshot:{view_id:"hidden",configuration:{panels:[]}}}};
   const panel:any={visible:true,webview:{postMessage:async()=>true,onDidReceiveMessage(){}},onDidChangeViewState:(f:()=>void)=>changed=f,onDidDispose(){}};
-  preview.pages=new Map();preview.rendered=new Map();preview.targetEntries=()=>{};preview.pageHtml=()=>"";preview.paint=()=>{};preview.warning=()=>{};
+  preview.controls=async()=>{};preview.pages=new Map();preview.rendered=new Map();preview.targetEntries=()=>{};preview.pageHtml=()=>"";preview.paint=()=>{};preview.warning=()=>{};
   await preview.render(document,panel);const page=preview.pages.get("hidden");page.recorded={clear:async()=>{clears++;}};
   panel.visible=false;changed();t.mock.timers.tick(29999);assert.equal(clears,0);
   panel.visible=true;changed();t.mock.timers.tick(1);assert.equal(clears,0);

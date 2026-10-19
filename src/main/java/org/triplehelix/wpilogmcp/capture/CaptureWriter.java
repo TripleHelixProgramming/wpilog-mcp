@@ -49,6 +49,12 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   @FunctionalInterface public interface OutputFactory {
     WpilogOutput open(Path path, int nextEntry, boolean resume) throws IOException;
   }
+  @FunctionalInterface public interface ContextSink {
+    void value(String name, String type, Object value, long timestampUs, JsonObject metadata);
+  }
+  private ContextSink contextSink = (name, type, value, time, metadata) -> {};
+  /** Set before starting the listener. The sink only admits bounded gateway work; it never waits. */
+  public void onContext(ContextSink sink) { contextSink = java.util.Objects.requireNonNull(sink); }
   public interface Observer {
     Path create(String address, Instant startedAt) throws IOException;
     /** Synchronous compatibility for callers outside the NT4 listener. */
@@ -73,6 +79,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     default void entry(Session session, EntryInfo entry) throws IOException {}
     default void metadata(Session session, EntryInfo entry) throws IOException {}
     default void value(Session session, EntryInfo entry, ValueFrame value, WpilogOutput.Written written) throws IOException {}
+    /** Monotonic times around a received value's completed publication, including admission wait. */
+    default void publication(Session session, long receivedUs, long publishedUs) {}
     default void flushed(Session session) throws IOException {}
     default void timeSync(Session session, long serverTimeUs) throws IOException {}
     default void providers(Session session) throws IOException {}
@@ -421,7 +429,9 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       if (policy.excluded(announce.name()) || topics.containsKey(announce.id())) return;
       long periodUs = policy.periodUs(announce.name());
       String metadata = metadata(announce, periodUs);
-      String name = "NT:" + announce.name(), type = NtType.fromNt4(announce.type()).wpilog();
+      String name = org.triplehelix.wpilogmcp.nt4.ContextTopic.metadata(announce.name(), announce.properties()).isPresent()
+          ? announce.name() : "NT:" + announce.name();
+      String type = NtType.fromNt4(announce.type()).wpilog();
       room(WpilogOutput.startSize(name, type, metadata, serverUs), 1);
       int id = output.start(name, type, metadata, serverUs);
       session.sizeBytes = output.size();
@@ -433,7 +443,10 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
 
   private String metadata(Announce announce, long periodUs) {
-    var metadata = new JsonObject(); metadata.addProperty("source", "nt4"); metadata.addProperty("robot", address);
+    var metadata = org.triplehelix.wpilogmcp.nt4.ContextTopic.metadata(announce.name(), announce.properties()).orElseGet(() -> {
+      var ordinary = new JsonObject(); ordinary.addProperty("source", "nt4"); return ordinary;
+    });
+    metadata.addProperty("robot", address);
     if (periodUs > 0) metadata.addProperty("period_sec", periodUs / 1_000_000.0);
     if (!announce.properties().isEmpty()) metadata.add("nt4_properties", announce.properties());
     return metadata.toString();
@@ -500,6 +513,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     var written = output.append(id, serverUs, WpilogOutput.payload(4, value.toString()));
     session.minUs = Math.min(session.minUs, serverUs); session.maxUs = Math.max(session.maxUs, serverUs);
     observer.value(session, entry, frame, written); output.finish(id, serverUs); session.sizeBytes = output.size();
+    contextSink.value(name, "json", value.toString(), serverUs, metadata);
   }
 
   /** Ordered provider hook: its own entry ids, metadata updates, rollover and the same live index. */
@@ -526,6 +540,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       var written = output.append(entry.id(), timestampUs, payload);
       session.minUs = Math.min(session.minUs, timestampUs); session.maxUs = Math.max(session.maxUs, timestampUs);
       session.sizeBytes = output.size(); observer.value(session, entry, frame, written); bytes[0] = written.size();
+      contextSink.value(name, nt.nt4(), value, timestampUs, metadata);
     });
     return bytes[0];
   }
@@ -631,6 +646,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       session.maxUs = Math.max(session.maxUs, frame.timestampUs());
       cost.add(receivedAtUs, written.size());
       observer.value(session, topic.entry, frame, written);
+      observer.publication(session, receivedAtUs, loop.nowUs());
     });
   }
 

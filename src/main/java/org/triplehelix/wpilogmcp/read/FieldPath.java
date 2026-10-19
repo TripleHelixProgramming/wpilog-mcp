@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.triplehelix.wpilogmcp.log.struct.EnumValue;
+import org.triplehelix.wpilogmcp.log.struct.UnsignedEnumValue;
 
 /**
  * A path into a decoded value: struct fields ({@code .translation.x}), array elements
@@ -214,10 +215,31 @@ public final class FieldPath {
    * value; null for anything else (maps, strings, missing).
    */
   public static Double toNumber(Object leaf) {
-    if (leaf instanceof Number n) return n.doubleValue();
-    if (leaf instanceof Boolean b) return b ? 1.0 : 0.0;
-    if (leaf instanceof EnumValue e) return (double) e.value();
+    var number = numericLeaf(leaf);
+    return number == null ? null : number.doubleValue();
+  }
+
+  /** Keep the stored integral representation until the consumer has applied its fidelity
+   * policy. Converting an unsigned field or an enum to double first can discard low bits. */
+  private static Number numericLeaf(Object leaf) {
+    if (leaf instanceof Number n) return n;
+    if (leaf instanceof Boolean b) return b ? 1L : 0L;
+    if (leaf instanceof EnumValue e) return e.value();
+    if (leaf instanceof UnsignedEnumValue e) return e.value();
     return null;
+  }
+
+  /** Plotting uses binary64 values, but must not present rounded integer identifiers as exact.
+   * Unsupported/missing leaves return null; unsafe integers return a non-finite gap. Raw reads
+   * retain the original integer, and ordinary numeric analysis keeps its existing policy. */
+  public static Double toPlotNumber(Object leaf) {
+    var number = numericLeaf(leaf);
+    if (number == null) return null;
+    long safe = 9_007_199_254_740_991L;
+    if (number instanceof java.math.BigInteger integer
+        ? integer.abs().compareTo(java.math.BigInteger.valueOf(safe)) > 0
+        : number instanceof Long && (number.longValue() < -safe || number.longValue() > safe)) return Double.NaN;
+    return number.doubleValue();
   }
 
   @Override

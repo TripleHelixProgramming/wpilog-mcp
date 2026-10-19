@@ -26,24 +26,43 @@ public final class ManagedLogAccess implements LogAccess {
 
   public ManagedLogAccess(LogManager manager) { this.manager = java.util.Objects.requireNonNull(manager); }
 
-  @Override public ManagedReadSnapshot open(Path path) throws IOException { return acquire(path.toString(), false); }
+  @Override public ManagedReadSnapshot open(Path path) throws IOException { return acquire(path.toString(), false, null); }
 
   /** Legacy entry points keep their original path spelling and manager refusal messages. */
-  public ManagedReadSnapshot acquire(String path) throws IOException { return acquire(path, true); }
+  public ManagedReadSnapshot acquire(String path) throws IOException { return acquire(path, true, null); }
+  public ManagedReadSnapshot acquire(String path, String scopeId) throws IOException { return acquire(path, true, scopeId); }
 
-  private ManagedReadSnapshot acquire(String path, boolean callerOwnsUse) throws IOException {
+  private ManagedReadSnapshot acquire(String path, boolean callerOwnsUse, String scopeId) throws IOException {
     synchronized (this) {
       if (closed) throw new ReadException(ReadProblem.Code.CLOSED, "Managed log access is closed");
     }
+    var requested = Path.of(path);
+    SourceScopes.Scope scope = null;
+    if (scopeId != null) {
+      scope = manager.sourceScopes().select(scopeId);
+      requested = requested.isAbsolute() ? requested : scope.root().resolve(requested);
+      manager.sourceScopes().recheckPath(requested, scope);
+      path = requested.toString();
+    } else if (!requested.isAbsolute()) {
+      var choices = manager.sourceScopes().snapshot();
+      if (choices.size() > 1) throw new SourceScopes.Failure("SOURCE_SELECTION_REQUIRED", "A relative file path requires an explicit source scope", choices);
+    }
     var use = callerOwnsUse ? manager.acquire(path) : manager.acquireReadOnly(path);
     ManagedReadSnapshot snapshot;
-    try { snapshot = new ManagedReadSnapshot(this, use, orders, callerOwnsUse); }
+    try {
+      if (scope != null) manager.sourceScopes().recheckPath(Path.of(use.log().path()), scope);
+      snapshot = new ManagedReadSnapshot(this, use, orders, callerOwnsUse, scope);
+    }
     catch (Throwable failure) { use.close(); throw failure; }
     synchronized (this) {
       if (!closed) { snapshots.add(snapshot); return snapshot; }
     }
     snapshot.close();
     throw new ReadException(ReadProblem.Code.CLOSED, "Managed log access closed while opening " + path);
+  }
+
+  void recheckScope(SourceScopes.Scope scope, Path path) throws IOException {
+    if (scope != null) manager.sourceScopes().recheckPath(path, scope);
   }
 
   synchronized void released(ManagedReadSnapshot snapshot) { snapshots.remove(snapshot); }

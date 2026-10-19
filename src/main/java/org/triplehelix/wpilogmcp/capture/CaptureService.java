@@ -25,6 +25,8 @@ public final class CaptureService implements AutoCloseable {
   private final org.triplehelix.wpilogmcp.nt4.server.Nt4Gateway gateway;
   private final org.triplehelix.wpilogmcp.store.LogStore store;
   private final AutoCloseable observation;
+  private final AutoCloseable textObservation;
+  private final org.triplehelix.wpilogmcp.capture.context.SystemTextPublisher textPublisher;
   public LiveCapture live() { return live; }
   /** The store this capture records into. */
   public java.nio.file.Path folder() { return store.root(); }
@@ -93,7 +95,10 @@ public final class CaptureService implements AutoCloseable {
     observation = store.observe(live);
     placement = store.captures(clock);
     placement.onStatus(live::status);
-    writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs(), live::robotNowUs), config.maxFileBytes(), outputs);
+    writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs(), live::robotNowUs, live::publicationTiming), config.maxFileBytes(), outputs);
+    if (gateway != null) writer.onContext(gateway::context);
+    textPublisher = gateway == null ? null : new org.triplehelix.wpilogmcp.capture.context.SystemTextPublisher(manager, writer, live, loop, gateway);
+    textObservation = textPublisher == null ? () -> {} : store.observeSystemText(textPublisher);
     var gate = new org.triplehelix.wpilogmcp.capture.pull.PullGate(loop::nowUs, config.pull().settleUs());
     providers = (config.providers().jvm() != null || config.providers().robotSsh() || !config.providers().tails().isEmpty() || !config.providers().photonvision().isEmpty() || pulls == null && config.pull().active())
         ? new org.triplehelix.wpilogmcp.capture.context.ContextProviders(config, writer, live, loop, store, clock) : null;
@@ -130,6 +135,7 @@ public final class CaptureService implements AutoCloseable {
     if (!stopping.compareAndSet(false, true)) return;
     watchdog.close();
     live.stop();
+    if (textPublisher != null) textPublisher.close();
     var providersClosed = providers == null ? java.util.concurrent.CompletableFuture.completedFuture(null) : providers.closeAsync();
     var pullClosed = pull == null ? java.util.concurrent.CompletableFuture.completedFuture(null) : pull.closeAsync();
     var gatewayClosed = gateway == null ? java.util.concurrent.CompletableFuture.completedFuture(null)
@@ -153,6 +159,7 @@ public final class CaptureService implements AutoCloseable {
       org.slf4j.LoggerFactory.getLogger(CaptureService.class).warn("Capture shutdown failed; the next startup sweep will recover unowned captures", e.getCause());
     } finally {
       try { observation.close(); } catch (Exception e) { deferred(e); }
+      try { textObservation.close(); } catch (Exception e) { deferred(e); }
     }
   }
 
@@ -205,7 +212,7 @@ public final class CaptureService implements AutoCloseable {
       }
       @Override public void value(org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce topic, org.triplehelix.wpilogmcp.nt4.ValueFrame frame, long received) {
         if (topic.id() == controlId) gate.control(frame.value()); writer.value(topic, frame, received);
-        if (live != null) live.value(topic, frame);
+        if (live != null) live.value(topic, frame, received);
         if (gateway != null) gateway.value(topic.name(), frame.timestampUs(), frame.typeCode(), frame.value());
       }
       @Override public void invalidValue(org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce topic, int code) {

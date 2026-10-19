@@ -34,17 +34,20 @@ public final class ManagedReadSnapshot implements ReadSnapshot {
   private final SharedTimeOrders orders;
   private SharedTimeOrders.Lease orderLease;
   private final boolean callerOwnsUse;
+  private final SourceScopes.Scope scope;
   private int cursors;
   private boolean retired, callerClosed, released;
 
-  ManagedReadSnapshot(ManagedLogAccess owner, LogManager.LogUse use, SharedTimeOrders orders, boolean callerOwnsUse) {
+  ManagedReadSnapshot(ManagedLogAccess owner, LogManager.LogUse use, SharedTimeOrders orders, boolean callerOwnsUse, SourceScopes.Scope scope) {
     this.owner = owner; this.use = use; this.orders = orders;
-    this.callerOwnsUse = callerOwnsUse;
+    this.callerOwnsUse = callerOwnsUse; this.scope = scope;
   }
 
   /** Legacy whole-entry caching and diagnostics are a policy over the shared record cursor.
    * Do not wrap this object: the manager's reload hooks compare its original identity. */
   public LogData log() { return use.log(); }
+  /** Carry the admitted serving identity through the call instead of selecting again. */
+  public void recheckScope() throws IOException { owner.recheckScope(scope, path()); }
   public FileSnapshot snapshot() { return boundary(); }
   @Override public Path path() { return Path.of(log().path()); }
   /** Null for a writer-owned fixed prefix: appending does not invalidate that prefix. */

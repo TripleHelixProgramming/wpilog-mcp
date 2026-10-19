@@ -19,8 +19,8 @@ const plants = [
     after: 'Promise.resolve("vscode.openWith",', checks: 3, reason: /custom editor/ },
   { name: "data-append", file: "../media/dataView.js", before: "if (rows.length) await this.table.update(rows);",
     after: "if (rows.length) await this.table.replace(rows);", checks: 4, reason: /1 !== 3/ },
-  { name: "data-store-command", file: "explorer.js", before: 'registerCommand("wpilog-mcp.explorer.showAllSources",',
-    after: 'registerCommand("wpilog-mcp.explorer.plantedMissingSourceToggle",', checks: 5, reason: /showAllSources|not found/ },
+  { name: "data-store-command", file: "explorer.js", before: 'registerCommand("wpilog-mcp.explorer.syncDataStore",',
+    after: 'registerCommand("wpilog-mcp.explorer.plantedMissingSyncCommand",', checks: 5, reason: /syncDataStore|not found/ },
   { name: "pit-secret", file: "claudeRegistration.js", before: '"connect", "--url", url];',
     after: '"connect", "--url", url, "password=synthetic-smoke-secret"];', checks: 6, reason: /only a user-scope URL bridge/ },
 ];

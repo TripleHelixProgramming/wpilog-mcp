@@ -64,6 +64,19 @@ class StoreReadCatalogTest {
     }
   }
 
+  @Test void unqualifiedContentCannotChooseBetweenTwoCopiesOfOneOrigin() throws Exception {
+    var first = fixture("first-copy", true);
+    var second = fixture("second-copy", true);
+    assertEquals(first.anchorFile().sha256(), second.anchorFile().sha256());
+    for (var roots : List.of(List.of(first.root(), second.root()), List.of(second.root(), first.root()))) {
+      try (var catalog = new StoreReadCatalog(roots)) {
+        var error = assertThrows(IOException.class,
+            () -> catalog.resolveContent("origin-id", first.anchorFile().sha256()));
+        assertTrue(error.getMessage().startsWith("SOURCE_SELECTION_REQUIRED"), error.getMessage());
+      }
+    }
+  }
+
   /** A mirror folder exists before its first contact names the origin's store id. Until then it
    * answers to no origin, and a reference to another store still resolves or refuses with its
    * reason instead of failing on the unnamed mirror. */

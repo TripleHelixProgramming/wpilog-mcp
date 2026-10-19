@@ -26,6 +26,9 @@ import org.triplehelix.wpilogmcp.sync.*;
  * Immutable snapshots retain rotations. Append cursors commit with their byte receipts, so an
  * interrupted append is truncated to the last committed prefix before it is retried. */
 public final class SystemPullStore implements FileTransfer.Local {
+  /** Only a committed prefix is visible. A prior immutable snapshot may prove an appended suffix. */
+  public record Text(String sessionId, Path capture, Path path, String source, String format, String remote,
+      long from, long to, Path previous, long previousBytes) {}
   private final LogStore store;
   private final SecurityValidator security;
   private final DeviceIdentity identity;
@@ -194,7 +197,8 @@ public final class SystemPullStore implements FileTransfer.Local {
     store.capture(io -> { if (!Files.isRegularFile(staged(io, name))) throw new IOException("Missing system file"); return null; });
   }
   @Override public String verified(PullManifest.Entry entry) throws IOException {
-    store.capture(io -> { place(io, staged(io, entry.localName()), entry.remoteName(), source(entry.remoteName())); return null; });
+    var text = store.capture(io -> place(io, staged(io, entry.localName()), entry.remoteName(), source(entry.remoteName())));
+    store.publishedSystemText(text);
     return entry.localName(); // Keep the prefix in staging for content-checked resume after growth.
   }
   private String source(String name) throws IOException {
@@ -217,7 +221,7 @@ public final class SystemPullStore implements FileTransfer.Local {
   private Provenance provenance(String remote) {
     return new Provenance("pulled", remote, remote.substring(remote.lastIndexOf('/') + 1), wall.instant().toString(), false, identity.serialNumber());
   }
-  private void place(StoreFiles io, Path from, String remote, String source) throws IOException {
+  private Text place(StoreFiles io, Path from, String remote, String source) throws IOException {
     String hash = StoreFiles.hash(from); String basename = remote.substring(remote.lastIndexOf('/') + 1);
     try { StoreFiles.component(basename); } catch (IllegalArgumentException e) { basename = "remote.txt"; }
     Path destinationManifest = manifest(io); Session target = session(io); String note = null;
@@ -228,6 +232,13 @@ public final class SystemPullStore implements FileTransfer.Local {
       else note = matches.isEmpty() ? "No session records this program pid" : "Several sessions record this program pid; placement is unassigned";
     }
     boolean shared = source.equals("syslog");
+    var earlier = shared ? SystemLogIndex.read(io, robot).files().stream().map(SystemLogIndex.Entry::file).toList() : target.systemLogs().files();
+    boolean held = earlier.stream().anyMatch(f -> f.source().equals(source) && f.sha256().equals(hash));
+    // Receipts are appended in commit order. The longest historical file may predate a rotation;
+    // using it would replay the shorter replacement on every growth until it exceeded that size.
+    var previous = earlier.stream().filter(f -> f.source().equals(source) && remote.equals(f.provenance().originalPath()))
+        .reduce((before, after) -> after).orElse(null);
+    Path previousPath = previous == null ? null : SystemLogFiles.resolve(io, store.root(), destinationManifest.getParent(), target, previous);
     Path parent = shared ? robot.resolve("system") : destinationManifest.getParent().resolve("robot/system");
     if (note != null) parent = parent.resolve("unassigned");
     var to = io.check(parent.resolve(hash).resolve(basename)); Files.createDirectories(to.getParent());
@@ -240,6 +251,8 @@ public final class SystemPullStore implements FileTransfer.Local {
       SystemLogIndex.put(io, robot, new SystemLogIndex.Entry(receipt, SystemLogIndex.span(to, format)));
       known.put(hash, receipt);
     } else record(io, destinationManifest, target, receipt);
+    return held || note != null || target.openCapture() == null ? null : new Text(target.id(), io.resolve(destinationManifest.getParent(), target.openCapture().path()),
+        to, source, format, remote, 0, receipt.sizeBytes(), previousPath, previous == null ? 0 : previous.sizeBytes());
   }
 
   private static boolean hasPid(Session session, String text) {
@@ -268,15 +281,17 @@ public final class SystemPullStore implements FileTransfer.Local {
 
   /** Completed snapshots are small ring buffers for dmesg, streamed for the journal. */
   public void kernel(List<String> lines, double uptime) throws IOException {
-    store.capture(io -> {
+    var text = store.capture(io -> {
       var s = session(io); var old = s.systemLogs(); var delta = KernelLines.following(lines, uptime, old.kernelCursor());
       if (delta.reboot()) throw new IOException("Kernel uptime restarted; waiting for the new capture session before appending");
       var files = appendLines(io, s, "robot/system/dmesg.txt", "kernel", "dmesg", "dmesg", delta.lines(), delta.note());
-      io.write(manifest(io), s.withSystemLogs(new SystemLogState(files, delta.cursor(), old.journalCursor(), old.journalBootId(), old.reasons()))); return null;
+      io.write(manifest(io), s.withSystemLogs(new SystemLogState(files, delta.cursor(), old.journalCursor(), old.journalBootId(), old.reasons())));
+      return delta.lines().isEmpty() ? null : appended(io, s, files, "robot/system/dmesg.txt");
     });
+    store.publishedSystemText(text);
   }
   public void journal(Iterable<String> lines, String cursor, String boot) throws IOException {
-    store.capture(io -> {
+    var texts = store.capture(io -> {
       var s = session(io); var old = s.systemLogs();
       if (old.journalBootId() != null && !old.journalBootId().equals(boot)) throw new IOException("Journal boot changed; waiting for the new capture session");
       var index = SystemLogIndex.read(io, robot);
@@ -285,6 +300,7 @@ public final class SystemPullStore implements FileTransfer.Local {
       for (var file : old.files()) if (file.location() == SystemLogState.Location.STORE) indexed.put(file.path(), file);
       for (var entry : index.files()) indexed.put(entry.file().path(), entry.file());
       var files = List.copyOf(indexed.values());
+      var publications = new ArrayList<Text>();
       // UTC date is from the journal's own unambiguous epoch, never this laptop's date.
       var days = new java.util.LinkedHashMap<String, Path>();
       java.io.BufferedWriter output = null; String writingDay = null;
@@ -305,13 +321,23 @@ public final class SystemPullStore implements FileTransfer.Local {
           files = appendFile(io, s.withSystemLogs(old.withFiles(files)), relative, SystemLogState.Location.STORE, "syslog", "journal", "journalctl", day.getValue(), null);
           var receipt = files.stream().filter(f -> f.path().equals(relative)).findFirst().orElseThrow();
           SystemLogIndex.put(io, robot, new SystemLogIndex.Entry(receipt, SystemLogIndex.span(io.resolve(store.root(), relative), "journal")));
+          publications.add(appended(io, s.withSystemLogs(old.withFiles(List.copyOf(indexed.values()))), files, relative));
         }
       } finally {
         if (output != null) output.close();
         for (var path : days.values()) Files.deleteIfExists(path);
       }
-      io.write(manifest(io), s.withSystemLogs(new SystemLogState(old.files(), old.kernelCursor(), cursor, boot, old.reasons()))); return null;
+      io.write(manifest(io), s.withSystemLogs(new SystemLogState(old.files(), old.kernelCursor(), cursor, boot, old.reasons()))); return publications;
     });
+    texts.forEach(store::publishedSystemText);
+  }
+  private Text appended(StoreFiles io, Session before, List<SystemLogState.File> files, String relative) throws IOException {
+    if (before.openCapture() == null) return null;
+    var file = files.stream().filter(f -> f.path().equals(relative)).findFirst().orElseThrow();
+    long offset = before.systemLogs().files().stream().filter(f -> f.path().equals(relative)).mapToLong(SystemLogState.File::sizeBytes).findFirst().orElse(0);
+    return offset == file.sizeBytes() ? null : new Text(before.id(), io.resolve(manifest(io).getParent(), before.openCapture().path()),
+        SystemLogFiles.resolve(io, store.root(), manifest(io).getParent(), before, file), file.source(), file.format(), file.provenance().originalPath(),
+        offset, file.sizeBytes(), null, 0);
   }
   private List<SystemLogState.File> appendLines(StoreFiles io, Session session, String relative, String source,
       String format, String remote, List<String> lines, String note) throws IOException {

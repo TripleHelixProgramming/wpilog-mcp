@@ -17,8 +17,24 @@ final class InventoryRequests {
     static final Admission DIRECT = new Admission(-1, true);
     InventoryFailure refusal(JsonObject message) {
       if (!operation(message, true)) return null;
-      try { CallerContext.current().requireLocal(); }
+      try {
+        var params = message.getAsJsonObject("params");
+        var args = params.has("arguments") && params.get("arguments").isJsonObject() ? params.getAsJsonObject("arguments") : new JsonObject();
+        int version = new JsonPrimitive(2).equals(args.get("api_version")) ? 2 : 1;
+        org.triplehelix.wpilogmcp.visualization.VisualizationAccess.transport(CallerContext.current(), version,
+            org.triplehelix.wpilogmcp.visualization.VisualizationAccess.tool(params.get("name").getAsString()));
+      }
       catch (java.nio.file.AccessDeniedException denied) { return new InventoryFailure(403, "ACCESS_DENIED", denied.getMessage(), false); }
+      boolean library = org.triplehelix.wpilogmcp.visualization.LibraryRequests.message(message);
+      if (library) {
+        int maximum = org.triplehelix.wpilogmcp.visualization.LibraryRequests.requestBytes(message);
+        try { if (message.has("id")) org.triplehelix.wpilogmcp.read.internal.ReadWire.bytes(message.get("id"), 64 << 10); }
+        catch (Exception tooLarge) { return new InventoryFailure(413, "RESOURCE_LIMIT", "Library request ID exceeds 64 KiB", false); }
+        if (rawBytes > maximum) return new InventoryFailure(413, "RESOURCE_LIMIT", "Library request exceeds its input byte limit", false);
+        if (rawBytes < 0) try { org.triplehelix.wpilogmcp.read.internal.ReadWire.bytes(message, maximum); }
+        catch (Exception tooLarge) { return new InventoryFailure(413, "RESOURCE_LIMIT", "Library request exceeds its input byte limit", false); }
+        return dataAdmitted ? null : busy();
+      }
       if (rawBytes > RecordingInventories.MAX_REQUEST_BYTES) return oversized();
       if (rawBytes < 0) try { RecordingInventories.checkRequest(message); }
       catch (java.io.IOException tooLarge) { return oversized(); }
@@ -34,10 +50,13 @@ final class InventoryRequests {
   }
   static JsonElement responseId(JsonObject message) {
     var id = message.get("id");
-    return id != null && id.toString().length() > 65536 ? JsonNull.INSTANCE : id;
+    try { if (id != null) org.triplehelix.wpilogmcp.read.internal.ReadWire.bytes(id, 64 << 10); }
+    catch (Exception tooLarge) { return JsonNull.INSTANCE; }
+    return id;
   }
-  private static final Set<String> READS = Set.of("visualization_source_entries_list", "visualization_source_entries_get");
+  private static final Set<String> READS = Set.of("visualization_source_reduction", "visualization_source_health", "visualization_source_entries_list", "visualization_source_entries_get");
   static boolean operation(JsonObject message, boolean includeClose) {
+    if (org.triplehelix.wpilogmcp.visualization.LibraryRequests.message(message)) return true;
     if (!"tools/call".equals(McpMessageHandler.methodName(message)) || !message.has("params") || !message.get("params").isJsonObject()) return false;
     var params = message.getAsJsonObject("params"); var name = params.get("name");
     if (name == null || !name.isJsonPrimitive() || !name.getAsJsonPrimitive().isString()) return false;
@@ -53,6 +72,8 @@ final class InventoryRequests {
     return false;
   }
   static boolean httpRead(String path) {
-    return Set.of("/visualizations/v1/source/describe", "/visualizations/v1/source/entries/list", "/visualizations/v1/source/entries/get").contains(path);
+    if (org.triplehelix.wpilogmcp.visualization.LibraryRequests.http(path)) return true;
+    if (path.startsWith("/visualizations/v2/")) path = "/visualizations/v1/" + path.substring("/visualizations/v2/".length());
+    return Set.of("/visualizations/v1/source/reduction", "/visualizations/v1/source/health", "/visualizations/v1/source/describe", "/visualizations/v1/source/entries/list", "/visualizations/v1/source/entries/get").contains(path);
   }
 }

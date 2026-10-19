@@ -11,7 +11,7 @@ import type { McpClient } from "../mcpClient";
 import type { ServerManager, DaemonSpec } from "../serverManager";
 import type { ImportRequest } from "../explorer/importJobs";
 import { LocalControlError } from "../mcpClient";
-import type { IngestionPolicy } from "../explorer/localIngestion";
+import type { IngestionPolicy, IngestionStatus, IngestionFiles } from "../explorer/localIngestion";
 import type { LogListing } from "../explorer/logsTree";
 
 type State = {
@@ -20,6 +20,7 @@ type State = {
   registered: boolean; registrationFailure: boolean; requests: ImportRequest[];
   commands: Map<string, (...args: any[]) => any>; dialogs: number; contexts: Map<string, unknown>;
   featureEnabled: boolean; neverOffer: boolean;
+  sourceStatus: NonNullable<IngestionStatus["sources"]>; receipts: IngestionFiles;
   selectedSources: string[]; confirmSetup: boolean; confirmFinished: boolean; policy: IngestionPolicy | null;
   toolArgs: Record<string, unknown>[]; controls: { route: string; method: string; body?: IngestionPolicy }[]; temporaryRoots: string[][]; conflict: boolean; infos: string[];
 };
@@ -48,6 +49,7 @@ const host = {
   } },
   window: {
     tabGroups: { activeTabGroup: {}, onDidChangeTabs: disposable, onDidChangeTabGroups: disposable },
+    createTreeView: () => ({ dispose() {}, onDidCollapseElement: disposable }),
     registerTreeDataProvider: disposable, registerWebviewViewProvider: disposable, registerCustomEditorProvider: disposable,
     registerUriHandler: disposable,
     showInformationMessage: async (message: string, ...choices: unknown[]) => {
@@ -98,6 +100,7 @@ async function fixture(action: (explorer: import("../explorer").Explorer, listin
     additional: [path.join(root, "previous")], updates: [], errors: [], output: [], registered: false,
     registrationFailure: false, requests: [], commands: new Map(), dialogs: 0, contexts: new Map(),
     featureEnabled: true, neverOffer: false,
+    sourceStatus: [], receipts: { files: [], offset: 0, limit: 100, total: 0 },
     selectedSources: [fs.realpathSync(source)], confirmSetup: true, confirmFinished: false,
     policy: { revision: 0, enabled: false, store: null, store_id: null, sources: [] },
     toolArgs: [], controls: [], temporaryRoots: [], conflict: false, infos: [] };
@@ -118,7 +121,7 @@ async function fixture(action: (explorer: import("../explorer").Explorer, listin
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}/mcp`;
   const spec = { kind: "standalone", name: "http" } as DaemonSpec;
-  const context = { globalStorageUri: { fsPath: path.join(root, "state") }, globalState: { get: (key: string) => key === "wpilog-mcp.neverOfferDataStore" ? ui.neverOffer : undefined, update: async () => {} } } as unknown as vscode.ExtensionContext;
+  const context = { extension: { packageJSON: { version: "test" } }, globalStorageUri: { fsPath: path.join(root, "state") }, globalState: { get: (key: string) => key === "wpilog-mcp.neverOfferDataStore" ? ui.neverOffer : undefined, update: async () => {} } } as unknown as vscode.ExtensionContext;
   const explorer = new Explorer(context, { appendLine: (line: string) => { ui.output.push(line); } } as vscode.OutputChannel,
     {} as ServerManager, () => spec);
   const listing: LogListing = { status: "ok", log_directories: [source],
@@ -130,7 +133,8 @@ async function fixture(action: (explorer: import("../explorer").Explorer, listin
       if (ui.conflict) throw new LocalControlError("Policy revision changed", 409, "CONFLICT");
       ui.policy = { ...body!, revision: body!.revision + 1 };
     }
-    return { policy: ui.policy, sources: [] };
+    if (route.startsWith("/store/local-ingestion/files?")) return ui.receipts;
+    return { policy: ui.policy, sources: ui.sourceStatus };
   };
   explorer.clientFor = async () => ({ endpoint,
     callTool: async (_name: string, args: Record<string, unknown>) => { ui.toolArgs.push(args); return listing; },
@@ -280,14 +284,46 @@ test("an already configured shared server is not offered setup by another editor
 });
 
 
-test("the source toggle requests the shared all view and restores the server default", async () => {
-  await fixture(async (explorer, _listing, _source, target) => {
-    ui.policy = { revision: 1, enabled: true, store: target, store_id: "store", sources: [] };
-    const listing = () => Object.getPrototypeOf(explorer.logs).listing.call(explorer.logs, explorer.spec());
-    await listing();
-    await ui.commands.get("wpilog-mcp.explorer.showAllSources")!(); await listing();
-    await ui.commands.get("wpilog-mcp.explorer.showAllSources")!(); await listing();
-    assert.deepEqual(ui.toolArgs, [{ limit: 500, offset: 0 }, { limit: 500, offset: 0, view: "all" }, { limit: 500, offset: 0 }]);
+test("Manage Data Store retains Show source status with source details and bounded receipts", async () => {
+  for (const enabled of [true, false]) await fixture(async (_explorer, _listing, source, target) => {
+    ui.policy = { revision: 7, enabled, store: target, store_id: "saved", sources: [
+      { path: source, enabled: true, mode: "copy", completed_files: false, stated_robot: null }] };
+    const policyBefore = structuredClone(ui.policy);
+    const offline = path.join(source, "offline-drive");
+    ui.sourceStatus = [{ path: source, state: enabled ? "watching" : "paused" },
+      { path: offline, state: "unavailable", reason: "Drive is disconnected" }];
+    ui.receipts = { offset: 0, limit: 100, total: 205, files: Array.from({ length: 100 }, (_, i) => ({
+      path: path.join(source, `receipt-${i}.wpilog`), state: ["waiting", "refused", "imported", "present"][i % 4],
+      reason: i % 4 === 1 ? "Invalid header" : null,
+      destination: i % 4 >= 2 ? path.join(target, `receipt-${i}.wpilog`) : null,
+    })) };
+    ui.picks = ["Show source status"];
+    await ui.commands.get("wpilog-mcp.explorer.manageDataStore")!();
+    assert.deepEqual(ui.errors, [], "Show source status must remain reachable through Manage Data Store");
+    assert.deepEqual(ui.picks, []);
+    const detail = `${enabled ? "Synchronization enabled" : "Synchronization paused"}\n${target}\n`
+      + `${source}: ${enabled ? "watching" : "paused"}\n${offline}: unavailable — Drive is disconnected`;
+    assert.equal(ui.output[0], detail);
+    const expectedReceipts = ui.receipts.files.map(file => `${file.path}: ${file.state}`
+      + (file.destination ? ` → ${file.destination}` : "") + (file.reason ? `; ${file.reason}` : ""));
+    assert.deepEqual(ui.output.slice(1, 101), expectedReceipts, "Status includes completed receipts as well as pending/refused ones");
+    assert.equal(ui.output[101], "Showing 100 of 205 receipts; GET /store/local-ingestion/files supports offset and limit.");
+    assert.deepEqual(ui.infos, [`${detail}\nThe output channel shows 100 of 205 file receipts.`]);
+    assert.deepEqual(ui.controls.map(call => [call.method, call.route]), [
+      ["GET", "/store/local-ingestion"], ["GET", "/store/local-ingestion"],
+      ["GET", "/store/local-ingestion/files?offset=0&limit=100"],
+    ]);
+    assert.deepEqual(ui.policy, policyBefore); assert.deepEqual(ui.requests, []);
+    assert.deepEqual(ui.updates, []); assert.deepEqual(ui.temporaryRoots, []);
+  });
+});
+
+
+test("source listings do not request the retired all view", async () => {
+  await fixture(async (explorer) => {
+    await Object.getPrototypeOf(explorer.logs).listing.call(explorer.logs, explorer.spec());
+    assert.deepEqual(ui.toolArgs, [{ limit: 500, offset: 0 }]);
+    assert.equal(ui.commands.has("wpilog-mcp.explorer.showAllSources"), false);
   });
 });
 
@@ -327,8 +363,8 @@ test("experimental store menus start disabled and automatic discovery stays sile
   });
 });
 
-test("disabled store commands cannot bypass opt-in, including the all-sources toggle", async () => {
-  for (const name of ["setupDataStore", "manageDataStore", "syncDataStore", "pauseDataStore", "showAllSources"]) {
+test("disabled store commands cannot bypass opt-in", async () => {
+  for (const name of ["setupDataStore", "manageDataStore", "syncDataStore", "pauseDataStore"]) {
     await fixture(async (explorer) => {
       ui.featureEnabled = false;
       await ui.commands.get(`wpilog-mcp.explorer.${name}`)!();
@@ -338,7 +374,7 @@ test("disabled store commands cannot bypass opt-in, including the all-sources to
       assert.equal(ui.dialogs, 0); assert.deepEqual(ui.temporaryRoots, []); assert.deepEqual(ui.requests, []);
       assert.ok(ui.controls.every(call => call.method === "GET"));
       await Object.getPrototypeOf(explorer.logs).listing.call(explorer.logs, explorer.spec());
-      assert.deepEqual(ui.toolArgs, [{ limit: 500, offset: 0 }], "Disabled all-sources command must not toggle the listing");
+      assert.deepEqual(ui.toolArgs, [{ limit: 500, offset: 0 }], "Disabled commands must not change the listing");
     });
   }
 });

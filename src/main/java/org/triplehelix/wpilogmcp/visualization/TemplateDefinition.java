@@ -33,8 +33,11 @@ public final class TemplateDefinition {
   public static long revision(JsonObject value, String key, boolean zero) {
     var field = value.get(key);
     if (field == null || !field.isJsonPrimitive() || !field.getAsJsonPrimitive().isNumber()) fail(key + " must be an integer");
-    double n = field.getAsDouble(); if (!Double.isFinite(n) || n < (zero ? 0 : 1) || n > 9_007_199_254_740_991L || n != Math.rint(n)) fail(key + " must be a safe integer");
-    return (long) n;
+    final long exact;
+    try { exact = field.getAsBigDecimal().longValueExact(); }
+    catch (ArithmeticException | NumberFormatException invalid) { throw new IllegalArgumentException("INVALID_TEMPLATE: " + key + " must be an exact safe integer", invalid); }
+    if (exact < (zero ? 0 : 1) || exact > 9_007_199_254_740_991L) fail(key + " must be a safe integer");
+    return exact;
   }
   public static String canonical(JsonObject object) throws IOException {
     return new JsonCanonicalizer(VisualizationContracts.parse(object.toString()).toString()).getEncodedString();
@@ -46,6 +49,11 @@ public final class TemplateDefinition {
   public static JsonObject export(JsonObject template) throws IOException {
     var out = new JsonObject(); out.addProperty("format", FORMAT); out.addProperty("schema_version", 1); out.add("template", validate(template));
     out.addProperty("content_sha256", digest(out)); return out;
+  }
+  /** The portable text is nested inside HTTP/MCP JSON; admission must count that extra escaping. */
+  public static JsonObject exportReply(JsonObject template) throws IOException {
+    var envelope = export(template); var out = new JsonObject(); out.addProperty("envelope_json", envelope.toString());
+    for (var key : List.of("format", "schema_version", "content_sha256")) out.add(key, envelope.get(key)); return out;
   }
   public static JsonObject imported(String raw) throws IOException {
     var envelope = VisualizationContracts.parse(raw);
@@ -69,11 +77,13 @@ public final class TemplateDefinition {
     var fields = switch (origin) {
       case "bundled" -> Set.of("origin", "template_id", "revision");
       case "store" -> Set.of("origin", "store_id", "template_id", "revision");
+      case "library" -> Set.of("origin", "server_instance_id", "library_id", "template_id", "revision");
       default -> throw new IllegalArgumentException("INVALID_TEMPLATE: unknown reference origin");
     };
     if (!ref.keySet().equals(fields)) fail("unknown or missing template reference fields");
     UUID.fromString(text(ref, "template_id", 36, false)); revision(ref, "revision", false);
     if (origin.equals("store")) UUID.fromString(text(ref, "store_id", 36, false));
+    if (origin.equals("library")) { LibraryReferences.uuid(ref, "server_instance_id"); LibraryReferences.uuid(ref, "library_id"); }
     return ref.deepCopy();
   }
   public static JsonObject catalog(String store, JsonObject template) {

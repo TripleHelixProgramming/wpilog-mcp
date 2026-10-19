@@ -3,6 +3,8 @@ import * as assert from "node:assert/strict";
 import { InventoryClient, InventoryHandle } from "../visualization/inventoryClient";
 import { ByteBudget } from "../visualization/byteBudget";
 import { McpClient } from "../mcpClient";
+import * as http from "node:http";
+import { AddressInfo } from "node:net";
 const source = { kind: "session", session_id: "s" };
 function fixture() {
   const calls: { route: string; body: any; options: any }[] = [], budget = new ByteBudget();
@@ -44,6 +46,40 @@ test("cancelled late open closes its new handle in the original session", async 
   f.setReply(route => { if (route === "/source/describe") abort.abort(); return route === "/capabilities" ? { recording_inventory_paging: true } : f.summary; });
   await assert.rejects(f.client.open(source, abort.signal), /cancelled/); assert.equal(f.calls.at(-1)?.route, "/source/inventory/close");
   assert.equal(f.calls.at(-1)?.options.session, "session1"); assert.equal(f.budget.reserved, 0);
+});
+test("cancelling an inventory open after server admission still receives and closes the opaque handle", async t => {
+  const f = fixture(), held = new Set<string>(), closed: string[] = [];
+  let admitted!: () => void, deliver!: () => void;
+  const entered = new Promise<void>(resolve => admitted = resolve);
+  const server = http.createServer((request, response) => {
+    let body = ""; request.on("data", chunk => body += chunk); request.on("end", () => {
+      const value = body ? JSON.parse(body) : {};
+      if (request.url === "/mcp") {
+        if (value.method === "initialize") response.setHeader("Mcp-Session-Id", "owner");
+        response.end(JSON.stringify({ jsonrpc: "2.0", id: value.id, result: {} }));
+      } else if (request.url === "/visualizations/v1/capabilities") response.end('{"recording_inventory_paging":true}');
+      else if (request.url === "/visualizations/v1/source/describe") {
+        held.add(f.summary.inventory_id); deliver = () => response.end(JSON.stringify(f.summary)); admitted();
+      } else if (request.url === "/visualizations/v1/source/inventory/close") {
+        assert.equal(request.headers["mcp-session-id"], "owner"); closed.push(value.inventory_id); held.delete(value.inventory_id); response.end("{}");
+      } else { response.statusCode = 404; response.end("{}"); }
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const mcp = new McpClient(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`, "inventory-cancellation");
+  t.after(async () => { await mcp.dispose(); server.closeAllConnections(); server.close(); });
+  const budget = new ByteBudget(), client = new InventoryClient(async () => mcp, budget), abort = new AbortController();
+  const opened = client.open(source, abort.signal); void opened.catch(() => {});
+  await entered; assert.equal(held.size, 1); abort.abort(); deliver();
+  await assert.rejects(opened, /cancel|abort/i);
+  assert.deepEqual(closed, [f.summary.inventory_id], "logical cancellation must reclaim an already-created server handle");
+  assert.equal(held.size, 0); assert.equal(budget.reserved, 0);
+});
+test("cancellation after capabilities prevents a new inventory admission", async () => {
+  const f = fixture(), abort = new AbortController();
+  f.setReply(() => { abort.abort(); return { recording_inventory_paging: true }; });
+  await assert.rejects(f.client.open(source, abort.signal), /cancel|abort/i);
+  assert.deepEqual(f.calls.map(c => c.route), ["/capabilities"]); assert.equal(f.budget.reserved, 0);
 });
 test("inventory list validates rows, cursor and exact sample counts before use", async () => {
   const f = fixture(), h = await f.client.open(source, new AbortController().signal);

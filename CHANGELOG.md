@@ -7,9 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-**Notable changes:** Claude Code registration is now at user scope, shared across projects. The extension retires its old project `.mcp.json` entries where it can safely do so; tracked and custom entries need the migration steps in the standalone guide.
-
 ### Changed (breaking)
+
+- MCP log discovery now requires an explicit source when multiple stores or directories are
+  configured, instead of preferring an import destination or blending roots. `list_source_scopes`
+  returns bounded choices, including unavailable roots. Scoped relative reads and visualization
+  API 2 references retain the selected server/store/directory; equal hashes in another copy
+  cannot silently substitute for it. API 1 rejects qualified references and views. Mirror
+  synchronization changes remain later checkpoints. `list_available_logs` no longer returns
+  `source_sync`, `source_files`, `excluded_directories` or `preferred_store_id`; its legacy `view`
+  parameter is validated but has no effect.
+
+**Notable changes:** Claude Code registration is now at user scope, shared across projects. The extension retires its old project `.mcp.json` entries where it can safely do so; tracked and custom entries need the migration steps in the standalone guide.
 
 - **Extension registration:** every window and agent now uses the standalone install's shared `http` server instead of per-client stdio servers. Directory, team and TBA-key changes replace a session lease without restarting it. Claude Code uses a user-scope bridge; permanent configuration belongs in `servers.yaml`, with optional project YAML for terminal directory leases. The development builds' `useStandaloneServer` and `idleExitMinutes` settings are retired; `maxHeap` still reaches the launcher through `WPILOG_MAX_HEAP`.
 - **Project `.mcp.json` retirement:** on project open, the extension removes only recognized old entries from untracked or ignored files, retaining other contents. Tracked, custom and unrecognized entries are left with a note. Development builds' `vscode-default` daemon is stopped before its private settings are removed, keeping them for retry if the stop fails; previously old project entries kept launching separate servers.
@@ -17,7 +26,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Extension: **Open Source Overview** works on the pit's files, reading only this laptop's: a file the pit pulled or was given opens from the mirror's copy, and the pit's capture, which the mirror does not copy, opens this laptop's own recording of that session from the pit's gateway (the same robot, the longest overlap). Before the mirror has copied a file the overview says so, with the mirror's progress and its Mirror Status and Pin Session actions. Previously the overview refused every pit file. Review of the unreleased overview corrected rollover selection and cross-connection lookups: captured listings now name `session.open_capture`, the overview opens that current member rather than sorting filenames, and a pit document refuses if its configured connection differs or changes during lookup.
+- Visualization API 2 and native saves now use a server-owned library for saved views and
+  templates. Previously saving a layout required a writable log store or created one; ordinary
+  folders and mirrors now need only durable server state. Pinned owner references, bounded
+  paging, atomic retry receipts and copy-only legacy migration preserve configurations and
+  originals. Working checkpoints recover after a library commit, and saved ordinary-file
+  locators survive draft expiry. API 1 retains its legacy store behavior.
+
+- The unreleased visualization preview now draws fixed/full recording history from bounded server min/max/mean buckets across every admitted member. Previously it displayed only the most recently delivered 4,096 points, losing earlier extrema in dense intervals. HTTP and MCP share original-sample counts, chronological ordering, prefix evidence and explicit work/byte refusals. Review of the unreleased reducer corrected numeric projections: absent array elements are counted gaps, enums use their stored numbers, and signed/unsigned integers are range-checked before conversion, including enum fields. Historical panels use the window's reserved budget, coalesce late-sample refreshes, and retain their buckets across follow frames and presentation edits; exact statistics remain independent.
+
+
+- The read-only NT4 gateway now publishes the context collected by the server, including JVM/Linux statistics, followed text and camera settings, with their original robot-clock timestamps and metadata. Newly committed kernel, journal and system-file lines use the same server-side clock conversion as system-log search before publication; unknown event times remain explicitly unmapped. Remote recordings preserve provider provenance. Previously only robot-published topics reached gateway clients; full pulled history remains in the store.
+
+- The unreleased recording preview now separates acquisition health from quiet signals and finalized history, through one bounded HTTP/MCP metadata read. A completed follow can resume the same anchored recording without duplicating buffers or switching to a new boot. Server-session recovery retries window registration and reattachment, rejects stale replies and preserves pause intent; previously a failed continuation left an open view stranded and Resume could falsely report “following.” Cancelled inventory opens now receive and close their admitted handle, preventing hide/reveal from consuming the window's inventory slots. Capture receipt-to-publication and host/render acknowledgement timing are now observable within their own clock domains, without claiming end-to-end latency.
+
+- Extension: Source Overview now reads directly from its selected local or remote MCP server,
+  with separate collapsed connection/scope roots and persistent owner verification. This replaces
+  the unreleased automatic translation from a pit source to a laptop mirror or local capture.
+  API 2 data, follows, charts and library saves retain the chosen server/scope; API 1 and local
+  administration retain their local gate. Remote-only browsing needs no local daemon, Java or
+  recordings. Mirror/live services now require explicit enablement.
+
 - A REV log in a store pairs with the robot's own log, on the pit and on a laptop's mirror: when the two were each measured against one capture, the REV tools, `list_available_logs`, REV reads and session reads align them by combining the two recorded offsets, drift included, and nothing is correlated again. `sync_method` is `COMBINED`; `sync_status` adds `sync.combined` with the reference, each measurement and `max_error_ms` (the sum of their bounds), and the confidence is the lower of the two. Previously a REV log paired only with the file it was measured against, so a laptop, which holds no captures, could not place REV data on the robot log's clock, and a REV log the pit measured while its capture was still recording paired with nothing, even on the pit.
 - A pull or import measured against a capture records the capture's recording, and each clock record entry names its capture's recording, so the reference is still known after the capture closes and in a copy without it. An offset recorded by 0.10.0-dev4 or earlier against a capture still recording names no recording: it is read as the session's recording only when the session shows exactly one, and otherwise the file stays unsynchronized with that reason.
 - `list_available_logs` gives each REV companion its `sync_method`.
@@ -162,6 +191,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `time_correlate` no longer treats real tiny signals as constant or assigns correlations to
+  large constants whose computed mean rounds away from the value. Constancy uses a four-ulp
+  range rule, and scaled centered products prevent underflow or overflow in correlation,
+  lag search and autocorrelation-adjusted significance. Since v0.9.1, large finite signals
+  could report zero correlation and p = 1, or lose autocorrelation and effective sample size.
+
+- Visualization: a just-finalized capture can open as recorded content while its closed writer
+  index remains cached. Previously admission treated the index's type as proof that the writer
+  was still active and refused until eviction. Active prefixes still refuse the single-file route.
+
+- Recovering a lost visualization save response now reconciles the original receipt with the
+  current working view. Previously, retrying after a newer edit could restore the older layout
+  and revision, falsely clear the editor's dirty state, and make the next edit conflict. Recovery
+  retains the original request UUID, preserves newer edits and their native Undo/Redo, and keeps
+  the retry intent if reading the current state fails.
+
+- Source selection: raw `/read/v1/follows` now rejects qualified references before admission; previously it discarded the selected server and scope and could read another copy. Qualified recording views retain their owner through view-bound follows and cached retries.
+- Source discovery now reports an unreadable configured root as unavailable while allowing explicit reads from healthy sources. Previously one directory permission failure aborted source enumeration and unrelated selected listings with an internal error; the failed choice now remains visible instead of becoming an implicit default.
+- Power analysis now assumes the roboRIO 1 output-disable threshold of 6.3 V when neither an override nor a recorded setting is available, and states that the controller is unknown. Previously it mislabeled the 6.8 V rail-drop stage as that threshold and said the roboRIO 2 default was 6.3 V; its configurable default is 6.75 V. Recorded settings and logged brownout flags still take precedence over assumptions.
+- Lag correlation now uses the same centered covariance and variance as the main correlation calculation. Previously large constant signal offsets could erase the measured variance, distort the coefficient or falsely report that no lag had enough overlapping samples.
+- The unreleased recording preview now returns explained empty results for relative statistics, histogram, scatter and reduction requests before the first sample, then refreshes when data arrives. Previously absent measured bounds generated invalid times and left live analysis blocked until Retry. Active chart requests also treat an explicit null `last_seconds` like an omitted argument, preserving the fixed interval and reported inputs instead of returning `JsonNull`.
+
 - Statistics: a valid numeric selection with no finite samples in its time scope returned an invalid-request error. It now returns `no_match`, a zero sample count, the scope and quality evidence, and a hint, without fabricated statistics. The unreleased live statistics preview stays eligible for refresh when a later prefix has samples.
 
 - Extension: closing or reloading a window did not wait for its server sessions to end, so the ending could be cut off and the server kept the window's views attached, and its directory lease registered, for the hour a session lives; a reopened window was refused its own views. The window now waits up to three seconds for its sessions to end, after refusing new requests.
@@ -212,7 +263,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Console following uses an integer one-second interval accepted by BusyBox and GNU tail, and reports that interval. The former fractional interval made roboRIO BusyBox tail exit immediately. Robot facts now identify each provider utility separately, and the synthetic roboRIO uses BusyBox tail.
 
 - Store Move imports across filesystems now force and verify the copied payload and commit its manifest before deleting the original; previously Java could delete the source before verification and restore corrupted bytes after a bad copy. A failed source deletion retains the successful import and reports the remaining original.
-- Preferred-store listings now name excluded configured and leased directories in `excluded_directories`, with their origins and a `view: all` hint; previously the default view omitted those directories without saying they existed.
+- Explorer shows configured and leased sources under connection and scope roots. Folder synchronization now reads local-ingestion status and receipts under the local connection; the removed listing fields had hidden the group. The ineffective Toggle All Source Logs command is removed.
 
 - A REV file imported before its WPILOG is now reconsidered when the store gains eligible WPILOG data. Previously it remained unassigned until a manual assignment. The existing unique strong correlation and 250 ms gate still decide placement; bounded attempts retain original provenance and avoid repeated idle work.
 
@@ -327,6 +378,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Server-library regressions cover quota accounting, migration, source revocation, interrupted
+  checkpoints and shared HTTP/MCP pressure. The extension's real-server client test now pins
+  and checks the current project version; filename sorting previously selected an older JAR
+  when several builds were present, hiding stale expectations about combined source listings.
+
+- Explicit-source regressions cover ambiguous discovery, equal-content master/mirror copies,
+  selected directory reads, grant revocation on cached inventory pages, shared hash reuse,
+  qualified-view recovery and API-version refusal. Isolated mutation checks exercise those
+  boundaries without changing the reviewed working tree.
+
 - The conformance sweep checks the page limits nested in results (a chart series' points, a session's costs), not only those at the top; a paged inventory's caps, also named `limits`, are told apart by their shape. A source check fails on a case conversion that names no locale. The timeline's brownout events are built from the crossings `power_analysis` and `predict_battery_health` count, one hysteresis rule instead of two, and pinned by events worked out by hand.
 - Native visualization lifecycle checks now wait for renderer acknowledgement and assert the Undo/Redo callback and server state; the earlier fixture raced editor switches and could report intermittent Undo timeouts. Callback traces and repeated switches make the target observable.
 
@@ -382,6 +443,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Blocked-store checks separate queue independence from real disk throughput, and failure/reconnect tests preserve callback traces and ordinary-test XML. Previously transient full-suite socket failures lost their evidence; unresolved occurrences remain documented without widened timeouts.
 
 ### Documentation
+
+- Record the agreed source and mirror design and its implementation checkpoints: direct remote Explorer access, explicit source selection, separate server visualization libraries, and mirror preservation with provisional peer exchange. Mark the conflicting older routing and retention policies as superseded design; runtime behavior is unchanged.
 
 - The ideas guide now records the remaining review hardening by subject: move history and durability, socket admission and receipt timing, client lifecycle and response bounds, Windows token permissions, CSV policy, CI pins and tool dependency ownership. These open decisions previously lived only in the review.
 

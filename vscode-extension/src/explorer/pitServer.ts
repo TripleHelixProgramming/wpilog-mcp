@@ -50,7 +50,7 @@ export function peerUrl(value: string): string {
 export function mirrorRequest(pitUrl: string | undefined, settings: MirrorSettings, storage: string,
   pathApi: path.PlatformPath = path): MirrorRequest | undefined {
   const endpoint = pitEndpoint(pitUrl);
-  if (!endpoint || settings.enabled === false) return undefined;
+  if (!endpoint || settings.enabled !== true) return undefined;
   const folder = settings.folder?.trim() || pathApi.join(storage, "mirror");
   if (!pathApi.isAbsolute(folder)) throw new Error("Mirror folder must be an absolute path.");
   const days = settings.days ?? 14, max = settings.maxSizeGb ?? 20, interval = settings.intervalSec ?? 30;
@@ -74,7 +74,7 @@ export interface LiveRequest { robot: { host: string; port: number }; store: str
 export function liveRequest(pitUrl: string | undefined, settings: LiveSettings, storage: string,
   pathApi: path.PlatformPath = path): LiveRequest | undefined {
   const endpoint = pitEndpoint(pitUrl);
-  if (!endpoint || settings.enabled === false) return undefined;
+  if (!endpoint || settings.enabled !== true) return undefined;
   const folder = settings.folder?.trim() || pathApi.join(storage, "live");
   if (!pathApi.isAbsolute(folder)) throw new Error("Live folder must be an absolute path.");
   const port = settings.gatewayPort ?? 5810;

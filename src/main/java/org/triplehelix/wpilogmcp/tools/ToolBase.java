@@ -161,6 +161,8 @@ public abstract class ToolBase implements McpServer.Tool {
     JsonElement result;
     try {
       return ResultContract.enforce(executeInternal(arguments));
+    } catch (org.triplehelix.wpilogmcp.read.server.SourceScopes.Failure e) {
+      result = e.result();
     } catch (IllegalArgumentException e) {
       // Parameter validation errors - return user-friendly error
       result = errorResult(e.getMessage());

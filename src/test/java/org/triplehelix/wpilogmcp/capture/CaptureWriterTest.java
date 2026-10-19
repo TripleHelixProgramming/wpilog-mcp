@@ -34,6 +34,30 @@ class CaptureWriterTest {
     writer.connected(URI.create("ws://127.0.0.1:5810/nt/test"), "networktables.first.wpi.edu");
     writer.timeSync(serverUs, receivedUs); writer.announce(TOPIC);
   }
+  @Test void publicationTimingUsesReceiptAndCompletionClockNotTheRobotSampleTimestamp() throws Exception {
+    var loop = new ManualScheduler(); var times = new ArrayList<Long>();
+    var measurements = new ArrayList<CaptureIndex.PublicationTiming>();
+    var placement = new CaptureWriter.Observer() {
+      public Path create(String address, Instant startedAt) { return directory.resolve("timing.wpilog"); }
+      public void value(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry, ValueFrame frame, WpilogOutput.Written written) {
+        loop.elapse(7_000);
+      }
+      public void publication(CaptureWriter.Session session, long receivedUs, long publishedUs) {
+        times.add(receivedUs); times.add(publishedUs);
+      }
+    };
+    var manager = org.triplehelix.wpilogmcp.log.LogManager.getInstance();
+    var index = new CaptureIndex(placement, manager, 10_000, () -> null, measurements::add);
+    var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index);
+    try {
+      connect(writer, 90_000_000, 0); loop.elapse(3_000);
+      writer.value(TOPIC, new ValueFrame(17, 1, 2, 42L), 1_000);
+      assertEquals(List.of(1_000L, 10_000L), times, "9 ms includes the 2 ms wait and 7 ms publication; the sample remains 1 us");
+      assertEquals(1, measurements.size()); assertEquals(9.0, measurements.get(0).receiveToPublicationMs());
+      assertEquals(WALL.instant().toString(), measurements.get(0).recordingStartedAt());
+      assertFalse(measurements.get(0).writerIdentity().isBlank());
+    } finally { writer.close(); manager.release(directory); }
+  }
 
   @Test void specificationBytesAndOffsetsIncludeNoNativeWriter() throws Exception {
     var path = directory.resolve("bytes.wpilog");

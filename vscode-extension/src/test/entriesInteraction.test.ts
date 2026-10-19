@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import type * as vscode from "vscode";
 import type { ServerManager } from "../serverManager";
+import { LocalControlError } from "../mcpClient";
 import { remoteLogUri } from "../explorer/pitServer";
 
 const disposable = () => ({ dispose() {} });
@@ -11,6 +12,7 @@ const commands = new Map<string, (...args: any[]) => any>();
 const calls: string[] = [];
 const views = new Map<string, unknown>();
 const host = {
+  TabInputCustom: class { constructor(public uri: any, public viewType: string) {} },
   TreeItem: class {
     constructor(public label: string, public collapsibleState: number) {}
   },
@@ -34,6 +36,7 @@ const host = {
   },
   window: {
     tabGroups: { activeTabGroup: {}, onDidChangeTabs: disposable, onDidChangeTabGroups: disposable },
+    createTreeView: () => ({ dispose() {}, onDidCollapseElement: disposable }),
     registerTreeDataProvider: disposable,
     registerWebviewViewProvider(id: string, provider: unknown) { views.set(id, provider); return disposable(); },
     registerCustomEditorProvider: disposable,
@@ -53,7 +56,7 @@ try {
 function fixture(savedGrouping?: unknown) {
   dialogs = 0; commands.clear(); calls.length = 0; views.clear();
   const saved = new Map<string, unknown>([["wpilog-mcp.entryGrouping", savedGrouping]]);
-  const context = { globalStorageUri: { fsPath: "unused-entries-fixture" }, globalState: { get: () => undefined }, extensionUri: {}, workspaceState: {
+  const context = { extension: { packageJSON: { version: "test" } }, globalStorageUri: { fsPath: "unused-entries-fixture" }, globalState: { get: () => undefined }, extensionUri: {}, workspaceState: {
     get: (key: string) => saved.get(key),
     update: async (key: string, value: unknown) => { saved.set(key, value); },
   } };
@@ -62,51 +65,96 @@ function fixture(savedGrouping?: unknown) {
     {} as ServerManager, () => ({ name: "http", url: "http://localhost:2363/mcp" }) as any);
 }
 
-function pitUri(url: string): vscode.Uri {
-  const link = remoteLogUri(url, "/shared/capture.wpilog");
-  return { scheme: "wpilog-pit", query: decodeURIComponent(link.slice(link.indexOf("?") + 1)) } as vscode.Uri;
-}
-for (const configured of ["http://pit-b:2363/mcp", "http://pit-a:2363/other/mcp"])
-  test(`pit overview refuses a document from another configured connection: ${configured}`, async () => {
-    const explorer = fixture(), requested: string[] = [];
-    (explorer as any).pitSpec = () => ({ kind: "pit", name: "pit", url: configured });
-    explorer.logs.listing = async spec => { requested.push((spec as { url?: string }).url ?? "local"); return { logs: [] }; };
+test("Logs roots are collapsed choices and do not start either server", async () => {
+  const explorer = fixture();
+  try {
+    explorer.connections.configure([{ id: "local", label: "Laptop", kind: "local" }, { id: "pit", label: "Pit", kind: "remote", url: "http://pit/mcp" }]);
+    explorer.clientFor = async () => assert.fail("Collapsed root connected");
+    const roots = await explorer.logs.getChildren();
+    assert.deepEqual(roots.map(item => item.label), ["Laptop", "Pit"]);
+    assert.ok(roots.every(item => item.collapsibleState === host.TreeItemCollapsibleState.Collapsed));
+  } finally { explorer.dispose(); }
+});
+test("expanding a selected connection lists all of its scopes without connecting another source", async () => {
+  const explorer = fixture();
+  try {
+    explorer.connections.configure([{ id: "pit", label: "Pit", kind: "remote", url: "http://pit/mcp" }, { id: "offline", label: "Offline", kind: "remote", url: "http://offline/mcp" }]);
+    const requested: string[] = [];
+    (explorer.connections as any).context = (id: string) => { requested.push(id); return { definition: { kind: "remote" }, facts: { server_instance_id: "owner" },
+      scopes: async () => [{ scope_id: "mirror", path: "/mirror", kind: "mirror", available: false, reason: "Unavailable" }, { scope_id: "logs", path: "/logs", kind: "directory", available: true }] }; };
+    const roots = await explorer.logs.getChildren(), scopes = await explorer.logs.getChildren(roots[0]);
+    assert.deepEqual(requested, ["pit"]); assert.deepEqual(scopes.map(item => item.spec.scopeId), ["mirror", "logs"]);
+    assert.ok(scopes.every(item => item.collapsibleState === host.TreeItemCollapsibleState.Collapsed));
+    assert.equal(scopes[0].description, "Unavailable");
+  } finally { explorer.dispose(); }
+});
+
+test("Folder synchronization reads local ingestion only and preserves scope roots", async () => {
+  const explorer = fixture();
+  const local = { id: "local", label: "Laptop", kind: "local" } as const;
+  const remote = { id: "pit", label: "Pit", kind: "remote", url: "http://pit/mcp" } as const;
+  const requests: string[] = [];
+  try {
+    explorer.connections.configure([local, remote]);
+    (explorer.connections as any).context = (id: string) => ({ definition: id === "local" ? local : remote,
+      facts: { server_instance_id: "owner" }, scopes: async () => [{ scope_id: "logs", path: "/logs", kind: "directory", available: true }],
+      client: async () => ({ requestLocalControl: async (route: string) => {
+        assert.equal(id, "local", "Remote browsing must never call the local-ingestion route"); requests.push(route);
+        return route.includes("/files?") ? { files: [{ path: "/logs/waiting.wpilog", state: "waiting", reason: "Still growing" }], offset: 0, limit: 100, total: 1 }
+          : { policy: { revision: 1, store: "/store", store_id: "store", enabled: true, sources: [] }, pending: 1 };
+      } }),
+    });
+    const roots = await explorer.logs.getChildren();
+    const remoteChildren = await explorer.logs.getChildren(roots[1]);
+    assert.deepEqual(remoteChildren.map(item => item.spec.scopeId), ["logs"]);
+    assert.deepEqual(requests, []);
+    const children = await explorer.logs.getChildren(roots[0]);
+    assert.equal(children[0].spec.scopeId, "logs");
+    const sync = children.find(item => item.node.kind === "sourceSync");
+    assert.ok(sync, "Local ingestion must produce the Folder synchronization group");
+    assert.match(sync.tooltip as string, /\/store\nEnabled/);
+    assert.deepEqual((await explorer.logs.getChildren(sync)).map(item => item.label), ["waiting.wpilog · waiting"]);
+    assert.deepEqual(requests, ["/store/local-ingestion", "/store/local-ingestion/files?offset=0&limit=100"]);
+    explorer.logs.setFilter("growing");
+    assert.ok((await explorer.logs.getChildren(roots[0])).some(item => item.node.kind === "sourceSync"));
+  } finally { explorer.dispose(); }
+});
+
+test("ingestion errors stay visible without hiding healthy scopes and cancelled reads stay hidden", async () => {
+  for (const mode of ["no-policy", "disabled", "status-error", "files-error", "cancelled"]) {
+    const explorer = fixture(); const definition = { id: "local", label: "Laptop", kind: "local" } as const;
+    let fileReads = 0;
     try {
-      const result = await explorer.pitOverview(pitUri("http://pit-a:2363/mcp"));
-      assert.deepEqual(requested, [], "reject the origin before reading another server's catalog");
-      assert.ok("message" in result); assert.match(result.message, /different pit server|changed/i);
+      explorer.connections.configure([definition]);
+      (explorer.connections as any).context = () => ({ definition, facts: { server_instance_id: "owner" },
+        scopes: async () => [{ scope_id: "logs", path: "/logs", kind: "directory", available: true }],
+        client: async () => ({ requestLocalControl: async (route: string) => {
+          if (route.includes("/files?")) { fileReads++; throw new Error("Receipt read failed"); }
+          if (mode === "disabled") throw new LocalControlError("Disabled", 409, "FEATURE_DISABLED");
+          if (mode === "status-error") throw new Error("Status read failed");
+          if (mode === "cancelled") explorer.logs.refresh();
+          return { policy: mode === "no-policy" ? null : { revision: 1, store: "/store", store_id: "store", enabled: false, sources: [] } };
+        } }),
+      });
+      const root = (await explorer.logs.getChildren())[0], nodes = await explorer.logs.getChildren(root);
+      if (mode === "cancelled") { assert.deepEqual(nodes, []); assert.equal(fileReads, 0); continue; }
+      assert.equal(nodes[0].spec.scopeId, "logs");
+      assert.equal(nodes.length, mode.endsWith("error") ? 2 : 1);
+      if (mode === "status-error") assert.match(nodes[1].label as string, /Status read failed/);
+      if (mode === "files-error") {
+        assert.equal(nodes[1].node.kind, "sourceSync");
+        assert.match((await explorer.logs.getChildren(nodes[1]))[0].label as string, /Receipt read failed/);
+        assert.equal(nodes[1].tooltip, "/store\nPaused");
+      }
+      assert.equal(fileReads, mode === "files-error" ? 1 : 0);
     } finally { explorer.dispose(); }
-  });
-test("pit overview refuses a connection changed while its catalog request was in flight", async () => {
-  const explorer = fixture(), requested: string[] = []; let url = "http://pit-a:2363/mcp";
-  (explorer as any).pitSpec = () => ({ kind: "pit", name: "pit", url });
-  explorer.logs.listing = async spec => { requested.push((spec as { url?: string }).url ?? "local"); url = "http://pit-b:2363/mcp"; return { logs: [] }; };
-  try {
-    const result = await explorer.pitOverview(pitUri("http://pit-a:2363/mcp"));
-    assert.deepEqual(requested, ["http://pit-a:2363/mcp"], "do not resolve local data after the connection changes");
-    assert.ok("message" in result); assert.match(result.message, /different pit server|changed/i);
-  } finally { explorer.dispose(); }
+  }
 });
-test("pit overview rechecks the connection after reading the local catalog", async () => {
-  const explorer = fixture(); let url = "http://pit-a:2363/mcp", calls = 0;
-  (explorer as any).pitSpec = () => ({ kind: "pit", name: "pit", url });
-  explorer.logs.listing = async () => { if (++calls === 2) url = "http://pit-b:2363/mcp"; return { logs: [] }; };
-  try {
-    const result = await explorer.pitOverview(pitUri("http://pit-a:2363/mcp"));
-    assert.equal(calls, 2); assert.ok("message" in result); assert.match(result.message, /different pit server|changed/i);
-  } finally { explorer.dispose(); }
-});
-test("pit overview accepts equivalent connection URLs and resolves that origin's mirror copy", async () => {
-  const explorer = fixture(), requested: string[] = [];
-  (explorer as any).pitSpec = () => ({ kind: "pit", name: "pit", url: "http://PIT-A:80/mcp/" });
-  const session = { id: "same", path: "/shared", started_at: "", ended_at: "", start_basis: "log" };
-  const remote = { path: "/shared/capture.wpilog", filename: "capture.wpilog", friendly_name: "source", session };
-  const copy = { ...remote, path: "/mirror/capture.wpilog", session: { ...session, path: "/mirror", origin: "http://pit-a" } };
-  explorer.logs.listing = async spec => { requested.push(spec!.kind); return { logs: [spec!.kind === "pit" ? remote : copy] }; };
-  try {
-    assert.deepEqual(await explorer.pitOverview(pitUri("http://pit-a/mcp")), { path: copy.path });
-    assert.equal(requested.length, 2);
-  } finally { explorer.dispose(); }
+
+test("the obsolete all-source toggle is not registered", () => {
+  const explorer = fixture();
+  try { assert.equal(commands.has("wpilog-mcp.explorer.showAllSources"), false); }
+  finally { explorer.dispose(); }
 });
 
 test("Entries filter focuses an inline field without opening Quick Input", async () => {
@@ -245,7 +293,9 @@ test("a hidden legacy editor cannot reclaim Entries or receive a later Entries c
 
 test("returning from the legacy editor restores the preview Entries target without resetting its filter", () => {
   const explorer = fixture();
-  const route = (explorer.preview as any).host.entries;
+  const selected = { definition: { id: "local", kind: "local" }, scopeId: "scope" };
+  (host.window.tabGroups.activeTabGroup as any).activeTab = { input: new host.TabInputCustom({ scheme: "wpilog-view", query: "connection=local&scope=scope" }, "wpilog-mcp.visualization") };
+  const route = (file: string, target: string) => (explorer.preview as any).host.entries(selected, file, target);
   try {
     route("/a.wpilog", "A · Plot");
     explorer.entries.setActive({ path: "/b.wpilog", spec: { name: "http" } as any });
@@ -255,5 +305,16 @@ test("returning from the legacy editor restores the preview Entries target witho
     explorer.entries.setFilter("Drive");
     route("/a.wpilog", "A · Plot");
     assert.equal(explorer.entries.filterText, "Drive", "repeated focus in the same target is inert");
+  } finally { explorer.dispose(); }
+});
+
+test("the ordinary editor retains the selected remote listing's follow availability", async () => {
+  const explorer = fixture(), messages: any[] = [];
+  const spec = { kind: "pit", name: "connection:pit:scope", url: "http://pit/mcp", connectionId: "pit", scopeId: "scope", owner: "owner" } as const;
+  explorer.logs.listing = async selected => { assert.equal(selected, spec); return { logs: [{ path: "/remote/current.wpilog", filename: "current.wpilog", friendly_name: "Current", session: { id: "s", path: "/remote", started_at: "", ended_at: "", start_basis: "pit_clock", open: true, open_capture: "/remote/current.wpilog" } }] }; };
+  explorer.clientFor = async selected => { assert.equal(selected, spec); return { callTool: async () => ({ entries: [], entry_count: 0 }) } as any; };
+  try {
+    await (explorer.editor as any).load({ log: { path: "/remote/current.wpilog", spec }, panel: { active: false, webview: { postMessage: async (message: any) => messages.push(message) } } });
+    assert.equal(messages.find(message => message.type === "log")?.live, true);
   } finally { explorer.dispose(); }
 });

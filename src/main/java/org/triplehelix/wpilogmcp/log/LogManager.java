@@ -94,6 +94,9 @@ public class LogManager {
       new org.triplehelix.wpilogmcp.read.server.ManagedLogAccess(this);
 
   public org.triplehelix.wpilogmcp.read.server.ManagedLogAccess readAccess() { return readAccess; }
+  private final org.triplehelix.wpilogmcp.read.server.SourceScopes sourceScopes =
+      new org.triplehelix.wpilogmcp.read.server.SourceScopes(this::getAllowedDirectories);
+  public org.triplehelix.wpilogmcp.read.server.SourceScopes sourceScopes() { return sourceScopes; }
 
   // Disk cache (initialized in constructor)
   private final DiskCache diskCache;

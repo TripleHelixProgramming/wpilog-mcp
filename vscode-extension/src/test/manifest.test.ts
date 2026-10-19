@@ -20,7 +20,8 @@ const experimentalGuide = fs.readFileSync(
 
 test("the experimental gateway guide stays outside the main README with a relative link", () => {
   const guide = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
-  assert.doesNotMatch(guide, /pit[- ]server|wpilog-mcp\.pitServerUrl/i);
+  assert.doesNotMatch(guide, /nt4Gateway|gatewayPort|networktables\.first\.wpi\.edu/i);
+  assert.match(guide, /Choosing local and remote sources/);
   assert.ok(experimentalGuide.includes("has limited controlled-shop evidence"));
   assert.ok(experimentalGuide.includes("[NT4 gateway configuration](STANDALONE.md#nt4-gateway-for-dashboards)"));
   assert.doesNotMatch(guide, /https:\/\/github\.com\/TripleHelixProgramming\/wpilog-mcp\/blob\/main\//);
@@ -64,6 +65,7 @@ test("the settings appear in a fixed order: where the logs are, then the team an
     "wpilog-mcp.additionalLogDirectories",
     "wpilog-mcp.teamNumber",
     "wpilog-mcp.tbaApiKey",
+    "wpilog-mcp.connections",
     "wpilog-mcp.pitServerUrl",
     "wpilog-mcp.mirror.enabled",
     "wpilog-mcp.mirror.folder",
@@ -139,7 +141,6 @@ test("the commands are the ones the README names, each under the extension's or 
     "wpilog-mcp.explorer.manageDataStore",
     "wpilog-mcp.explorer.syncDataStore",
     "wpilog-mcp.explorer.pauseDataStore",
-    "wpilog-mcp.explorer.showAllSources",
     "wpilog-mcp.explorer.organizeLogs",
     "wpilog-mcp.explorer.importLogs",
     "wpilog-mcp.explorer.assignRobot",
@@ -293,7 +294,7 @@ test("one server removes obsolete settings and registers Claude Code at user sco
 
 
 test("mirror settings pin defaults and links to user controls", () => {
-  for (const [key, value] of Object.entries({ pitServerUrl: "", "mirror.enabled": true, "mirror.folder": "", "mirror.days": 14,
+  for (const [key, value] of Object.entries({ pitServerUrl: "", "mirror.enabled": false, "mirror.folder": "", "mirror.days": 14,
     "mirror.maxSizeGb": 20, "mirror.robots": [], "mirror.events": [], "mirror.intervalSec": 30 })) {
     assert.deepEqual(settings[`wpilog-mcp.${key}`]?.default, value, key);
   }
@@ -324,11 +325,16 @@ test("selection commands stay in the title and the webview context menu; links a
 
 test("experimental data-store commands are hidden and disabled until the server opts in", () => {
   const context = "wpilog-mcp.dataStoreEnabled";
-  for (const name of ["setupDataStore", "manageDataStore", "syncDataStore", "pauseDataStore", "showAllSources"]) {
+  for (const name of ["setupDataStore", "manageDataStore", "syncDataStore", "pauseDataStore"]) {
     const command = `wpilog-mcp.explorer.${name}`;
     assert.equal(manifest.contributes.commands.find((item: any) => item.command === command)?.enablement, context, `${command} enablement`);
     assert.equal(manifest.contributes.menus.commandPalette.find((item: any) => item.command === command)?.when, context, `${command} palette`);
     assert.equal(manifest.contributes.menus["view/title"].find((item: any) => item.command === command)?.when,
       `view == wpilog-mcp.logs && ${context}`, `${command} Logs menu`);
   }
+});
+
+
+test("the obsolete source toggle has no command or menu contribution", () => {
+  assert.ok(!JSON.stringify(manifest.contributes).includes("wpilog-mcp.explorer.showAllSources"));
 });

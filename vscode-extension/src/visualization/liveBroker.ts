@@ -1,10 +1,11 @@
+import { sourceContent } from "./recordedModel";
 import { ByteBudget, decodedBytes } from "./byteBudget";
 import { FollowTransport, aborted, encodeFollowOpen } from "./followClient";
 import { FollowPage, FollowSource, FollowWindow, FollowSelection, FollowFrontier, FollowError, FollowLease, canonical, freezeJson, page, selectionKey } from "./followProtocol";
 import { ViewFollowBinding, ViewFollowRequest, VIEW_PAGE_BYTES, viewRequest } from "./viewFollowProtocol";
 
 export interface ViewIdentity { readonly viewId: string; readonly generation: number; readonly revision: number; readonly queryKey: string }
-export interface FollowDelivery { readonly identity: ViewIdentity; readonly reset: number; readonly page: FollowPage; readonly frontier: FollowFrontier }
+export interface FollowDelivery { readonly receivedAtMs?: number; readonly identity: ViewIdentity; readonly reset: number; readonly page: FollowPage; readonly frontier: FollowFrontier }
 export interface FollowState { readonly kind: "reset" | "connecting" | "bootstrapping" | "catching_up" | "following" | "retrying" | "ended" | "error";
   readonly reason: string; readonly reset: number; readonly code?: string }
 export interface FollowConsumer {
@@ -72,8 +73,9 @@ export class LiveBroker {
   }
   private attach(source: FollowSource, windows: readonly FollowWindow[], selections: readonly FollowSelection[], sink: FollowConsumer, view?: ViewFollowRequest): FollowSubscription {
     if (this.closed) throw new Error("Follow broker is closed");
-    if (source.kind !== "session" || !source.anchor_member?.original_name || !source.anchor_member.recording_started_at
-      || !source.origin_store_id || !source.session_id) throw new Error("An anchored recording source is required");
+    const content = sourceContent(source);
+    if (content.kind !== "session" || !content.anchor_member?.original_name || !content.anchor_member.recording_started_at
+      || !content.origin_store_id || !content.session_id) throw new Error("An anchored recording source is required");
     if (windows.length > 4096 || !view && selections.length === 0 || selections.length > 256) throw new Error("Follow selection limit");
     if (this.resources.consumers >= 256) throw new Error("Follow consumer limit");
     const unique = new Map<string, FollowSelection>();
@@ -198,6 +200,7 @@ export class LiveBroker {
           }
           if (signal.aborted) break;
           const raw = await this.transport.next(lease, cursor, signal);
+          const receivedAtMs = performance.now();
           if (signal.aborted) break;
           if (raw === undefined) { attempt = 0; continue; } // 204 is a wait timeout, never EOF.
           const releasePage = reserve(raw);
@@ -209,7 +212,7 @@ export class LiveBroker {
               const replacement = reserve(checked.frontier); releaseFrontier?.(); releaseFrontier = replacement;
             }
             previous = { prefix: checked.page.prefix_id, frontier: checked.frontier };
-            await Promise.all([...job.consumers].map(c => this.deliver(job, c, checked.page, checked.frontier, signal)));
+            await Promise.all([...job.consumers].map(c => this.deliver(job, c, checked.page, checked.frontier, signal, receivedAtMs)));
           } finally { releasePage(); }
           if (signal.aborted || !job.consumers.size) break;
           cursor = checked.page.next_cursor; attempt = 0;
@@ -239,14 +242,14 @@ export class LiveBroker {
       if (lease) try { await this.transport.close(lease); } catch { /* Lost cleanup is bounded by the server's 60 s idle lease. */ }
     }
   }
-  private async deliver(job: Job, c: Consumer, data: FollowPage, frontier: FollowFrontier, signal: AbortSignal): Promise<void> {
+  private async deliver(job: Job, c: Consumer, data: FollowPage, frontier: FollowFrontier, signal: AbortSignal, receivedAtMs: number): Promise<void> {
     if (signal.aborted || !this.current(job, c)) return;
     const timeout = new AbortController();
     const timer = delay(this.timeout, [signal, c.stop.signal, timeout.signal]);
     try {
       const selected = Object.freeze({ ...data, batches: Object.freeze(data.batches.filter(b => c.keys.has(selectionKey(b)))) });
       await Promise.race([
-        Promise.resolve().then(() => { if (!signal.aborted && this.current(job, c)) return c.sink.page(Object.freeze({ identity: c.identity, reset: c.reset, page: selected, frontier })); }),
+        Promise.resolve().then(() => { if (!signal.aborted && this.current(job, c)) return c.sink.page(Object.freeze({ identity: c.identity, reset: c.reset, page: selected, frontier, receivedAtMs })); }),
         timer.then(() => { throw new FollowError("CONSUMER_TIMEOUT", "View did not consume its follow page within the deadline; reopen it to rebootstrap"); })
       ]);
     } catch (error) {

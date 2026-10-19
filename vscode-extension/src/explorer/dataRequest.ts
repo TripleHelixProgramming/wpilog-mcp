@@ -7,6 +7,9 @@
 /** What the viewer asks for: one or more entries over a window, exact or bucketed. */
 export interface DataRequest {
   path: string;
+  scopeId?: string;
+  serverInstanceId?: string;
+  sourceRef?: object;
   names: string[];
   startTime?: number;
   endTime?: number;
@@ -30,6 +33,9 @@ export function dataEndpointOf(mcpUrl: string): string {
 export function dataQuery(request: DataRequest): string {
   const params = new URLSearchParams();
   params.set("path", request.path);
+  if (request.scopeId) params.set("scope_id", request.scopeId);
+  if (request.serverInstanceId) params.set("server_instance_id", request.serverInstanceId);
+  if (request.sourceRef) params.set("source_ref", JSON.stringify(request.sourceRef));
   params.set("names", request.names.join(","));
   if (request.startTime !== undefined) params.set("start_time", String(request.startTime));
   if (request.endTime !== undefined) params.set("end_time", String(request.endTime));

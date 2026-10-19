@@ -1,5 +1,12 @@
 # WPILog Explorer reusable visualization design
 
+**Next design, 2026-10-18:** [Explorer sources and mirror implementation plan](SOURCE_AND_MIRROR_PLAN.md)
+records the owner's latest decisions and the next implementation checkpoints. Direct access
+to separately selected local/remote sources, a server visualization library outside log stores,
+and preservation-based mirror policy supersede conflicting requirements below. The existing
+checkpoint records remain evidence of what was implemented and tested; the new plan is not
+an implementation or validation claim.
+
 Status: Stage 1 committed as `632b492`; accepted Stage 2a committed as `c6436d6` after owner
 authorization. Accepted Stage 2b and its fixes are committed as `2fb2376`, and the Stage 3
 first gate and review refinements as `719f163`. The accepted Stage 3 server integration checkpoint
@@ -2531,6 +2538,12 @@ Evidence: `/private/tmp/wpilog-visualization-stage3-review19/validation.md`.
 
 ### Consolidated data path (owner decision, 2026-10-17)
 
+**Historical routing and mirror policy:** the [2026-10-18 source and mirror decisions](SOURCE_AND_MIRROR_PLAN.md)
+supersede the mandatory laptop data path and exclusion of finalized pit captures described
+here. Current code still reflects this checkpoint. Its clock facts, ownership work and
+validation evidence are retained; the new design uses direct remote access, not the earlier
+laptop-server relay.
+
 Status: decided by the owner on 2026-10-17, decision 4 and its design approved the same day.
 Steps 1 to 7 below are done. This replaces
 the configured remote routing decided on 2026-10-16 ("the pit answers, the laptop relays"), which
@@ -2798,3 +2811,87 @@ Evidence and the committed file manifest are under
 `/private/tmp/wpilog-visualization-stage3-checkpoint-commit/validation.md`. This checkpoint does
 not complete Stage 3: health and recovery, recording-history reduction, workload/performance
 and platform gates remain. No push, tag, version change or release is part of this checkpoint.
+
+### Stage 3 acquisition health and recovery checkpoint (2026-10-17)
+
+After local checkpoint `812c082`, this work separates source acquisition from history state and
+sample freshness, without reopening payloads for the five-second visible-view heartbeat.
+One workspace owner serves HTTP and MCP; catalog grants and bounded inventory dispatch still
+apply. Quiet signals do not time out. Completed follows reopen only for their same anchored
+recording; no new boot is substituted. Session replacement suspends old generations before
+window registration and reattachment, retries the complete operation, preserves configuration
+and pause intent, and starts fresh buffers after admission. Closing cancels recovery.
+
+Timing evidence is scoped: server receipt-to-publication uses the capture scheduler clock;
+final-page receipt-to-render acknowledgement uses the extension clock; the renderer supplies
+its own animation-frame elapsed duration. Writer/revision and prefix/delivery coordinates name
+the observations. These are not a calibrated end-to-end measurement or a performance result.
+The native owner-restart fixture keeps the independent writer running and injects a transient
+attachment refusal. A second phase starts a fresh Java process after finalization and checks
+the restored working UUID/configuration and ten exact raw/statistical records. Abrupt
+process-crash recovery with live capture/mirroring is a separate gate.
+Validation, plants, exact scope and remaining checks are recorded under
+`/private/tmp/wpilog-visualization-stage3-health-recovery/validation.md`. Stage 3 remains open
+for dense recording-history reduction, the declaration-burst/32-lease and season-sized catalog
+workloads, sustained performance, end-to-end clock calibration and native platform validation.
+
+
+## Stage 3 dense recording-history reduction checkpoint
+
+The historical-navigation checkpoint's 4096-point tail is no longer the data source for
+Inspect History or Full recording. A shared source reduction operation reads a fresh admitted
+file/recording prefix and uses the native chronological merge and min/max/mean reducer. Both
+HTTP and MCP expose the same result and refusal rules; declarations, schemas, grants, writer
+identity and finalized boundaries are proved before read and rechecked before publication.
+Duplicate and backward timestamps remain original samples. Output carries bucket bounds,
+counts, finite counts, extrema, mean, first/last and an independent prefix. Nonfinite or unsafe
+plot integers are explicit counted gaps. Empty windows are no_match; limits refuse, without
+calling an incomplete tail a complete history.
+
+Admission: two concurrent reductions; 4,194,304 selected records including out-of-window
+records before any chronological sort; existing shared time-order memory admission; 64 KiB
+per payload; 8 MiB merge lookahead payload; at most 4096 buckets; 1 MiB result; 64 KiB raw
+request on both adapters; cooperative 10 s work budget. The client selects fewer buckets from
+its window's available bytes and repeated plot copies, and uses the existing one-flight/FIFO
+analysis queue and one-Hz coalescing. New completed prefixes recompute fixed history, including
+late records. No new history cache is claimed. Follow and physical raw rows stay incremental;
+statistics still read original samples independently. Pause/hide/close and query epochs reject
+late work; incoming follow frames cannot overwrite history buckets.
+
+Gate: two-member independent numerical oracle, early extrema beyond 4096 retained values,
+full/fixed bounds, nonfinite/projection and malformed records, empty windows, limits/lifecycle,
+HTTP/MCP parity and raw request admission, controller response validation and byte accounting,
+and actual pan/zoom/late-sample/dense-history rendering on both supported cached editor builds.
+Evidence: `/private/tmp/wpilog-visualization-stage3-reduction/validation.md`.
+The broader Stage 3 live capability stays false. Declaration bursts at 32 leases, season-sized
+catalog scans/hashes, sustained throughput/heap, abrupt live-process crashes, clock calibration,
+Linux/Windows native runs, manual Close cancellation and Save As remain unverified gates.
+
+## Consolidated code review disposition (2026-10-18)
+
+The six actionable findings in the local root `CODE_REVIEW.md` are addressed together, with
+evidence in `/private/tmp/wpilog-code-review-fixes-2026-10-18/validation.md`:
+
+- F1/F2: shared numeric-leaf conversion retains enum and signed/unsigned integer values until
+  the plot safe-range check. Missing projected elements are counted gaps; exact raw values
+  remain available. HTTP and MCP cases include all-missing intervals and both recording members.
+- F3: the fallback and all current guidance use the assumed roboRIO 1 output-disable threshold
+  of 6.3 V, name the unknown-controller limitation and the roboRIO 2 configurable default of
+  6.75 V. Explicit/logged settings and logged flags keep their precedence.
+- F4: lag search shares centered covariance/variance with the main correlation, retaining its
+  overlap, lag grid and tie rules. Independent shifted-series oracles cover either correlation
+  sign and zero/nonzero lag with offsets through 1e10.
+- F5: empty sources resolve finite relative scopes without inventing measured session bounds.
+  A real server and live controller exercise the empty-to-first-sample transition on the same
+  binding; no manual Retry is needed.
+- F6: explicit null `last_seconds` follows the shared omitted-argument meaning for chart bounds
+  and inputs, with paired HTTP/MCP checks.
+
+C1 remains a separate shared-mean compatibility decision in `IDEAS.md`: sequential summation
+can cancel extreme mixed-magnitude inputs. The four stale earlier-review findings require no
+implementation change. These fixes do not complete Stage 3 or claim new platform, native-editor,
+performance, crash or shop measurements; the open gates above remain open.
+
+The source/mirror plan's M1 server contracts and explicit selection checkpoint is now implemented
+locally and uncommitted. Its acceptance evidence and pending M2/M3 boundaries are recorded in
+[SOURCE_AND_MIRROR_PLAN.md](SOURCE_AND_MIRROR_PLAN.md#m1-source-contracts-and-selection-checkpoint).

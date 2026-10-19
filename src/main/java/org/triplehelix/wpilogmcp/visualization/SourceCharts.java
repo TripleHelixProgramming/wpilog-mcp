@@ -32,10 +32,11 @@ final class SourceCharts {
     return result;
   }
   JsonObject read(JsonObject request, boolean scatter, BooleanSupplier alive) throws Exception {
+    boolean relative = request.has("last_seconds") && !request.get("last_seconds").isJsonNull();
     var keys = new HashSet<>(List.of("api_version", "source_ref", "start_time", "end_time", "last_seconds"));
     keys.addAll(scatter ? List.of("x_entry", "x_field", "y_entry", "y_field", "offset", "limit") : List.of("entry", "field"));
     for (var key : request.keySet()) if (!keys.contains(key)) throw new IllegalArgumentException("Unknown chart argument " + key);
-    if (request.has("api_version") && !request.get("api_version").equals(new JsonPrimitive(1))) throw new IllegalArgumentException("Unsupported api_version");
+    if (request.has("api_version") && !Set.of(new JsonPrimitive(1), new JsonPrimitive(2)).contains(request.get("api_version"))) throw new IllegalArgumentException("Unsupported api_version");
     var source = VisualizationContracts.source(request.getAsJsonObject("source_ref"));
     var selections = scatter ? List.of(selection(request, "x_entry", "x_field"), selection(request, "y_entry", "y_field")) : List.of(selection(request, "entry", "field"));
     int offset = scatter && request.has("offset") ? ReadWire.integer(request, "offset") : 0;
@@ -59,7 +60,7 @@ final class SourceCharts {
         range = VisualizationBindings.statisticsArguments(new RecordingAnalysis.History(prefix.recordingId(), first.entries().get(selections.get(0).entry()), first.schemas(), List.of(), summary, problems), range);
         if (!prefix.finalized()) {
           if (!range.has("start_time") || !range.has("end_time")) throw new IllegalArgumentException("Active recording charts require an explicit 1–300 second interval or last_seconds");
-          double duration = request.has("last_seconds") ? request.get("last_seconds").getAsDouble()
+          double duration = relative ? request.get("last_seconds").getAsDouble()
               : range.get("end_time").getAsDouble() - range.get("start_time").getAsDouble();
           if (!Double.isFinite(duration) || duration < 1 || duration > 300) throw new IllegalArgumentException("Active recording charts require a 1–300 second interval; choose a shorter window");
         }
@@ -100,14 +101,14 @@ final class SourceCharts {
           result.addProperty("status", "partial"); var skipped = result.has("skipped") ? result.getAsJsonArray("skipped") : new JsonArray();
           var skippedRecords = new JsonObject(); skippedRecords.addProperty("section", "undecodable_records"); skippedRecords.addProperty("reason", problems.count + " selected records failed; inspect member-qualified problems"); skipped.add(skippedRecords); result.add("skipped", skipped);
         }
-        var proof = new JsonObject(); boolean recording = source.get("kind").getAsString().equals("session");
+        var proof = new JsonObject(); boolean recording = VisualizationContracts.kind(source).equals("session");
         proof.addProperty("source_kind", recording ? "session" : "file"); proof.addProperty("finalized", prefix.finalized());
         if (recording) { proof.addProperty("recording_id", prefix.recordingId()); proof.addProperty("catalog_revision", Long.toString(prefix.catalogRevision())); }
         proof.add("members", summary.get("members")); proof.add("clock", summary.get("clock"));
         result.add("prefix", proof); result.addProperty("basis", "admitted_source_prefix"); result.addProperty("records_visited", budget.visited);
         var inputs = result.getAsJsonObject("inputs"); inputs.add("source_ref", source);
         for (var key : scatter ? List.of("x_entry", "x_field", "y_entry", "y_field") : List.of("entry", "field")) if (request.has(key)) inputs.add(key, request.get(key));
-        if (request.has("last_seconds")) inputs.add("last_seconds", request.get("last_seconds"));
+        if (relative) inputs.add("last_seconds", request.get("last_seconds"));
         budget.check(); bound.admission().check();
         try { ReadWire.bytes(result, limits.resultBytes()); }
         catch (ReadException | ReadWire.WireLimit tooLarge) { throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT, "Chart result exceeds its 1 MiB allowance; reduce scatter limit or select shorter entry names"); }

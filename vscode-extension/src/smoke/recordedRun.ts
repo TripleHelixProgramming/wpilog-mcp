@@ -14,7 +14,7 @@ async function main(): Promise<void> {
   const overviewOnly = process.env.WPILOG_OVERVIEW_FIXTURE === "true";
   const version = process.env.VSCODE_VERSION ?? "1.101.0";
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Use an explicit editor version");
-  const base = path.join(repository, panelsOnly ? "build/visualization-stage3-panels" : overviewOnly ? "build/visualization-stage3-overview" : "build/visualization-stage2b", version); fs.mkdirSync(base, { recursive: true });
+  const base = process.env.WPILOG_RECORDED_OUTPUT ?? path.join(repository, panelsOnly ? "build/visualization-stage3-panels" : overviewOnly ? "build/visualization-stage3-overview" : "build/visualization-stage2b", version); fs.mkdirSync(base, { recursive: true });
   const root = fs.mkdtempSync(path.join(base, "run-")); console.log("Recorded fixture: " + root);
   for (const folder of ["logs", "home", "workspace", "extension", "profile/User"]) fs.mkdirSync(path.join(root, folder), { recursive: true });
   fs.writeFileSync(path.join(root, "fixture-only"), "Synthetic recorded preview\n");
@@ -37,12 +37,32 @@ async function main(): Promise<void> {
     const log = fs.openSync(path.join(root, phase + "-server.log"), "w");
     const serverArgs = overviewOnly || panelsOnly ? ["-Duser.home=" + path.join(root, "home"), "-cp", fs.readFileSync(path.join(repository, "build/extension-smoke/classpath.txt"), "utf8"), "org.triplehelix.wpilogmcp.fixtures.OverviewServerFixture", path.join(root, "logs/recording-store"), String(port), ...(panelsOnly ? [path.join(root, "command-result.json")] : [])]
       : ["-Duser.home=" + path.join(root, "home"), "-jar", jar, "run", "fixture", "--config", config];
-    const server = spawn(process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, "bin/java") : "java", serverArgs, { env, stdio: ["pipe", log, log] });
+    const launch = (restore = false) => spawn(process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, "bin/java") : "java", restore ? [...serverArgs, "restore"] : serverArgs, { env, stdio: ["pipe", log, log] });
+    let server = launch();
     let commandId: string | undefined;
     const commandTimer = panelsOnly ? setInterval(() => {
       try {
         const command = JSON.parse(fs.readFileSync(path.join(root, "command.json"), "utf8"));
-        if (command.id !== commandId) { commandId = command.id; server.stdin?.write(JSON.stringify(command) + "\n"); }
+        if (command.id !== commandId) {
+          commandId = command.id;
+          if (command.op === "processRestart") void (async () => {
+            const previous = server;
+            await new Promise<void>((resolve, reject) => {
+              const timeout = setTimeout(() => { previous.kill("SIGKILL"); reject(new Error("Fixture process did not stop")); }, 10000);
+              previous.once("exit", () => { clearTimeout(timeout); resolve(); }); previous.stdin?.end();
+            });
+            server = launch(true);
+            const deadline = Date.now() + 15000;
+            while (Date.now() < deadline) {
+              try { if ((await fetch(`http://127.0.0.1:${port}/health`)).ok) {
+                fs.writeFileSync(path.join(root, "command-result.json"), JSON.stringify({ id: command.id, previous_pid: previous.pid, pid: server.pid })); return;
+              } } catch { /* Fresh process starting. */ }
+              await new Promise(r => setTimeout(r, 50));
+            }
+            throw new Error("Restored fixture process did not answer health");
+          })().catch(error => fs.writeFileSync(path.join(root, "command-result.json"), JSON.stringify({ id: command.id, error: String(error) })));
+          else server.stdin?.write(JSON.stringify(command) + "\n");
+        }
       } catch { /* fixture command not yet published */ }
     }, 25) : undefined;
     try {

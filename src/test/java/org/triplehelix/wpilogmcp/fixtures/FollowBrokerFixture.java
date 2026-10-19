@@ -43,22 +43,28 @@ public final class FollowBrokerFixture {
   private final Path root, file, manifest;
   private final Announce x = new Announce("/x", 1, "int", null, new JsonObject());
   private final Announce y = new Announce("/y", 2, "double", null, new JsonObject());
+  private final boolean direct;
   private CaptureWriter writer;
   private HttpTransport transport;
 
-  private FollowBrokerFixture(Path root) throws Exception {
+  private FollowBrokerFixture(Path root, boolean emptyAnalysis, boolean direct) throws Exception {
+    this.direct = direct;
     this.root = Files.createDirectories(root).toRealPath(); logs.addAllowedDirectory(this.root);
+    if (direct) org.triplehelix.wpilogmcp.log.LogDirectory.getInstance().setLogDirectory(this.root.toString());
     var robot = Files.createDirectories(this.root.resolve("robots/fixture"));
     var directory = Files.createDirectories(robot.resolve("sessions/2026-01-01/session"));
     file = directory.resolve("capture.wpilog"); manifest = directory.resolve("session.json");
     Files.writeString(this.root.resolve("store.json"), StoreJson.JSON.toJson(new Header(1, WHEN, STORE, List.of())));
     Files.writeString(robot.resolve("robot.json"), StoreJson.JSON.toJson(new Robot("fixture", "fixture", null, null, "logged")));
-    var index = new CaptureIndex((address, start) -> file, logs, 10_000_000);
+    var index = emptyAnalysis ? new CaptureIndex((address, start) -> file, logs, 10_000_000, () -> 3_000_000.0)
+        : new CaptureIndex((address, start) -> file, logs, 10_000_000);
     writer = new CaptureWriter(Clock.fixed(Instant.parse(WHEN), ZoneOffset.UTC), new ManualScheduler(), CapturePolicy.ALL, index);
     writer.connected(RobotAddress.uri("127.0.0.1", 5810, "broker-fixture"), "networktables.first.wpi.edu");
     writer.timeSync(1_000_000, 0); writer.announce(x); writer.announce(y);
-    append(100, 0);
-    writer.value(y, new ValueFrame(2, 100, 1, -0.0d), 0);
+    if (!emptyAnalysis) {
+      append(100, 0);
+      writer.value(y, new ValueFrame(2, 100, 1, -0.0d), 0);
+    }
     var open = new OpenCapture("capture.wpilog", new Provenance("captured", null, "capture.wpilog", WHEN, false), Files.size(file), 1, 2);
     var session = StoreJson.JSON.toJsonTree(new Session(SESSION, WHEN, WHEN, "pit_clock", null, null, null, null, List.of(), open)).getAsJsonObject();
     try (var use = logs.acquire(file.toString())) {
@@ -67,12 +73,15 @@ public final class FollowBrokerFixture {
     Files.writeString(manifest, session.toString()); start(0);
   }
   private void start(int port) throws Exception {
-    transport = new HttpTransport(new ToolRegistry(), port); transport.setStoreDirectories(Set.of(root)); transport.start();
+    var registry = new ToolRegistry(); org.triplehelix.wpilogmcp.tools.VisualizationTools.registerAll(registry);
+    if (direct) { registry.serverIdentity(org.triplehelix.wpilogmcp.visualization.ServerIdentity.open(root.resolveSibling("state"))); org.triplehelix.wpilogmcp.tools.CoreTools.registerAll(registry); }
+    transport = new HttpTransport(registry, port); transport.setStoreDirectories(Set.of(root)); transport.start();
   }
   private void append(long timestamp, long n) { writer.value(x, new ValueFrame(1, timestamp, 2, 9_007_199_254_740_993L + n), 0); }
   private JsonObject command(JsonObject request) throws Exception {
     var result = new JsonObject();
     switch (request.get("op").getAsString()) {
+      case "analysis-append" -> writer.value(x, new ValueFrame(1, 2_500_000, 2, 41L), 0);
       case "append" -> {
         int first = request.get("first").getAsInt(), count = request.get("count").getAsInt();
         for (int n = first; n < first + count; n++) append(n % 2 == 0 ? 100 : 50, n);
@@ -90,9 +99,9 @@ public final class FollowBrokerFixture {
         int count = request.get("count").getAsInt();
         if (count < 2 || count > 10000) throw new IllegalArgumentException("Synthetic topic count outside fixture bound");
         var rollover = file.resolveSibling("rollover.wpilog");
-        try (var out = new WpilogWriter(rollover, "")) {
-          int xId = out.start("NT:/x", "int64", "", 0); out.append(xId, -10, WpilogWriter.encodeInt64(-7));
-          out.start("NT:/y", "double", "", 0);
+        try (var use = logs.acquire(file.toString()); var out = new WpilogWriter(rollover, "")) {
+          int xId = out.start("NT:/x", "int64", direct ? use.log().entries().get("NT:/x").metadata() : "", 0); out.append(xId, -10, WpilogWriter.encodeInt64(-7));
+          out.start("NT:/y", "double", direct ? use.log().entries().get("NT:/y").metadata() : "", 0);
           for (int n = 0; n < count - 2; n++) {
             String name = "/inputs/synthetic/subsystem/signal-" + String.format(java.util.Locale.ROOT, "%05d", n);
             var properties = new JsonObject(); properties.addProperty("unit", "synthetic");
@@ -128,9 +137,10 @@ public final class FollowBrokerFixture {
   }
   private static void reply(JsonObject value) { System.out.println("BROKER " + value); System.out.flush(); }
   public static void main(String[] args) throws Exception {
-    var fixture = new FollowBrokerFixture(Path.of(args[0]));
+    var fixture = new FollowBrokerFixture(Path.of(args[0]), args.length > 1 && args[1].equals("empty-analysis"), args.length > 1 && args[1].equals("direct"));
     try {
-      var ready = new JsonObject(); ready.addProperty("port", fixture.transport.getPort()); reply(ready);
+      var ready = new JsonObject(); ready.addProperty("port", fixture.transport.getPort()); ready.addProperty("file", fixture.file.toString());
+      ready.add("configuration", org.triplehelix.wpilogmcp.visualization.VisualizationContracts.blank()); reply(ready);
       try (var input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
         String line;
         while ((line = input.readLine()) != null) reply(fixture.command(JsonParser.parseString(line).getAsJsonObject()));

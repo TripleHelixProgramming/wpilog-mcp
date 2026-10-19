@@ -81,6 +81,7 @@ function renderer(overview = false, uiState: any = {}) {
   let receive: (event: any) => void = () => {}; const replacements: number[][][] = [], messages: any[] = [], charts: Plot[] = [];
   const pointRanges: any[] = [];
   const timers = new Map<number, () => void>(); let timerId = 0;
+  let now = 100; const animations: (() => void)[] = [];
   class Plot {
     series: any[]; axes: any[]; cursor = { left: 20, top: 20, event: null as object | null }; hooks: any;
     select = { left: 0, width: 0, top: 0, height: 0 };
@@ -103,8 +104,10 @@ function renderer(overview = false, uiState: any = {}) {
     Plot: { seriesOf: () => ({ count: 2, bucketed: false, timestamps: [0, 1], values: [7, 8] }) },
     setTimeout: (callback: () => void) => { timers.set(++timerId, callback); return timerId; },
     clearTimeout: (id: number) => timers.delete(id),
+    performance: { now: () => now }, requestAnimationFrame: (callback: () => void) => animations.push(callback),
   });
   return { send: (data: any) => receive({ data }), get, replacements, messages, charts, pointRanges,
+    animationFrame: () => { now += 16; const pending = animations.splice(0); pending.forEach(callback => callback()); },
     flush: () => { const pending = [...timers.values()]; timers.clear(); pending.forEach(callback => callback()); } };
 }
 test("the webview retains samples and values for presentation revisions and rejects an old query", () => {
@@ -135,6 +138,32 @@ test("overview shows unreadable shared records beside its readable saved views",
 test("a recording overview offers the bounded recording panel preview", () => {
   const r = renderer(true);
   r.send({ type: "summary", summary: { source_ref: { kind: "session" }, label: "Synthetic recording", size_bytes: 12 } });
+  assert.equal(r.get("blank").disabled, false, "blank layouts now have a recording controller");
+  assert.equal(r.get("template-open").disabled, false);
+  r.send({ type: "inventory", inventory: { source_kind: "session", entries: [], members: [{ member_id: "one" }], entry_conflicts: [{ name: "/x" }], duration_sec: 2, clock: { basis: "last_sample", waiting_for_time_sync: true }, clock_basis: "Robot time" } });
+  assert.match(r.get("status").text(), /Recording inspected/);
+  assert.match(r.get("inventory").text(), /1 member.*1 conflicting/);
+  assert.match(r.get("inventory").text(), /Last sample; waiting for time sync/);
+  assert.doesNotMatch(r.get("inventory").text(), /last_sample|clock\.basis/);
+  for (const [basis, waiting, label] of [
+    ["robot_estimate", false, "Robot clock estimate"], ["last_sample", false, "Last recorded sample"],
+    ["waiting_for_time_sync", true, "Waiting for time sync"], ["unavailable", false, "No recorded samples"],
+  ] as const) {
+    r.send({ type: "inventory", inventory: { source_kind: "session", entries: [], members: [], entry_conflicts: [],
+      clock: { basis, waiting_for_time_sync: waiting }, clock_basis: "clock.basis is a protocol tag" } });
+    assert.ok(r.get("inventory").text().includes(label), basis);
+    assert.doesNotMatch(r.get("inventory").text(), /clock\.basis/);
+  }
+  assert.match(r.get("warning").text(), /Recording panel preview/);
+  r.send({ type: "templates", catalog: { templates: [{ template_ref: { origin: "bundled", revision: 1, template_id: "fixture" }, template: { name: "Fixture" } }] } });
+  r.get("templates").value = "0"; (r.get("templates") as any).onchange();
+  assert.equal(r.messages.some(m => m.type === "templateCheck"), true);
+  assert.match(r.get("template-status").text(), /Checking compatibility/);
+});
+
+test("a qualified recording overview retains recording controls and clock facts", () => {
+  const r = renderer(true);
+  r.send({ type: "summary", summary: { source_ref: { schema_version: 2, server_instance_id: "server", scope_id: "scope", content: { kind: "session" } }, label: "Synthetic recording", size_bytes: 12 } });
   assert.equal(r.get("blank").disabled, false, "blank layouts now have a recording controller");
   assert.equal(r.get("template-open").disabled, false);
   r.send({ type: "inventory", inventory: { source_kind: "session", entries: [], members: [{ member_id: "one" }], entry_conflicts: [{ name: "/x" }], duration_sec: 2, clock: { basis: "last_sample", waiting_for_time_sync: true }, clock_basis: "Robot time" } });
@@ -309,7 +338,7 @@ test("recording renderer keeps exact server values apart from delivered frames a
   r.send({ type: "liveFrame", generation: "live1", delivery_id: "owner:1", frame });
   assert.deepEqual(JSON.parse(JSON.stringify(r.replacements.at(-1))), [[0, 1], [7, null]]);
   assert.doesNotMatch(r.get("grid").text(), /9007199254740993/, "physical delivery must not stand in for latest by timestamp");
-  assert.match(r.get("clock").text(), /prefix-one/); assert.equal(r.messages.at(-1).type, "liveRendered"); assert.equal(r.messages.at(-1).delivery_id, "owner:1");
+  assert.match(r.get("clock").text(), /prefix-one/); r.animationFrame(); r.animationFrame(); assert.equal(r.messages.at(-1).type, "liveRendered"); assert.equal(r.messages.at(-1).delivery_id, "owner:1");
   const before = r.replacements.length;
   r.send({ type: "liveFrame", generation: "stale", delivery_id: "old:2", frame: null });
   assert.equal(r.replacements.length, before); assert.equal(r.messages.at(-1).delivery_id, "old:2", "stale owner's bytes can be released without painting");
@@ -570,4 +599,71 @@ test("invalid restored following state defaults to 30 and hidden pan controls st
     r.send({ type: "visibility", visible: false }); assert.equal(r.get("time-zoom-in").disabled, true);
     (r.get("time-zoom-in") as any).onclick(); assert.equal(r.messages.filter(m => m.type === "timeNavigate").length, 0);
   }
+});
+
+
+test("live frames acknowledge after two animation frames in the renderer clock, but stale or hidden frames never claim paint", () => {
+  const r = renderer(), snapshot = { view_id: "view", revision: 1, source_ref: { kind: "session" }, configuration: configuration() };
+  r.send({ type: "snapshot", generation: "q", snapshot });
+  const frame = { prefix: "p", clock: { right_edge_sec: 1 }, binding: { compatibility: { bindings: [] } }, series: {}, raw: {} };
+  r.send({ type: "liveFrame", generation: "q", frame, delivery_id: "one" });
+  assert.equal(r.messages.filter(m => m.type === "liveRendered").length, 0);
+  r.animationFrame(); assert.equal(r.messages.filter(m => m.type === "liveRendered").length, 0);
+  r.animationFrame(); assert.equal(r.messages.at(-1).rendered, true); assert.equal(r.messages.at(-1).render_elapsed_ms, 32);
+  r.send({ type: "liveFrame", generation: "q", frame, delivery_id: "two" });
+  r.send({ type: "visibility", visible: false });
+  assert.equal(r.messages.at(-1).delivery_id, "two"); assert.equal(r.messages.at(-1).rendered, false);
+  const acknowledgements = r.messages.filter(m => m.type === "liveRendered").length;
+  r.animationFrame(); r.animationFrame();
+  assert.equal(r.messages.filter(m => m.type === "liveRendered").length, acknowledgements, "a hidden frame releases the host without waiting for suspended animation frames, exactly once");
+  r.send({ type: "liveFrame", generation: "old", frame, delivery_id: "stale" });
+  assert.equal(r.messages.at(-1).delivery_id, "stale"); assert.equal(r.messages.at(-1).rendered, false);
+});
+
+test("replacing a live frame releases the old paint acknowledgement without cancelling the current frame", () => {
+  const r = renderer(), snapshot = { view_id: "view", revision: 1, source_ref: { kind: "session" }, configuration: configuration() };
+  r.send({ type: "snapshot", generation: "q", snapshot });
+  const frame = { prefix: "p", clock: {}, binding: { compatibility: { bindings: [] } }, series: {}, raw: {} };
+  r.send({ type: "liveFrame", generation: "q", frame, delivery_id: "one" }); r.animationFrame();
+  r.send({ type: "liveFrame", generation: "q", frame, delivery_id: "two" });
+  const released = r.messages.filter(m => m.type === "liveRendered");
+  assert.equal(released.at(-1)?.delivery_id, "one", JSON.stringify(r.messages)); assert.equal(released.at(-1)?.rendered, false);
+  r.send({ type: "liveFrame", generation: "old", frame, delivery_id: "stale" });
+  r.animationFrame(); r.animationFrame();
+  assert.deepEqual(r.messages.filter(m => m.type === "liveRendered").map(m => [m.delivery_id, m.rendered]), [["one", false], ["stale", false], ["two", true]]);
+});
+
+test("recording history renders server extrema instead of the incremental tail and releases on clear", () => {
+  const r = renderer(), config = configuration(); config.time.live = { mode: "fixed", start_sec: 0, end_sec: 100 };
+  config.time.recorded = { mode: "full" };
+  const snapshot = { view_id: "view", revision: 1, source_ref: { kind: "session" }, configuration: config };
+  r.send({ type: "snapshot", generation: "q", snapshot });
+  r.send({ type: "analysisState", generation: "q", value_epoch: 0, statistics_epoch: 0, histogram_epoch: 0, scatter_epoch: 0, reduction_epoch: 1, history: true });
+  const result = { status: "ok", sample_count: 10000, finite_count: 10000, unplottable_count: 0, problem_count: 0,
+    window: { start_us: "0", end_us: "100000000" }, prefix: { source_kind: "session", catalog_revision: "4", finalized: true, members: [] },
+    buckets: [{ start_us: "0", end_us: "50000000", min: -8, max: 10000, mean: 1, count: 6000 },
+      { start_us: "50000000", end_us: "100000000", min: 0, max: 2, mean: 1, count: 4000 }] };
+  r.send({ type: "reduction", generation: "q", requirement_id: "r1", analysis_epoch: 1, delivery_id: "history:1", result });
+  assert.ok(r.replacements.length > 0, "a history reduction must draw a chart");
+  assert.deepEqual(JSON.parse(JSON.stringify(r.replacements.at(-1))), [[0, 50], [1, 1], [10000, 2], [-8, 0]]);
+  assert.match(r.get("grid").text(), /10,000.*original samples/);
+  const frame = { prefix: "newer", finalized: true, clock: {}, binding: { compatibility: { bindings: [] } }, raw: {},
+    range: { start: 70, end: 100 }, series: { r1: { timestamps: [99], values: [2], count: 1, bucketed: false } } };
+  r.send({ type: "liveFrame", generation: "q", frame, delivery_id: "tail:1" });
+  assert.deepEqual(JSON.parse(JSON.stringify(r.replacements.at(-1))), [[0, 50], [1, 1], [10000, 2], [-8, 0]], "follow frames cannot replace proven history");
+  assert.match(r.get("time-mode").text(), /0 to 100/, "full history keeps the reduction's range, not the prior follow window");
+  r.send({ type: "analysisClear", generation: "q", delivery_id: "history:clear" });
+  assert.equal(r.charts.filter(c => !c.destroyed).length, 0);
+  assert.ok(r.messages.some(m => m.type === "recordedRendered" && m.delivery_id === "history:clear"));
+});
+
+test("a historical view never flashes its truncated follow tail before analysis starts", () => {
+  const r = renderer(), config = configuration(); config.time.live = { mode: "fixed", start_sec: 0, end_sec: 100 };
+  r.send({ type: "snapshot", generation: "q", snapshot: { view_id: "view", revision: 1, source_ref: { kind: "session" }, configuration: config } });
+  r.send({ type: "liveFrame", generation: "q", delivery_id: "early", frame: {
+    prefix: "p", finalized: false, clock: {}, range: { start: 0, end: 100 }, binding: { compatibility: { bindings: [] } }, raw: {},
+    series: { r1: { timestamps: [99], values: [1], count: 1, bucketed: false } }
+  } });
+  assert.equal(r.charts.filter(c => !c.destroyed).length, 0, "a late reduction must remain a loading state, not a full-history tail");
+  assert.match(r.get("grid").text(), /Loading full-interval history/);
 });

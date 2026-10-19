@@ -98,7 +98,7 @@ for (const platform of ["linux", "darwin", "win32"] as const) {
     assert.equal(feedback.warning, undefined);
     assert.equal(feedback.information, undefined);
     assert.equal(feedback.copyCommand, undefined);
-    assert.equal(feedback.output, `Claude Code: ${name} already uses this launcher's user-scope bridge; remembered for this editor.`);
+    assert.equal(feedback.output, `Claude Code: ${name} already uses this user-scope connection; remembered for this editor.`);
   });
 }
 
@@ -212,7 +212,7 @@ for (const remote of [false, true]) {
       const feedback = claudeRegistrationFeedback(result, name, "registration command");
       assert.equal(calls, state === "added" ? 1 : 2);
       if (state === "existing") {
-        assert.equal(feedback.output, `Claude Code: ${name} already uses this launcher's user-scope bridge; remembered for this editor.`);
+        assert.equal(feedback.output, `Claude Code: ${name} already uses this user-scope connection; remembered for this editor.`);
       } else {
         assert.ok(feedback.output?.startsWith("add stdout\nadd stderr\n")
           || feedback.output === "add stdout\nadd stderr",
