@@ -309,7 +309,7 @@ class StoreSyncTest {
     put(b, fixture("peer.wpilog", 2, "SERIAL")); sync(a, httpB);
     var mirrored = manager.stores().store(temp.resolve("picker-mirror"));
     var config = new org.triplehelix.wpilogmcp.config.MirrorConfig(url(httpB), mirrored.root(), 365000, 1000000, List.of(), List.of(), 30, 0);
-    mirrored.mirror(config, p -> {}).get();
+    org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirrored, config, p -> {}).get();
     httpA.stop(); httpA = new HttpTransport(new ToolRegistry(), 0);
     httpA.setStoreDirectories(Set.of(a.root(), mirrored.root())); httpA.start();
     var response = java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(

@@ -8,8 +8,9 @@
 
 The [source and mirror implementation plan](../SOURCE_AND_MIRROR_PLAN.md) specifies the
 next mirror protocol, verification states and separation of transfer I/O from publication.
-Its new retention and peer policies are not implemented by the current transfer owners
-described below.
+M4 supplies explicit format-2 migration and preservation admission. The new payload writer
+remains disabled until M5; peer exchange remains M6 work. Ordinary union transfers retain
+their separate owner described below.
 
 `sync.FileTransfer` advances at most one 64 KiB block per step, with an injected monotonic clock and
 gate. It performs no sleeps and owns no socket or thread. A read-only transport interface serves
@@ -431,19 +432,33 @@ A sync is a reader of the peer and a queued, locked writer of its own store. The
 
 #### Mirrors
 
-`MirrorSync` keeps the origin's IDs and relative session paths instead of coalescing peer
-sessions. It snapshots the origin catalog for each pass, wraps remote names with the session
-ID, and delegates byte copying to `FileTransfer`. It copies every finished file except the
-origin's captures, each reader-checked and matched to its advertised hash, and a mirrored manifest
-lists only the files it holds. Captures stay at the origin because a laptop records live data from
-the gateway itself; their clock records travel instead. Captures copied by 0.10.0-dev1 to dev4
-stay unrefreshed until their session is evicted. Its header holds
-origin identity, pins and per-session freshness; the session manifests preserve provenance
-and matching evidence. Recorded REV alignments are used on the origin and mirror alike, and a
-REV log and the robot's log measured against one capture are aligned by combining the two (the
-main architecture guide's "Offsets meet at their reference"), so the mirror, holding neither
-capture, places REV data on the robot log's clock as the pit does. New associations retain the
-complete synchronization result, while older summaries behave as recorded manual offsets. Cache format 9 retires preceding synchronization state.
+`MirrorSync` now stops before network or payload work. Format-1 mirrors report
+`migration_required`; format-2 mirrors report `writer_not_ready` until M5 supplies immutable
+publication. The old automatic scope/cap eviction engine exists only in test fixtures for
+historical migration and read compatibility. Existing sessions, captures, clock records,
+system-text prefixes, offsets, partial journals and unmanaged files remain unchanged.
+
+Format 2 adds a bounded replica catalog to the atomic store header. Master files have UUID
+file/version identities and size/hash/finalization records. A migrated mirror retains
+`legacy_unconfirmed` entries: its old transfer-verified boolean cannot supply master identity
+or authoritative confirmation. Legacy pins become acquisition inclusions. Read compatibility
+accepts formats 1 and 2; new ordinary stores still use format 1 until explicitly migrated.
+Older binaries reject format 2. The backup and preparation record are retained under `.replicas/`.
+
+Migration hashes outside the store queue, retaining file leases and filesystem boundaries.
+Two server-wide preparation slots, one per store and no waiting queue, remain charged through
+publication or cancellation unwind. A short store turn rechecks identity and boundaries before
+publishing the marker; future completions and mutation observers run after the store lock closes.
+A format-2 retry retains its established UUIDs. The metadata and path-count limits refuse an
+oversized migration without truncating old facts. Native power-loss durability is not yet proven.
+
+Scope is an acquisition predicate. Robot filters combine with event OR date evidence, and
+explicit `all` includes unknown dates. Closed captures and rollover members are eligible;
+active members are excluded. Capacity counts held, partial, metadata and reserved logical bytes,
+with metadata headroom inside the cap. Replacement must fit beside the incumbent and pins
+cannot bypass admission. Cleanup previews identify exact entries and exclusions; execution,
+affected-view enumeration and reader retirement are gated on M5. No admission decision deletes
+existing data, even after master deletion or clock advance.
 
 A clock record holds the facts a closed capture has for placing other sources on robot time:
 today, the roboRIO uptime samples that alone link kernel log times to robot time. It is derived
@@ -459,13 +474,11 @@ pit's line for line. Peer sync copies no records. A server that records into a s
 every capture the store holds, peer copies included, at its start; a store nothing records into has
 none, and its own searches read the captures.
 
-`MirrorService` schedules daemon work without blocking HTTP workers. Loopback-only mirror
-endpoints configure an allowed folder, report progress, request a pass and queue pins. The
-mirror's queue and store lock serialize these changes. Imports and inboxes refuse mirrors.
-Scope and cap eviction considers whole sessions, preserves pins and origin-missing content,
-and removes only manifested files. Moves reserve readers and release mappings first, including
-on Windows; pending file and directory moves are journaled. A stopped origin leaves the last
-successful per-session time in the listing. No mirror read asks the origin to answer a tool.
+`MirrorService` publishes status snapshots; HTTP polling does not scan the mirror. Local controls
+configure an admitted folder, report the gate, migrate explicitly, page migrated file records and
+preview cleanup. Requests and replies are bounded to 64 KiB and 1 MiB. Imports and inboxes still
+refuse mirrors. Stored offsets remain the source of read alignment; migration never re-correlates
+logs. No mirror read asks the master to answer a tool.
 
 ## PhotonVision context in the capture
 

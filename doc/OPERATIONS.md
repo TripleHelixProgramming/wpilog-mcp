@@ -792,3 +792,20 @@ acquisition/history facts without reading sample data.
 This is the server selection checkpoint. The current Explorer source picker and direct remote
 visualization migration are pending; this checkpoint does not promise the new multiple-root UI.
 Import destination preferences and old Show All Sources controls cannot override MCP selection.
+
+### Inspecting the mirror migration checkpoint
+
+M4 intentionally pauses mirror downloads. Existing local copies remain readable as their own
+source, and direct remote visualization continues to use the selected server.
+
+1. Read `GET /store/mirror` on the local server. A legacy mirror reports `migration_required`.
+2. For an explicit upgrade, send its exact store UUID to `POST /store/mirror/migrate`. Poll status
+   until `writer_not_ready` or `error`; an error leaves the recordings intact.
+3. Inspect migrated records with `GET /store/mirror/files?offset=0&limit=100`. Advance by the number
+   returned until `has_more` is false; `total` is the full count. Legacy copies are unconfirmed.
+4. Cleanup previews identify exact records, hashes and byte totals. Cleanup and re-inclusion
+   currently refuse with `WRITER_NOT_READY`; they change no payload or exclusion.
+
+For master migration, use the local job route described in
+[Explicit replica-format migration](STANDALONE.md#explicit-replica-format-migration). The checkpoint
+requires further publication and platform validation before operational mirror upgrades.

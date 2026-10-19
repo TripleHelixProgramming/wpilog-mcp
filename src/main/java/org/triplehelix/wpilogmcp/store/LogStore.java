@@ -428,6 +428,79 @@ public final class LogStore implements AutoCloseable {
     return new StoreFiles(root, security, this::published).read(root.resolve("store.json"), Header.class).origin();
   }
 
+  public Header replicaHeader() throws IOException {
+    return new StoreFiles(root, security).read(root.resolve("store.json"), Header.class);
+  }
+  public MirrorCapacity.Snapshot mirrorCapacity(org.triplehelix.wpilogmcp.config.MirrorConfig config) throws IOException {
+    return MirrorCapacity.measure(root, security, config).snapshot();
+  }
+
+  private static final java.util.concurrent.ThreadPoolExecutor REPLICA_PREPARERS =
+      new java.util.concurrent.ThreadPoolExecutor(0, 2, 30, java.util.concurrent.TimeUnit.SECONDS,
+          new java.util.concurrent.SynchronousQueue<>(), task -> {
+            var thread = new Thread(task, "store-replica-migration"); thread.setDaemon(true); return thread;
+          });
+  private final java.util.concurrent.atomic.AtomicBoolean replicaPreparing = new java.util.concurrent.atomic.AtomicBoolean();
+
+  /** Explicit migration preserves payloads. Preparation is bounded and off-queue; only publication
+   * takes the store lock, and no user continuation runs until that lock has been released. */
+  public CompletableFuture<ReplicaCatalog> migrateReplicas(String expectedStoreId) {
+    return migrateReplicas(expectedStoreId, null, () -> ReplicaMigration.prepare(root, security, java.time.Clock.systemUTC()));
+  }
+  CompletableFuture<ReplicaCatalog> migrateReplicas(String expectedStoreId, org.triplehelix.wpilogmcp.config.MirrorConfig config) {
+    return migrateReplicas(expectedStoreId, config, () -> ReplicaMigration.prepare(root, security, java.time.Clock.systemUTC()));
+  }
+  @FunctionalInterface interface ReplicaPreparation { ReplicaMigration.Prepared prepare() throws IOException; }
+  CompletableFuture<ReplicaCatalog> migrateReplicas(String expectedStoreId,
+      org.triplehelix.wpilogmcp.config.MirrorConfig config, ReplicaPreparation preparation) {
+    var result = new CompletableFuture<ReplicaCatalog>();
+    if (!replicaPreparing.compareAndSet(false, true)) return CompletableFuture.failedFuture(new IOException("BUSY: replica migration already running"));
+    pending.incrementAndGet();
+    try {
+      REPLICA_PREPARERS.execute(() -> {
+        ReplicaMigration.Prepared prepared = null;
+        MirrorCapacity.Reservation reservation = null;
+        try {
+          if (!replicaHeader().id().equals(expectedStoreId)) throw new IOException("SOURCE_UNAVAILABLE: store identity changed");
+          prepared = preparation.prepare();
+          if (!prepared.before().id().equals(expectedStoreId)) throw new IOException("SOURCE_UNAVAILABLE: store identity changed");
+          if (config != null && prepared.before().replicas() == null) {
+            long newBytes = StoreFiles.JSON.toJson(prepared.after()).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            long oldBytes = StoreFiles.JSON.toJson(prepared.before()).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            reservation = MirrorCapacity.measure(root, security, config).reserveMetadata(Math.addExact(oldBytes, Math.multiplyExact(2, newBytes)));
+          }
+          var owned = prepared;
+          var charged = reservation;
+          var completed = new CompletableFuture<Void>();
+          queue.execute(() -> {
+            Header published = null; Throwable failure = null;
+            try (owned; var lock = StoreLock.acquire(root, security)) {
+              if (queue.isShutdown() || result.isCancelled()) throw new IOException("Migration cancelled before publication");
+              published = ReplicaMigration.publish(root, new StoreFiles(root, security), owned);
+            } catch (Throwable e) { failure = e; }
+            finally { if (charged != null) charged.close(); }
+            // Release ownership before completing a future: its callback may reenter the store.
+            replicaPreparing.set(false); pending.decrementAndGet();
+            completed.complete(null);
+            if (failure == null) {
+              published(root.resolve("store.json"), published); result.complete(published.replicas());
+            } else result.completeExceptionally(failure);
+          });
+          // Keep the two preparation slots charged through publication and lease release.
+          // Cancelling the public future does not release an outstanding OS read's slot.
+          completed.join();
+        } catch (Throwable failure) {
+          if (prepared != null) prepared.close();
+          if (reservation != null) reservation.close();
+          replicaPreparing.set(false); pending.decrementAndGet(); result.completeExceptionally(failure);
+        }
+      });
+    } catch (java.util.concurrent.RejectedExecutionException busy) {
+      replicaPreparing.set(false); pending.decrementAndGet(); result.completeExceptionally(new IOException("BUSY: two replica migrations are preparing; retry", busy));
+    }
+    return result;
+  }
+
   @FunctionalInterface interface CaptureOperation<T> { T run(StoreFiles files) throws IOException; }
 
   /** Capture manifest changes share the import queue and the cross-process store lock. */
@@ -444,17 +517,22 @@ public final class LogStore implements AutoCloseable {
   private <T> CompletableFuture<T> mutate(CaptureOperation<T> operation, boolean allowMirror) {
     var result = new CompletableFuture<T>();
     queue.execute(() -> {
+      T value = null; Throwable failure = null;
+      var publications = new ArrayList<Map.Entry<Path, Object>>();
       try (var lock = StoreLock.acquire(root, security)) {
-        var io = new StoreFiles(root, security, this::published);
+        var io = new StoreFiles(root, security, (path, record) -> publications.add(Map.entry(path, record)));
         if (!StoreCatalog.isStore(root)) io.write(root.resolve("store.json"),
             new Header(StoreManifest.FORMAT_VERSION, Instant.now().toString(), UUID.randomUUID().toString(), List.of()));
         var header = io.read(root.resolve("store.json"), Header.class);
-        if (header.formatVersion() != StoreManifest.FORMAT_VERSION) throw new IOException("Unsupported store format version " + header.formatVersion());
+        if (!StoreManifest.readable(header.formatVersion())) throw new IOException("Unsupported store format version " + header.formatVersion());
         if (header.mirror() && !allowMirror) throw new IOException("A mirror is written only by its mirror synchronization");
-        var value = operation.run(io);
-        if (allowMirror) publishInventory();
-        result.complete(value);
-      } catch (Throwable e) { result.completeExceptionally(e); }
+        value = operation.run(io);
+      } catch (Throwable e) { failure = e; }
+      // Observers and future completions can run arbitrary caller code. Store ordering remains
+      // on the queue, but none of those callbacks inherits the cross-process file lock.
+      for (var publication : publications) published(publication.getKey(), publication.getValue());
+      if (failure == null && allowMirror) try { publishInventory(); } catch (Throwable e) { failure = e; }
+      if (failure == null) result.complete(value); else result.completeExceptionally(failure);
     });
     return result;
   }
@@ -688,7 +766,7 @@ public final class LogStore implements AutoCloseable {
     catch (IOException e) { return false; }
   }
 
-  /** Pins are local cache policy, not a change to the origin's session or a robot command. */
+  /** Pins are acquisition inclusions, not permission to exceed capacity or change the master. */
   public CompletableFuture<StoreManifest.MirrorOrigin> pin(String sessionId, boolean pinned) {
     StoreFiles.component(sessionId);
     return mutate(io -> {
@@ -697,7 +775,13 @@ public final class LogStore implements AutoCloseable {
       var ids = new java.util.TreeSet<>(origin.pinnedSessions());
       if (pinned) ids.add(sessionId); else ids.remove(sessionId);
       var updated = new MirrorOrigin(origin.storeId(), origin.url(), origin.lastSync(), List.copyOf(ids), origin.sessions());
-      io.write(root.resolve("store.json"), header.withOrigin(updated)); return updated;
+      header = header.withOrigin(updated);
+      if (header.replicas() != null) {
+        var catalog = header.replicas();
+        header = header.withReplicas(new ReplicaCatalog(catalog.schemaVersion(), catalog.epoch(), Math.addExact(catalog.revision(), 1),
+            catalog.files(), List.copyOf(ids), catalog.exclusions()));
+      }
+      io.write(root.resolve("store.json"), header); return updated;
     }, true);
   }
 

@@ -58,7 +58,7 @@ class StoreSyncConformanceTest {
       http.setStoreDirectories(Set.of(a.root())); http.start();
       String url = "http://127.0.0.1:" + http.getPort();
       if (mirror) {
-        var result = b.mirror(new org.triplehelix.wpilogmcp.config.MirrorConfig(url, b.root(), 365_000,
+        var result = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(b, new org.triplehelix.wpilogmcp.config.MirrorConfig(url, b.root(), 365_000,
             Long.MAX_VALUE, List.of(), List.of(), 30, 0), p -> {}).get();
         assertEquals("synchronized", result.state(), result.toString());
       } else {

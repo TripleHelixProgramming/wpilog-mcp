@@ -62,7 +62,7 @@ public final class HttpRemoteFiles implements RemoteFiles {
     var object = json("", null);
     if (object.has("stores")) throw new IOException("Peer has multiple stores or none; select one with ?store=<id>");
     var description = StoreJson.JSON.fromJson(object, StoreDoor.Description.class);
-    if (description.id() == null || description.formatVersion() != StoreManifest.FORMAT_VERSION) throw new IOException("Unsupported peer store format");
+    if (description.id() == null || !StoreManifest.readable(description.formatVersion())) throw new IOException("Unsupported peer store format");
     return description;
   }
   public List<StoreManifest.Robot> robots() throws IOException {

@@ -99,7 +99,7 @@ class SessionTransferReadTest {
         // A mirror leaves every capture with its origin, a peer's copies included: a laptop records
         // live data itself. These are the capture store's own records, not a fixture's.
         var mirror = manager.stores().store(temp.resolve("mirror"));
-        var mirrored = mirror.mirror(new MirrorConfig(url(peerHttp), mirror.root(), 14, 1 << 20,
+        var mirrored = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, new MirrorConfig(url(peerHttp), mirror.root(), 14, 1 << 20,
             List.of(), List.of(), 30, 0), p -> {}, CLOCK, StoreSync::http).get(30, TimeUnit.SECONDS);
         assertEquals("synchronized", mirrored.state(), mirrored.toString());
         assertEquals(0, mirrored.bytesCopied(), mirrored.toString());

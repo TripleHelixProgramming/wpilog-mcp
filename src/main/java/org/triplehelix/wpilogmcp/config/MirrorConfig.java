@@ -12,10 +12,15 @@ import java.util.Set;
 import java.util.function.UnaryOperator;
 import org.triplehelix.wpilogmcp.sync.HttpRemoteFiles;
 
-/** A mirror has one origin and an explicit retention policy; it never becomes an import target. */
+/** Scope selects acquisitions only; neither scope changes nor capacity authorize deletion. */
 public record MirrorConfig(String origin, Path folder, int days, long maxSizeBytes,
-    List<String> robots, List<String> events, int intervalSec, long rateBytes) {
-  public static final Set<String> KEYS = Set.of("origin", "folder", "days", "max_size_gb", "robots", "events", "interval_sec", "rate_bytes");
+    List<String> robots, List<String> events, int intervalSec, long rateBytes,
+    String scope, long metadataReserveBytes) {
+  public static final Set<String> KEYS = Set.of("origin", "folder", "days", "max_size_gb", "robots", "events", "interval_sec", "rate_bytes", "scope", "metadata_reserve_bytes");
+  public MirrorConfig(String origin, Path folder, int days, long maxSizeBytes,
+      List<String> robots, List<String> events, int intervalSec, long rateBytes) {
+    this(origin, folder, days, maxSizeBytes, robots, events, intervalSec, rateBytes, "filtered", 1_048_576);
+  }
   public MirrorConfig {
     origin = new HttpRemoteFiles(origin).url();
     folder = folder.toAbsolutePath().normalize();
@@ -24,6 +29,9 @@ public record MirrorConfig(String origin, Path folder, int days, long maxSizeByt
     if (maxSizeBytes <= 0) throw new IllegalArgumentException("mirror.max_size_gb must be positive");
     if (intervalSec <= 0) throw new IllegalArgumentException("mirror.interval_sec must be positive");
     if (rateBytes < 0) throw new IllegalArgumentException("mirror.rate_bytes must be nonnegative");
+    if (!Set.of("all", "filtered").contains(scope)) throw new IllegalArgumentException("mirror.scope must be all or filtered");
+    if (metadataReserveBytes < 4096 || metadataReserveBytes > 128L * 1024 * 1024)
+      throw new IllegalArgumentException("mirror.metadata_reserve_bytes must be between 4096 and 134217728");
   }
 
   public static MirrorConfig parse(JsonElement value, UnaryOperator<String> expand) throws ConfigException {
@@ -43,7 +51,9 @@ public record MirrorConfig(String origin, Path folder, int days, long maxSizeByt
       return new MirrorConfig(url, folder, (int) integer(block.get("days"), "days", 14, Integer.MAX_VALUE),
           (long) (gb * 1_000_000_000), strings(block.get("robots"), "robots"), strings(block.get("events"), "events"),
           (int) integer(block.get("interval_sec"), "interval_sec", 30, Integer.MAX_VALUE),
-          integer(block.get("rate_bytes"), "rate_bytes", 0, Long.MAX_VALUE));
+          integer(block.get("rate_bytes"), "rate_bytes", 0, Long.MAX_VALUE),
+          block.has("scope") ? string(block.get("scope"), "scope") : "filtered",
+          integer(block.get("metadata_reserve_bytes"), "metadata_reserve_bytes", 1_048_576, 134_217_728));
     } catch (IllegalArgumentException e) { throw new ConfigException("Invalid mirror configuration: " + e.getMessage(), e); }
   }
   private static String string(JsonElement value, String key) throws ConfigException {

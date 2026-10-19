@@ -50,7 +50,9 @@ class ReadLibraryTest {
     }
   }
 
-  @Test void javaConsumerUsesOnlyTheReaderJarAndWritesNoHomeOrCache() throws Exception {
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(ints = {1, 2})
+  void javaConsumerUsesOnlyTheReaderJarAndWritesNoHomeOrCache(int format) throws Exception {
     var jar = Path.of(System.getProperty("read.testJar", "build/missing-reader-library.jar")).toAbsolutePath();
     assertTrue(Files.isRegularFile(jar), "build must produce the standalone read library");
     var log = temp.resolve("input.wpilog");
@@ -61,7 +63,7 @@ class ReadLibraryTest {
       writer.append(id, 3_000_000, WpilogWriter.encodeInt64(6L));
       writer.finish(id, 3_000_000);
     }
-    var store = storeFixture();
+    var store = storeFixture(format);
     var source = temp.resolve("Consumer.java");
     Files.writeString(source, """
         import java.nio.file.*;
@@ -94,6 +96,10 @@ class ReadLibraryTest {
               var inventory = catalog.snapshot();
               if (!inventory.problems().isEmpty()) throw new AssertionError(inventory.problems());
               var facts = inventory.stores().get(0);
+              if (facts.header().formatVersion() != Integer.parseInt(args[2])) throw new AssertionError("store format changed");
+              if (facts.header().formatVersion() == 2 && (facts.header().replicas().files().size() != 2
+                  || facts.header().replicas().files().stream().anyMatch(f -> !f.verificationBasis().equals("legacy_unconfirmed"))))
+                throw new AssertionError("legacy replica evidence changed");
               if (!facts.header().mirror() || facts.files().size() != 2 || inventory.sharedSystemLogs().size() != 1)
                 throw new AssertionError("store facts or shared system receipts missing");
               Path wpilog = facts.files().stream().filter(f -> f.file().kind().equals("wpilog")).findFirst().orElseThrow().path();
@@ -123,7 +129,7 @@ class ReadLibraryTest {
     var output = temp.resolve("consumer.out");
     var javaExe = Path.of(System.getProperty("java.home"), "bin", System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java");
     var builder = new ProcessBuilder(javaExe.toString(), "-Duser.home=" + home,
-        "-cp", jar + java.io.File.pathSeparator + temp, "Consumer", log.toString(), store.toString());
+        "-cp", jar + java.io.File.pathSeparator + temp, "Consumer", log.toString(), store.toString(), Integer.toString(format));
     builder.environment().put("WPILOG_DISK_CACHE_DIR", cache.toString());
     var process = builder.redirectErrorStream(true).redirectOutput(output.toFile()).start();
     try {
@@ -144,7 +150,7 @@ class ReadLibraryTest {
     } finally { example.destroyForcibly(); }
   }
 
-  private Path storeFixture() throws Exception {
+  private Path storeFixture(int format) throws Exception {
     var root = Files.createDirectories(temp.resolve("store"));
     var robot = Files.createDirectories(root.resolve("robots/fixture-serial"));
     var session = Files.createDirectories(robot.resolve("sessions/2026-01-01/session-id"));
@@ -164,6 +170,13 @@ class ReadLibraryTest {
         new org.triplehelix.wpilogmcp.store.StoreManifest.Matching("by_correlation", anchor.sha256(), 250_000, 0.9, 1_000_000, 1, "data"));
     var header = new org.triplehelix.wpilogmcp.store.StoreManifest.Header(1, when, "mirror-id", List.of())
         .withOrigin(new org.triplehelix.wpilogmcp.store.StoreManifest.MirrorOrigin("origin-id", "http://fixture.invalid", when, List.of(), java.util.Map.of()));
+    if (format == 2) {
+      var entries = List.of(anchor, companion).stream().map(file -> new org.triplehelix.wpilogmcp.store.ReplicaCatalog.Entry(
+          java.util.UUID.randomUUID().toString(), null, root.relativize(session.resolve(file.path())).toString().replace('\\', '/'),
+          file.sha256(), file.sizeBytes(), file.kind(), "session-id", "completed_import", "legacy_unconfirmed", true, null)).toList();
+      header = header.withReplicas(new org.triplehelix.wpilogmcp.store.ReplicaCatalog(1, java.util.UUID.randomUUID().toString(), 1,
+          entries, List.of(), List.of()));
+    }
     var identity = new org.triplehelix.wpilogmcp.store.StoreManifest.Robot("fixture-serial", "fixture-serial", "Fixture", "", "logged");
     var manifest = new org.triplehelix.wpilogmcp.store.StoreManifest.Session("session-id", when, when, "log", null, null, null, null,
         List.of(anchor, companion));

@@ -139,8 +139,8 @@ the pit does. A record whose capture reopens is dropped, and written again when 
 `/store/sessions`; the file and prefix-hash routes serve only committed byte lengths. Peer sync
 carries the whole shared index; a mirror carries the shared files that its sessions' spans
 select. Both verify the advertised hash, keep provenance, and resume growing text through the
-held-prefix check. Shared bytes in a mirror count once toward its cap and stay until their last
-retained session is evicted, provided the origin still holds them. A manifest ahead of its local
+held-prefix check. Shared bytes in a mirror count once toward its logical cap and remain held;
+M4 performs no automatic eviction. A manifest ahead of its local
 text returns `not_applicable` naming the collecting server: synchronize the copy, or query that
 server.
 
@@ -831,10 +831,15 @@ loopback connection, including this picker.
 
 ### The Mirror
 
-A mirror is a local cache of a team's store, read by every tool while offline. The origin must
-serve its HTTP door on an address this laptop can reach. The local server owns copying and
-retention; imports, assignments, capture writers, inbox processing, and peer sync cannot write
-into a mirror. Strays are reported and left alone. SSH contact history is never copied.
+A mirror is a separately selected, engine-owned local copy. Ordinary imports, assignments,
+capture, inbox and union peer sync cannot write into it. Manually placed files remain unmanaged.
+Remote visualization works directly against the selected server and does not require a mirror.
+
+**M4 migration checkpoint:** automatic mirror downloads are paused. Format-1 mirrors report
+`migration_required`; explicitly upgraded mirrors report `writer_not_ready`. Neither state
+contacts the origin or deletes held files. Transfer and cleanup execution require M5's generation
+publication owner; peer offers and reconciliation follow in M6. Do not interpret configuration
+or migration as completed synchronization.
 
 ```yaml
 servers:
@@ -843,8 +848,10 @@ servers:
     mirror:
       origin: http://pit-server:2363
       folder: ~/wpilog-mirror
+      scope: filtered
       days: 14
       max_size_gb: 20
+      metadata_reserve_bytes: 1048576
       robots: []
       events: []
       interval_sec: 30
@@ -853,57 +860,70 @@ servers:
 
 | Key | Meaning |
 |-----|---------|
-| `mirror.origin` | HTTP(S) origin URL; append `?store=<id>` if that server exposes several stores |
-| `mirror.folder` | Empty destination, or this origin's existing mirror; also admitted as a log directory |
-| `mirror.days` | Nonnegative calendar window in days, default `14` |
-| `mirror.max_size_gb` | Positive decimal GB cap, default `20` (20,000,000,000 bytes) |
-| `mirror.robots` | Robot serials to include; empty means all |
-| `mirror.events` | Whole named events to include beyond the day window, subject to the robot filter |
-| `mirror.interval_sec` | Positive integer seconds between attempts, default `30` |
-| `mirror.rate_bytes` | Nonnegative integer bytes per second; default `0` means unlimited |
+| `mirror.origin` | HTTP(S) master URL; append `?store=<id>` when several stores are exposed |
+| `mirror.folder` | Empty destination or this origin's existing mirror, admitted as a log directory |
+| `mirror.scope` | `filtered` (default) or explicit `all`; `all` includes unknown dates and ignores robot/event/day filters |
+| `mirror.days` | Nonnegative acquisition window in days, default `14`; never a retention timer |
+| `mirror.max_size_gb` | Positive decimal GB cap, default `20`, including engine-owned held, partial and metadata bytes |
+| `mirror.metadata_reserve_bytes` | Metadata headroom inside the cap, default `1048576`, range 4096–134217728; not extra disk allowance |
+| `mirror.robots` | In filtered scope, robot IDs to include; empty means all |
+| `mirror.events` | In filtered scope, named events OR the date window, both subject to the robot filter |
+| `mirror.interval_sec` | Positive seconds between status/admission attempts, default `30` |
+| `mirror.rate_bytes` | Future transfer rate: nonnegative bytes/second, default `0` means unlimited; no downloads in M4 |
 
-The mirror copies each session's finished files with the system text that belongs to them, except
-the origin's own captures: it copies the logs the origin pulled from robots and the files imported
-or uploaded into it. A laptop records live data itself from the pit's gateway
-([Live source on a laptop](#live-source-on-a-laptop)). A mirrored session lists only the files
-the mirror holds. Each capture's [clock record](#clock-records) comes instead of the capture, so
-kernel lines keep the pit's match times. The origin measures each file it pulls against its
-capture of the session, and records the capture's hash, or its recording when the capture was
-still recording. A REV log and the robot's log measured against one capture are paired by
-combining the two offsets, in the mirror as on the pit: the REV tools report `COMBINED` with both
-measurements, and nothing is correlated again.
+Scope and pins govern new acquisition only. Unknown date evidence does not match the date
+window. Pins are explicit acquisition inclusions and cannot bypass capacity. Master deletion,
+clock advance, narrowed filters and reduced capacity never authorize automatic removal. Finalized
+captures and completed rollover members are eligible even while the next member grows; active
+bytes are excluded. Existing captures, clock records, system-text prefixes, manifests and partial
+journals remain intact. New system-text prefix transfers remain disabled pending immutable
+version admission.
 
-Pinned session IDs override the window and robot filter. The cap favors newer sessions and
-evicts the oldest unpinned ones first. Pins can exceed the cap; that is reported, and none is
-deleted. A copy whose origin no longer advertises its held content is retained with a reason,
-not deleted on an assumption. Retention deletes only manifested mirror files, never a stray.
-System text that grows on the origin advances to its current prefix each pass, using the same
-content proof and resume engine as peer sync. Session IDs follow directory renames and robot
-moves.
+Format 2 is an explicit upgrade, not an automatic rewrite on read or startup. Migration hashes
+finalized payloads and checks their receipt boundaries before publishing the new header. It retains
+`.replicas/format-1-store.json` as a readable backup and `.replicas/upgrade.json` as the preparation
+record. Sessions, original provenance, pins and payloads are preserved. A failed marker write leaves
+format 1 readable; retry is safe. Old binaries refuse format 2. Do not downgrade by deleting replica
+fields or replacing the marker: use the backup for diagnosis and preserve the complete store.
+Native filesystem durability and power-loss recovery still require platform validation.
 
-Captures that 0.10.0-dev1 to dev4 copied stay as they were: listed and readable, never refreshed,
-and counted toward the cap, until their session leaves the window or the cap evicts it.
+A master migration assigns UUID file/version identities and exact size/hash/finalization records.
+A legacy mirror's old `verified` bit proves only transfer integrity: its migrated entries are
+`legacy_unconfirmed`, without invented master identity or confirmation. No peer claim promotes
+verification. Master catalog record serving and receipt reconciliation are M6 work. Source-reference
+`file_version` reads are not enabled by this metadata checkpoint; existing hash-pinned reads remain
+available through their selected source.
 
-`list_available_logs` adds `origin`, `complete`, `growing`, `last_sync`, and `age_sec` to a
-mirrored log's `session`. `complete` means every file the mirrored session lists was verified
-against the origin's hash; `growing` is true only for a copy of an open capture that an earlier
-version made. The bytes, provenance, and recorded matching offsets are the origin's; no REV
-correlation is rerun. A disconnected origin leaves the existing listing and files readable.
+`GET /store/mirror` reports separate replica and capacity summaries. Capacity counts logical owned
+bytes, not filesystem allocation, free space or measured heap. The migration reservation includes
+backup, journal and temporary marker bytes. Insufficient capacity refuses migration before writing;
+increase the cap rather than deleting held payloads. Metadata preparation has two server-wide slots,
+one per store, with no waiting queue; cancellation keeps the slot until preparation unwinds. Limits
+are 4096 replica records, 32768 inspected paths and a 4 MiB header. Oversized old stores are refused
+without truncation or data loss.
 
-Local user controls require a loopback connection and the normal Origin check:
+Master stores use the separate [local migration job route](../STANDALONE.md#explicit-replica-format-migration);
+mirrors use the capacity-checked controls below. Local controls require direct loopback access
+and the normal Origin checks:
 
 | Endpoint | Result |
 |----------|--------|
-| `GET /store/mirror` | State (`disabled`, `waiting`, `synchronizing`, `synchronized`, `offline`, `partial`, `error`), configuration, last sync and age, remaining file/byte counts, result and origin policy |
-| `POST /store/mirror/configure` | The mirror block as JSON; starts background synchronization, returns 202; folder must already be allowed by configuration or a directory lease, and must not be the live folder or a `servers.yaml` capture's store |
-| `POST /store/mirror/sync` | `{}` requests Sync Now, returns 202; an active pass returns 409 |
-| `POST /store/mirror/pin_session` | `{ "session_id": "..." }` queues a pin; 202; polling status shows it applied |
-| `POST /store/mirror/unpin_session` | The same body removes the pin; 202 |
-| `DELETE /store/mirror` | Stops future passes and leaves existing files intact; 409 while the mirror or the live source is being configured |
+| `GET /store/mirror` | State, configuration, historical sync time/age, origin policy, replica summary and logical capacity snapshot |
+| `POST /store/mirror/configure` | Mirror block; 202, then `migration_required` or `writer_not_ready`; folder must be admitted and distinct from live/capture stores |
+| `POST /store/mirror/sync` | `{}`; 202, reevaluates the gate without contacting the master; 409 when an operation is active |
+| `POST /store/mirror/migrate` | `{ "store_id": "<mirror UUID>" }`; 202, poll status until `writer_not_ready` or `error`; identity mismatch refuses publication |
+| `GET /store/mirror/files?offset=0&limit=100` | Migrated entries, catalog epoch/revision and true total; 1–256 rows, byte-shortened pages advance by returned row count |
+| `POST /store/mirror/cleanup_preview` | `{ "keys": ["<replica key>"] }`; 1–32 exact entries with versions/hashes, byte total and prospective acquisition exclusions; revision-bound and non-destructive |
+| `POST /store/mirror/cleanup` | 409 `WRITER_NOT_READY`; no payload or exclusion changes until M5 supplies reader retirement and execution receipts |
+| `POST /store/mirror/reinclude` | Same M5 gate; no exclusion changes in M4 |
+| `POST /store/mirror/pin_session` | `{ "session_id": "..." }`; 202, queues an acquisition inclusion and advances the format-2 catalog revision |
+| `POST /store/mirror/unpin_session` | Same body; removes the inclusion without removing any held bytes |
+| `DELETE /store/mirror` | Stops future attempts and leaves files intact; 409 during configuration |
 
-These controls are endpoints for a person's UI actions, not assistant tools. Mirror configuration
-starts after the HTTP listener, so an unavailable or slow origin cannot delay daemon health.
-The mirror uses additive fields in store format 1 and refuses a different origin store ID.
+Requests are bounded to 64 KiB, replies to 1 MiB. These are local UI controls, not assistant tools.
+Cleanup previews are preparation only: affected-view enumeration, durable exclusion execution and
+read-lease retirement belong to M5. The old listing's `complete`/`growing` fields retain their
+historical meaning; neither asserts fresh master coverage or authoritative verification.
 
 #### Live source on a laptop
 
@@ -925,11 +945,8 @@ configures `capture`, the status reports that capture, and both changes are refu
 editor cannot redirect a pit's robot capture. Pulling robot logs, the gateway and context
 providers stay in `servers.yaml`. The live tools answer from whichever capture is current.
 
-A prefix that changes repeatedly during one pass is retried once, then reported as partial
-until the next interval; the journal keeps its place. Superseded private partial files are
-removed after successful verification. The cap counts session payloads; manifests and the
-private staging copy needed to verify a replacement require temporary additional space.
-A growing local prefix can be evicted only when the origin's prefix hash proves it still exists.
+Legacy mirror prefix journals remain preserved during M4. No new growing-prefix transfer,
+automatic eviction or replacement runs until the new publication owner is integrated.
 
 ### Uploading from a laptop
 

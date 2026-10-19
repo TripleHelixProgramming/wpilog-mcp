@@ -115,6 +115,13 @@ final class StoreFiles {
   }
 
   void write(Path path, Object value) throws IOException {
+    write(path, value, false);
+  }
+
+  /** Migration forces the prepared bytes before the format marker can expose them. */
+  void writeDurable(Path path, Object value) throws IOException { write(path, value, true); }
+
+  private void write(Path path, Object value, boolean durable) throws IOException {
     check(path);
     Files.createDirectories(path.getParent());
     check(path);
@@ -126,6 +133,9 @@ final class StoreFiles {
       if (Files.size(temporary) > MAX_MANIFEST_BYTES) {
         throw new IOException("Manifest is too large (maximum " + MAX_MANIFEST_BYTES
             + " bytes); previous manifest retained: " + path);
+      }
+      if (durable) try (var channel = java.nio.channels.FileChannel.open(temporary, java.nio.file.StandardOpenOption.WRITE)) {
+        channel.force(true);
       }
       // A crash leaves the old manifest or the complete new one, never a half-written catalog.
       // A filesystem without atomic rename is refused rather than weakening that guarantee.

@@ -160,6 +160,7 @@ public class HttpTransport {
   /** The guard both local controls take, so a test can hold it as a change in progress would. */
   java.util.concurrent.atomic.AtomicBoolean localControlsGuard() { return localControls; }
   private final MirrorEndpoint mirrorEndpoint = new MirrorEndpoint(stores, () -> this.liveSourceEndpoint.folder(), localControls);
+  private final StoreReplicaEndpoint replicaEndpoint = new StoreReplicaEndpoint(stores, storeDoor);
   /** The capture the live tools answer from: the one servers.yaml configured, or a laptop's live
    * source set at run time, or none. */
   private final java.util.concurrent.atomic.AtomicReference<org.triplehelix.wpilogmcp.capture.LiveCapture> liveCapture =
@@ -308,7 +309,8 @@ public class HttpTransport {
     server.createContext("/store", storeStreaming.handle(counted(this::handleStore)));
     server.createContext(LocalIngestionEndpoint.PATH, storeStreaming.handle(counted(this::handleLocalIngestion)));
     server.createContext(StoreSyncEndpoint.PATH, counted(this::handleSync));
-    server.createContext(MirrorEndpoint.PATH, counted(this::handleMirror));
+    server.createContext(MirrorEndpoint.PATH, storeStreaming.handle(counted(this::handleMirror)));
+    server.createContext(StoreReplicaEndpoint.PATH, storeStreaming.handle(counted(this::handleReplica)));
     server.createContext(LiveSourceEndpoint.PATH, counted(this::handleLiveSource));
     // Direct handoff grows beyond four workers as soon as they are busy. A waiting queue
     // would keep health behind four streaming data/store responses until that queue filled.
@@ -404,6 +406,7 @@ public class HttpTransport {
       return;
     }
     mirrorEndpoint.close();
+    replicaEndpoint.close();
     liveSourceEndpoint.close();
     followEndpoint.close();
     readEndpoint.close();
@@ -966,6 +969,15 @@ public class HttpTransport {
       sendError(exchange, 403, "Mirror controls require a loopback connection"); return;
     }
     noteMcpActivity(); mirrorEndpoint.handle(exchange);
+  }
+
+  private void handleReplica(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) { sendError(exchange, 403, "Forbidden: invalid origin"); return; }
+    if (forwarded(exchange) || !exchange.getRemoteAddress().getAddress().isLoopbackAddress()) {
+      sendError(exchange, 403, "Replica migration controls require a direct loopback connection"); return;
+    }
+    noteMcpActivity(); replicaEndpoint.handle(exchange);
   }
 
   private void handleLiveSource(HttpExchange exchange) throws IOException {

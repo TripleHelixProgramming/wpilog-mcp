@@ -9,12 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- Automatic mirror synchronization is paused for the M4 preservation checkpoint. Previously
+  scope and capacity could evict collected files and the writer excluded finalized captures.
+  Legacy mirrors now require explicit format-2 migration; old files, pins and journals survive
+  without treating transfer verification as master confirmation. Acquisition scope, bounded
+  metadata/disk admission and cleanup previews are defined. Downloads and cleanup execution
+  remain disabled until the generation publication checkpoint. Older binaries refuse format 2.
+
 - MCP log discovery now requires an explicit source when multiple stores or directories are
   configured, instead of preferring an import destination or blending roots. `list_source_scopes`
   returns bounded choices, including unavailable roots. Scoped relative reads and visualization
   API 2 references retain the selected server/store/directory; equal hashes in another copy
   cannot silently substitute for it. API 1 rejects qualified references and views. Mirror
-  synchronization changes remain later checkpoints. `list_available_logs` no longer returns
+  transfer publication and peer synchronization remain later checkpoints. `list_available_logs` no longer returns
   `source_sync`, `source_files`, `excluded_directories` or `preferred_store_id`; its legacy `view`
   parameter is validated but has no effect.
 

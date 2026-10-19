@@ -198,13 +198,13 @@ class SystemTextTransferTest {
     pulledBeside(capture); // A mirror copies a session for the logs the pit pulled from its robot.
     var mirror = manager.stores().store(temp.resolve("mirror"));
     var config = new MirrorConfig(url(), mirror.root(), 14, 1000000, List.of(), List.of(), 30, 0);
-    var mirrored = mirror.mirror(config, p -> {}, WALL, StoreSync::http).get(); assertEquals("synchronized", mirrored.state(), mirrored::toString);
+    var mirrored = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config, p -> {}, WALL, StoreSync::http).get(); assertEquals("synchronized", mirrored.state(), mirrored::toString);
     assertEquals(1, SystemLogIndex.read(new StoreFiles(mirror.root(), manager.testGetSecurityValidator()), mirror.root().resolve("robots").resolve(SERIAL)).files().size());
     assertSearch(StoreCatalog.readManaged(copy.root(), manager.testGetSecurityValidator()).files().get(0).path());
   }
   @Test void mirrorSearchesItsCopiesAndRefusesBytesThatDisagreeWithTheAdvertisedHash() throws Exception {
     var robotLog = pulledBeside(capture);
-    var bad = copy.mirror(config(), p -> {}, WALL, address -> {
+    var bad = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(copy, config(), p -> {}, WALL, address -> {
       var peer = StoreSync.http(address); var remote = peer.remote();
       return new StoreSync.Peer(peer.url(), peer.description(), peer.robots(), peer.sessions(), new RemoteFiles() {
         public List<File> list() throws java.io.IOException { return remote.list(); }
@@ -220,14 +220,14 @@ class SystemTextTransferTest {
     }).get(20, TimeUnit.SECONDS);
     assertEquals("partial", bad.state(), bad::toString); assertFalse(bad.refusals().isEmpty());
     assertFalse(Files.exists(copy.root().resolve(origin.root().relativize(kernel()))), "Unverified system bytes must not be installed");
-    var good = copy.mirror(config(), p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
+    var good = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(copy, config(), p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
     assertEquals("synchronized", good.state(), good::toString);
     assertFalse(Files.exists(copied(capture)), "The pit's capture stays at the pit");
     // From a pit that has not written the capture's clock record, kernel lines arrive without times;
     assertMirroredSearch(copied(robotLog));
     // with the record, the copy gives the pit's own times, line for line.
     assertEquals(1, origin.keepClocks().get(20, TimeUnit.SECONDS));
-    var timed = copy.mirror(config(), p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
+    var timed = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(copy, config(), p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
     assertEquals("synchronized", timed.state(), timed::toString); assertFalse(Files.exists(copied(capture)));
     assertSearch(copied(robotLog)); assertEquals(times(search(robotLog)), times(search(copied(robotLog))));
   }
@@ -254,7 +254,7 @@ class SystemTextTransferTest {
       io.write(path, s.withSystemLogs(s.systemLogs().withFiles(List.of(receipt)))); return null;
     });
     assertEquals(1, origin.keepClocks().get(20, TimeUnit.SECONDS));
-    var mirrored = copy.mirror(config(), p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
+    var mirrored = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(copy, config(), p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
     assertEquals("synchronized", mirrored.state(), mirrored::toString);
     var pit = times(search(robotLog));
     assertEquals(List.of("kernel|2|16.0|\"uptime_pairing\"", "syslog|1|15.0|\"system_time\""), pit);
@@ -284,7 +284,7 @@ class SystemTextTransferTest {
     assertEquals("uptime_pairing", kernel.get("timestamp_basis").getAsString());
   }
   @Test void aMirrorManifestAheadOfItsTextNamesTheCollectingServer() throws Exception {
-    copy.mirror(config(), p -> {}, WALL, address -> { throw new java.io.IOException("offline fixture"); }).get();
+    org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(copy, config(), p -> {}, WALL, address -> { throw new java.io.IOException("offline fixture"); }).get();
     Path destination = copy.root().resolve(origin.root().relativize(capture)); Files.createDirectories(destination.getParent());
     Files.copy(capture, destination); Files.copy(capture.resolveSibling("session.json"), destination.resolveSibling("session.json"));
     var robot = copy.root().resolve("robots").resolve(SERIAL); Files.copy(origin.root().resolve("robots").resolve(SERIAL).resolve("robot.json"), robot.resolve("robot.json"));
@@ -294,12 +294,12 @@ class SystemTextTransferTest {
   @Test void mirrorCapIncludesSharedTextAndEvictsItOnlyAfterItsLastSession() throws Exception {
     var robotLog = pulledBeside(capture);
     var cap = new MirrorConfig(url(), copy.root(), 14, Files.size(robotLog) + Files.size(kernel()), List.of(), List.of(), 30, 0);
-    var refused = copy.mirror(cap, p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
+    var refused = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(copy, cap, p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
     assertEquals("synchronized", refused.state(), refused::toString);
     assertTrue(StoreCatalog.readManaged(copy.root(), manager.testGetSecurityValidator()).sessions().isEmpty(), "The shared syslog consumes capacity too");
-    copy.mirror(config(), p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
+    org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(copy, config(), p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
     var tiny = new MirrorConfig(url(), copy.root(), 0, 1, List.of(), List.of(), 30, 0);
-    var evicted = copy.mirror(tiny, p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
+    var evicted = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(copy, tiny, p -> {}, WALL, StoreSync::http).get(20, TimeUnit.SECONDS);
     assertEquals(List.of("boot"), evicted.evicted());
     var io = new StoreFiles(copy.root(), manager.testGetSecurityValidator());
     assertTrue(SystemLogIndex.read(io, copy.root().resolve("robots").resolve(SERIAL)).files().isEmpty());
@@ -309,7 +309,7 @@ class SystemTextTransferTest {
     copy.sync(url(), 0, p -> {}, WALL, StoreSync::http).get();
     var mirror = manager.stores().store(temp.resolve("mirror"));
     var config = new MirrorConfig(url(), mirror.root(), 14, 1000000, List.of(), List.of(), 30, 0);
-    mirror.mirror(config, p -> {}, WALL, StoreSync::http).get();
+    org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config, p -> {}, WALL, StoreSync::http).get();
     var renamed = capture.getParent().resolveSibling("renamed-event");
     Files.move(capture.getParent(), renamed); capture = renamed.resolve("capture.wpilog");
     long held = Files.size(kernel());
@@ -333,7 +333,7 @@ class SystemTextTransferTest {
     var copied = copy.sync(url(), 0, p -> {}, WALL, spy).get();
     assertTrue(copied.stopped().isEmpty(), copied::toString); assertTrue(copied.refusals().isEmpty(), copied::toString);
     assertEquals(List.of(held), offsets); assertTrue(proofs.contains(held)); offsets.clear(); proofs.clear();
-    var mirrored = mirror.mirror(config, p -> {}, WALL, spy).get();
+    var mirrored = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config, p -> {}, WALL, spy).get();
     assertEquals("synchronized", mirrored.state(), mirrored::toString);
     assertEquals(List.of(held), offsets); assertTrue(proofs.contains(held));
     for (var store : List.of(copy, mirror)) {
@@ -379,10 +379,10 @@ class SystemTextTransferTest {
     long shared = SystemLogIndex.read(new StoreFiles(origin.root(), manager.testGetSecurityValidator()), origin.root().resolve("robots").resolve(SERIAL)).files().get(0).file().sizeBytes();
     long allBytes = Files.size(robotLog) + Files.size(kernel()) + Files.size(secondLog) + shared + clockBytes(capture) + clockBytes(second);
     var both = new MirrorConfig(url(), copy.root(), 14, allBytes, List.of(), List.of(), 30, 0);
-    var complete = copy.mirror(both, p -> {}, WALL, StoreSync::http).get(); assertEquals("synchronized", complete.state(), complete::toString);
+    var complete = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(copy, both, p -> {}, WALL, StoreSync::http).get(); assertEquals("synchronized", complete.state(), complete::toString);
     assertEquals(2, StoreCatalog.readManaged(copy.root(), manager.testGetSecurityValidator()).sessions().size(), "Shared bytes count once");
     var one = new MirrorConfig(url(), copy.root(), 14, allBytes - Files.size(secondLog) - clockBytes(second), List.of(), List.of(), 30, 0);
-    var trimmed = copy.mirror(one, p -> {}, WALL, StoreSync::http).get(); assertEquals(List.of("second"), trimmed.evicted());
+    var trimmed = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(copy, one, p -> {}, WALL, StoreSync::http).get(); assertEquals(List.of("second"), trimmed.evicted());
     assertFalse(Files.exists(copied(second.resolveSibling("clock").resolve("capture.wpilog.json"))), "An evicted session's clock record goes with it");
     assertSearch(copied(robotLog));
   }

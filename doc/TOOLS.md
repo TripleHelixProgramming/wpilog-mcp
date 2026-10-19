@@ -499,11 +499,15 @@ Store listings additionally return:
 
 For a mirrored log, `session` also reports `origin` (the origin URL), `complete`, `growing`,
 `last_sync` and `age_sec`. The last successful synchronization stays visible offline.
-`complete` means every file the mirrored session lists was verified; `growing` is true only
-for a copy of an open capture that 0.10.0-dev1 to dev4 made, which the mirror does not refresh.
-A mirror does not hold its origin's captures, so a capture is read on its origin.
+`complete` records the historical transfer check of every file that session lists; it does not
+assert current master coverage or authoritative verification. `growing` can describe an old open
+capture copy, which is retained without refresh. Held captures remain readable; a capture absent
+from this mirror can be read by explicitly selecting its origin.
 The `stores` summary marks `mirror` and includes its origin, pins and freshness. A mirror refuses
 imports and leaves unmanaged files untouched; pinning is a local HTTP UI control, not a tool.
+At the M4 checkpoint automatic mirror transfers are paused: format-1 mirrors require explicit
+migration, and format-2 mirrors await the M5 payload writer. The migrated file pages distinguish
+legacy transfer integrity from master confirmation. See [the mirror reference](pit-server/STANDALONE.md#the-mirror).
 
 A REV companion with corrupt recorded alignment carries `read_error` naming its manifest, as does
 one whose offset names no reference in a session with more than one recording.
@@ -1053,7 +1057,8 @@ Unmapped lines have null `timestamp_sec` and a reason; they remain visible even 
 window because their membership in it is unknown.
 
 Text files are read only to the manifest's committed length, including gzip syslog rotations.
-Text travels through peer sync and mirrors with hash verification. A receipt whose local copy
+Text travels through peer sync with hash verification. Existing mirror text prefixes are retained;
+new mirror transfers await immutable version admission. A receipt whose local copy
 is missing gives `not_applicable`, naming the collecting server and the files to synchronize.
 A shortened or unsafe receipt gives an explained error.
 

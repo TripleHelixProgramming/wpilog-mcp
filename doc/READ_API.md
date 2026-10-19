@@ -24,6 +24,10 @@ wire-contract change, and consumers must tolerate additive fields.
 returns `SnapshotDescriptor`. These are immutable public models with server paths kept as strings.
 Neither signature exposes Gson or another relocated implementation type.
 
+The catalog reader accepts both format-1 stores and explicitly migrated format-2 stores.
+Format-2 replica records retain their verification basis; the read-only library neither migrates
+stores nor promotes legacy transfer checks into master confirmation.
+
 ```java
 try (var access = LogAccess.local(List.of(Path.of("/data/logs")));
      var snapshot = access.open(Path.of("/data/logs/example.wpilog"));

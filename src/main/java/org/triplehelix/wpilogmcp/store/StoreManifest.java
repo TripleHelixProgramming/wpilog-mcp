@@ -14,12 +14,31 @@ public final class StoreManifest {
   }
 
   public static final int FORMAT_VERSION = 1;
+  public static final int REPLICA_FORMAT_VERSION = 2;
+  public static boolean readable(int version) { return version == FORMAT_VERSION || version == REPLICA_FORMAT_VERSION; }
 
   public record Header(int formatVersion, String createdAt, String id, List<Move> moves,
-      Map<String, String> addresses, boolean mirror, List<String> peers, MirrorOrigin origin) {
+      Map<String, String> addresses, boolean mirror, List<String> peers, MirrorOrigin origin,
+      ReplicaCatalog replicas) {
     public Header {
       addresses = addresses == null ? Map.of() : Map.copyOf(addresses);
       peers = peers == null ? List.of() : List.copyOf(peers);
+      if (formatVersion == REPLICA_FORMAT_VERSION && replicas == null)
+        throw new IllegalArgumentException("Format 2 requires its replica catalog");
+      if (formatVersion == FORMAT_VERSION && replicas != null)
+        throw new IllegalArgumentException("Replica records require explicit format-2 migration");
+      if (replicas != null) for (var file : replicas.files()) {
+        if (mirror && file.verificationBasis().equals("master_local")
+            || mirror && file.identity() != null && (origin == null
+                || !java.util.Objects.equals(origin.storeId(), file.identity().masterStoreId()))
+            || !mirror && (!file.verificationBasis().equals("master_local")
+                || !id.equals(file.identity().masterStoreId())))
+          throw new IllegalArgumentException("Replica authority does not belong to this store");
+      }
+    }
+    public Header(int version, String createdAt, String id, List<Move> moves, Map<String, String> addresses,
+        boolean mirror, List<String> peers, MirrorOrigin origin) {
+      this(version, createdAt, id, moves, addresses, mirror, peers, origin, null);
     }
     public Header(int version, String createdAt, String id, List<Move> moves, Map<String, String> addresses) {
       this(version, createdAt, id, moves, addresses, false, List.of());
@@ -31,10 +50,13 @@ public final class StoreManifest {
     public Header(int version, String createdAt, String id, List<Move> moves) {
       this(version, createdAt, id, moves, Map.of());
     }
-    public Header withMoves(List<Move> value) { return new Header(formatVersion, createdAt, id, value, addresses, mirror, peers, origin); }
-    public Header withAddresses(Map<String, String> value) { return new Header(formatVersion, createdAt, id, moves, value, mirror, peers, origin); }
-    public Header withPeers(List<String> value) { return new Header(formatVersion, createdAt, id, moves, addresses, mirror, value, origin); }
-    public Header withOrigin(MirrorOrigin value) { return new Header(formatVersion, createdAt, id, moves, addresses, true, peers, value); }
+    public Header withMoves(List<Move> value) { return new Header(formatVersion, createdAt, id, value, addresses, mirror, peers, origin, replicas); }
+    public Header withAddresses(Map<String, String> value) { return new Header(formatVersion, createdAt, id, moves, value, mirror, peers, origin, replicas); }
+    public Header withPeers(List<String> value) { return new Header(formatVersion, createdAt, id, moves, addresses, mirror, value, origin, replicas); }
+    public Header withOrigin(MirrorOrigin value) { return new Header(formatVersion, createdAt, id, moves, addresses, true, peers, value, replicas); }
+    public Header withReplicas(ReplicaCatalog value) {
+      return new Header(REPLICA_FORMAT_VERSION, createdAt, id, moves, addresses, mirror, peers, origin, value);
+    }
   }
   /** Mirror policy state belongs to the copy; the origin's session manifests remain unchanged. */
   public record MirrorOrigin(String storeId, String url, String lastSync, List<String> pinnedSessions,

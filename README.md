@@ -213,3 +213,7 @@ MIT License. See [LICENSE](LICENSE).
 - [AdvantageKit](https://github.com/Mechanical-Advantage/AdvantageKit) for pioneering FRC replay logging
 - [Anthropic](https://anthropic.com) for MCP and Claude
 - [FRC Team 2363 Triple Helix](https://team2363.org)
+
+Mirror development has reached the M4 preservation checkpoint: existing copies remain readable,
+while automatic transfers and retention are paused pending the new publication owner. Explicit
+format-2 migration and its limits are described in [the mirror reference](doc/pit-server/STANDALONE.md#the-mirror).

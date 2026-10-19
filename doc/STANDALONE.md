@@ -654,7 +654,8 @@ configured roots, stable across restart and reordering; moving a directory chang
 These IDs grant no access. Reads revalidate current grants, server identity and serving scope;
 matching hashes on a different mirror or master never supply a fallback. Legacy origin/hash
 references with several serving copies refuse before searching for the hash. Future logical
-`file_version` references belong to the mirror-identity checkpoint and are not accepted yet.
+`file_version` identities are persisted by explicit format-2 migration; visualization references
+using them still await generation-aware admission and are not accepted yet.
 
 The raw `/read/v1/follows` source/query form rejects qualified references and `scope_id` with
 400 `INVALID_REQUEST`. Follow an API 2 working view with `view_binding` to retain its serving
@@ -1433,3 +1434,23 @@ checked before replying, including cached 304 replies. Invalid qualification ref
 of falling back to another path or serving copy. Query text is capped at 64 KiB. The direct
 Explorer uses these checks for samples; notebooks retain owner and scope without embedding
 session IDs or credentials. Existing unqualified requests retain their legacy behavior.
+
+### Explicit replica-format migration
+
+The M4 mirror checkpoint pauses automatic mirror transfers and retention. Existing files remain
+readable. Configure a mirror, observe `migration_required`, then use its local
+`POST /store/mirror/migrate` control with the exact store UUID. A successful upgrade reports
+`writer_not_ready`: payload transfer and cleanup remain gated on M5.
+
+For a master, `POST /store/replicas/migrate` accepts `{ "store_id": "<UUID>" }` and returns 202
+with `job_id`. Poll `GET /store/replicas/jobs/<job_id>` for `running`, `complete` or `error`.
+At most eight jobs are remembered per transport; completed jobs make room first, and restart
+clears job history. Retrying migration preserves published identities. These routes require
+a direct loopback connection and the usual Origin checks. Unknown selections are 409; malformed
+requests are 400, forbidden callers 403 and unknown jobs 404. Migration bodies are limited to
+64 KiB. Mirror and migration controls share the four store streaming workers and their I/O
+progress deadlines; saturation returns retryable 503 without occupying health dispatch.
+
+See [the mirror reference](pit-server/STANDALONE.md#the-mirror) for preservation, capacity,
+format backups, page limits and the explicit M5/M6 integration gates. No production migration
+is performed merely by configuring or starting the server.

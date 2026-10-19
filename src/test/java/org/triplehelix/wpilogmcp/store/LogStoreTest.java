@@ -549,7 +549,7 @@ class LogStoreTest {
     run(List.of(), false, null);
     var path = root.resolve("store.json");
     var header = StoreFiles.JSON.fromJson(Files.readString(path), JsonObject.class);
-    header.addProperty("format_version", StoreManifest.FORMAT_VERSION + 1);
+    header.addProperty("format_version", StoreManifest.REPLICA_FORMAT_VERSION + 1);
     Files.writeString(path, header.toString());
     byte[] before = Files.readAllBytes(path);
     var error = assertThrows(IOException.class, this::catalog);

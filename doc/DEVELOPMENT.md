@@ -995,3 +995,21 @@ downloads or installs them. After `compileExtension` and `extensionSmokeFixture`
 `/opt/homebrew/bin/node out/smoke/connectionsRun.js`. It opens isolated editor windows,
 profiles and two synthetic server processes. Obtain permission before launching native UI
 validation. Inspect each `native-*/result.json`; compilation alone is not a native pass.
+
+### Replica identity and preservation checkpoint
+
+`MirrorPreservationTest` checks the no-network/no-deletion gate and callback lock ownership.
+`ReplicaContractsTest` checks exact master receipts, unconfirmed legacy copies, file and metadata
+accounting, overflow, interrupted marker publication, stale filesystem snapshots, cancellation
+and the two-builder/no-queue bound. `MirrorEndpointTest` drives local migration jobs, file/control
+contracts, malformed inputs, denied Origins and forwarded requests. `LegacyMirrorFixture` is
+test-only format-1 writer code retained to construct historical migration/read fixtures; its
+automatic eviction and capture-exclusion tests do not describe the current production engine.
+`ReadLibraryTest` runs external consumers against both store formats with the standalone reader
+JAR alone. The synthetic shop timeline explicitly selects its known store; the gateway probe
+directory remains a separate source and cannot supply an implicit default.
+
+M4 performs no payload transfers or cleanup execution. M5 must test durable exclusion receipts,
+affected views, immutable publication, retirement and crash recovery before enabling that writer.
+Run destructive mutation plants in an isolated scratch copy. Native durability/platform checks
+and throughput measurements remain separate gates.

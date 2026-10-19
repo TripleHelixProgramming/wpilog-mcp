@@ -27,6 +27,7 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.store.StoreManifest.*;
 import org.triplehelix.wpilogmcp.sync.RemoteFiles;
 
+/** Exercises the historical writer only as a generator of preserved format-1 fixtures. */
 class MirrorSyncTest {
   @TempDir Path temp;
   LogManager manager; Set<Path> previous;
@@ -48,7 +49,7 @@ class MirrorSyncTest {
   MirrorConfig config() { return config(14, 20_000_000_000L, List.of(), List.of()); }
   MirrorSync.Result sync() throws Exception { return sync(config()); }
   MirrorSync.Result sync(MirrorConfig c) throws Exception {
-    var result = mirror.mirror(c, p -> {}, clock, StoreSync::http).get(20, TimeUnit.SECONDS);
+    var result = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, c, p -> {}, clock, StoreSync::http).get(20, TimeUnit.SECONDS);
     assertEquals("synchronized", result.state(), result.toString()); return result;
   }
   StoreCatalog.Snapshot catalog(LogStore store) throws Exception { return StoreCatalog.read(store.root(), manager.testGetSecurityValidator()); }
@@ -191,7 +192,7 @@ class MirrorSyncTest {
     var files = session("match", "2026-01-19", "RIO", null, List.of(pulledLog(100, 1), capture(false, 100, 2)));
     assertEquals(1, origin.keepClocks().get(20, TimeUnit.SECONDS));
     var record = files.get(0).resolveSibling("clock").resolve("capture.wpilog.json");
-    var result = mirror.mirror(config(), p -> {}, clock, address -> {
+    var result = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {}, clock, address -> {
       var peer = StoreSync.http(address); var remote = peer.remote();
       return new StoreSync.Peer(peer.url(), peer.description(), peer.robots(), peer.sessions(), new RemoteFiles() {
         public List<File> list() throws java.io.IOException { return remote.list(); }
@@ -382,7 +383,7 @@ class MirrorSyncTest {
   @Test void offlineRetainsTheLastSuccessfulSyncAndResumesWithoutADuplicate() throws Exception {
     var file = session("boot", "2026-01-19", "RIO", null, 100, 1); sync();
     String last = catalog(mirror).header().origin().lastSync();
-    var offline = mirror.mirror(config(), p -> {}, Clock.offset(clock, java.time.Duration.ofHours(2)), address -> {
+    var offline = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {}, Clock.offset(clock, java.time.Duration.ofHours(2)), address -> {
       throw new java.io.IOException("origin unavailable");
     }).get();
     assertEquals("offline", offline.state()); assertEquals(last, offline.lastSync());
@@ -392,12 +393,12 @@ class MirrorSyncTest {
 
   @Test void interruptedBetweenBlocksResumesItsJournalRatherThanAdoptingStrays() throws Exception {
     var file = session("boot", "2026-01-19", "RIO", null, 10_000, 1);
-    assertThrows(java.util.concurrent.ExecutionException.class, () -> mirror.mirror(config(), p -> {
+    assertThrows(java.util.concurrent.ExecutionException.class, () -> org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {
       if (p.remainingBytes() > 0) throw new IllegalStateException("test stop between blocks");
     }, clock, StoreSync::http).get());
     assertTrue(catalog(mirror).files().isEmpty()); assertTrue(catalog(mirror).unmanaged().isEmpty());
     var offsets = new ArrayList<Long>(); var hashes = new ArrayList<Long>();
-    var result = mirror.mirror(config(), p -> {}, clock, observed(offsets, hashes)).get();
+    var result = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {}, clock, observed(offsets, hashes)).get();
     assertEquals("synchronized", result.state(), result.toString()); assertEquals(65536L, offsets.get(0)); assertTrue(hashes.contains(65536L));
     assertArrayEquals(Files.readAllBytes(file), Files.readAllBytes(copy(file)));
   }
@@ -417,8 +418,8 @@ class MirrorSyncTest {
         assertEquals("synchronizing", service.status().state());
       } finally { release.countDown(); }
       pending.get(10, TimeUnit.SECONDS);
-      assertEquals("synchronized", service.status().state()); assertEquals(clock.instant().toString(), service.status().lastSync());
-      assertEquals(0L, service.status().ageSec());
+      assertEquals("migration_required", service.status().state()); assertNull(service.status().lastSync());
+      assertNull(service.status().ageSec());
     } finally { release.countDown(); }
   }
 
@@ -426,14 +427,14 @@ class MirrorSyncTest {
     sync(); // Establish mirror ownership before a person places a stray inside its layout.
     var source = session("boot", "2026-01-19", "RIO", null, 100, 1);
     var occupied = copy(source); Files.createDirectories(occupied.getParent()); Files.writeString(occupied, "a person's file");
-    var refused = mirror.mirror(config(), p -> {}, clock, StoreSync::http).get();
+    var refused = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {}, clock, StoreSync::http).get();
     assertEquals("offline", refused.state()); assertTrue(refused.reason().contains("unmanaged"));
     assertEquals("a person's file", Files.readString(occupied)); assertTrue(catalog(mirror).files().isEmpty());
     assertTrue(catalog(mirror).unmanaged().contains(occupied)); Files.delete(occupied);
     var manifest = source.resolveSibling("session.json");
     var json = com.google.gson.JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
     json.getAsJsonArray("files").get(0).getAsJsonObject().addProperty("sha256", "0".repeat(64)); Files.writeString(manifest, json.toString());
-    var wrongHash = mirror.mirror(config(), p -> {}, clock, StoreSync::http).get();
+    var wrongHash = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {}, clock, StoreSync::http).get();
     assertEquals("partial", wrongHash.state()); assertFalse(wrongHash.refusals().isEmpty());
     assertTrue(catalog(mirror).files().isEmpty()); assertFalse(Files.exists(occupied));
   }
@@ -441,7 +442,7 @@ class MirrorSyncTest {
   @Test void aContinuouslyChangingPrefixEndsThePassAndKeepsItsJournal() throws Exception {
     session("changing", "2026-01-19", "RIO", null, 100, 1);
     var checks = new java.util.concurrent.atomic.AtomicInteger();
-    var result = mirror.mirror(config(), p -> {}, clock, address -> {
+    var result = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {}, clock, address -> {
       var peer = StoreSync.http(address); var remote = peer.remote();
       return new StoreSync.Peer(peer.url(), peer.description(), peer.robots(), peer.sessions(), new RemoteFiles() {
         public List<File> list() throws java.io.IOException { return remote.list(); }
@@ -465,12 +466,12 @@ class MirrorSyncTest {
   @Test void aGrowingPrefixCanBeEvictedOnlyAfterTheOriginProvesItStillHasIt() throws Exception {
     var file = copiedByAnEarlierVersion("live", "2026-01-19", List.of(capture(true, 100, 1))).get(0);
     var offsets = new ArrayList<Long>(); var hashes = new ArrayList<Long>();
-    var result = mirror.mirror(config(0, 1, List.of(), List.of()), p -> {}, clock, observed(offsets, hashes)).get();
+    var result = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(0, 1, List.of(), List.of()), p -> {}, clock, observed(offsets, hashes)).get();
     assertEquals(List.of("live"), result.evicted()); assertEquals(List.of(Files.size(file)), hashes);
     assertFalse(Files.exists(copy(file))); assertTrue(catalog(mirror).sessions().isEmpty());
     var changed = copiedByAnEarlierVersion("changed", "2026-01-19", List.of(capture(true, 100, 1))).get(0);
     session("changed", "2026-01-19", "RIO", null, List.of(capture(true, 100, 10)));
-    result = mirror.mirror(config(0, 1, List.of(), List.of()), p -> {}, clock, observed(offsets, hashes)).get();
+    result = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(0, 1, List.of(), List.of()), p -> {}, clock, observed(offsets, hashes)).get();
     assertTrue(result.evicted().isEmpty(), result.toString()); assertTrue(Files.exists(copy(changed)));
     assertTrue(result.retained().stream().anyMatch(reason -> reason.startsWith("changed:")), result.toString());
   }
@@ -495,7 +496,7 @@ class MirrorSyncTest {
 
   @Test void pendingFileAndDirectoryMovesRecoverBeforeContactingAnOfflineOrigin() throws Exception {
     var file = session("boot", "2026-01-19", "RIO", null, 100, 1);
-    assertThrows(java.util.concurrent.ExecutionException.class, () -> mirror.mirror(config(), p -> {
+    assertThrows(java.util.concurrent.ExecutionException.class, () -> org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {
       throw new IllegalStateException("stop before verification");
     }, clock, StoreSync::http).get());
     var io = new StoreFiles(mirror.root(), manager.testGetSecurityValidator());
@@ -505,7 +506,7 @@ class MirrorSyncTest {
         "to", StoreFiles.relative(mirror.root(), destination), "hash", StoreFiles.hash(io.resolve(mirror.root(), entry.localName()))));
     Files.move(io.resolve(mirror.root(), entry.localName()), destination);
     StoreSync.Source offline = address -> { throw new java.io.IOException("offline"); };
-    assertEquals("offline", mirror.mirror(config(), p -> {}, clock, offline).get().state());
+    assertEquals("offline", org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {}, clock, offline).get().state());
     journal = io.read(MirrorSync.journalPath(mirror.root()), org.triplehelix.wpilogmcp.sync.PullManifest.class);
     assertEquals(StoreFiles.relative(mirror.root(), destination), journal.files().get(0).localName());
     assertFalse(Files.exists(mirror.root().resolve(".mirror/pending.json"))); sync();
@@ -513,7 +514,7 @@ class MirrorSyncTest {
     io.write(mirror.root().resolve(".mirror/pending.json"), java.util.Map.of("from", StoreFiles.relative(mirror.root(), from),
         "to", StoreFiles.relative(mirror.root(), to), "session_id", "boot"));
     Files.move(from, to);
-    assertEquals("offline", mirror.mirror(config(), p -> {}, clock, offline).get().state());
+    assertEquals("offline", org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {}, clock, offline).get().state());
     assertEquals(StoreFiles.relative(mirror.root(), to), catalog(mirror).header().origin().sessions().get("boot").path());
     assertEquals(to.resolve(file.getFileName()), manager.stores().resolveMoved(destination));
     assertFalse(Files.exists(mirror.root().resolve(".mirror/pending.json")));
@@ -527,7 +528,7 @@ class MirrorSyncTest {
     var json = com.google.gson.JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
     json.getAsJsonArray("files").get(0).getAsJsonObject().addProperty("sha256", StoreFiles.hash(file));
     Files.writeString(manifest, json.toString());
-    var result = mirror.mirror(config(), p -> {}, clock, StoreSync::http).get();
+    var result = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {}, clock, StoreSync::http).get();
     assertEquals("partial", result.state()); assertEquals(2 * bytes.length, result.bytesCopied());
     assertFalse(result.refusals().isEmpty()); assertTrue(catalog(mirror).files().isEmpty());
     assertFalse(Files.exists(copy(file)), "A matching hash alone must not admit an unreadable log");
@@ -538,13 +539,13 @@ class MirrorSyncTest {
     var existing = manager.stores().store(temp.resolve("existing"));
     existing.importPaths(new LogStore.Request(List.of(source), false, "RIO"), p -> {}).get();
     var c = new MirrorConfig(url(), existing.root(), 14, 20_000_000_000L, List.of(), List.of(), 30, 0);
-    assertThrows(java.util.concurrent.ExecutionException.class, () -> existing.mirror(c, p -> {}, clock, StoreSync::http).get());
+    assertThrows(java.util.concurrent.ExecutionException.class, () -> org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(existing, c, p -> {}, clock, StoreSync::http).get());
     var before = Files.readAllBytes(copy(source));
     origin.capture(io -> {
       var h = io.read(origin.root().resolve("store.json"), Header.class);
       io.write(origin.root().resolve("store.json"), new Header(h.formatVersion(), h.createdAt(), "different", h.moves())); return null;
     });
-    var refused = mirror.mirror(config(), p -> {}, clock, StoreSync::http).get();
+    var refused = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config(), p -> {}, clock, StoreSync::http).get();
     assertEquals("offline", refused.state()); assertTrue(refused.reason().contains("different store id"));
     assertArrayEquals(before, Files.readAllBytes(copy(source)));
   }

@@ -143,7 +143,7 @@ class ToolConformanceTest {
       var mirror = logManager.stores().store(mirrorRoot);
       var config = new org.triplehelix.wpilogmcp.config.MirrorConfig("http://127.0.0.1:" + originHttp.getPort(),
           mirror.root(), 365_000, 20_000_000_000L, List.of(), List.of(), 30, 0);
-      var copied = mirror.mirror(config, ignored -> {}).get(30, TimeUnit.SECONDS);
+      var copied = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config, ignored -> {}).get(30, TimeUnit.SECONDS);
       if (!copied.state().equals("synchronized")) throw new IOException(copied.toString());
     } finally { originHttp.stop(); }
     exportDir = dir.resolve("export").toAbsolutePath();

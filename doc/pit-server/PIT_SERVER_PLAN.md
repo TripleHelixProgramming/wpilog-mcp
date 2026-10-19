@@ -16,6 +16,12 @@ cleanup is explicit and a full mirror pauses downloads. Peer writes remain exclu
 by the mirror engine, with separate provisional and master-confirmed states. The older
 specification and implementation records below are preserved; these changes are planned.
 
+**Checkpoint, 2026-10-19:** M1–M3 are committed as `643cdfd`. M4's explicit format migration
+and identity/preservation foundations are implemented for review. The old mirror writer is
+paused before remote I/O. New payload transfer and cleanup remain disabled until M5; peer
+offers and master reconciliation remain M6. See the current
+[checkpoint disposition](../SOURCE_AND_MIRROR_PLAN.md#m4-checkpoint-identity-and-preservation-foundations-2026-10-19).
+
 ## Part I: The Idea
 
 ### What it is

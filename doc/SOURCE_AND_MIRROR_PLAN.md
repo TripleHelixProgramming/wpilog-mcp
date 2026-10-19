@@ -1,9 +1,11 @@
 # Explorer sources and mirror implementation plan
 
 Status: M1 source contracts, M2 server-library persistence and M3 direct connections are
-implemented locally, 2026-10-19, and remain uncommitted. M3 verification and its remaining
-limits are recorded below. M4 mirror identity/preservation is the next implementation checkpoint;
-M4–M9 remain pending.
+committed as `643cdfd` on 2026-10-19, including the reviewed corrections. M4 identity and
+preservation foundations are implemented locally, with automated verification complete, and
+remain uncommitted for review. Payload transfer,
+cleanup execution and affected-view enumeration remain gated on M5 publication ownership;
+peer protocol and later checkpoints remain pending.
 
 Explorer will connect directly to the server that owns the selected source. A laptop
 can browse, analyze, follow and visualize remote recordings without a local MCP server
@@ -129,8 +131,9 @@ downloading recording files or launching a local daemon is not a prerequisite.
 | Recording identity | Existing provenance-backed recording identity and anchored member relationships. Session aliases nominate members; they do not prove membership by themselves. |
 
 Introduce source-reference schema 2 alongside schema 1. M1 wraps the existing recorded, session
-and unmanaged forms; the following logical file-version content is reserved for M4 and is not
-accepted by M1. A future catalog file example is:
+and unmanaged forms; M4 now persists logical file/version identities in format-2 master catalogs. The following
+wire content still requires generation-aware admission with M5/M6 and is not accepted by
+current visualization routes. A future catalog file example is:
 
 ```json
 {
@@ -560,7 +563,7 @@ partially migrated client from silently choosing a source or changing retention 
 
 | Checkpoint | Work and principal files | Acceptance before proceeding |
 |---|---|---|
-| M1 Source contracts and selection — complete, uncommitted | Add `SourceScopes` and schema-2 source validation; qualify `StoreReadCatalog`, `RecordedSources`, shared read admission and MCP guidance. Adapt `LogRequiringTool` and exceptional multi-input routes. Preserve `VerifiedContentHashes` ownership. | Two stores with the same origin/hash stay distinct. Multiple choices refuse unqualified data requests. Explicit choices survive reorder, rename and unavailable neighbors. Legacy ambiguity is reported. No numerical changes. |
+| M1 Source contracts and selection — committed | Add `SourceScopes` and schema-2 source validation; qualify `StoreReadCatalog`, `RecordedSources`, shared read admission and MCP guidance. Adapt `LogRequiringTool` and exceptional multi-input routes. Preserve `VerifiedContentHashes` ownership. | Two stores with the same origin/hash stay distinct. Multiple choices refuse unqualified data requests. Explicit choices survive reorder, rename and unavailable neighbors. Legacy ambiguity is reported. No numerical changes. |
 | M2 Server visualization library | Add `VisualizationLibrary`; adapt `VisualizationWorkspace`, `VisualizationMetadata`, `TemplateMetadata`, native save references and strict tool schemas. Add idempotent legacy migration. | Save against a mirror and an ordinary folder with no writable log store. Crash/retry cannot duplicate saves or advance the wrong working revision. Originals survive migration. Quotas include receipts and in-flight work. |
 | M3 Direct connections and remote visualization | Add a shared extension connection registry/context; replace local assumptions in `explorer.ts`, `recordedPreview.ts`, `recordedClient.ts`, `dataClient.ts`, follow/health adapters and agent registration. Add shared operation admission in HTTP/MCP. | Remote-only GUI and agent workflows work with the laptop daemon stopped and zero local recordings; local-only works with the pit unavailable. Inactive roots make no calls. Simultaneous views never cross owners. Legacy offline fallback becomes explicit. |
 | M4 Mirror identity and preservation | Introduce format-2 file/version and replica records, master catalog receipts, acquisition-only scope, strict capacity reservation and explicit cleanup/exclusions. Adapt `StoreManifest`, `MirrorSync`, `MirrorService`, configuration and mirror routes. | Master deletions, clock advance, narrowed scope and capacity pressure delete nothing automatically. Closed captures/rollover members are eligible. Active bytes are excluded. Old mirrors migrate without lost files or false verification. |
@@ -868,3 +871,53 @@ and Windows, actual agent UI registration/conversations, and the full earlier na
 stress matrix were not exercised here. The original declaration-burst, season-sized catalog and
 sustained-throughput gates remain pending. Mirror identity, peer offers, transfer publication,
 discovery and agent display handoff remain M4–M9 work. No robot or production store was used.
+
+## M4 checkpoint: identity and preservation foundations (2026-10-19)
+
+The reviewed M1–M3 work and subsequent eight-finding/E1 corrections are committed locally as
+`643cdfd`. Local notes and historical reviews remain untracked and unchanged; nothing was pushed.
+
+M4 removes the old automatic eviction writer from production. Its implementation survives only
+as `LegacyMirrorFixture` in test sources, where historical snapshots and read compatibility can
+be reproduced. Format-1 synchronization reports `migration_required` before any remote I/O.
+After explicit migration it reports `writer_not_ready`. This follows the existing M4/M5 gate: no
+policy-only intermediate state can feed the old eviction or replacement engine.
+
+Format-2 headers own bounded file/version and replica records. Master migration assigns distinct
+UUIDs and exact hash/size/finalization records. Legacy mirror transfers retain a
+`legacy_unconfirmed` basis with no invented master file identity; old `verified` booleans do not
+supply authority. Payloads, captures, clock records, system text, pins, partial journals and strays
+are preserved. Migration retains a readable backup and prepared marker; failed publication and
+retry preserve the prior header. Formats 1 and 2 remain readable and older binaries refuse 2.
+
+Migration preparation performs hashes outside the store queue with file leases and bounded
+filesystem snapshots. Two server-wide slots, one per store and no waiting queue, stay charged
+through publication or cancellation unwind. Publication rechecks source identity, metadata and
+filesystem boundaries. Mirror manifest observers and migration continuations run after the store lock
+closes. Limits are 4096 replica records, 32768 inspected paths and 4 MiB per header. These are
+accounted bounds, not measured heap or filesystem allocation claims.
+
+Acquisition uses explicit `all` or robot AND (event OR known date) predicates; it never selects
+files for deletion. Finalized captures/rollover members are eligible while active members are
+excluded. Capacity accounts incumbent payloads, journal partials, metadata and reservations with
+checked arithmetic; metadata headroom is inside the cap. Migration reserves its backup, intent
+and temporary marker bytes before publication. Pins cannot bypass admission.
+
+Local routes expose asynchronous master/mirror migration, status, bounded migrated-file pages
+and exact revision-bound cleanup previews. Prospective file/version exclusions are modeled and
+validated. Cleanup execution, persistent exclusion changes, affected-view enumeration, payload
+transfer/replacement and reader retirement remain disabled until M5 supplies their common owner.
+Peer catalog serving, receipt reconciliation and `file_version` source-reference reads remain
+M6 integration. Native filesystem durability, Linux/Windows, season-scale measurements and
+production-store migration remain unverified. The checkpoint does not claim completed mirror
+synchronization or provisional-data serving.
+
+The final Java build/license gate passed 4,352 tests with 85 skipped. Extension tests passed
+882 with five broker-only skips; the real-server broker passed all five. The synthetic shop
+harness with native replay passed 33 checks with three skipped (real-log inputs and the Linux
+container backend). All 25 isolated mutation plants produced behavioral assertion failures and
+were restored. The first full build caught missing reader-JAR replica dependencies and an old
+unsupported-format fixture; both were corrected. The shop fixture was updated to select its
+known store explicitly alongside its separate gateway-probe directory. Formats 1 and 2 now run
+through an external consumer using only the reader JAR. This is macOS synthetic evidence, not
+native editor, Linux/Windows, power-loss, production or throughput validation.

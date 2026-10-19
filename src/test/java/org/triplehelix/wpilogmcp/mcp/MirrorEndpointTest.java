@@ -94,10 +94,12 @@ class MirrorEndpointTest {
     } finally { local.localControlsGuard().set(false); }
     assertEquals(200, request("/store/mirror", "DELETE", null).statusCode());
   }
-  @Test void configurationSyncPinsAndOfflineListingUseTheLocalServer() throws Exception {
+  @Test void configurationPinsAndLegacyListingRemainAvailableWhileMigrationIsPaused() throws Exception {
     assertEquals("disabled", status().get("state").getAsString());
+    org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(manager.stores().store(target),
+        org.triplehelix.wpilogmcp.config.MirrorConfig.parse(configuration(), s -> s), p -> {}).get();
     var configured = request("/store/mirror/configure", "POST", configuration().toString()); assertEquals(202, configured.statusCode(), configured.body());
-    var synchronizedState = await("synchronized"); assertEquals(0, synchronizedState.get("remaining_files").getAsInt());
+    var synchronizedState = await("migration_required"); assertEquals(0, synchronizedState.get("remaining_files").getAsInt());
     var catalog = StoreCatalog.readManaged(target, manager.testGetSecurityValidator()); String id = catalog.sessions().get(0).session().id();
     var pin = new JsonObject(); pin.addProperty("session_id", id);
     for (boolean pinned : List.of(true, false)) {
@@ -108,7 +110,7 @@ class MirrorEndpointTest {
     }
     origin.stop();
     assertEquals(202, request("/store/mirror/sync", "POST", "{}").statusCode());
-    var offline = await("offline"); assertEquals(synchronizedState.get("last_sync"), offline.get("last_sync"));
+    var offline = await("migration_required"); assertEquals(synchronizedState.get("last_sync"), offline.get("last_sync"));
     assertTrue(offline.get("age_sec").getAsLong() >= 0);
     var registry = new ToolRegistry(); CoreTools.registerAll(registry);
     var result = registry.getTool("list_available_logs").execute(new JsonObject()).getAsJsonObject();
@@ -131,6 +133,89 @@ class MirrorEndpointTest {
     assertEquals(200, request("/health", "GET", null).statusCode());
   }
 
+  @Test void migrationIsExplicitAndDoesNotEnableThePayloadWriter() throws Exception {
+    assertEquals(202, request("/store/mirror/configure", "POST", configuration().toString()).statusCode());
+    await("migration_required");
+    var header = JsonParser.parseString(Files.readString(target.resolve("store.json"))).getAsJsonObject();
+    var body = new JsonObject(); body.add("store_id", header.get("id"));
+    var migrated = request("/store/mirror/migrate", "POST", body.toString());
+    assertEquals(202, migrated.statusCode(), migrated.body());
+    await("writer_not_ready");
+    var after = JsonParser.parseString(Files.readString(target.resolve("store.json"))).getAsJsonObject();
+    assertEquals(2, after.get("format_version").getAsInt());
+    assertTrue(after.getAsJsonObject("replicas").getAsJsonArray("files").isEmpty());
+    assertTrue(Files.isRegularFile(target.resolve(".replicas/format-1-store.json")));
+    assertEquals(409, request("/store/mirror/cleanup", "POST", "{}").statusCode());
+    assertEquals(200, request("/health", "GET", null).statusCode());
+  }
+
+  @Test void masterFormatMigrationUsesAnExplicitLocalJobAndPreservesPayloads() throws Exception {
+    var root = temp.resolve("origin"); local.stop();
+    local = new HttpTransport(new ToolRegistry(), 0); local.setStoreDirectories(Set.of(root)); local.start();
+    String storeId = StoreCatalog.readManaged(root, manager.testGetSecurityValidator()).header().id();
+    byte[] expected = Files.readAllBytes(source);
+    var input = new JsonObject(); input.addProperty("store_id", storeId); String body = input.toString();
+    var response = request("/store/replicas/migrate", "POST", body);
+    assertEquals(202, response.statusCode(), response.body());
+    String id = JsonParser.parseString(response.body()).getAsJsonObject().get("job_id").getAsString();
+    JsonObject job = null; long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+    do {
+      job = JsonParser.parseString(request("/store/replicas/jobs/" + id, "GET", null).body()).getAsJsonObject();
+      if (!job.get("state").getAsString().equals("running")) break;
+    } while (System.nanoTime() < deadline);
+    assertEquals("complete", job.get("state").getAsString(), job.toString());
+    assertEquals(1, job.get("files").getAsInt()); assertEquals(2, job.get("format_version").getAsInt());
+    assertArrayEquals(expected, Files.readAllBytes(source));
+    assertEquals(403, request("/store/replicas/migrate", "POST", body, "Origin", "https://evil.example").statusCode());
+    assertEquals(403, request("/store/replicas/migrate", "POST", body, "X-Forwarded-For", "192.0.2.1").statusCode());
+    assertEquals(400, request("/store/replicas/migrate", "POST",
+        "{\"store_id\":\"" + storeId + "\",\"store_id\":\"" + storeId + "\"}").statusCode());
+    assertEquals(400, request("/store/replicas/migrate", "POST", "{\"pad\":\"" + "x".repeat(65_536) + "\"}").statusCode());
+    assertEquals(400, request("/store/replicas/migrate", "POST", "{\"pad\":" + "[".repeat(160) + "0" + "]".repeat(160) + "}").statusCode());
+    assertEquals(409, request("/store/replicas/migrate", "POST", "{\"store_id\":\"" + java.util.UUID.randomUUID() + "\"}").statusCode());
+    assertEquals(404, request("/store/replicas/jobs/" + java.util.UUID.randomUUID(), "GET", null).statusCode());
+  }
+
+  @Test void replicaPagesAndPreviewAdvanceWithExplicitInclusion() throws Exception {
+    var second = ImportFixture.write(temp.resolve("second.wpilog"), 2);
+    manager.stores().store(temp.resolve("origin")).importPaths(new LogStore.Request(List.of(second), false, "RIO"), p -> {}).get();
+    org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(manager.stores().store(target),
+        org.triplehelix.wpilogmcp.config.MirrorConfig.parse(configuration(), s -> s), p -> {}).get();
+    var expected = StoreCatalog.readManaged(target, manager.testGetSecurityValidator()).allFiles().stream()
+        .map(file -> file.file().sha256()).collect(java.util.stream.Collectors.toSet());
+    assertEquals(2, expected.size());
+    assertEquals(202, request("/store/mirror/configure", "POST", configuration().toString()).statusCode()); await("migration_required");
+    var header = JsonParser.parseString(Files.readString(target.resolve("store.json"))).getAsJsonObject();
+    assertEquals(202, request("/store/mirror/migrate", "POST", "{\"store_id\":" + header.get("id") + "}").statusCode()); await("writer_not_ready");
+    var seen = new java.util.HashSet<String>(); JsonObject first = null;
+    for (int offset = 0; offset < 3; offset++) {
+      var response = request("/store/mirror/files?offset=" + offset + "&limit=1", "GET", null);
+      assertEquals(200, response.statusCode(), response.body());
+      var page = JsonParser.parseString(response.body()).getAsJsonObject();
+      assertEquals(2, page.get("total").getAsInt()); assertEquals(1, page.get("catalog_revision").getAsLong());
+      assertEquals(offset == 0, page.get("has_more").getAsBoolean());
+      assertEquals(offset < 2 ? 1 : 0, page.getAsJsonArray("files").size());
+      if (offset < 2) {
+        var entry = page.getAsJsonArray("files").get(0).getAsJsonObject(); if (first == null) first = entry;
+        assertTrue(seen.add(entry.get("sha256").getAsString()), "duplicate page member");
+        assertEquals("legacy_unconfirmed", entry.get("verification_basis").getAsString());
+      }
+    }
+    assertEquals(expected, seen); assertEquals(400, request("/store/mirror/files?limit=257", "GET", null).statusCode());
+    assertEquals(202, request("/store/mirror/pin_session", "POST", "{\"session_id\":" + first.get("session_id") + "}").statusCode());
+    long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+    while (status().getAsJsonObject("origin").getAsJsonArray("pinned_sessions").isEmpty() && System.nanoTime() < deadline) Thread.yield();
+    assertEquals(1, status().getAsJsonObject("origin").getAsJsonArray("pinned_sessions").size());
+    var response = request("/store/mirror/cleanup_preview", "POST", "{\"keys\":[" + first.get("key") + "]}");
+    assertEquals(200, response.statusCode(), response.body()); var preview = JsonParser.parseString(response.body()).getAsJsonObject();
+    assertEquals(2, preview.get("catalog_revision").getAsLong());
+    assertEquals(first.get("size_bytes").getAsLong(), preview.get("payload_bytes").getAsLong());
+    assertEquals(first, preview.getAsJsonArray("files").get(0));
+    assertEquals(2, status().getAsJsonObject("replicas").get("catalog_revision").getAsLong());
+    assertEquals(expected, StoreCatalog.readManaged(target, manager.testGetSecurityValidator()).allFiles().stream()
+        .map(file -> file.file().sha256()).collect(java.util.stream.Collectors.toSet()));
+  }
+
   @org.junit.jupiter.params.ParameterizedTest
   @org.junit.jupiter.params.provider.ValueSource(strings = {"configure", "sync", "pin_session", "unpin_session"})
   void aNetworkBoundServerRefusesEveryMirrorWriteRoute(String route) throws Exception {
@@ -147,7 +232,7 @@ class MirrorEndpointTest {
     assertFalse(Files.exists(target.resolve("store.json")));
   }
 
-  @Test void aSlowOriginDoesNotDelayTheLocalHealthEndpoint() throws Exception {
+  @Test void aPausedMirrorDoesNotContactTheOriginAndHealthStaysAvailable() throws Exception {
     var entered = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
     var proxy = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
     proxy.createContext("/", exchange -> {
@@ -167,9 +252,9 @@ class MirrorEndpointTest {
     try {
       var config = configuration(); config.addProperty("origin", "http://127.0.0.1:" + proxy.getAddress().getPort());
       assertEquals(202, request("/store/mirror/configure", "POST", config.toString()).statusCode());
-      assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+      await("migration_required"); assertEquals(1, entered.getCount(), "No origin request while migration is required");
       assertEquals(200, request("/health", "GET", null).statusCode());
-      assertEquals("synchronizing", status().get("state").getAsString());
-    } finally { release.countDown(); await("synchronized"); proxy.stop(0); }
+      assertEquals("migration_required", status().get("state").getAsString());
+    } finally { release.countDown(); proxy.stop(0); }
   }
 }

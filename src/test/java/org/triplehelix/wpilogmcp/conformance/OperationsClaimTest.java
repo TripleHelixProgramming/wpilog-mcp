@@ -57,12 +57,12 @@ class OperationsClaimTest {
       has_more high hint histogram host http imports inputs insufficient journalctl jvm jvm_crash
       kernel kind last_seconds last_sync limit listening log_directories looked_for low lvuser
       managed match_number match_type matching_reason max_error_ms measured_entry measurement_entry mechanism_name
-      medium mirror name no_match not_applicable offline offset offset_ms ok origin partial path
+      medium migration_required mirror name no_match not_applicable offline offset offset_ms ok origin partial path writer_not_ready
       pattern pit port program rate_bytes reason records regex rio robot run sampling scatter
       scope server_analysis_directives server_instance_id servers setpoint_entry settle_sec sha256sum signal_key
       skipped source source_ref at_sec prefix problems stall_current_threshold stand_down start start_time stated_robot status sync
       sync_method sync_status syslog tba tba_key team temperature_entry text_event_counts text_event_summary
-      threshold threshold_ms time_series timeout_ms unassigned velocity_entry vision_entries
+      threshold threshold_ms time_series timeout_ms total unassigned velocity_entry vision_entries
       voltage_analysis waiting waiting_for_sync warning windows working_state working_state_reason year
       """).strip().split("\\s+"));
 

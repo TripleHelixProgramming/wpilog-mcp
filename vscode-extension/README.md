@@ -441,3 +441,9 @@ scope, inventory, data, follow and library adapters retain that context for the 
 No failed remote request substitutes a mirror or starts the local daemon. To use another copy,
 open that connection's source as a separate document. Later mirror-engine and display-handoff
 work is tracked in [the source and mirror plan](../doc/SOURCE_AND_MIRROR_PLAN.md).
+
+The M4 server checkpoint pauses mirror downloads while replacing the old retention writer.
+Existing copies remain readable; a configured mirror reports `migration_required`, then
+`writer_not_ready` after explicit format-2 migration. Direct remote visualization is independent
+of this gate. Migration does not enable synchronization, cleanup or peer exchange. See
+[the mirror reference](../doc/pit-server/STANDALONE.md#the-mirror) for local controls and limits.

@@ -32,6 +32,15 @@ class ShopHarnessTest {
     builder.environment().putAll(env); return builder.start();
   }
 
+  /** The harness deliberately owns this store; its separate gateway probe folder is not a default. */
+  static JsonObject listing(HarnessHttp http, Path store) throws Exception {
+    var arguments = new JsonObject();
+    arguments.add("scope_id", JsonParser.parseString(Files.readString(store.resolve("store.json"))).getAsJsonObject().get("id"));
+    var result = http.call("list_available_logs", arguments);
+    assertNotEquals("error", result.get("status").getAsString(), result.toString());
+    return result;
+  }
+
   @Test void timelineSurvivesCapturePullRenameRebootAndHttpTools() throws Exception {
     var timelinePath = Path.of(System.getProperty("harness.timeline"));
     var timeline = JsonParser.parseString(Files.readString(timelinePath)).getAsJsonObject();
@@ -74,7 +83,7 @@ class ShopHarnessTest {
         });
         int expected = index + 1;
         HarnessHttp.await("capture subscribed for boot " + index, 30, () -> {
-          var listing = http.call("list_available_logs", new JsonObject());
+          var listing = listing(http, store);
           Files.writeString(control.resolve("subscribing-listing.json"), listing.toString());
           if (!listing.has("logs")) return false;
           return listing.getAsJsonArray("logs").asList().stream().map(e -> e.getAsJsonObject())
@@ -105,7 +114,7 @@ class ShopHarnessTest {
         }
       });
       Files.writeString(run.resolve("ssh-reads.json"), StoreJson.JSON.toJson(rio.reads()));
-      var listing = http.call("list_available_logs", new JsonObject()); Files.writeString(run.resolve("listing.json"), listing.toString());
+      var listing = listing(http, store); Files.writeString(run.resolve("listing.json"), listing.toString());
       HarnessExpectations.verify(timeline, run, store, http, listing, rio.reads(), true, java.util.Set.copyOf(rio.logNames()));
     } finally {
       for (var robot : robots) if (robot.isAlive()) { robot.destroyForcibly(); robot.waitFor(10, TimeUnit.SECONDS); }

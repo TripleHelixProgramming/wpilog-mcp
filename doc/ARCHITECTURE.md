@@ -305,7 +305,9 @@ A log that records no team gets the configured team number. The listing remember
 
 A directory with `store.json` is a store. Its format version and creation time describe the layout; `robots/<id>/robot.json` describes a robot, and `sessions/<yyyy-MM-dd>/<HHmmss>Z[_<EVENT>_<MATCH>]/session.json` beneath that robot lists its files under `robot/`. Relative paths in manifests use `/` on every platform. Unassigned files have `unassigned/<sha256 prefix>/import.json`, with payloads beneath `robot/` as in sessions. Legacy payloads beside the import manifest remain readable and migrate on the next import under the store lock, preserving provenance and move notices.
 
-Manifests keep the store inspectable with ordinary file tools, without a database or another service to operate. Only manifested files belong to sessions: a file copied in by hand appears under `unmanaged`, even inside a session directory. A newer format is refused, and an older one requires an explicit migration.
+Manifests keep the store inspectable with ordinary file tools, without a database or another service to operate. Only manifested files belong to sessions: a file copied in by hand appears under `unmanaged`, even inside a session directory. Formats 1 and 2 are readable; an unsupported format is refused. Ordinary new stores remain
+format 1 until explicit replica migration. Format 2 adds identity and verification records that
+older binaries must not ignore.
 
 #### Persistent local ingestion
 
@@ -1557,3 +1559,19 @@ a configured connection id, owner, scope and server-side path/reference, never a
 network destination. Qualified references remain intact in request/cache identities. Only
 source-kind inspection unwraps content. Legacy offline translation is removed: another copy
 is a separately selected source/document. Mirror transfer ownership remains unchanged here.
+
+### Mirror identity and preservation checkpoint
+
+M4 replaces automatic mirror retention with a preservation gate and explicit format-2 migration.
+`ReplicaCatalog` keeps file/version identities and master records separate from transfer integrity.
+Legacy mirror files have an unconfirmed basis; no basename, hash equality or old boolean creates
+master authority. `ReplicaMigration` hashes off-queue, rechecks prepared boundaries on publication
+and retains a readable format-1 header backup. Two preparation slots remain held through unwind;
+mirror manifest observers and migration continuations run outside the store lock.
+
+`MirrorCapacity` accounts logical held/staged bytes and metadata headroom with checked arithmetic;
+`MirrorSync` supplies acquisition and finalization predicates. No new payload is downloaded and no
+held file is deleted in M4. Cleanup previews and prospective exact-version exclusions are defined,
+while execution and affected-view enumeration await M5's publication and reader-retirement owner.
+Peer transport/reconciliation and logical file-version read references remain later integration.
+See [the mirror reference](pit-server/STANDALONE.md#the-mirror) for current routes and limits.

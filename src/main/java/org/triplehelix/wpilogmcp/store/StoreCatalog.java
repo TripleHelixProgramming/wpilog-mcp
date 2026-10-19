@@ -188,9 +188,9 @@ public final class StoreCatalog {
     io.observe(observer);
     var headerPath = root.resolve("store.json");
     var header = io.read(headerPath, Header.class);
-    if (header.formatVersion() != StoreManifest.FORMAT_VERSION) {
+    if (!StoreManifest.readable(header.formatVersion())) {
       throw new IOException("Store format version " + header.formatVersion() + " at " + root
-          + (header.formatVersion() > StoreManifest.FORMAT_VERSION
+          + (header.formatVersion() > StoreManifest.REPLICA_FORMAT_VERSION
               ? " is newer than this server supports; upgrade the server."
               : " requires an explicit migration; it will not be changed automatically."));
     }
@@ -199,6 +199,10 @@ public final class StoreCatalog {
     }
     var managed = new HashSet<Path>();
     managed.add(headerPath);
+    for (String name : List.of("format-1-store.json", "upgrade.json")) {
+      var path = io.check(root.resolve(".replicas").resolve(name));
+      if (Files.isRegularFile(path)) { io.read(path, Header.class); managed.add(path); }
+    }
     var robots = new ArrayList<RobotDirectory>();
     var files = new ArrayList<StoredFile>();
     var openCaptures = new ArrayList<StoredFile>();
@@ -344,7 +348,7 @@ public final class StoreCatalog {
     if (root.isEmpty()) return original;
     var io = new StoreFiles(root.get(), security);
     var header = io.read(root.get().resolve("store.json"), Header.class);
-    if (header.formatVersion() != StoreManifest.FORMAT_VERSION) throw new IOException("Unsupported store format version " + header.formatVersion());
+    if (!StoreManifest.readable(header.formatVersion())) throw new IOException("Unsupported store format version " + header.formatVersion());
     return resolveMoved(original, root.get(), header, security);
   }
   public static Path resolveMoved(Path original, Path root, Header header, SecurityValidator security) throws IOException {

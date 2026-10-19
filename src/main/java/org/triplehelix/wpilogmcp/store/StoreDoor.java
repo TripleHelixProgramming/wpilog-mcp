@@ -90,7 +90,7 @@ public final class StoreDoor {
   private static Selected inspect(Path root, SecurityValidator security) throws IOException {
     security.validate(root);
     var header = new StoreFiles(root, security).read(root.resolve("store.json"), StoreManifest.Header.class);
-    if (header.formatVersion() != StoreManifest.FORMAT_VERSION || header.id() == null) {
+    if (!StoreManifest.readable(header.formatVersion()) || header.id() == null) {
       throw new IOException("Unsupported or incomplete store manifest");
     }
     return new Selected(root, new Description(header.id(), header.formatVersion(), Version.VERSION, header.mirror()), security);
