@@ -97,6 +97,28 @@ class QualifiedSourcesTest {
     assertEquals(2, hashes.get(), "The single-file verification is reused by recording admission");
     sources.describe(recording(MIRROR)); assertEquals(2, hashes.get());
   }
+  @Test void formatTwoIdentificationUsesTheSelectedLogicalVersionWhileApiOneStaysHashPinned() throws Exception {
+    var owner = logs.stores().store(master);
+    owner.refreshStatus().get(); // Establish the store lock before migration pins directory boundaries.
+    var catalog = owner.migrateReplicas(MASTER).get();
+    var result = sources.identify(Authority.STDIO_LOCAL, first(master), MASTER, true);
+    var reference = result.getAsJsonObject("source_ref");
+    assertEquals("file_version", VisualizationContracts.kind(reference), "schema 2 must survive provisional generation replacement");
+    var file = catalog.files().stream().filter(f -> master.resolve(f.path()).equals(first(master))).findFirst().orElseThrow();
+    var content = reference.getAsJsonObject("content");
+    assertEquals(file.identity().fileId(), content.get("file_id").getAsString());
+    assertEquals(file.identity().fileVersion(), content.get("file_version").getAsString());
+    assertEquals(MASTER, content.get("master_store_id").getAsString());
+    int beforeHealth = hashes.get();
+    var health = sources.health(reference, null);
+    assertEquals("finalized", health.get("history_state").getAsString());
+    assertEquals(file.sha256(), health.getAsJsonObject("replica").get("content_sha256").getAsString());
+    assertEquals(beforeHealth, hashes.get(), "generation observation does not hash or admit data");
+    assertEquals(first(master), sources.resolve(reference));
+    assertEquals("recorded", VisualizationContracts.kind(sources.identify(Authority.STDIO_LOCAL, first(master)).getAsJsonObject("source_ref")));
+    var foreign = reference.deepCopy(); foreign.addProperty("scope_id", MIRROR);
+    assertThrows(IOException.class, () -> sources.resolve(foreign), "equal bytes in the mirror are not the selected logical version");
+  }
 
   @Test void foreignOwnersWrongScopesAndRevokedGrantsCannotUseAnotherCopy() throws Exception {
     var ref = sources.identify(Authority.STDIO_LOCAL, first(mirror), MIRROR, true).getAsJsonObject("source_ref");

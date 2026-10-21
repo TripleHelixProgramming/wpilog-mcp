@@ -317,6 +317,7 @@ public final class VisualizationWorkspace implements AutoCloseable {
     if (request.has("field")) query = query.project(text(request, "field"));
     try (var snapshot = sources.open(source); var cursor = snapshot.read(query)) {
       var batch = cursor.next(); var out = ReadWire.batch(batch, 1 << 20);
+      if (snapshot.replica() != null) out.add("replica", StoreJson.JSON.toJsonTree(snapshot.replica()));
       out.addProperty("next_ordinal", first + batch.recordsVisited()); out.addProperty("total_records", snapshot.sampleCount(query.entry()));
       out.addProperty("basis", "physical entry ordinal; duplicate/backward timestamps are retained"); sources.resolve(source); return out;
     }
@@ -324,6 +325,44 @@ public final class VisualizationWorkspace implements AutoCloseable {
   private static long micros(double seconds) {
     if (!Double.isFinite(seconds) || Math.abs(seconds) > 9_007_199_254.0) throw new IllegalArgumentException("Time exceeds the exact microsecond range"); return Math.round(seconds * 1e6);
   }
+  /** Preview is conservative for session views: removing one member can invalidate the whole
+   * recording binding. An unreadable/oversized definition refuses the preview instead of hiding it. */
+  public JsonArray replicaCleanupImpact(StoreManifest.Header header, List<ReplicaCatalog.Entry> entries) throws IOException {
+    var hashes = entries.stream().map(ReplicaCatalog.Entry::sha256).collect(java.util.stream.Collectors.toSet());
+    var sessions = entries.stream().map(ReplicaCatalog.Entry::sessionId).filter(Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+    java.util.function.Predicate<JsonObject> matches = ref -> {
+      if (ref.has("scope_id") && (!ref.get("scope_id").getAsString().equals(header.id())
+          || !ref.get("server_instance_id").getAsString().equals(identity.id().toString()))) return false;
+      var content = VisualizationContracts.content(ref); String kind = content.get("kind").getAsString();
+      if (kind.equals("unmanaged")) return false; // A store member is always identified as recorded/session by admission.
+      if (kind.equals("file_version")) return entries.stream().anyMatch(file -> file.identity() != null
+          && content.get("master_store_id").getAsString().equals(file.identity().masterStoreId())
+          && content.get("file_id").getAsString().equals(file.identity().fileId())
+          && content.get("file_version").getAsString().equals(file.identity().fileVersion()));
+      if (!content.get("origin_store_id").getAsString().equals(header.origin().storeId())) return false;
+      return kind.equals("recorded") ? hashes.contains(content.get("content_sha256").getAsString())
+          : sessions.contains(content.get("session_id").getAsString());
+    };
+    var affected = new JsonArray();
+    for (var view : views.cleanupSources()) if (matches.test(view.getAsJsonObject("source_ref"))) {
+      view.remove("source_ref"); view.addProperty("kind", "working"); affected.add(view);
+    }
+    try { library.cleanupImpact(matches).get(10, java.util.concurrent.TimeUnit.SECONDS).getAsJsonArray("views").forEach(affected::add); }
+    catch (Exception failure) { throw new IOException("VIEW_IMPACT_UNAVAILABLE: server library could not be inspected; no cleanup admitted", failure); }
+    int stores = 0;
+    for (var selected : door.stores()) {
+      if (++stores > 64) throw new IOException("VIEW_IMPACT_UNAVAILABLE: more than 64 stores to inspect");
+      var listing = VisualizationMetadata.list(selected);
+      if (listing.incomplete() || !listing.unreadable().isEmpty()) throw new IOException("VIEW_IMPACT_UNAVAILABLE: legacy saved views are unreadable or exceed the listing bound");
+      for (var view : listing.views()) if (matches.test(view.getAsJsonObject("source_ref"))) {
+        var row = new JsonObject(); row.addProperty("kind", "legacy"); row.addProperty("store_id", selected.description().id());
+        for (String key : List.of("saved_view_id", "revision")) row.add(key, view.get(key)); affected.add(row);
+        if (affected.size() > 2048) throw new IOException("VIEW_IMPACT_UNAVAILABLE: affected view count exceeds 2048");
+      }
+    }
+    return affected;
+  }
+
   public JsonObject stores() throws IOException {
     door.refresh();
     var result = new JsonObject(); var values = new JsonArray();
@@ -459,6 +498,7 @@ public final class VisualizationWorkspace implements AutoCloseable {
       }
       var result = RecordedValue.at(snapshot, text(request, "entry"), request.has("field") ? text(request, "field") : null, at);
       var out = new JsonObject(); var sample = result.sample();
+      if (snapshot.replica() != null) out.add("replica", StoreJson.JSON.toJsonTree(snapshot.replica()));
       out.add("value", sample == null ? JsonNull.INSTANCE : ReadWire.value(sample.value()));
       if (sample == null) out.add("timestamp_us", JsonNull.INSTANCE); else out.addProperty("timestamp_us", Long.toString(sample.timestampUs()));
       out.addProperty("basis", "last_recorded_sample_at_or_before_cursor"); out.add("problems", StoreJson.JSON.toJsonTree(result.problems()));

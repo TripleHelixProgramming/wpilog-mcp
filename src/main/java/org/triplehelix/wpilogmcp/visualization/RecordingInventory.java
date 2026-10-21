@@ -67,6 +67,7 @@ final class RecordingInventory {
       var item = new JsonObject(); item.addProperty("member_id", member.id());
       item.addProperty("generation", member.generation()); item.addProperty("writer_identity", member.writerIdentity());
       item.addProperty("content_sha256", member.contentSha256()); item.add("boundary", ReadWire.boundary(member.snapshot().boundary()));
+      if (member.snapshot().replica() != null) item.add("replica", ReadWire.JSON.toJsonTree(member.snapshot().replica()));
       item.addProperty("live", member.snapshot().live()); item.addProperty("truncated", member.snapshot().truncated());
       item.addProperty("damaged", member.snapshot().damaged()); item.addProperty("truncation_message", member.snapshot().truncationMessage());
       members.add(item);

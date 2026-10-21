@@ -44,6 +44,7 @@ export interface PreviewHost {
   dialogs?: Pick<typeof vscode.window, "showQuickPick" | "showOpenDialog" | "showInputBox" | "showSaveDialog" | "showWarningMessage">;
 }
 interface ViewPage {
+  replicaWatch?: { dispose(): void }; replicaKey?: string; replicaSource?: string;
   document: ViewDocument; panel: vscode.WebviewPanel; generation: ViewGeneration; key: string;
   inventory?: Inventory; activePanel?: string; ready: boolean; closed: boolean;
   serial: Promise<void>; cursor?: number; cursorGeneration: number; valueAbort?: AbortController;
@@ -54,6 +55,8 @@ interface ViewPage {
   selectionSerial?: number; selectionCheck?: AbortController; selectionCancel?: () => void;
 }
 interface OverviewPage {
+  replicaWatch?: { dispose(): void }; replicaKey?: string; replicaSource?: string;
+  replicaRefresh?: boolean;
   uri: vscode.Uri; panel: vscode.WebviewPanel; summary?: SourceSummary; ready: boolean; closed: boolean;
   generation: number; initialization?: Promise<void>; abort: AbortController; inventory?: InventoryOverview; delivery?: InventoryPresentation;
 }
@@ -267,10 +270,10 @@ export class RecordedPreview implements vscode.Disposable {
     panel.webview.onDidReceiveMessage(message => { void this.overviewMessage(page, message).catch(error => this.warning(panel, error)); });
     panel.onDidChangeViewState(() => {
       if (panel.visible) { if (page.ready) void page.inventory?.show(); }
-      else { this.cancelOverviewInitialization(page); void page.inventory?.hide(); page.delivery?.dispose(); page.delivery = undefined; }
+      else { page.replicaWatch?.dispose(); page.replicaWatch = undefined; this.cancelOverviewInitialization(page); void page.inventory?.hide(); page.delivery?.dispose(); page.delivery = undefined; }
       this.targetEntries();
     });
-    panel.onDidDispose(() => { page.closed = true; this.cancelOverviewInitialization(page); page.delivery?.dispose(); void page.inventory?.dispose(); this.overviews.delete(uri.toString()); this.targetEntries(); });
+    panel.onDidDispose(() => { page.closed = true; page.replicaWatch?.dispose(); this.cancelOverviewInitialization(page); page.delivery?.dispose(); void page.inventory?.dispose(); this.overviews.delete(uri.toString()); this.targetEntries(); });
     panel.webview.html = this.pageHtml(panel, true); this.targetEntries();
   }
   private delivery(page: OverviewPage): InventoryPresentation {
@@ -313,11 +316,23 @@ export class RecordedPreview implements vscode.Disposable {
         const inventory = await this.backend.describe(page.summary.source_ref, abort.signal);
         if (!current()) return;
         void page.panel.webview.postMessage({ type: "inventory", inventory });
+        page.replicaKey = this.replicaKey(inventory.replica);
+        this.watchReplica(page, page.summary.source_ref, () => {
+          if (page.initialization) page.replicaRefresh = true;
+          else void this.initializeOverview(page).catch(error => this.warning(page.panel, error));
+        }, inventory.replica);
       }
       if (current()) await this.refreshOverview(page);
     })().catch(error => { if (current()) throw error; });
     page.initialization = task;
-    const finished = () => { if (page.initialization === task) page.initialization = undefined; };
+    const finished = () => {
+      if (page.initialization !== task) return;
+      page.initialization = undefined;
+      if (page.replicaRefresh) {
+        page.replicaRefresh = false;
+        void this.initializeOverview(page).catch(error => this.warning(page.panel, error));
+      }
+    };
     void task.then(finished, finished);
     return task;
   }
@@ -326,7 +341,10 @@ export class RecordedPreview implements vscode.Disposable {
     if (message.type === "inventoryRendered") { page.delivery?.acknowledge(String(message.delivery_id)); return; }
     if (message.type === "ready") {
       await this.initializeOverview(page);
-    } else if (message.type === "refresh") { await this.refreshOverview(page); await page.inventory?.refresh(); }
+    } else if (message.type === "refresh") {
+      if (page.summary && sourceContent(page.summary.source_ref).kind !== "session") await this.initializeOverview(page);
+      else { await this.refreshOverview(page); await page.inventory?.refresh(); }
+    }
     else if (message.type === "inventoryRefresh") {
       if (page.inventory?.snapshot.hidden && page.panel.visible) await page.inventory.show(); else await page.inventory?.refresh();
     }
@@ -374,6 +392,7 @@ export class RecordedPreview implements vscode.Disposable {
       void panel.webview.postMessage({ type: "visibility", visible: panel.visible });
       clearTimeout(page.hiddenTimer);
       if (!panel.visible) {
+        page.replicaWatch?.dispose(); page.replicaWatch = undefined;
         this.cancelSelection(page);
         page.valueAbort?.abort(); page.analysis?.hide(); page.live?.hide(); void page.recordingInventory?.hide();
         if (!page.live) {
@@ -388,6 +407,7 @@ export class RecordedPreview implements vscode.Disposable {
   }
   private closePage(id: string): void {
     const page = this.pages.get(id); if (!page) return;
+    page.replicaWatch?.dispose(); page.replicaWatch = undefined;
     page.closed = true; page.recovery?.dispose(); this.cancelSelection(page); clearTimeout(page.hiddenTimer); page.recorded?.dispose(); page.generation.cancel(); page.valueAbort?.abort(); page.analysis?.dispose(); page.live?.dispose(); page.delivery?.dispose(); void page.recordingInventory?.dispose(); this.pages.delete(id); this.rendered.delete(id); this.targetEntries();
     if (!this.pages.size) { this.controlSubscription?.dispose(); this.controlSubscription = undefined; this.controlClient = undefined; }
     for (const overview of this.overviews.values()) void this.refreshOverview(overview).catch(() => {});
@@ -400,6 +420,10 @@ export class RecordedPreview implements vscode.Disposable {
       try { requireRecordedPreview(snapshot.configuration as RecordedConfiguration); }
       catch (error) { this.warning(page.panel, error); return; }
       const recording = sourceContent(snapshot.source_ref).kind === "session";
+      this.watchReplica(page, snapshot.source_ref, () => {
+        page.generation.cancel(); page.valueAbort?.abort(); page.inventory = undefined; page.bindings = undefined; page.dataKey = undefined;
+        this.paint(document, true);
+      }, page.inventory?.replica);
       const dataKey = recording ? liveDataKey(snapshot) : recordedDataKey(snapshot.source_ref, snapshot.configuration as RecordedConfiguration);
       let load: { key: string; signal: AbortSignal } | undefined;
       if (page.dataKey !== dataKey) {
@@ -424,12 +448,38 @@ export class RecordedPreview implements vscode.Disposable {
   private recordedFor(page: ViewPage): RecordedBuffers {
     return page.recorded ??= new RecordedBuffers(this.budgets, message => page.panel.webview.postMessage(message));
   }
+  private replicaKey(replica: Inventory["replica"]): string | undefined {
+    return replica ? JSON.stringify([replica.generation, replica.content_sha256, replica.authority_state ?? replica.verification_basis, replica.server_epoch]) : undefined;
+  }
+  private watchReplica(page: ViewPage | OverviewPage, source: SourceRef, refresh: () => void, admitted?: Inventory["replica"]): void {
+    const selected = JSON.stringify(source);
+    if (sourceContent(source).kind !== "file_version" || page.replicaSource !== selected) {
+      page.replicaWatch?.dispose(); page.replicaWatch = undefined; page.replicaKey = undefined; page.replicaSource = selected;
+    }
+    if (page.replicaKey === undefined && admitted) page.replicaKey = this.replicaKey(admitted);
+    if (sourceContent(source).kind !== "file_version" || page.replicaWatch || !page.panel.visible || page.closed) return;
+    page.replicaWatch = this.healthMonitor.watch(source, observation => {
+      if (page.closed || !page.panel.visible) return;
+      if (observation.kind !== "ok" || !observation.health.replica) {
+        this.warning(page.panel, observation.reason); return;
+      }
+      const replica = observation.health.replica;
+      const key = this.replicaKey(replica);
+      const old = page.replicaKey; page.replicaKey = key;
+      if (old !== undefined && old !== key) {
+        refresh(); this.warning(page.panel, "Replica content changed or its authority basis changed; refreshed the same selected source.");
+      }
+    });
+  }
   private async loadData(page: ViewPage, view: RecordedView, signal: AbortSignal): Promise<void> {
     const key = page.key, buffers = this.recordedFor(page);
     await buffers.clear(key);
     if (signal.aborted || !page.generation.current(key)) return;
     if (!page.inventory) page.inventory = await this.backend.describe(view.source_ref, signal);
     if (!page.generation.current(key)) return;
+    // A health reply can precede this description. The next poll compares with the generation
+    // actually admitted for display, so it cannot adopt a replacement as an unseen baseline.
+    page.replicaKey = this.replicaKey(page.inventory.replica);
     await page.panel.webview.postMessage({ type: "inventory", inventory: page.inventory }); this.targetEntries();
     const config = view.configuration as RecordedConfiguration;
     requireRecordedPreview(config);

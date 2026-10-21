@@ -81,6 +81,7 @@ public final class AnalysisGuidance {
       {
         "purpose": "How to reason about this server's results without confabulating. Read once per session; apply the method to causal questions and the traps everywhere.",
         "answer_first": "Lead with the answer to the question actually asked, in one or two sentences. Evidence, alternatives, and confidence follow. For lookups they are optional.",
+        "replicas": "Replica states provisional and legacy_unconfirmed are not master-confirmed. authoritative_mismatch means the held bytes are known to differ from the configured master's immutable version; report that warning and select the master or wait for replacement before relying on those bytes.",
         "source_selection": "There is no default source. Use list_source_scopes and ask the user when several choices are configured. Carry the explicit scope or source reference through later reads. Neither availability, recency, an import destination nor matching filenames selects a source. Never silently switch a remote source to its mirror.",
         "system_logs": "The pulled file is the exact record (search_system_logs); the tailed entry is the timely one (search_strings), timestamped at receipt. They may contain the same text twice.",
         "method": {

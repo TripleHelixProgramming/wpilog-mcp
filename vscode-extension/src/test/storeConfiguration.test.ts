@@ -17,6 +17,8 @@ async function fixture(t: any, holdActivation?: Kind) {
   const listeners: ((event: { affectsConfiguration(key: string): boolean }) => void)[] = [];
   const calls: { kind: Kind; origin?: string }[] = [], refused: string[] = [], output: string[] = [];
   const configured: Partial<Record<Kind, string>> = {};
+  let mirrorFolder: string | undefined;
+  const disabledMirrors: string[] = [];
   let busy = false, registration = Promise.resolve(), hold: Kind | undefined = holdActivation, fail: Kind | undefined;
   const held = deferred();
   const disposable = () => ({ dispose() {} });
@@ -58,11 +60,24 @@ async function fixture(t: any, holdActivation?: Kind) {
     } }; }
   }
   class StoreClient {
-    configure(config: any) { return service("mirror", config.origin); }
-    disable() { return service("mirror"); }
+    async configure(config: any) {
+      const result = await service("mirror", config.origin);
+      mirrorFolder = config.folder;
+      return result;
+    }
+    disable(id?: string) {
+      assert.equal(id, "fixture-mirror", "settings removal must retain the selected server mirror identity");
+      disabledMirrors.push(id!);
+      return service("mirror");
+    }
     configureLive(config: any) { return service("live", config.robot.host); }
     disableLive() { return service("live"); }
-    async status() { return { state: configured.mirror ? "idle" : "disabled" }; }
+    async status() {
+      // The real endpoint publishes the configured folder and store identity. Omitting them
+      // made this fixture unable to identify the service selected for explicit removal.
+      return configured.mirror ? { state: "idle", mirror_id: "fixture-mirror",
+        config: { folder: mirrorFolder, origin: configured.mirror } } : { state: "disabled" };
+    }
   }
   const loader = require("node:module") as { _load: (...args: any[]) => any }, load = loader._load;
   const extensionPath = require.resolve("../extension"); delete require.cache[extensionPath];
@@ -99,7 +114,7 @@ async function fixture(t: any, holdActivation?: Kind) {
     settings[key] = value;
     for (const listener of listeners) listener({ affectsConfiguration: name => `wpilog-mcp.${key}` === name || `wpilog-mcp.${key}`.startsWith(name + ".") });
   };
-  return { api, calls, refused, configured, output, change, release: held.resolve,
+  return { api, calls, refused, configured, disabledMirrors, output, change, release: held.resolve,
     hold: (kind: Kind) => { hold = kind; }, fail: (kind: Kind) => { fail = kind; } };
 }
 
@@ -135,4 +150,5 @@ test("a refused operation does not poison later configuration or disable request
   f.change("live.enabled", false); f.change("mirror.enabled", false);
   await until(() => f.configured.live === undefined && f.configured.mirror === undefined);
   assert.deepEqual(f.refused, []);
+  assert.deepEqual(f.disabledMirrors, ["fixture-mirror"]);
 });

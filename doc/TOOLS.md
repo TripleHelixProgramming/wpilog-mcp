@@ -213,7 +213,9 @@ These are publication facts, not statistical inferences, so they carry no data-q
 
 ### `list_sessions`
 
-Current and recent store sessions, newest first. Top-level `managed` is true only when the
+Current and recent store sessions, newest first. `replica_publication_failure` reports a pending
+catalog publication for the current capture (otherwise null); recording continues and its local
+session receipt remains durable. Top-level `managed` is true only when the
 server was started with `--managed`; a hand-written systemd unit must pass that flag.
 An inherited `INVOCATION_ID` does not set it. Use `systemctl`, not the daemon
 manager, to stop or update it. This field is present even when capture is disabled.
@@ -505,8 +507,9 @@ capture copy, which is retained without refresh. Held captures remain readable; 
 from this mirror can be read by explicitly selecting its origin.
 The `stores` summary marks `mirror` and includes its origin, pins and freshness. A mirror refuses
 imports and leaves unmanaged files untouched; pinning is a local HTTP UI control, not a tool.
-At the M4 checkpoint automatic mirror transfers are paused: format-1 mirrors require explicit
-migration, and format-2 mirrors await the M5 payload writer. The migrated file pages distinguish
+Format-1 mirrors require explicit migration before automatic transfers; format-2 mirrors pull
+finalized versioned offers and confirm authority only through the configured master. Local cleanup and generation recovery
+use the publication owner; none is an assistant tool. The migrated file pages distinguish
 legacy transfer integrity from master confirmation. See [the mirror reference](pit-server/STANDALONE.md#the-mirror).
 
 A REV companion with corrupt recorded alignment carries `read_error` naming its manifest, as does
@@ -3123,14 +3126,15 @@ allowance across recorded/live sample buffers and paged inventory, with separate
 
 ### `visualization_source_health`
 
-Observe an anchored recording's acquisition separately from its manifested history. This reads
+Observe an anchored recording's acquisition separately from its manifested history, or an API 2
+`file_version` source's current generation and replica basis. This reads
 catalog identity and current grants, without opening, hashing or decoding the log payload.
 It does not replace data admission: a subsequent follow still proves writer identity and bytes.
 
 **Parameters:**
 
 - `api_version` (required, integer): `1` for legacy references or `2` for qualified references; API 1 requires trusted local authority; API 2 admits remote callers; legacy migration stays local.
-- `source_ref` (required, object): Durable anchored `session` reference.
+- `source_ref` (required, object): Durable anchored `session` reference, or API 2 qualified `file_version` reference.
 
 **Returns:** `api_version`, `status`, `health` on success; `code` and `error` on refusal.
 
@@ -3140,6 +3144,13 @@ It does not replace data admission: a subsequent follow still proves writer iden
 when no matching acquisition is running. A quiet change-only signal is not disconnection;
 receipt age is freshness evidence, never the sample's robot timestamp. Finalized history can
 resume if the same robot clock reconnects. Another recording is never substituted.
+For an API 2 logical file version, acquisition is inactive and history finalized. `replica`
+contains `serving_scope_id`, `server_epoch`, `identity`, `content_sha256`, `size_bytes`, `generation`,
+`verification_basis`, `authority_state`, `confirmation` and `placement`. The stronger
+`authoritative_mismatch` state means the master has disproved the held provisional candidate.
+These metadata observations do not certify current bytes; data admission still hashes changed
+boundaries. Ordinary replica analysis exposes the same admitted facts in `inputs.replica`, and
+Arrow metadata retains that snapshot. Placement and clock relationships carry separate evidence.
 `publication_timing` is null without a matching measurement, otherwise it reports
 `writer_identity`, `publication_revision`, and `receive_to_publication_ms` for the latest
 observed NT value publication. This is a duration in the server's monotonic clock domain,
@@ -3800,3 +3811,10 @@ Guidance is added for:
 - a change-only series (long intervals are holds, not missing data, and a sample count is a count of changes)
 - NaN or infinite values ("non-finite values were filtered")
 - a time span under 10 seconds ("Short time span")
+
+
+Replica-backed analysis carries its admitted generation and authority in `inputs.replica`.
+`provisional` and `legacy_unconfirmed` do not establish master authority. When the master has
+disproved held bytes (`authoritative_mismatch`), the result also warns with both hashes and sizes;
+statistics still describe the held bytes. Select the master or wait for replacement before relying
+on that copy as the authoritative version.

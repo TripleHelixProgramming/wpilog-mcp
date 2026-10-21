@@ -87,6 +87,11 @@ public class HttpTransport {
   private StreamingRequests storeStreaming;
   private StreamingRequests followStreaming;
   private StreamingRequests inventoryStreaming;
+  private StreamingRequests replicaStreaming;
+  private StreamingRequests replicaMetadata;
+  private final AtomicInteger replicaResponseBytes = new AtomicInteger();
+  int replicaResponseBytes() { return replicaResponseBytes.get(); }
+  private StreamingRequests replicaControls;
   private Duration streamTimeout = Duration.ofSeconds(10);
   void streamTimeout(Duration timeout) { streamTimeout = timeout; }
   int activeStreams() { return streaming == null ? 0 : streaming.activeCount(); }
@@ -161,6 +166,41 @@ public class HttpTransport {
   java.util.concurrent.atomic.AtomicBoolean localControlsGuard() { return localControls; }
   private final MirrorEndpoint mirrorEndpoint = new MirrorEndpoint(stores, () -> this.liveSourceEndpoint.folder(), localControls);
   private final StoreReplicaEndpoint replicaEndpoint = new StoreReplicaEndpoint(stores, storeDoor);
+  private final ReplicaEndpoint replicaDoor = new ReplicaEndpoint(storeDoor, stores);
+  private org.triplehelix.wpilogmcp.store.PeerDiscovery peerDiscovery;
+  private volatile boolean nativeDiscoveryEnabled;
+  private final Object discoveryLock = new Object();
+  private final java.util.concurrent.atomic.AtomicBoolean discoveryClaimed = new java.util.concurrent.atomic.AtomicBoolean();
+  private java.util.List<org.triplehelix.wpilogmcp.store.MdnsPeers> mdnsPeers = java.util.List.of();
+  @FunctionalInterface interface DiscoveryStarter {
+    java.util.List<org.triplehelix.wpilogmcp.store.MdnsPeers> start(org.triplehelix.wpilogmcp.store.PeerDiscovery discovery,
+        org.triplehelix.wpilogmcp.store.StoreDoor door, String bind, int port) throws IOException;
+  }
+  private volatile DiscoveryStarter discoveryStarter = org.triplehelix.wpilogmcp.store.MdnsPeers::start;
+  void discoveryStarter(DiscoveryStarter starter) { discoveryStarter = starter; }
+  /** The launcher explicitly owns native discovery; in-process synthetic servers need no multicast sockets. */
+  public void startReplicaDiscovery() {
+    nativeDiscoveryEnabled = true;
+    mirrorEndpoint.onConfigured(() -> { if (nativeDiscoveryEnabled) startReplicaDiscovery(); });
+    try { if (java.net.InetAddress.getByName(bindAddress).isLoopbackAddress() && !mirrorEndpoint.discoveryEnabled()) return; }
+    catch (IOException ignored) { return; }
+    if (stopped.get() || !discoveryClaimed.compareAndSet(false, true)) return;
+    var discovery = new org.triplehelix.wpilogmcp.store.PeerDiscovery();
+    java.util.List<org.triplehelix.wpilogmcp.store.MdnsPeers> providers = java.util.List.of();
+    String failure = null;
+    try { providers = java.util.List.copyOf(discoveryStarter.start(discovery, storeDoor, bindAddress, getPort())); }
+    catch (IOException error) { failure = error.getMessage(); }
+    boolean published;
+    synchronized (discoveryLock) {
+      published = !stopped.get();
+      if (published) { peerDiscovery = discovery; mdnsPeers = providers; }
+    }
+    if (!published) { providers.forEach(org.triplehelix.wpilogmcp.store.MdnsPeers::close); discovery.close(); return; }
+    var owned = providers; String reason = failure;
+    mirrorEndpoint.discovery(() -> java.util.Map.of("state", owned.isEmpty() ? "unavailable" : "started",
+        "reason", reason == null ? "" : reason, "providers", owned.stream().map(org.triplehelix.wpilogmcp.store.MdnsPeers::status).toList(),
+        "candidates", discovery.snapshot()), discovery::endpoints);
+  }
   /** The capture the live tools answer from: the one servers.yaml configured, or a laptop's live
    * source set at run time, or none. */
   private final java.util.concurrent.atomic.AtomicReference<org.triplehelix.wpilogmcp.capture.LiveCapture> liveCapture =
@@ -270,7 +310,9 @@ public class HttpTransport {
   }
 
   public void start() throws IOException {
-    try { visualization = new VisualizationEndpoint(sessionManager, toolRegistry); }
+    liveSourceEndpoint.mirrorFolders(mirrorEndpoint::folders);
+    try { visualization = new VisualizationEndpoint(sessionManager, toolRegistry);
+      mirrorEndpoint.impacts((header, files) -> toolRegistry.visualizations().replicaCleanupImpact(header, files)); }
     catch (IOException failure) { visualizationFailure = failure.getMessage(); logger.warn("Visualization preview unavailable: {}", visualizationFailure); }
     server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
     server.createContext(this.mcpPath, counted(this::handleRequest));
@@ -307,6 +349,14 @@ public class HttpTransport {
     server.createContext(StoreImportEndpoint.PATH, storeStreaming.handle(counted(this::handleImport)));
     server.createContext(StoreImportEndpoint.ASSIGN_PATH, storeStreaming.handle(counted(this::handleImport)));
     server.createContext("/store", storeStreaming.handle(counted(this::handleStore)));
+    replicaStreaming = new StreamingRequests(4, streamTimeout);
+    replicaMetadata = new StreamingRequests(4, streamTimeout);
+    replicaControls = new StreamingRequests(2, streamTimeout);
+    server.createContext(ReplicaEndpoint.PATH, replicaMetadata.handle(counted(this::handleReplicaDoor),
+        exchange -> replicaMetadata.refuse(exchange, this::replicaBusy)));
+    server.createContext(ReplicaEndpoint.PATH + "/file", replicaStreaming.handle(counted(this::handleReplicaDoor),
+        exchange -> replicaStreaming.refuse(exchange, this::replicaBusy)));
+    server.createContext(ReplicaEndpoint.PATH + "/close", replicaControls.handle(counted(this::handleReplicaDoor)));
     server.createContext(LocalIngestionEndpoint.PATH, storeStreaming.handle(counted(this::handleLocalIngestion)));
     server.createContext(StoreSyncEndpoint.PATH, counted(this::handleSync));
     server.createContext(MirrorEndpoint.PATH, storeStreaming.handle(counted(this::handleMirror)));
@@ -376,7 +426,7 @@ public class HttpTransport {
   /** Runs {@code onIdle} once, when no session is open and the idle time has passed. */
   void exitIfIdle() {
     var idle = idleExit;
-    if (idle == null || localIngestion != null && localIngestion.enabled() || sessionManager.size() > 0 || stores.importing() || importEndpoint.active() || syncEndpoint.active() || mirrorEndpoint.active()) return;
+    if (idle == null || localIngestion != null && localIngestion.enabled() || sessionManager.size() > 0 || stores.importing() || importEndpoint.active() || syncEndpoint.active() || mirrorEndpoint.configured()) return;
     long idleFor = idleClock.getAsLong() - lastMcpActivityNanos;
     if (idleFor < idle.toNanos()) return;
     if (!idleExitRun.compareAndSet(false, true)) return;
@@ -406,7 +456,13 @@ public class HttpTransport {
       return;
     }
     mirrorEndpoint.close();
+    java.util.List<org.triplehelix.wpilogmcp.store.MdnsPeers> providers;
+    org.triplehelix.wpilogmcp.store.PeerDiscovery discovery;
+    synchronized (discoveryLock) { providers = mdnsPeers; discovery = peerDiscovery; }
+    providers.forEach(org.triplehelix.wpilogmcp.store.MdnsPeers::close);
+    if (discovery != null) discovery.close();
     replicaEndpoint.close();
+    replicaDoor.close();
     liveSourceEndpoint.close();
     followEndpoint.close();
     readEndpoint.close();
@@ -451,6 +507,9 @@ public class HttpTransport {
     if (storeStreaming != null) storeStreaming.close();
     if (followStreaming != null) followStreaming.close();
     if (inventoryStreaming != null) inventoryStreaming.close();
+    if (replicaStreaming != null) replicaStreaming.close();
+    if (replicaMetadata != null) replicaMetadata.close();
+    if (replicaControls != null) replicaControls.close();
     sessionManager.clear();
     stores.stopWatching();
     stores.awaitImports();
@@ -955,6 +1014,7 @@ public class HttpTransport {
   /** Called after the listener starts, so an offline origin cannot delay daemon health. */
   public void configureMirror(org.triplehelix.wpilogmcp.config.MirrorConfig config) throws IOException {
     mirrorEndpoint.configure(config);
+    if (nativeDiscoveryEnabled && config.discovery()) startReplicaDiscovery();
   }
 
   private void handleMirror(HttpExchange exchange) throws IOException {
@@ -978,6 +1038,24 @@ public class HttpTransport {
       sendError(exchange, 403, "Replica migration controls require a direct loopback connection"); return;
     }
     noteMcpActivity(); replicaEndpoint.handle(exchange);
+  }
+
+  private void handleReplicaDoor(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) { sendError(exchange, 403, "Forbidden: invalid origin"); return; }
+    noteMcpActivity();
+    String route = exchange.getRequestURI().getPath();
+    boolean metadata = !route.equals(ReplicaEndpoint.PATH + "/close") && !route.startsWith(ReplicaEndpoint.PATH + "/file");
+    // Four metadata workers each own two 1 MiB encoding buffers through socket completion.
+    // File workers instead own their bounded 64 KiB copy buffer, never a visualization permit.
+    if (metadata) replicaResponseBytes.addAndGet(2 << 20);
+    try { replicaDoor.handle(exchange); }
+    finally { if (metadata) replicaResponseBytes.addAndGet(-(2 << 20)); }
+  }
+  private void replicaBusy(HttpExchange exchange) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) { sendError(exchange, 403, "Forbidden: invalid origin"); return; }
+    ReplicaEndpoint.busy(exchange);
   }
 
   private void handleLiveSource(HttpExchange exchange) throws IOException {

@@ -789,23 +789,53 @@ acquisition/history facts without reading sample data.
    [view binding](READ_API.md#following-a-recording-view); raw `/read/v1/follows` source/query
    requests reject qualification instead of discarding it.
 
-This is the server selection checkpoint. The current Explorer source picker and direct remote
-visualization migration are pending; this checkpoint does not promise the new multiple-root UI.
+Explorer shows explicit connection roots and their source scopes; direct remote visualization
+uses the selected server without a local copy.
 Import destination preferences and old Show All Sources controls cannot override MCP selection.
 
 ### Inspecting the mirror migration checkpoint
 
-M4 intentionally pauses mirror downloads. Existing local copies remain readable as their own
+Format-1 mirrors keep automatic downloads paused until explicit migration. Existing local copies remain readable as their own
 source, and direct remote visualization continues to use the selected server.
 
 1. Read `GET /store/mirror` on the local server. A legacy mirror reports `migration_required`.
 2. For an explicit upgrade, send its exact store UUID to `POST /store/mirror/migrate`. Poll status
-   until `writer_not_ready` or `error`; an error leaves the recordings intact.
+   until `ready` or `error`; an error leaves the recordings intact.
 3. Inspect migrated records with `GET /store/mirror/files?offset=0&limit=100`. Advance by the number
    returned until `has_more` is false; `total` is the full count. Legacy copies are unconfirmed.
-4. Cleanup previews identify exact records, hashes and byte totals. Cleanup and re-inclusion
-   currently refuse with `WRITER_NOT_READY`; they change no payload or exclusion.
+4. Send 1–32 replica keys to `POST /store/mirror/cleanup_preview`. The reply names exact files,
+   byte totals, affected working/saved views and prospective acquisition exclusions. It reports
+   historical master evidence, not a live master-presence check. An incomplete view inspection refuses.
+5. To execute that selection, send `request_id` (a new UUID), `store_id`, `catalog_epoch`,
+   `catalog_revision`, `policy_revision` and the same `keys` to `POST /store/mirror/cleanup`.
+   The response is 202; poll status until `maintenance_complete` or `error`. Inspect `operation`:
+   a stale selection changes nothing. Keep the UUID and exact request for a lost-response retry.
+   Views remain saved; readers already holding a generation finish before its bytes retire.
+6. List `GET /store/mirror/exclusions?offset=0&limit=100` to find excluded keys. Explicit
+   re-inclusion sends `request_id`, `catalog_epoch`, `catalog_revision`, `policy_revision` and
+   `keys` to `POST /store/mirror/reinclude`. It removes only those acquisition exclusions; it
+   neither downloads files nor edits definitions. Poll the same operation status.
 
 For master migration, use the local job route described in
 [Explicit replica-format migration](STANDALONE.md#explicit-replica-format-migration). The checkpoint
-requires further publication and platform validation before operational mirror upgrades.
+implements paged reconciliation; native platform and durability validation remain required before operational mirror upgrades.
+
+
+For several mirrors, configure the YAML `mirrors` list or extension `wpilog-mcp.mirrors` list.
+Every entry selects its own master and folder. Inspect `GET /store/mirror`, choose a `mirror_id`,
+and add `?mirror=<id>` to each local control above. A missing selection is a refusal, not a
+fallback. In VS Code, use Mirror Actions to inspect status/discovery, migrate a selected legacy
+mirror, synchronize or include a session. Show Mirror Status includes the historical master
+coverage revision/time; `partial` means no complete successful master traversal. Do not confuse
+peer availability with master verification. Provisional data can be analyzed, with its hash and
+basis in the result. If the master disproves it, a visible preview refreshes the same logical
+source after the corrected generation publishes. Scope changes and a full cap preserve held
+files. The [replica protocol reference](pit-server/STANDALONE.md#replica-protocol-and-multiple-mirrors)
+explains manual peers, offline master IDs, discovery limits and service ownership.
+
+
+If `list_sessions` reports `replica_publication_failure`, capture is still recording locally, but
+one or more completed receipts could not enter the replica catalog. Preserve the store and its
+`.replica-publication.json` markers. Check the reported capacity or I/O failure before retrying
+publication; restarting does not discard those receipts or prevent the next recording. The
+[mirror reference](pit-server/STANDALONE.md#the-mirror) lists the metadata limits and recovery bound.

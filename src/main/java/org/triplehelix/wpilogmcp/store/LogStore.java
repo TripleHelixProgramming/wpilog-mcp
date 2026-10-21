@@ -384,6 +384,17 @@ public final class LogStore implements AutoCloseable {
     });
   }
 
+  private final ReplicaTransfers replicaTransfers = new ReplicaTransfers(this);
+  ReplicaTransfers replicaTransfers() { return replicaTransfers; }
+  void replicaPublished(Header header) { published(root.resolve("store.json"), header); }
+  SecurityValidator replicaSecurity() { return security; }
+  LogManager replicaLogManager() { return logManager; }
+
+  /** Only bounded replica metadata uses this turn; transfer, hashing and retirement stay off-queue. */
+  <T> CompletableFuture<T> replicaTurn(CaptureOperation<T> operation) {
+    return mutate(operation, true, false);
+  }
+
   public Path root() {
     return root;
   }
@@ -418,8 +429,21 @@ public final class LogStore implements AutoCloseable {
         LoggerFactory.getLogger(LogStore.class).warn("Skipping invalid session inventory {}: {}", manifest, reason));
     observers.forEach(observer -> observer.inventory(snapshot));
   }
+  private volatile String replicaPublicationFailure;
+  String replicaPublicationFailure() { return replicaPublicationFailure; }
   public CompletableFuture<Void> refreshStatus() {
-    return captureAsync(io -> { publishInventory(); return null; });
+    return captureAsync(io -> { recoverPublication(io); publishInventory(); return null; });
+  }
+  private void recoverPublication(StoreFiles io) throws IOException {
+    try { ReplicaMasters.recover(root, io); ReplicaMasters.recoverCaptures(root, io); replicaPublicationFailure = null; }
+    catch (IOException | RuntimeException failure) {
+      replicaPublicationFailure = "PUBLICATION_PENDING: recorded captures remain local; " + failure.getMessage();
+      throw failure;
+    }
+  }
+  /** Explicit recovery has a bounded path budget and never blocks admission of a new capture. */
+  public CompletableFuture<Void> recoverMasterPublication() {
+    return mutate(io -> { recoverPublication(io); return null; }, false, false);
   }
 
   /** Atomic manifest replacement permits nonblocking status reads while a sync is queued. */
@@ -465,7 +489,7 @@ public final class LogStore implements AutoCloseable {
           prepared = preparation.prepare();
           if (!prepared.before().id().equals(expectedStoreId)) throw new IOException("SOURCE_UNAVAILABLE: store identity changed");
           if (config != null && prepared.before().replicas() == null) {
-            long newBytes = StoreFiles.JSON.toJson(prepared.after()).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            long newBytes = ReplicaCatalogFiles.metadataBytes(prepared.after());
             long oldBytes = StoreFiles.JSON.toJson(prepared.before()).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
             reservation = MirrorCapacity.measure(root, security, config).reserveMetadata(Math.addExact(oldBytes, Math.multiplyExact(2, newBytes)));
           }
@@ -510,13 +534,25 @@ public final class LogStore implements AutoCloseable {
     catch (java.util.concurrent.ExecutionException e) { throw new IOException("Capture placement failed: " + e.getCause().getMessage(), e.getCause()); }
   }
 
-  <T> CompletableFuture<T> captureAsync(CaptureOperation<T> operation) {
-    return mutate(operation, false);
+  <T> CompletableFuture<T> captureAsync(CaptureOperation<T> operation) { return mutate(operation, false); }
+  <T> CompletableFuture<T> recordingAsync(CaptureOperation<T> operation) {
+    return mutate(io -> {
+      var header = io.read(root.resolve("store.json"), Header.class);
+      if (header.replicas() != null) io.recording(reason -> {
+        replicaPublicationFailure = reason;
+        LoggerFactory.getLogger(LogStore.class).warn("{}", reason);
+      });
+      return operation.run(io);
+    }, false);
   }
 
   private <T> CompletableFuture<T> mutate(CaptureOperation<T> operation, boolean allowMirror) {
+    return mutate(operation, allowMirror, true);
+  }
+
+  private <T> CompletableFuture<T> mutate(CaptureOperation<T> operation, boolean allowMirror, boolean inventory) {
     var result = new CompletableFuture<T>();
-    queue.execute(() -> {
+    try { queue.execute(() -> {
       T value = null; Throwable failure = null;
       var publications = new ArrayList<Map.Entry<Path, Object>>();
       try (var lock = StoreLock.acquire(root, security)) {
@@ -530,10 +566,10 @@ public final class LogStore implements AutoCloseable {
       } catch (Throwable e) { failure = e; }
       // Observers and future completions can run arbitrary caller code. Store ordering remains
       // on the queue, but none of those callbacks inherits the cross-process file lock.
-      for (var publication : publications) published(publication.getKey(), publication.getValue());
-      if (failure == null && allowMirror) try { publishInventory(); } catch (Throwable e) { failure = e; }
+      if (inventory) for (var publication : publications) published(publication.getKey(), publication.getValue());
+      if (failure == null && allowMirror && inventory) try { publishInventory(); } catch (Throwable e) { failure = e; }
       if (failure == null) result.complete(value); else result.completeExceptionally(failure);
-    });
+    }); } catch (java.util.concurrent.RejectedExecutionException closed) { result.completeExceptionally(new IOException("Store is closed", closed)); }
     return result;
   }
 
@@ -752,11 +788,19 @@ public final class LogStore implements AutoCloseable {
 
   CompletableFuture<MirrorSync.Result> mirror(org.triplehelix.wpilogmcp.config.MirrorConfig config,
       Consumer<MirrorSync.Progress> progress, java.time.Clock clock, StoreSync.Source source) {
+    return mirror(config, progress, clock, source, master -> java.util.List.of());
+  }
+  CompletableFuture<MirrorSync.Result> mirror(org.triplehelix.wpilogmcp.config.MirrorConfig config,
+      Consumer<MirrorSync.Progress> progress, java.time.Clock clock, StoreSync.Source source,
+      java.util.function.Function<String, java.util.List<String>> discovered) {
     if (!root.equals(config.folder().toAbsolutePath().normalize()) && !sameRealFolder(root, config.folder())) return CompletableFuture.failedFuture(new IOException("mirror.folder differs from this store"));
     if (!syncing.compareAndSet(false, true)) return CompletableFuture.failedFuture(new IOException("A sync is already running for this store"));
     pending.incrementAndGet();
     try {
+      long replicaEpoch = replicaTransfers.reconciliationEpoch(config);
       return mutate(io -> new MirrorSync(root, io, security, logManager, clock, progress).run(config, source), true)
+          .thenCompose(result -> result.state().equals("ready")
+              ? ReplicaReconciler.run(this, config, clock, progress, replicaEpoch, discovered) : CompletableFuture.completedFuture(result))
           .whenComplete((result, error) -> { syncing.set(false); pending.decrementAndGet(); });
     } catch (RuntimeException e) { syncing.set(false); pending.decrementAndGet(); throw e; }
   }
@@ -770,19 +814,25 @@ public final class LogStore implements AutoCloseable {
   public CompletableFuture<StoreManifest.MirrorOrigin> pin(String sessionId, boolean pinned) {
     StoreFiles.component(sessionId);
     return mutate(io -> {
-      var header = io.read(root.resolve("store.json"), Header.class); var origin = header.origin();
-      if (!header.mirror() || origin == null) throw new IOException("pin_session requires a mirror");
-      var ids = new java.util.TreeSet<>(origin.pinnedSessions());
-      if (pinned) ids.add(sessionId); else ids.remove(sessionId);
-      var updated = new MirrorOrigin(origin.storeId(), origin.url(), origin.lastSync(), List.copyOf(ids), origin.sessions());
-      header = header.withOrigin(updated);
-      if (header.replicas() != null) {
-        var catalog = header.replicas();
-        header = header.withReplicas(new ReplicaCatalog(catalog.schemaVersion(), catalog.epoch(), Math.addExact(catalog.revision(), 1),
-            catalog.files(), List.copyOf(ids), catalog.exclusions()));
-      }
-      io.write(root.resolve("store.json"), header); return updated;
+      var header = pinnedHeader(io.read(root.resolve("store.json"), Header.class), sessionId, pinned);
+      io.write(root.resolve("store.json"), header); return header.origin();
     }, true);
+  }
+
+  /** Shared value transformation; the replica owner reserves the durable replacement separately. */
+  static Header pinnedHeader(Header header, String sessionId, boolean pinned) throws IOException {
+    var origin = header.origin();
+    if (!header.mirror() || origin == null) throw new IOException("pin_session requires a mirror");
+    var ids = new java.util.TreeSet<>(origin.pinnedSessions());
+    if (pinned) ids.add(sessionId); else ids.remove(sessionId);
+    var updated = new MirrorOrigin(origin.storeId(), origin.url(), origin.lastSync(), List.copyOf(ids), origin.sessions());
+    header = header.withOrigin(updated);
+    if (header.replicas() != null) {
+      var catalog = header.replicas();
+      header = header.withReplicas(new ReplicaCatalog(catalog.schemaVersion(), catalog.epoch(), Math.addExact(catalog.revision(), 1),
+          catalog.files(), List.copyOf(ids), catalog.exclusions()));
+    }
+    return header;
   }
 
   /** A second caller queues behind the first, including its inspection and identity changes. */
@@ -867,6 +917,7 @@ public final class LogStore implements AutoCloseable {
 
   @Override
   public void close() {
+    replicaTransfers.close();
     queue.shutdown();
   }
 
@@ -1327,6 +1378,38 @@ public final class LogStore implements AutoCloseable {
     try (var lease = reservation) {
       List<LogFile> records;
       try {
+        records = new ArrayList<LogFile>(session == null ? List.of() : session.files());
+        String now = Instant.now().toString();
+        for (var placement : placements) {
+          var input = placement.input();
+          var previous = catalog.assigning.get(input.hash());
+          var provenance = previous == null ? uploadSources.getOrDefault(input.path(), new Provenance("imported", input.path().toString(),
+              input.path().getFileName().toString(), now, move)) : previous.file().provenance();
+          records.add(new LogFile(StoreFiles.relative(manifest.getParent(), placement.destination()),
+              input.hash(), input.size(), input.kind(), provenance, true, input.min(), input.max(),
+              input.start() == null ? null : input.start().toString(),
+              input.end() == null ? null : input.end().toString(), input.startBasis(), input.truncated(),
+              placement.matching(), input.robotFingerprint(), placement.reason(), placement.placementMethod()));
+        }
+        if (session != null) {
+          var start = Instant.parse(session.startedAt());
+          var end = Instant.parse(session.endedAt());
+          String basis = session.startBasis();
+          for (var input : inputs) {
+            // Data joined an already-proven boot. Its uncertain source calendar only nominated it.
+            if (decision != null && decision.matching() != null) continue;
+            // A REV wall clock nominates candidates only; the correlated wpilog owns session time.
+            if (!input.kind().equals("wpilog")) continue;
+            if (input.start() != null && input.start().isBefore(start)) {
+              start = input.start();
+              basis = input.startBasis();
+            }
+            if (input.end() != null && input.end().isAfter(end)) end = input.end();
+          }
+          session = new Session(session.id(), start.toString(), end.toString(), basis,
+              session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats(), session.systemLogs(), session.mergedSessionIds(), session.clocks());
+        }
+        ReplicaMasters.preflight(root, io, manifest, session == null ? records.get(0) : session);
         for (var placement : placements) {
           var input = placement.input();
           security.validate(input.path());
@@ -1366,39 +1449,7 @@ public final class LogStore implements AutoCloseable {
           var verified = ImportInspection.read(placement.destination(), parser);
           if (!verified.hash().equals(input.hash())) throw new IOException("Copy hash differs: " + input.path());
         }
-        records = new ArrayList<LogFile>(session == null ? List.of() : session.files());
-        String now = Instant.now().toString();
-        for (var placement : placements) {
-          var input = placement.input();
-          var previous = catalog.assigning.get(input.hash());
-          var provenance = previous == null ? uploadSources.getOrDefault(input.path(), new Provenance("imported", input.path().toString(),
-              input.path().getFileName().toString(), now, move)) : previous.file().provenance();
-          records.add(new LogFile(StoreFiles.relative(manifest.getParent(), placement.destination()),
-              input.hash(), input.size(), input.kind(), provenance, true, input.min(), input.max(),
-              input.start() == null ? null : input.start().toString(),
-              input.end() == null ? null : input.end().toString(), input.startBasis(), input.truncated(),
-              placement.matching(), input.robotFingerprint(), placement.reason(), placement.placementMethod()));
-        }
-        if (session == null) io.write(manifest, records.get(0));
-        else {
-          var start = Instant.parse(session.startedAt());
-          var end = Instant.parse(session.endedAt());
-          String basis = session.startBasis();
-          for (var input : inputs) {
-            // Data joined an already-proven boot. Its uncertain source calendar only nominated it.
-            if (decision != null && decision.matching() != null) continue;
-            // A REV wall clock nominates candidates only; the correlated wpilog owns session time.
-            if (!input.kind().equals("wpilog")) continue;
-            if (input.start() != null && input.start().isBefore(start)) {
-              start = input.start();
-              basis = input.startBasis();
-            }
-            if (input.end() != null && input.end().isAfter(end)) end = input.end();
-          }
-          session = new Session(session.id(), start.toString(), end.toString(), basis,
-              session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats(), session.systemLogs(), session.mergedSessionIds(), session.clocks());
-          io.write(manifest, session);
-        }
+        if (session == null) io.write(manifest, records.get(0)); else io.write(manifest, session);
       } catch (IOException | RuntimeException e) {
         // Before commit, discard only Move copies we created; ordinary Copy keeps its strays.
         // A plain reverse move refuses an intervening original instead of replacing it.
@@ -1419,7 +1470,7 @@ public final class LogStore implements AutoCloseable {
       // The payload's manifest is committed. No later failure may roll this placement back.
       catalog.placed(io, manifest, robot, session, records);
       if (move) {
-        var header = catalog.header;
+        var header = io.read(root.resolve("store.json"), Header.class);
         var moves = new ArrayList<>(header.moves());
         for (var placement : placements) moves.add(new Move(placement.input().path().toString(),
             StoreFiles.relative(root, placement.destination()), Instant.now().toString()));
@@ -1510,7 +1561,7 @@ public final class LogStore implements AutoCloseable {
 
   private void rewriteMoves(StoreFiles io, ImportCatalog catalog, Path old, Path target)
       throws IOException {
-    var header = catalog.header;
+    var header = io.read(root.resolve("store.json"), Header.class);
     var moves = new ArrayList<Move>();
     for (var move : header.moves()) {
       var path = io.resolve(root, move.movedTo());

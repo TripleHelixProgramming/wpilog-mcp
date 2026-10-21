@@ -8,8 +8,8 @@
 
 The [source and mirror implementation plan](../SOURCE_AND_MIRROR_PLAN.md) specifies the
 next mirror protocol, verification states and separation of transfer I/O from publication.
-M4 supplies explicit format-2 migration and preservation admission. The new payload writer
-remains disabled until M5; peer exchange remains M6 work. Ordinary union transfers retain
+M4 supplies explicit format-2 migration and preservation admission. M5 supplies immutable
+generations, recovery, local cleanup and paged peer reconciliation; discovery is server-owned. Ordinary union transfers retain
 their separate owner described below.
 
 `sync.FileTransfer` advances at most one 64 KiB block per step, with an injected monotonic clock and
@@ -433,8 +433,8 @@ A sync is a reader of the peer and a queued, locked writer of its own store. The
 #### Mirrors
 
 `MirrorSync` now stops before network or payload work. Format-1 mirrors report
-`migration_required`; format-2 mirrors report `writer_not_ready` until M5 supplies immutable
-publication. The old automatic scope/cap eviction engine exists only in test fixtures for
+`migration_required`; format-2 mirrors recover journals, then use the versioned replica
+protocol for peer offers and direct-master reconciliation. The old automatic scope/cap eviction engine exists only in test fixtures for
 historical migration and read compatibility. Existing sessions, captures, clock records,
 system-text prefixes, offsets, partial journals and unmanaged files remain unchanged.
 
@@ -456,9 +456,11 @@ Scope is an acquisition predicate. Robot filters combine with event OR date evid
 explicit `all` includes unknown dates. Closed captures and rollover members are eligible;
 active members are excluded. Capacity counts held, partial, metadata and reserved logical bytes,
 with metadata headroom inside the cap. Replacement must fit beside the incumbent and pins
-cannot bypass admission. Cleanup previews identify exact entries and exclusions; execution,
-affected-view enumeration and reader retirement are gated on M5. No admission decision deletes
-existing data, even after master deletion or clock advance.
+cannot bypass admission. Cleanup previews identify exact entries, exclusions and affected views. M5 executes revision-bound
+cleanup with durable receipts and read-lease retirement through the common publication owner. No admission decision deletes
+existing data, even after master deletion or clock advance. See
+[replica publication ownership](../ARCHITECTURE.md#replica-generation-publication-owner) for the
+worker, journal, cancellation and logical-accounting boundaries.
 
 A clock record holds the facts a closed capture has for placing other sources on robot time:
 today, the roboRIO uptime samples that alone link kernel log times to robot time. It is derived

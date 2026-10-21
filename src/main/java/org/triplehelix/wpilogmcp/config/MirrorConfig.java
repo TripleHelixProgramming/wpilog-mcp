@@ -15,8 +15,17 @@ import org.triplehelix.wpilogmcp.sync.HttpRemoteFiles;
 /** Scope selects acquisitions only; neither scope changes nor capacity authorize deletion. */
 public record MirrorConfig(String origin, Path folder, int days, long maxSizeBytes,
     List<String> robots, List<String> events, int intervalSec, long rateBytes,
-    String scope, long metadataReserveBytes) {
-  public static final Set<String> KEYS = Set.of("origin", "folder", "days", "max_size_gb", "robots", "events", "interval_sec", "rate_bytes", "scope", "metadata_reserve_bytes");
+    String scope, long metadataReserveBytes, List<String> peers, boolean discovery, String masterStoreId) {
+  public static final Set<String> KEYS = Set.of("origin", "folder", "days", "max_size_gb", "robots", "events", "interval_sec", "rate_bytes", "scope", "metadata_reserve_bytes", "peers", "discovery", "master_store_id");
+  public MirrorConfig(String origin, Path folder, int days, long maxSizeBytes,
+      List<String> robots, List<String> events, int intervalSec, long rateBytes, String scope, long metadataReserveBytes,
+      List<String> peers, boolean discovery) {
+    this(origin, folder, days, maxSizeBytes, robots, events, intervalSec, rateBytes, scope, metadataReserveBytes, peers, discovery, null);
+  }
+  public MirrorConfig(String origin, Path folder, int days, long maxSizeBytes,
+      List<String> robots, List<String> events, int intervalSec, long rateBytes, String scope, long metadataReserveBytes) {
+    this(origin, folder, days, maxSizeBytes, robots, events, intervalSec, rateBytes, scope, metadataReserveBytes, List.of(), true);
+  }
   public MirrorConfig(String origin, Path folder, int days, long maxSizeBytes,
       List<String> robots, List<String> events, int intervalSec, long rateBytes) {
     this(origin, folder, days, maxSizeBytes, robots, events, intervalSec, rateBytes, "filtered", 1_048_576);
@@ -25,6 +34,10 @@ public record MirrorConfig(String origin, Path folder, int days, long maxSizeByt
     origin = new HttpRemoteFiles(origin).url();
     folder = folder.toAbsolutePath().normalize();
     robots = List.copyOf(robots); events = List.copyOf(events);
+    peers = peers.stream().map(address -> new HttpRemoteFiles(address).url()).distinct().toList();
+    if (masterStoreId != null && !java.util.UUID.fromString(masterStoreId).toString().equals(masterStoreId))
+      throw new IllegalArgumentException("mirror.master_store_id must be a canonical UUID");
+    if (peers.size() > 64) throw new IllegalArgumentException("mirror.peers accepts at most 64 endpoints");
     if (days < 0) throw new IllegalArgumentException("mirror.days must be nonnegative");
     if (maxSizeBytes <= 0) throw new IllegalArgumentException("mirror.max_size_gb must be positive");
     if (intervalSec <= 0) throw new IllegalArgumentException("mirror.interval_sec must be positive");
@@ -53,7 +66,9 @@ public record MirrorConfig(String origin, Path folder, int days, long maxSizeByt
           (int) integer(block.get("interval_sec"), "interval_sec", 30, Integer.MAX_VALUE),
           integer(block.get("rate_bytes"), "rate_bytes", 0, Long.MAX_VALUE),
           block.has("scope") ? string(block.get("scope"), "scope") : "filtered",
-          integer(block.get("metadata_reserve_bytes"), "metadata_reserve_bytes", 1_048_576, 134_217_728));
+          integer(block.get("metadata_reserve_bytes"), "metadata_reserve_bytes", 1_048_576, 134_217_728),
+          strings(block.get("peers"), "peers"), bool(block.get("discovery"), true),
+          block.has("master_store_id") ? string(block.get("master_store_id"), "master_store_id") : null);
     } catch (IllegalArgumentException e) { throw new ConfigException("Invalid mirror configuration: " + e.getMessage(), e); }
   }
   private static String string(JsonElement value, String key) throws ConfigException {
@@ -61,6 +76,11 @@ public record MirrorConfig(String origin, Path folder, int days, long maxSizeByt
       throw new ConfigException("mirror." + key + " must be a nonblank string");
     }
     return value.getAsString();
+  }
+  private static boolean bool(JsonElement value, boolean fallback) throws ConfigException {
+    if (value == null) return fallback;
+    if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isBoolean()) throw new ConfigException("mirror.discovery must be boolean");
+    return value.getAsBoolean();
   }
   private static List<String> strings(JsonElement value, String key) throws ConfigException {
     if (value == null) return List.of();

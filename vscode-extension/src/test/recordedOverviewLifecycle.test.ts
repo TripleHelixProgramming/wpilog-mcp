@@ -52,6 +52,19 @@ test("duplicate ready joins one catalog initialization and admits one inventory 
   await f.send(); await tick(); assert.equal(f.owners.length, 1, "a later ready reuses the admitted owner too");
   f.close(); await tick(); assert.equal(f.budgets.decoded.reserved, 0); assert.equal(f.budgets.encoded.reserved, 0);
 });
+test("a replica replacement during overview initialization schedules a fresh description", async t => {
+  const f = fixture(t); let notify: (value: any) => void = () => {}, descriptions = 0;
+  const listing = deferred<void>(); f.preview.refreshOverview = () => listing.promise;
+  f.preview.backend.describe = async () => ({ replica: { generation: descriptions++ ? "new" : "old", content_sha256: "a".repeat(64), verification_basis: "provisional" } });
+  f.preview.healthMonitor = { watch: (_source: unknown, callback: (value: any) => void) => { notify = callback; return { dispose() {} }; } };
+  f.page.summary = { source_ref: { schema_version: 2, server_instance_id: "server", scope_id: "mirror", content: { kind: "file_version", master_store_id: "master", file_id: "file", file_version: "version" } } };
+  const ready = f.send(); await tick();
+  notify({ kind: "ok", health: { replica: { generation: "old", content_sha256: "a".repeat(64), verification_basis: "provisional" } } });
+  notify({ kind: "ok", health: { replica: { generation: "new", content_sha256: "a".repeat(64), verification_basis: "provisional" } } });
+  listing.resolve(); await ready; await tick();
+  assert.equal(descriptions, 2, "joining the obsolete initialization must not swallow the refresh");
+  assert.equal(f.messages.filter(m => m.type === "inventory").at(-1).inventory.replica.generation, "new");
+});
 for (const first of ["obsolete", "current"] as const) test(`hide/reveal invalidates initialization when ${first} catalog reply arrives first`, async t => {
   const f = fixture(t), a = f.send(); await tick(); f.hide(); f.reveal(); const b = f.send(); await tick();
   assert.equal(f.pending.length, 2, "reveal starts a fresh catalog generation");

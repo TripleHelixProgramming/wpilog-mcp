@@ -20,6 +20,7 @@ public interface ReadSnapshot extends AutoCloseable {
    * Use live() to distinguish a writer-owned prefix from a composite snapshot. */
   FileSnapshot boundary();
   default boolean live() { return false; }
+  default org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica() { return null; }
   default java.util.List<SourceFile> sources() { return java.util.List.of(); }
   default java.util.List<ExcludedSource> excludedSources() { return java.util.List.of(); }
   record SourceFile(String path, String sha256, org.triplehelix.wpilogmcp.store.StoreManifest.Provenance provenance,

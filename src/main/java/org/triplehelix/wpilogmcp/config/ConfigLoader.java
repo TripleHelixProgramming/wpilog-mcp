@@ -388,18 +388,35 @@ public class ConfigLoader {
         MirrorConfig.parse(block.get("mirror"), path -> expandPath(interpolate(path, warnings))),
         MetricsConfig.parse(block.get("metrics")),
         ContextConfig.parse(block.get("context"), text -> interpolate(text, warnings)),
-        getBoolean(block, "experimental_data_store")
+        getBoolean(block, "experimental_data_store"),
+        mirrors(block, warnings)
     );
+  }
+
+  private java.util.List<MirrorConfig> mirrors(JsonObject block, Collection<String> warnings) throws ConfigException {
+    if (!block.has("mirrors")) return null;
+    if (block.has("mirror")) throw new ConfigException("Choose mirror or mirrors, not both");
+    if (!block.get("mirrors").isJsonArray() || block.getAsJsonArray("mirrors").size() > 8)
+      throw new ConfigException("mirrors must be an array of at most eight policies");
+    var result = new java.util.ArrayList<MirrorConfig>();
+    for (var value : block.getAsJsonArray("mirrors")) {
+      var mirror = MirrorConfig.parse(value, path -> expandPath(interpolate(path, warnings)));
+      if (mirror == null) throw new ConfigException("mirrors entries cannot be null");
+      for (var prior : result) if (mirror.folder().startsWith(prior.folder()) || prior.folder().startsWith(mirror.folder()))
+        throw new ConfigException("mirrors folders cannot overlap");
+      result.add(mirror);
+    }
+    return java.util.List.copyOf(result);
   }
 
   private void validate(ServerConfig config, boolean foreground) throws ConfigException {
     if (config.context() != null && config.context().jvm() != null && config.capture() == null) throw new ConfigException("context.jvm requires capture");
     if (config.context() != null && !config.context().photonvision().isEmpty() && config.capture() == null) throw new ConfigException("context.photonvision requires capture");
     if (config.capture() != null && !config.isHttp()) throw new ConfigException("capture requires transport: http");
-    if (config.mirror() != null && !config.isHttp()) throw new ConfigException("mirror requires transport: http");
-    if (config.mirror() != null && config.capture() != null && config.mirror().folder().equals(config.capture().store())) {
-      throw new ConfigException("mirror.folder cannot be capture.store");
-    }
+    if (!config.effectiveMirrors().isEmpty() && !config.isHttp()) throw new ConfigException("mirror requires transport: http");
+    for (var mirror : config.effectiveMirrors()) if (config.capture() != null
+        && (mirror.folder().startsWith(config.capture().store()) || config.capture().store().startsWith(mirror.folder())))
+      throw new ConfigException("mirror.folder cannot overlap capture.store");
     if (config.capture() != null && config.idleExit().isPresent()) throw new ConfigException("capture requires idle_exit_minutes: 0 (recording must continue without MCP sessions)");
     var transport = config.effectiveTransport();
     if (!"stdio".equals(transport) && !"http".equals(transport)) {

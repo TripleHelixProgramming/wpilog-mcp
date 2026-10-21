@@ -10,15 +10,22 @@ export interface MirrorSettings {
   robots?: string[];
   events?: string[];
   intervalSec?: number;
+  origin?: string; scope?: "all" | "filtered"; peers?: string[]; discovery?: boolean;
+  masterStoreId?: string; rateBytes?: number; metadataReserveBytes?: number;
 }
 export interface MirrorRequest {
   origin: string; folder: string; days: number; max_size_gb: number;
   robots: string[]; events: string[]; interval_sec: number;
+  scope?: "all" | "filtered"; peers?: string[]; discovery?: boolean; master_store_id?: string;
+  rate_bytes?: number; metadata_reserve_bytes?: number;
 }
 export interface MirrorStatus {
-  state: "disabled" | "waiting" | "synchronizing" | "synchronized" | "offline" | "partial" | "error";
+  state: "disabled" | "waiting" | "synchronizing" | "synchronized" | "offline" | "partial" | "error"
+    | "multiple" | "migration_required" | "migrating" | "ready" | "capacity_paused";
+  mirror_id?: string; mirrors?: MirrorStatus[];
+  replicas?: { format_version: number; catalog_epoch?: string; catalog_revision: number; files: number; verified: number; legacy_unconfirmed: number; exclusions: number; writer_enabled: boolean } | null;
   last_sync?: string | null; age_sec?: number | null; remaining_files?: number; remaining_bytes?: number;
-  config?: { folder: string };
+  config?: { folder: string; origin?: string; peers?: string[]; discovery?: boolean };
   result?: { reason?: string | null; refusals?: string[]; retained?: string[] } | null;
   origin?: { url: string; store_id: string; pinned_sessions: string[]; sessions: Record<string, { path: string; last_sync: string; complete: boolean; growing: boolean }> } | null;
 }
@@ -57,8 +64,47 @@ export function mirrorRequest(pitUrl: string | undefined, settings: MirrorSettin
   if (!Number.isSafeInteger(days) || days < 0) throw new Error("Mirror days must be a nonnegative integer.");
   if (!Number.isFinite(max) || max <= 0) throw new Error("Mirror max size must be positive.");
   if (!Number.isSafeInteger(interval) || interval < 1) throw new Error("Mirror interval must be a positive integer.");
+  if (settings.scope !== undefined && !["all", "filtered"].includes(settings.scope)) throw new Error("Mirror scope must be all or filtered.");
+  if (settings.discovery !== undefined && typeof settings.discovery !== "boolean") throw new Error("Mirror discovery must be boolean.");
+  if (settings.masterStoreId !== undefined && !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(settings.masterStoreId)) throw new Error("Mirror masterStoreId must be a canonical UUID.");
+  for (const [key, value] of [["rateBytes", settings.rateBytes], ["metadataReserveBytes", settings.metadataReserveBytes]] as const) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new Error(`Mirror ${key} must be a nonnegative safe integer.`);
+  }
+  if (settings.peers && (!Array.isArray(settings.peers) || settings.peers.length > 64)) throw new Error("Mirror peers accepts at most 64 endpoints.");
   return { origin: originOf(endpoint), folder: pathApi.normalize(folder), days, max_size_gb: max,
-    robots: [...(settings.robots ?? [])], events: [...(settings.events ?? [])], interval_sec: interval };
+    robots: [...(settings.robots ?? [])], events: [...(settings.events ?? [])], interval_sec: interval,
+    ...(settings.scope === undefined ? {} : { scope: settings.scope }),
+    ...(settings.discovery === undefined ? {} : { discovery: settings.discovery }),
+    ...(settings.peers === undefined ? {} : { peers: [...new Set(settings.peers.map(peerUrl))] }),
+    ...(settings.masterStoreId === undefined ? {} : { master_store_id: settings.masterStoreId }),
+    ...(settings.rateBytes === undefined ? {} : { rate_bytes: settings.rateBytes }),
+    ...(settings.metadataReserveBytes === undefined ? {} : { metadata_reserve_bytes: settings.metadataReserveBytes }) };
+}
+/** Each mirror names its own master and directory. Several configurations never imply a preferred source. */
+export function mirrorConfigurations(pit: string | undefined, legacy: MirrorSettings, configured: unknown, storage: string,
+  pathApi: path.PlatformPath = path): MirrorRequest[] {
+  if (configured === undefined || Array.isArray(configured) && configured.length === 0) {
+    const single = mirrorRequest(pit, legacy, storage, pathApi); return single ? [single] : [];
+  }
+  if (!Array.isArray(configured) || configured.length > 8) throw new Error("mirrors must contain at most eight independent configurations.");
+  if (legacy.enabled) throw new Error("Do not enable both mirror.enabled and mirrors; choose one configuration form.");
+  const all = configured.map((value: MirrorSettings) => {
+    if (!value || typeof value !== "object" || typeof value.origin !== "string" || !value.origin.trim()) throw new Error("Each mirror needs its own origin.");
+    if (!value.folder?.trim()) throw new Error("Each mirror needs its own absolute folder.");
+    // peerUrl permits a selected store on a server which serves more than one master.
+    const origin = peerUrl(value.origin), plain = new URL(origin); plain.search = "";
+    return { ...mirrorRequest(plain.href, { ...value, enabled: true }, storage, pathApi)!, origin };
+  });
+  for (let i = 0; i < all.length; i++) for (let j = 0; j < i; j++) {
+    const clean = (s: string) => pathApi === path.win32 ? s.toLowerCase() : s;
+    const a = clean(all[i].folder), b = clean(all[j].folder);
+    const under = (x: string, y: string) => { const r = pathApi.relative(x, y); return !r || !r.startsWith(`..${pathApi.sep}`) && r !== ".." && !pathApi.isAbsolute(r); };
+    if (under(a, b) || under(b, a)) throw new Error("Mirror folders cannot overlap.");
+  }
+  return all;
+}
+export function mirrorChoices(status: MirrorStatus): MirrorStatus[] {
+  return status.state === "multiple" ? status.mirrors ?? [] : status.state === "disabled" ? [] : [status];
 }
 export interface LiveSettings { enabled?: boolean; folder?: string; gatewayPort?: number; }
 /** The server's live source: disabled, connecting, waiting_for_time_sync, connected, recording or failed. */
@@ -96,6 +142,11 @@ export function ageText(seconds: number | null | undefined): string {
 }
 export function mirrorStatusText(status: MirrorStatus): string {
   switch (status.state) {
+    case "multiple": return `$(database) ${status.mirrors?.length ?? 0} mirrors · choose for actions`;
+    case "migration_required": return "$(warning) Mirror requires format-2 migration";
+    case "migrating": return "$(sync~spin) Mirror migrating";
+    case "capacity_paused": return "$(warning) Mirror at capacity · held files preserved";
+    case "ready": return "$(sync) Mirror ready";
     case "synchronized": return "$(check) Mirror synchronized";
     case "synchronizing": return `$(sync~spin) Mirror: ${status.remaining_files ?? 0} files, ${formatSize(status.remaining_bytes ?? 0)} remaining`;
     case "offline": return `$(cloud-offline) Mirror offline · ${ageText(status.age_sec)}`;

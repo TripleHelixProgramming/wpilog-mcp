@@ -79,12 +79,23 @@ final class ReplicaMigration {
             "local_master_catalog", clock.instant().toString());
         entries.add(new ReplicaCatalog.Entry(key, identity, StoreFiles.relative(root, file.path()), facts.sha256(), facts.sizeBytes(),
             facts.kind(), file.session() == null ? null : file.session().id(), basis,
-            header.mirror() ? "legacy_unconfirmed" : "master_local", true, confirmation));
+            header.mirror() ? "legacy_unconfirmed" : "master_local", true, confirmation, null,
+            ReplicaMasters.placement(root, file.manifestPath(), file.session(), header.mirror() ? "legacy_claim" : "master_receipt",
+                new ReplicaCatalog.Relationships(facts.provenance(), facts.matching(), null, null))));
+      }
+      for (var session : catalog.sessions()) {
+        for (var record : session.session().clocks()) {
+          if (session.session().openCapture() != null && session.session().openCapture().path().equals(record.capture())) continue;
+          var path = ClockRecords.resolve(io, session.path(), record); leases.add(LogFileAccess.read(path));
+          var boundary = FileSnapshot.of(path); ClockRecords.read(io, path, record);
+          if (boundary == null || !boundary.equals(FileSnapshot.of(path))) throw new IOException("Clock changed during migration");
+          boundaries.put(path, boundary);
+        }
+        ReplicaMasters.companions(root, io, header, entries, session.path().resolve("session.json"), session.session(), epoch, 1, clock.instant().toString());
       }
       var included = header.origin() == null ? List.<String>of() : header.origin().pinnedSessions();
       var next = header.withReplicas(new ReplicaCatalog(1, epoch, 1, entries, included, List.of()));
-      if (StoreFiles.JSON.toJson(next).getBytes(java.nio.charset.StandardCharsets.UTF_8).length > StoreFiles.MAX_MANIFEST_BYTES)
-        throw new IOException("Replica metadata exceeds the 4 MiB manifest budget; no migration performed");
+      ReplicaCatalogFiles.preflight(next);
       return new Prepared(header, next, Map.copyOf(boundaries), List.copyOf(leases));
     } catch (IOException | RuntimeException failure) { leases.forEach(LogFileAccess.Lease::close); throw failure; }
   }

@@ -10,6 +10,13 @@ their engine. M1 source contracts and M2 server-library persistence are implemen
 M3 source-aware Explorer routing and the later mirror checkpoints remain pending. The plan
 records migration, acceptance gates and the validation limits for each checkpoint.
 
+The [architecture hardening plan](ARCHITECTURE_HARDENING_PLAN.md) proposes changes to the
+current design that the review of the rejected [columnar analytics cache](COLUMNAR_STORE_PLAN.md)
+exposed: recordings that no import can stop, a disk reserve for capture, a restart for a hung
+server, one rule for bucketing samples, costs measured against a season's store, a contract
+for questions across many sessions (sections 2.2 and 3.5 below), and the design rules written
+down. Nothing in it is implemented.
+
 ---
 
 ## 1. Performance & Scalability

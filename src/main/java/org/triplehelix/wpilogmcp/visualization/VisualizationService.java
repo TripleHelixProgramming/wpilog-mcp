@@ -330,6 +330,15 @@ public final class VisualizationService implements AutoCloseable {
           summary.add("attached_client_id", attachment(r)); return summary;
         }).toList();
   }
+  /** Cleanup needs source identity, not copies of every chart configuration and receipt. */
+  public List<JsonObject> cleanupSources() {
+    return views.values().stream().filter(r -> !expired(r) && !r.get("deleted").getAsBoolean()).map(r -> {
+      var row = new JsonObject();
+      for (String key : List.of("view_id", "revision", "source_ref")) row.add(key, r.get(key).deepCopy());
+      return row;
+    }).toList();
+  }
+
   public List<JsonObject> all() {
     return views.values().stream().filter(r -> !expired(r) && !r.get("deleted").getAsBoolean()).map(this::describe).toList();
   }

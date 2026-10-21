@@ -9,19 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
-- Automatic mirror synchronization is paused for the M4 preservation checkpoint. Previously
+- Automatic mirror synchronization now uses the format-2 replica protocol. Previously
   scope and capacity could evict collected files and the writer excluded finalized captures.
   Legacy mirrors now require explicit format-2 migration; old files, pins and journals survive
   without treating transfer verification as master confirmation. Acquisition scope, bounded
-  metadata/disk admission and cleanup previews are defined. Downloads and cleanup execution
-  remain disabled until the generation publication checkpoint. Older binaries refuse format 2.
+  metadata/disk admission and explicit cleanup replace automatic eviction. Format-2 mirrors
+  pull finalized versions from manual or discovered peers and confirm authority directly with their master. Older binaries refuse format 2.
 
 - MCP log discovery now requires an explicit source when multiple stores or directories are
   configured, instead of preferring an import destination or blending roots. `list_source_scopes`
   returns bounded choices, including unavailable roots. Scoped relative reads and visualization
   API 2 references retain the selected server/store/directory; equal hashes in another copy
   cannot silently substitute for it. API 1 rejects qualified references and views. Mirror
-  transfer publication and peer synchronization remain later checkpoints. `list_available_logs` no longer returns
+  synchronization uses separate selected stores and never blends Explorer sources. `list_available_logs` no longer returns
   `source_sync`, `source_files`, `excluded_directories` or `preferred_store_id`; its legacy `view`
   parameter is validated but has no effect.
 
@@ -32,6 +32,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Directory listing:** `list_available_logs.log_directories` now contains objects with `path`, `origin` (`configured` or `leased`) and nullable `team`. Clients expecting strings must use `log_directory_paths`.
 
 ### Added
+
+- Mirrors exchange paged finalized offers and immutable byte ranges through a bounded server
+  protocol. Peer copies remain provisional; only the selected master can confirm or correct
+  them. Closed clock companions, provenance and separate metadata bases survive transfer.
+  MCP/Arrow results and API 2 logical file-version previews expose the admitted generation and
+  authority; previews refresh after correction without switching stores.
+- Server-owned DNS-SD discovery and explicit manual peers support up to eight independent
+  mirrors. YAML `mirrors` and extension `wpilog-mcp.mirrors` require separate destinations and
+  explicit control selection. Previously a single runtime mirror was replaceable by another
+  configuration. Window disposal now leaves the daemon's service grant and synchronization alive.
+  The bundled JmDNS provider has a synthetic macOS proof; native Linux/Windows remain unverified.
+
+- Mirror publication now has two bounded transfer workers, immutable generations, flushed-prefix
+  resume checks, durable intents/receipts and read-lease retirement. Cancelled or timed-out I/O
+  remains charged until it unwinds and cannot publish afterward. Explicit local cleanup previews
+  affected views, binds catalog/policy revisions, persists exclusions and preserves saved layouts.
+  The old writer could overwrite/evict copies; it remains removed. Paged replica offers now
+  feed this owner, and only direct-master receipts can promote or correct provisional copies. No native durability or throughput claim is made.
 
 - Visualization API 2 and native saves now use a server-owned library for saved views and
   templates. Previously saving a layout required a writable log store or created one; ordinary
@@ -197,6 +215,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The mirror no longer copies the pit's captures; a laptop records live data from the pit's gateway itself. In 0.10.0-dev1 through dev4 the mirror copied every file of a session, captures included, and refreshed an open capture every pass, 30 seconds apart by default. Captures those versions copied stay unrefreshed until their session ages out. A mirrored session now lists only the files the mirror holds, and the cap counts only those.
 
 ### Fixed
+
+- Replica catalogs now publish bounded external parts behind a small atomic header. Previously
+  ordinary metadata could fill the 4 MiB header at roughly 1,800 files, half-commit imports and
+  stop later captures. Imports preflight limits; capture retains pending publication receipts
+  and continues, including after restart.
+- Mirror reconciliation completes bounded enumeration before payload transfers and renews
+  expired sessions without switching suppliers. Previously slow first-page transfers could
+  prevent later pages from ever being acquired.
+- Unchanged verified replicas retain their confirmation, catalog revision and per-file receipt
+  history; current byte checks reuse bounded hash proofs. Previously every pass rewrote and
+  rehashed each held file.
+- Replica downloads and metadata now use their own admission budgets; four slow downloads
+  previously exhausted recording-inventory and visualization-library response reservations.
+- Runtime mirror configuration now starts server-owned discovery after local startup, with a
+  single provider owner under concurrent calls.
+- Replica refusals retain supplier codes, remedies and retryability; ordinary filesystem errors
+  no longer expose private paths or turn Windows drive letters into protocol codes.
+- Canonical store membership retains replica admission through path aliases, and bounded parsed
+  catalog reuse avoids repeatedly decoding the entire header during a read.
+- Analysis of a master-disproved replica now warns with held and master hashes and sizes.
+  The API 2 and mirror references now describe accepted file-version references and the current
+  lack of new system-text prefix replication.
 
 - `time_correlate` no longer treats real tiny signals as constant or assigns correlations to
   large constants whose computed mean rounds away from the value. Constancy uses a four-ulp

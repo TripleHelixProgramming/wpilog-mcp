@@ -32,7 +32,7 @@ class MirrorEndpointTest {
   final LogManager manager = LogManager.getInstance();
   final HttpClient client = HttpClient.newHttpClient();
   Set<Path> previous; HttpTransport origin, local; Path source, target;
-  List<Path> listed;
+  List<Path> listed; ToolRegistry localRegistry;
   @BeforeEach void setup() throws Exception {
     temp = temp.toRealPath(); previous = manager.getAllowedDirectories(); manager.clearAllowedDirectories(); manager.addAllowedDirectory(temp);
     var input = ImportFixture.write(temp.resolve("fixture.wpilog"), 1);
@@ -42,7 +42,7 @@ class MirrorEndpointTest {
     listed = org.triplehelix.wpilogmcp.log.LogDirectory.getInstance().getLogDirectories();
     org.triplehelix.wpilogmcp.log.LogDirectory.getInstance().setLogDirectories(List.of(target.toString()));
     origin = new HttpTransport(new ToolRegistry(), 0); origin.setStoreDirectories(Set.of(store.root())); origin.start();
-    local = new HttpTransport(new ToolRegistry(), 0); local.setStoreDirectories(Set.of(target)); local.start();
+    localRegistry = new ToolRegistry(); local = new HttpTransport(localRegistry, 0); local.setStoreDirectories(Set.of(target)); local.start();
   }
   @AfterEach void cleanup() {
     local.stop(); origin.stop(); manager.unloadAllLogs(); manager.clearAllowedDirectories(); previous.forEach(manager::addAllowedDirectory);
@@ -57,6 +57,40 @@ class MirrorEndpointTest {
   JsonObject configuration() {
     var result = new JsonObject(); result.addProperty("origin", "http://127.0.0.1:" + origin.getPort()); result.addProperty("folder", target.toString());
     result.addProperty("days", 365000); return result;
+  }
+  @Test void discoveryStatusExistsWithoutConfiguringAMirrorOrStartingNativeDiscovery() throws Exception {
+    var response = request("/store/mirror/peers", "GET", null);
+    assertEquals(200, response.statusCode(), response.body());
+    var body = JsonParser.parseString(response.body()).getAsJsonObject();
+    assertEquals("not_started", body.get("state").getAsString());
+    assertEquals(0, body.getAsJsonArray("candidates").size());
+    assertEquals("disabled", status().get("state").getAsString(), "discovery does not configure an Explorer source or mirror");
+  }
+  @Test void runtimeMirrorConfigurationStartsDiscoveryOnceAfterLocalStartup() throws Exception {
+    var starts = new java.util.concurrent.atomic.AtomicInteger();
+    local.discoveryStarter((discovery, door, bind, port) -> {
+      assertFalse(local.localControlsGuard().get(), "provider I/O must not inherit the configuration guard");
+      starts.incrementAndGet(); return List.of();
+    });
+    local.startReplicaDiscovery(); assertEquals(0, starts.get(), "loopback startup without a mirror needs no provider");
+    var config = configuration(); config.addProperty("discovery", true);
+    assertEquals(202, request("/store/mirror/configure", "POST", config.toString()).statusCode());
+    assertEquals(1, starts.get(), "the runtime route must notify the discovery owner");
+    var calls = java.util.stream.IntStream.range(0, 8).mapToObj(i -> java.util.concurrent.CompletableFuture.runAsync(local::startReplicaDiscovery)).toList();
+    for (var call : calls) call.get();
+    assertEquals(1, starts.get(), "concurrent starts cannot create duplicate providers");
+    assertNotEquals("not_started", JsonParser.parseString(request("/store/mirror/peers", "GET", null).body()).getAsJsonObject().get("state").getAsString());
+  }
+
+  @Test void aConfiguredMirrorRetainsItsOwnGrantAfterTheWindowGrantDisappears() throws Exception {
+    assertEquals(202, request("/store/mirror/configure", "POST", configuration().toString()).statusCode());
+    await("migration_required");
+    manager.clearAllowedDirectories();
+    assertTrue(manager.getAllowedDirectories().contains(target.toRealPath()), "server service grant outlives the configuring window");
+    assertEquals(202, request("/store/mirror/sync", "POST", "{}").statusCode());
+    await("migration_required");
+    assertEquals(200, request("/store/mirror", "DELETE", null).statusCode());
+    assertFalse(manager.getAllowedDirectories().contains(target.toRealPath()), "explicit disable releases only the service's grant");
   }
   JsonObject status() throws Exception { return JsonParser.parseString(request("/store/mirror", "GET", null).body()).getAsJsonObject(); }
   JsonObject await(String state) throws Exception {
@@ -132,20 +166,34 @@ class MirrorEndpointTest {
     assertEquals(409, request("/store/mirror/pin_session", "POST", "{\"session_id\":\"x\"}").statusCode());
     assertEquals(200, request("/health", "GET", null).statusCode());
   }
+  @Test void severalMirrorsRemainIndependentAndUnqualifiedControlsRequireAChoice() throws Exception {
+    var first = configuration(); assertEquals(202, request("/store/mirror/configure", "POST", first.toString()).statusCode());
+    await("migration_required");
+    var second = configuration(); second.addProperty("folder", temp.resolve("second-mirror").toString());
+    assertEquals(202, request("/store/mirror/configure", "POST", second.toString()).statusCode());
+    var all = status();
+    assertTrue(all.has("mirrors"), "adding a mirror must retain the first configured owner");
+    assertEquals(2, all.getAsJsonArray("mirrors").size());
+    var refused = request("/store/mirror/sync", "POST", "{}");
+    assertEquals(409, refused.statusCode()); assertTrue(refused.body().contains("SOURCE_SELECTION_REQUIRED"), refused.body());
+    assertEquals(409, request("/store/mirror", "DELETE", null).statusCode(), "unqualified delete cannot disable another mirror");
+    assertTrue(Files.exists(target.resolve("store.json")));
+  }
 
-  @Test void migrationIsExplicitAndDoesNotEnableThePayloadWriter() throws Exception {
+  @Test void migrationIsExplicitAndEnablesOnlyTheFinalizedReplicaProtocol() throws Exception {
     assertEquals(202, request("/store/mirror/configure", "POST", configuration().toString()).statusCode());
     await("migration_required");
     var header = JsonParser.parseString(Files.readString(target.resolve("store.json"))).getAsJsonObject();
     var body = new JsonObject(); body.add("store_id", header.get("id"));
     var migrated = request("/store/mirror/migrate", "POST", body.toString());
     assertEquals(202, migrated.statusCode(), migrated.body());
-    await("writer_not_ready");
+    await("ready");
     var after = JsonParser.parseString(Files.readString(target.resolve("store.json"))).getAsJsonObject();
     assertEquals(2, after.get("format_version").getAsInt());
-    assertTrue(after.getAsJsonObject("replicas").getAsJsonArray("files").isEmpty());
+    assertTrue(after.getAsJsonObject("replica_catalog").get("index").getAsString().matches("[0-9a-f]{64}"));
+    assertTrue(manager.stores().store(target).replicaHeader().replicas().files().isEmpty());
     assertTrue(Files.isRegularFile(target.resolve(".replicas/format-1-store.json")));
-    assertEquals(409, request("/store/mirror/cleanup", "POST", "{}").statusCode());
+    assertEquals(400, request("/store/mirror/cleanup", "POST", "{}").statusCode());
     assertEquals(200, request("/health", "GET", null).statusCode());
   }
 
@@ -186,7 +234,7 @@ class MirrorEndpointTest {
     assertEquals(2, expected.size());
     assertEquals(202, request("/store/mirror/configure", "POST", configuration().toString()).statusCode()); await("migration_required");
     var header = JsonParser.parseString(Files.readString(target.resolve("store.json"))).getAsJsonObject();
-    assertEquals(202, request("/store/mirror/migrate", "POST", "{\"store_id\":" + header.get("id") + "}").statusCode()); await("writer_not_ready");
+    assertEquals(202, request("/store/mirror/migrate", "POST", "{\"store_id\":" + header.get("id") + "}").statusCode()); await("ready");
     var seen = new java.util.HashSet<String>(); JsonObject first = null;
     for (int offset = 0; offset < 3; offset++) {
       var response = request("/store/mirror/files?offset=" + offset + "&limit=1", "GET", null);
@@ -256,5 +304,48 @@ class MirrorEndpointTest {
       assertEquals(200, request("/health", "GET", null).statusCode());
       assertEquals("migration_required", status().get("state").getAsString());
     } finally { release.countDown(); proxy.stop(0); }
+  }
+
+  @Test void explicitCleanupShowsAffectedViewAndPreservesItWhileExcludingExactBytes() throws Exception {
+    org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(manager.stores().store(target),
+        org.triplehelix.wpilogmcp.config.MirrorConfig.parse(configuration(), s -> s), p -> {}).get();
+    assertEquals(202, request("/store/mirror/configure", "POST", configuration().toString()).statusCode()); await("migration_required");
+    var store = manager.stores().store(target); String storeId = store.replicaHeader().id();
+    assertEquals(202, request("/store/mirror/migrate", "POST", "{\"store_id\":\"" + storeId + "\"}").statusCode()); await("ready");
+    var entry = store.replicaHeader().replicas().files().get(0); var sourceRef = new JsonObject();
+    sourceRef.addProperty("kind", "recorded"); sourceRef.addProperty("origin_store_id", store.replicaHeader().origin().storeId());
+    sourceRef.addProperty("content_sha256", entry.sha256());
+    var view = localRegistry.visualizations().views.create(CallerContext.Authority.HTTP_LOCAL, java.util.UUID.randomUUID(), sourceRef,
+        org.triplehelix.wpilogmcp.visualization.VisualizationContracts.blank()).get();
+    var input = new JsonObject(); var keys = new com.google.gson.JsonArray(); keys.add(entry.key()); input.add("keys", keys);
+    var response = request("/store/mirror/cleanup_preview", "POST", input.toString()); assertEquals(200, response.statusCode(), response.body());
+    var preview = JsonParser.parseString(response.body()).getAsJsonObject(); assertEquals("ready", preview.get("writer_state").getAsString());
+    assertEquals(1, preview.getAsJsonArray("affected_views").size());
+    assertEquals(view.get("view_id"), preview.getAsJsonArray("affected_views").get(0).getAsJsonObject().get("view_id"));
+    var execute = new JsonObject(); execute.addProperty("request_id", java.util.UUID.randomUUID().toString());
+    for (String key : List.of("store_id", "catalog_epoch", "catalog_revision", "policy_revision")) execute.add(key, preview.get(key));
+    execute.add("keys", keys);
+    var cleanup = request("/store/mirror/cleanup", "POST", execute.toString()); assertEquals(202, cleanup.statusCode(), cleanup.body());
+    var completed = await("maintenance_complete"); assertEquals("cleanup", completed.getAsJsonObject("operation").get("state").getAsString());
+    assertTrue(store.replicaHeader().replicas().files().isEmpty()); assertEquals(1, store.replicaHeader().replicas().exclusions().size());
+    assertFalse(Files.exists(target.resolve(entry.path())));
+    assertEquals(view, localRegistry.visualizations().views.get(java.util.UUID.fromString(view.get("view_id").getAsString())));
+    assertEquals(202, request("/store/mirror/cleanup", "POST", execute.toString()).statusCode()); await("maintenance_complete");
+    assertEquals(2, store.replicaHeader().replicas().revision());
+    var excluded = JsonParser.parseString(request("/store/mirror/exclusions?offset=0&limit=1", "GET", null).body()).getAsJsonObject();
+    assertEquals(1, excluded.get("total").getAsInt()); assertFalse(excluded.get("has_more").getAsBoolean());
+    assertEquals(entry.key(), excluded.getAsJsonArray("exclusions").get(0).getAsJsonObject().get("key").getAsString());
+    var reinclude = new JsonObject(); reinclude.addProperty("request_id", java.util.UUID.randomUUID().toString()); reinclude.add("keys", keys);
+    for (String key : List.of("catalog_epoch", "catalog_revision", "policy_revision")) reinclude.add(key, excluded.get(key));
+    assertEquals(202, request("/store/mirror/reinclude", "POST", reinclude.toString()).statusCode()); await("maintenance_complete");
+    assertTrue(store.replicaHeader().replicas().exclusions().isEmpty()); assertEquals(3, store.replicaHeader().replicas().revision());
+    var stale = execute.deepCopy(); stale.addProperty("request_id", java.util.UUID.randomUUID().toString());
+    assertEquals(202, request("/store/mirror/cleanup", "POST", stale.toString()).statusCode());
+    assertTrue(await("error").getAsJsonObject("operation").get("error").getAsString().contains("STALE_PREVIEW"));
+    assertEquals(3, store.replicaHeader().replicas().revision());
+    var invalid = execute.deepCopy(); invalid.addProperty("catalog_revision", 1.5);
+    assertEquals(400, request("/store/mirror/cleanup", "POST", invalid.toString()).statusCode());
+    assertEquals(403, request("/store/mirror/cleanup", "POST", execute.toString(), "Origin", "https://evil.example").statusCode());
+    assertEquals(403, request("/store/mirror/reinclude", "POST", "{}", "X-Forwarded-For", "192.0.2.1").statusCode());
   }
 }

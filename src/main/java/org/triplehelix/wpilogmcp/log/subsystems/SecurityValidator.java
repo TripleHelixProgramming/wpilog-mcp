@@ -101,6 +101,13 @@ public class SecurityValidator {
   public void replacePersistentDirectories(String owner, Set<Path> directories) {
     replacePersistentDirectories(owner, grantSequence.incrementAndGet(), directories);
   }
+  /** An explicitly configured server service outlives the editor lease that configured it.
+   * The owner releases only its own grant; unrelated roots and services are left intact. */
+  public AutoCloseable retainServiceDirectory(Path canonical) {
+    String owner = "service:" + java.util.UUID.randomUUID();
+    replacePersistentDirectories(owner, Set.of(canonical));
+    return () -> persistentDirectories.remove(owner);
+  }
 
   /** A completed older import must never reinstate a source a newer user edit revoked. */
   public void replacePersistentDirectories(String owner, long generation, Set<Path> directories) {

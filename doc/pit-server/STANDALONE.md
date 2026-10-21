@@ -137,10 +137,10 @@ the pit does. A record whose capture reopens is dropped, and written again when 
 
 **Sharing them.** The store door includes these receipts and the shared indices in
 `/store/sessions`; the file and prefix-hash routes serve only committed byte lengths. Peer sync
-carries the whole shared index; a mirror carries the shared files that its sessions' spans
-select. Both verify the advertised hash, keep provenance, and resume growing text through the
-held-prefix check. Shared bytes in a mirror count once toward its logical cap and remain held;
-M4 performs no automatic eviction. A manifest ahead of its local
+carries the whole shared index, verifying the advertised hash and resuming growing text through
+the held-prefix check. Format-2 mirrors do not yet carry system-log text; read new text on the
+collecting server. Existing mirror prefixes and journals remain preserved and charged once toward
+the logical cap; migration does not evict them. A manifest ahead of its local
 text returns `not_applicable` naming the collecting server: synchronize the copy, or query that
 server.
 
@@ -835,11 +835,15 @@ A mirror is a separately selected, engine-owned local copy. Ordinary imports, as
 capture, inbox and union peer sync cannot write into it. Manually placed files remain unmanaged.
 Remote visualization works directly against the selected server and does not require a mirror.
 
-**M4 migration checkpoint:** automatic mirror downloads are paused. Format-1 mirrors report
-`migration_required`; explicitly upgraded mirrors report `writer_not_ready`. Neither state
-contacts the origin or deletes held files. Transfer and cleanup execution require M5's generation
-publication owner; peer offers and reconciliation follow in M6. Do not interpret configuration
-or migration as completed synchronization.
+Format-2 pin/unpin changes use the same bounded metadata owner. An occupied mirror refuses
+with 409; accepted updates report completion or a capacity refusal through the polled
+`operation` in `GET /store/mirror`.
+
+**M6/M7 review checkpoint:** format-1 mirrors report `migration_required`. Explicitly upgraded
+mirrors report `ready`, then pull finalized offers from their configured master and eligible
+peers. Only a direct master receipt can confirm authority. Do not interpret migration or a peer
+claim as completed synchronization. There is no upstream replica submission route, automatic
+eviction or active-recording replication.
 
 ```yaml
 servers:
@@ -869,7 +873,10 @@ servers:
 | `mirror.robots` | In filtered scope, robot IDs to include; empty means all |
 | `mirror.events` | In filtered scope, named events OR the date window, both subject to the robot filter |
 | `mirror.interval_sec` | Positive seconds between status/admission attempts, default `30` |
-| `mirror.rate_bytes` | Future transfer rate: nonnegative bytes/second, default `0` means unlimited; no downloads in M4 |
+| `mirror.rate_bytes` | Nonnegative payload bytes/second, default `0` means unlimited; throttling retains the transfer reservation |
+| `mirror.peers` | Up to 64 explicit HTTP(S) suppliers, default `[]`; optional `?store=<id>` selects the serving store |
+| `mirror.discovery` | Boolean, default `true`; use validated local-link DNS-SD hints in addition to manual peers |
+| `mirror.master_store_id` | Optional canonical master UUID for offline initial peer admission; never inferred from a peer's claim |
 
 Scope and pins govern new acquisition only. Unknown date evidence does not match the date
 window. Pins are explicit acquisition inclusions and cannot bypass capacity. Master deletion,
@@ -890,17 +897,28 @@ Native filesystem durability and power-loss recovery still require platform vali
 A master migration assigns UUID file/version identities and exact size/hash/finalization records.
 A legacy mirror's old `verified` bit proves only transfer integrity: its migrated entries are
 `legacy_unconfirmed`, without invented master identity or confirmation. No peer claim promotes
-verification. Master catalog record serving and receipt reconciliation are M6 work. Source-reference
-`file_version` reads are not enabled by this metadata checkpoint; existing hash-pinned reads remain
-available through their selected source.
+verification. API 2 `file_version` references retain their selected serving scope and resolve
+the current immutable generation. Existing API 1 hash-pinned reads remain available.
 
 `GET /store/mirror` reports separate replica and capacity summaries. Capacity counts logical owned
 bytes, not filesystem allocation, free space or measured heap. The migration reservation includes
 backup, journal and temporary marker bytes. Insufficient capacity refuses migration before writing;
 increase the cap rather than deleting held payloads. Metadata preparation has two server-wide slots,
 one per store, with no waiting queue; cancellation keeps the slot until preparation unwinds. Limits
-are 4096 replica records, 32768 inspected paths and a 4 MiB header. Oversized old stores are refused
-without truncation or data loss.
+are 4096 replica records, 32768 inspected migration paths and a 4 MiB header. Replica rows live
+in immutable catalog parts under `.replicas/catalog/`: at most 256 rows and 1 MiB per part,
+128 parts, a 4 MiB index, and 32 MiB total encoded catalog/header metadata. The small header
+atomically selects the index by hash. Existing inline format-2 catalogs remain readable and are
+externalized on publication. Oversized stores are refused without truncation or data loss.
+
+Imports preflight the catalog before copying payloads or committing receipts. Capture remains
+independent of catalog capacity: a completed recording stays in its session receipt with a
+`.replica-publication.json` recovery marker if publication fails. `list_sessions` reports
+`replica_publication_failure` for the current capture, and the server logs the failure. Explicit
+status/recovery retries those markers with a 32768-path inspection limit; publication failures
+remain reported and never block admission of the next recording, including after restart.
+The marker retains both receipt hashes while replacing a receipt, so a failed replacement cannot
+erase an earlier completed capture's pending publication.
 
 Master stores use the separate [local migration job route](../STANDALONE.md#explicit-replica-format-migration);
 mirrors use the capacity-checked controls below. Local controls require direct loopback access
@@ -909,21 +927,116 @@ and the normal Origin checks:
 | Endpoint | Result |
 |----------|--------|
 | `GET /store/mirror` | State, configuration, historical sync time/age, origin policy, replica summary and logical capacity snapshot |
-| `POST /store/mirror/configure` | Mirror block; 202, then `migration_required` or `writer_not_ready`; folder must be admitted and distinct from live/capture stores |
-| `POST /store/mirror/sync` | `{}`; 202, reevaluates the gate without contacting the master; 409 when an operation is active |
-| `POST /store/mirror/migrate` | `{ "store_id": "<mirror UUID>" }`; 202, poll status until `writer_not_ready` or `error`; identity mismatch refuses publication |
+| `POST /store/mirror/configure` | Mirror block; 202, then `migration_required` or a format-2 synchronization state; folder must be admitted and distinct from live/capture stores |
+| `POST /store/mirror/sync` | `{}`; 202, recovers owned partial work and traverses the master/peer catalogs; 409 when an operation is active |
+| `POST /store/mirror/migrate` | `{ "store_id": "<mirror UUID>" }`; 202, poll status until `ready` or `error`; identity mismatch refuses publication |
 | `GET /store/mirror/files?offset=0&limit=100` | Migrated entries, catalog epoch/revision and true total; 1–256 rows, byte-shortened pages advance by returned row count |
-| `POST /store/mirror/cleanup_preview` | `{ "keys": ["<replica key>"] }`; 1–32 exact entries with versions/hashes, byte total and prospective acquisition exclusions; revision-bound and non-destructive |
-| `POST /store/mirror/cleanup` | 409 `WRITER_NOT_READY`; no payload or exclusion changes until M5 supplies reader retirement and execution receipts |
-| `POST /store/mirror/reinclude` | Same M5 gate; no exclusion changes in M4 |
+| `POST /store/mirror/cleanup_preview` | `{ "keys": ["<replica key>"] }`; 1–32 exact entries with versions/hashes, byte total and prospective acquisition exclusions; catalog/policy revision-bound, affected views and historical master evidence; non-destructive |
+| `POST /store/mirror/cleanup` | `request_id`, `store_id`, `catalog_epoch`, `catalog_revision`, `policy_revision`, `keys`; 202, poll `operation` for completion or error; stale selections change nothing |
+| `GET /store/mirror/exclusions?offset=0&limit=100` | Paged persistent exclusions, true total and current catalog/policy revisions; 1–256 rows |
+| `POST /store/mirror/reinclude` | `request_id`, `catalog_epoch`, `catalog_revision`, `policy_revision`, `keys`; 202, explicitly remove selected exclusions without downloading |
 | `POST /store/mirror/pin_session` | `{ "session_id": "..." }`; 202, queues an acquisition inclusion and advances the format-2 catalog revision |
 | `POST /store/mirror/unpin_session` | Same body; removes the inclusion without removing any held bytes |
 | `DELETE /store/mirror` | Stops future attempts and leaves files intact; 409 during configuration |
 
 Requests are bounded to 64 KiB, replies to 1 MiB. These are local UI controls, not assistant tools.
-Cleanup previews are preparation only: affected-view enumeration, durable exclusion execution and
-read-lease retirement belong to M5. The old listing's `complete`/`growing` fields retain their
+Cleanup selects at most 32 exact keys. The preview reports affected working, server-library and
+legacy saved views; unreadable or oversized view metadata refuses a complete preview. Execution
+leaves those definitions intact, durably excludes the selection, removes its current catalog
+membership, then retires bytes after active readers release them. Poll status for
+`maintenance_running`, `maintenance_complete` or `error`; `operation` retains request identity,
+result state, catalog revision and any refusal. Repeat the same request UUID/body after a lost
+reply. The latest 128 operation receipts survive restart. Older cleanup/reinclude retries fail
+their stale revision check; an older transfer retry re-admits already held identity/hash bytes
+without rewriting them. Receipt rotation never removes acquisition exclusions. Retired bytes remain charged and periodic recovery retries retirement. Cleanup never
+adopts or deletes unmanaged files. Exclusion metadata remains bounded and is never silently pruned.
+The old listing's `complete`/`growing` fields retain their
 historical meaning; neither asserts fresh master coverage or authoritative verification.
+
+#### Replica protocol and multiple mirrors
+
+Use `mirrors: [...]` instead of the singular `mirror:` block to configure up to eight independent,
+non-overlapping destination folders. Each item uses the table above and names its own `origin`;
+there is no default mirror. The two forms cannot be combined. `GET /store/mirror` returns
+`state: multiple` and `mirrors` when several owners exist. Every selected local control then
+requires `?mirror=<mirror_id>` (including files, exclusions, migration, pins and DELETE).
+Omitting the selection returns 409 `SOURCE_SELECTION_REQUIRED`. Stopping one leaves the others
+running. A window closing releases its lease, not the service's directory grant or synchronization.
+YAML owns persistent startup configuration; a runtime HTTP configuration lasts for that daemon.
+
+`peers` lists manual HTTP(S) endpoints; `?store=<UUID>` disambiguates a server holding several
+matching copies. `master_store_id` optionally binds an initially offline master, allowing peer
+acquisition without first contacting it. A different advertised or handshaken master cannot
+retarget this folder. `discovery: false` disables discovered suppliers for that mirror; manual
+peers still work. Only the configured origin is a direct authority channel. Downloaded bytes
+are fully hashed and format-checked, but another mirror's `verified` claim remains provisional.
+Conflicting peer candidates retain the first published candidate. A master mismatch is visible
+until a separately staged correction can fit; it never overwrites a verified generation.
+
+| Replica endpoint | Request / response |
+|---|---|
+| `GET /replicas/v1/handshake` | Protocol 1, opaque session ID, capabilities, up to 64 serving store/master identities; at most 64 KiB |
+| `POST /replicas/v1/catalog` | `Replica-Session` header; `store_id`, `limit` (1–256), then `inventory_id` and `cursor`; fixed catalog epoch/revision, true total, ordered offers and continuation |
+| `POST /replicas/v1/file` | Same session; `store_id`, `master_store_id`, `file_id`, `file_version`, `sha256`, `offset`; immutable bytes with exact hash, offset and remaining Content-Length headers |
+| `POST /replicas/v1/close` | Same session and `{}`; idempotently releases its inventories even after access revocation |
+| `GET /store/mirror/peers` | Loopback-only provider status and bounded discovered candidates; discovery never adds Explorer sources |
+
+All routes check Origin. Replica read routes may serve the configured network bind; controls
+remain loopback-only. There is no replica upload route. Bodies are at most 64 KiB and catalog
+replies at most 1 MiB, including JSON encoding. Pages shorten by encoded bytes as needed. IDs
+are random UUIDs, session-bound and invalid after server restart. Replaying a page rechecks
+the serving store and grants; it does not reopen or rehash payloads. Byte admission uses the
+shared verified-hash implementation and a read lease. Raw byte replies are streams, not 1 MiB
+metadata replies; they use 64 KiB application blocks.
+
+There are eight inventory handles server-wide, two per session including construction, with
+32 MiB accounted metadata per inventory and 64 MiB aggregate. Two builders have no waiting
+queue and a ten-second response deadline. A timed-out build stays charged until I/O unwinds
+and cannot publish. Sessions/inventories expire after 60 seconds idle or five minutes total.
+Four replica metadata workers own a separate 8 MiB encoding budget through socket completion.
+Four payload workers own 64 KiB streaming buffers; downloads consume no recording-inventory or
+visualization-library response permits. Health, MCP ping and close use separate admission. Refusals are structured:
+400 malformed, 403 forbidden Origin, 409 stale/foreign selection, 413 structural limit, 503
+retryable pressure (`Retry-After: 1`), and 504 construction deadline. Bounded request drains and
+the transport's progress watchdog also apply to saturated paths. Client control replies have
+a ten-second deadline and bounded decoding, including 4 KiB refusal envelopes whose code,
+message and retryability are retained. Ordinary filesystem errors use a fixed message without
+server paths. Byte reads have ten-second socket read timeouts.
+
+The two transfer workers and one destination owner keep their existing no-queue publication
+contract. Two reconciliation workers retain at most one coalesced retry per configured mirror,
+up to eight waiting policies, without reserving payloads while waiting. Each pass enumerates its
+complete fixed listing before payload work, with 32 MiB accounted client metadata per coordinator
+(64 MiB aggregate). Expired incomplete enumeration restarts at most twice. Payload session renewal
+rechecks the same supplier/store identity; it never changes coverage or silently selects a copy.
+Unchanged master-confirmed versions retain their original confirmation and catalog revision;
+current filesystem boundaries still pass the shared verified-hash owner (4096 proofs per destination).
+Only pass coverage and last-sync metadata change on an unchanged pass. `rate_bytes` throttles
+payload blocks. Catalog coverage reports its observed epoch/revision, time and offered/selected/
+held-matching counts; offline coverage is historical. `synchronized` requires complete master
+traversal. A peer-only pass is `partial`; capacity pressure is `capacity_paused`. No omission
+in a later catalog deletes a held file. File pages include up to eight recent observations per
+logical identity, charged within the same response byte budget.
+
+Closed clock companions have their own hash/version identities and retain capture relationships;
+they use the shared clock format validator and are never listed as log files. Log provenance,
+recorded matching and placement retain a separate `peer_claim` or `direct_master_claim` basis.
+Verifying payload bytes does not verify these metadata claims. Growing captures and continuous
+system-text prefixes are not new replica offers. Already held legacy text prefixes survive.
+Corrupt held bytes fail read admission; repair stages the established master hash. Unexpectedly
+changed retired bytes are preserved and charged rather than deleted, so quarantine can require
+operator inspection and eventually refuse further publication at the retirement bound.
+
+DNS-SD uses JmDNS 3.6.2 (Apache-2.0, Java 8+; bundled license), with experimental project service
+type `_wpilog-replica._tcp.local.`. This name has not been registered with IANA; no general
+interoperability claim is made. TXT keys are `v=1`, `peer`, `master`, `path=/replicas/v1`; at most
+4 KiB is admitted. Only intentionally network-serving endpoints advertise. Up to four private
+IPv4 interfaces are evaluated on a wildcard bind. Local-link literal addresses are hints to a
+fresh handshake, never authority. The application retains at most 64 candidates and two concurrent
+probes, with TTL expiry (at most 300 seconds), 30-second ready revalidation and 60-second failure
+backoff. Provider cache/OS multicast memory is separate from these accounted application bounds.
+Manual endpoints require neither multicast nor a provider. The synthetic macOS interface proof
+passed; loopback multicast did not discover its peer. Linux and Windows remain unverified.
 
 #### Live source on a laptop
 
@@ -945,7 +1058,7 @@ configures `capture`, the status reports that capture, and both changes are refu
 editor cannot redirect a pit's robot capture. Pulling robot logs, the gateway and context
 providers stay in `servers.yaml`. The live tools answer from whichever capture is current.
 
-Legacy mirror prefix journals remain preserved during M4. No new growing-prefix transfer,
+Legacy mirror prefix journals remain preserved during M4/M5. No new growing-prefix transfer,
 automatic eviction or replacement runs until the new publication owner is integrated.
 
 ### Uploading from a laptop

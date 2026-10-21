@@ -80,7 +80,7 @@ public final class LiveTools {
           + "(captured value records over the last minute), event, match (type, number), cost[] "
           + "(ten highest bytes_per_sec topics: name, records, bytes, bytes_per_sec), thinned[] "
           + "(prefix, period_sec), excluded[], imports[] (path, method, offset_sec, reason), end_reason and "
-          + "counts_basis. providers[] reports name, state, reason (current activity, stand-down, partial-sample or "
+          + "counts_basis. replica_publication_failure explains deferred catalog publication while capture continues (otherwise null). providers[] reports name, state, reason (current activity, stand-down, partial-sample or "
           + "sampling-budget explanation), period_sec, "
           + "last_round_trip_ms, robot_cpu_sec (processor time between samples, not provider-only CPU), lines_per_sec, "
           + "dropped_lines, dropped_before_sync, records, bytes (provider value records), sample_bytes (last reply), and program_pids (observed program identities for crash-file placement). "
@@ -132,6 +132,7 @@ public final class LiveTools {
       row.add("providers", GSON.toJsonTree(open ? live.providers() : stats == null ? List.of() : stats.providers()));
       row.addProperty("counts_basis", stats == null ? "no complete recorder summary in this manifest" : "capture value records; excludes control records, context and copied schema seeds");
       row.addProperty("end_reason", thisCapture ? current.endReason() : session.endReason());
+      row.addProperty("replica_publication_failure", thisCapture ? current.replicaPublicationFailure() : null);
       row.addProperty("event", thisCapture && current.event() != null ? current.event() : session.event());
       var match = new JsonObject();
       match.addProperty("type", thisCapture && current.matchType() != null ? current.matchType() : session.matchType());

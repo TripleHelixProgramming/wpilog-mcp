@@ -73,7 +73,7 @@
     get("title").textContent = summary.label; get("source").textContent = recording ? "Recording · inspection preview" : "Recorded source · preview";
     for (const id of ["blank", "template-open"]) if (get(id)) get(id).disabled = false;
     get("warning").textContent = recording ? "Recording panel preview: plots and raw rows follow completed prefixes. Values and statistics read independent server prefixes." : "";
-    const catalog = summary.catalog, rows = [["Source", summary.label], ["Identity", recording ? "Anchored recording" : sourceKind(summary.source_ref) === "recorded" ? "Managed recorded content" : "File fingerprint"]];
+    const catalog = summary.catalog, rows = [["Source", summary.label], ["Identity", recording ? "Anchored recording" : sourceKind(summary.source_ref) === "file_version" ? "Logical file version in selected store" : sourceKind(summary.source_ref) === "recorded" ? "Managed recorded content" : "File fingerprint"]];
     rows.push(["Robot", catalog?.robot?.name ?? catalog?.robot?.serial_number ?? "Unavailable: not recorded"]);
     rows.push(["Session", catalog?.session?.started_at ?? "Unavailable: no recorded session"]);
     rows.push(["Match", catalog?.session?.match_number == null ? "Unavailable: not recorded" : `${catalog.session.match_type ?? ""} ${catalog.session.match_number}`]);
@@ -478,16 +478,22 @@
     }
     if (message.type === "inventory") {
       inventory = message.inventory;
+      const replica = inventory.replica;
+      const basis = replica ? replica.authority_state ?? replica.verification_basis : undefined;
+      const replicaNote = !replica ? "" : ` · ${basis === "authoritative_mismatch" ? "Master disproved these bytes; replacement pending"
+        : basis === "provisional" ? "Provisional replica; master has not confirmed these bytes"
+        : basis === "legacy_unconfirmed" ? "Legacy replica; authority unconfirmed"
+        : basis === "verified" ? "Replica confirmed directly by its master" : basis === "master_local" ? "Master's finalized content" : "Replica authority unavailable"} · SHA-256 ${replica.content_sha256}`;
       if (overview) {
         const recording = inventory.source_kind === "session";
         const clock = recording ? `Robot timestamps in seconds · ${recordingClock(inventory.clock)}` : inventory.clock_basis;
         const members = recording ? ` · ${inventory.members.length} member(s) · ${inventory.entry_conflicts.length} conflicting declaration(s)` : "";
         const state = inventory.truncated || inventory.damaged ? "Incomplete or damaged file: " + (inventory.truncation_message ?? "see reader diagnostics")
           : recording ? "Snapshot of the recording; close and reopen this overview to update" : "Indexed to the recorded file boundary";
-        get("inventory").textContent = `${inventory.entries.length} signals · Duration ${inventory.duration_sec ?? "unavailable"} s · ${clock}${members} · ${state}`;
+        get("inventory").textContent = `${inventory.entries.length} signals · Duration ${inventory.duration_sec ?? "unavailable"} s · ${clock}${members} · ${state}${replicaNote}`;
         get("status").textContent = recording ? "Recording inspected · live panels pending" : "Recorded source ready";
       }
-      else { signals(); get("source").textContent = inventory.label; get("clock").textContent = inventory.clock_basis; }
+      else { signals(); get("source").textContent = inventory.label; get("clock").textContent = inventory.clock_basis + replicaNote; }
       return;
     }
     if (message.type === "lists" && overview) {

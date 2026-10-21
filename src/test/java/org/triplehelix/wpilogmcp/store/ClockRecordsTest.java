@@ -90,6 +90,42 @@ class ClockRecordsTest {
     assertEquals(List.of(), StoreCatalog.read(pit.root(), manager.testGetSecurityValidator()).unmanaged(), "A record is a store file, not a stray");
   }
 
+  @Test void replicaProtocolCarriesClosedClockBytesAndTheirRecordingRelationship() throws Exception {
+    for (boolean afterMigration : List.of(false, true)) {
+      String name = afterMigration ? "later" : "first";
+      if (afterMigration) pit.migrateReplicas(pit.replicaHeader().id()).get();
+      var capture = writeCapture(name, 5); record(name, capture, false, 5);
+      assertEquals(1, pit.keepClocks().get(20, TimeUnit.SECONDS));
+      if (!afterMigration) pit.migrateReplicas(pit.replicaHeader().id()).get();
+      var receipt = read(name).clocks().get(0);
+      var clock = pit.replicaHeader().replicas().files().stream().filter(f -> f.kind().equals("clock_record") && f.sha256().equals(receipt.sha256())).findFirst();
+      assertTrue(clock.isPresent(), "closed clock companions need independent immutable replica identities");
+    }
+    var server = new org.triplehelix.wpilogmcp.mcp.HttpTransport(new org.triplehelix.wpilogmcp.mcp.ToolRegistry(), 0);
+    server.setStoreDirectories(Set.of(pit.root())); server.start();
+    var mirror = manager.stores().store(temp.resolve("mirror"));
+    var policy = new org.triplehelix.wpilogmcp.config.MirrorConfig("http://127.0.0.1:" + server.getPort(), mirror.root(), 14,
+        20_000_000, List.of(), List.of(), 30, 0, "all", 1_048_576, List.of(), false);
+    try {
+      mirror.mirror(policy, p -> {}).get(); mirror.migrateReplicas(mirror.replicaHeader().id()).get();
+      assertEquals("synchronized", mirror.mirror(policy, p -> {}).get(20, TimeUnit.SECONDS).state());
+      var copies = mirror.replicaHeader().replicas().files(); assertEquals(4, copies.size());
+      for (var entry : copies.stream().filter(f -> f.kind().equals("clock_record")).toList()) {
+        var original = pit.replicaHeader().replicas().files().stream().filter(f -> f.identity().equals(entry.identity())).findFirst().orElseThrow();
+        assertEquals("verified", entry.verificationBasis());
+        assertArrayEquals(Files.readAllBytes(pit.root().resolve(original.path())), Files.readAllBytes(mirror.root().resolve(entry.path())));
+        var receipt = read(entry.sessionId()).clocks().get(0);
+        var facts = ClockRecords.read(new StoreFiles(mirror.root(), manager.testGetSecurityValidator()), mirror.root().resolve(entry.path()), receipt);
+        assertPairs(expected(5), facts.uptime()); assertEquals(10, facts.minTimestampSec()); assertEquals(18, facts.maxTimestampSec());
+        var relationships = StoreJson.JSON.toJsonTree(entry.placement()).getAsJsonObject().getAsJsonObject("relationships");
+        assertEquals(receipt.captureSha256(), relationships.getAsJsonObject("clock").get("capture_sha256").getAsString());
+        assertEquals(pit.replicaHeader().id(), relationships.getAsJsonObject("capture").get("master_store_id").getAsString());
+      }
+      assertEquals(2, StoreCatalog.read(mirror.root(), manager.testGetSecurityValidator()).files().size(), "clock JSON is managed but never presented as a log");
+      assertEquals(List.of(), StoreCatalog.read(mirror.root(), manager.testGetSecurityValidator()).unmanaged());
+    } finally { server.stop(); }
+  }
+
   @Test void anEntryThatDoesNotNameItsRecordingIsWrittenAgainAndADisagreeingOneIsRefused() throws Exception {
     var path = writeCapture("boot", 3); record("boot", path, false, 3);
     assertEquals(1, pit.keepClocks().get(20, TimeUnit.SECONDS));

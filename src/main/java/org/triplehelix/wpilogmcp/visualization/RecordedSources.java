@@ -126,6 +126,12 @@ public final class RecordedSources implements AutoCloseable {
     }
     if (qualified) {
       if (scope == null) throw new IOException("SOURCE_UNAVAILABLE: configure a source root before creating a qualified reference");
+      var replica = logs.replicaEntry(path);
+      if (replica != null && replica.identity() != null) {
+        ref = new JsonObject(); ref.addProperty("kind", "file_version");
+        ref.addProperty("master_store_id", replica.identity().masterStoreId()); ref.addProperty("file_id", replica.identity().fileId());
+        ref.addProperty("file_version", replica.identity().fileVersion());
+      }
       ref = VisualizationContracts.qualify(views.serverId(), scope.id(), ref);
     }
     result.add("source_ref", VisualizationContracts.source(ref)); result.addProperty("label", path.getFileName().toString());
@@ -172,6 +178,17 @@ public final class RecordedSources implements AutoCloseable {
    * prefix. It is an observation, never permission to reuse data: follows still prove every file. */
   public JsonObject health(JsonObject source, org.triplehelix.wpilogmcp.capture.LiveCapture capture) throws IOException {
     var ref = authorize(source);
+    if (VisualizationContracts.kind(ref).equals("file_version")) {
+      var content = VisualizationContracts.content(ref); var scope = logs.sourceScopes().select(VisualizationContracts.scopeId(ref));
+      var identity = new org.triplehelix.wpilogmcp.store.ReplicaCatalog.Identity(content.get("master_store_id").getAsString(),
+          content.get("file_id").getAsString(), content.get("file_version").getAsString());
+      var path = logs.resolveReplica(scope.root(), identity); logs.sourceScopes().recheckPath(path, scope);
+      var facts = logs.replicaFacts(path);
+      var out = new JsonObject(); out.add("source_ref", ref); out.addProperty("acquisition_state", "inactive");
+      out.addProperty("history_state", "finalized"); out.addProperty("reason", "Published replica generation; data admission separately verifies its bytes");
+      out.add("connected", JsonNull.INSTANCE); out.add("clock_synchronized", JsonNull.INSTANCE); out.add("last_value_age_ms", JsonNull.INSTANCE);
+      out.add("replica", org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJsonTree(facts)); return out;
+    }
     if (!VisualizationContracts.kind(ref).equals("session")) throw new IllegalArgumentException("Health requires an anchored recording source_ref");
     try (var lease = catalog()) {
       if (lease.value() == null) throw new IOException("SOURCE_UNAVAILABLE: originating recording store is not configured");
@@ -209,6 +226,15 @@ public final class RecordedSources implements AutoCloseable {
   public Path resolve(JsonObject source) throws IOException {
     var qualified = authorize(source); var ref = VisualizationContracts.content(qualified);
     String scope = VisualizationContracts.scopeId(qualified);
+    if (ref.get("kind").getAsString().equals("file_version")) {
+      var selected = logs.sourceScopes().select(scope);
+      var identity = new org.triplehelix.wpilogmcp.store.ReplicaCatalog.Identity(ref.get("master_store_id").getAsString(),
+          ref.get("file_id").getAsString(), ref.get("file_version").getAsString());
+      var path = logs.resolveReplica(selected.root(), identity);
+      logs.sourceScopes().recheckPath(path, selected);
+      var file = logs.replicaEntry(path);
+      verified.verify(path, FileSnapshot.of(path), file.sha256()); return path;
+    }
     if (ref.get("kind").getAsString().equals("recorded")) {
       try (var lease = catalog()) {
       var catalog = lease.value();
@@ -240,7 +266,8 @@ public final class RecordedSources implements AutoCloseable {
       // A closed capture may retain its writer-built index in the cache. Its non-null disk
       // boundary is checked like any finalized file; only an active fixed prefix must refuse.
       if (snapshot.live() && snapshot.boundary() == null) throw new IOException("SOURCE_UNAVAILABLE: active capture needs the live preview");
-      resolve(source); return snapshot;
+      if (!snapshot.path().equals(resolve(source))) throw new IOException("SOURCE_CHANGED: selected version has a new generation");
+      return snapshot;
     } catch (IOException | RuntimeException e) { snapshot.close(); throw e; }
   }
   public record Admission(org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Prefix prefix,
@@ -268,7 +295,9 @@ public final class RecordedSources implements AutoCloseable {
     try {
       var member = new org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Member("file", 0, snapshot);
       var prefix = new org.triplehelix.wpilogmcp.read.server.OrdinalFollow.Prefix("single-file", 0, true, List.of(member));
-      return new Admission(prefix, () -> resolve(source));
+      return new Admission(prefix, () -> {
+        if (!snapshot.path().equals(resolve(source))) throw new IOException("SOURCE_CHANGED: selected version has a new generation");
+      });
     } catch (RuntimeException failure) { snapshot.close(); throw failure; }
   }
   public Admission admitRecording(JsonObject source) throws IOException {

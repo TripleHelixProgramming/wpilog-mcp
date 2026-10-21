@@ -17,7 +17,7 @@ import { directoryRegistration, LEASE_SETTINGS, SessionRegistration } from "./di
 import { claudeArgs, claudeCommandText, findClaude, registerWithClaude, ClaudeReply, ClaudeRegistrationAttempt, claudeRegistrationFeedback } from "./claudeRegistration";
 import { GitStatus, PROJECT_FILE, ignoreProjectFile, projectFileOffer, projectFileText } from "./projectFile";
 import { legacyCleanupAction, retireLegacyEntry } from "./legacyMigration";
-import { MirrorStatus, liveRequest, mirrorRequest, mirrorStatusText, peerUrl, pitEndpoint, sessionPicks } from "./explorer/pitServer";
+import { MirrorStatus, liveRequest, mirrorConfigurations, mirrorChoices, mirrorStatusText, peerUrl, pitEndpoint, sessionPicks } from "./explorer/pitServer";
 import { SESSION_END_MS } from "./sessionEnd";
 import { uploadLog } from "./explorer/upload";
 import { resultSummary, resultDetails, progressText } from "./explorer/importJobs";
@@ -273,7 +273,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
       days: config.get<number>("mirror.days"), maxSizeGb: config.get<number>("mirror.maxSizeGb"),
       robots: config.get<string[]>("mirror.robots"), events: config.get<string[]>("mirror.events"), intervalSec: config.get<number>("mirror.intervalSec") };
   };
-  const mirrorConfiguration = () => mirrorRequest(pitUrl(), mirrorSettings(), context.globalStorageUri.fsPath);
+  const mirrorConfiguration = () => mirrorConfigurations(pitUrl(), mirrorSettings(),
+    vscode.workspace.getConfiguration("wpilog-mcp").get("mirrors"), context.globalStorageUri.fsPath);
   const liveSettings = () => {
     const config = vscode.workspace.getConfiguration("wpilog-mcp");
     return { enabled: config.get<boolean>("live.enabled"), folder: config.get<string>("live.folder"), gatewayPort: config.get<number>("live.gatewayPort") };
@@ -287,8 +288,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
       user.logDirectory = wellKnownLogDirectory();
     }
     const directories = directoryRegistration(user, projects());
-    const mirror = mirrorRequest(pitUrl(), mirrorSettings(), context.globalStorageUri.fsPath);
-    if (mirror && !directories.paths.some(p => p.path === mirror.folder)) directories.paths.push({ path: mirror.folder, team: null });
+    for (const mirror of mirrorConfiguration())
+      if (!directories.paths.some(p => p.path === mirror.folder)) directories.paths.push({ path: mirror.folder, team: null });
     const live = liveRequest(pitUrl(), liveSettings(), context.globalStorageUri.fsPath);
     if (live && !directories.paths.some(p => p.path === live.store)) directories.paths.push({ path: live.store, team: null });
     return { directories, key: await context.secrets.get(TBA_SECRET) || null, pitCredential: await pitRegistration(pitUrl(), context.secrets) };
@@ -432,7 +433,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
   // The server owns disk policy and transfers; this window supplies settings and user choices.
   const mirrorBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   mirrorBar.command = "wpilog-mcp.mirrorActions";
-  let mirrorState: MirrorStatus = { state: "disabled" }, lastConfigured: string | undefined, mirrorPolling = false;
+  let mirrorState: MirrorStatus = { state: "disabled" }, mirrorPolling = false;
+  let lastConfigured: string[] = [];
   explorer.mirrorStatus = () => mirrorState;
   let mirrorTimer: ReturnType<typeof setInterval> | undefined;
   async function storeClient(): Promise<StoreClient> {
@@ -443,8 +445,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
   function showMirror(status: MirrorStatus) {
     mirrorState = status;
     mirrorBar.text = mirrorStatusText(status);
-    mirrorBar.tooltip = [status.config?.folder, status.last_sync ? `Last synchronized: ${status.last_sync}` : undefined,
-      status.result?.reason, ...(status.result?.refusals ?? []), ...(status.result?.retained ?? [])].filter(Boolean).join("\n");
+    mirrorBar.tooltip = mirrorChoices(status).flatMap(item => [item.config?.folder,
+      item.last_sync ? `Last synchronized: ${item.last_sync}` : undefined,
+      item.result?.reason, ...(item.result?.refusals ?? []), ...(item.result?.retained ?? [])]).filter(Boolean).join("\n");
     if (pitUrl()?.trim() || status.state !== "disabled") mirrorBar.show(); else mirrorBar.hide();
   }
   async function pollMirror() {
@@ -452,22 +455,41 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     mirrorPolling = true;
     try {
       const client = await storeClient(), status = await client.status();
-      const changed = mirrorState.last_sync !== status.last_sync;
+      const changed = JSON.stringify(mirrorChoices(mirrorState).map(s => s.last_sync)) !== JSON.stringify(mirrorChoices(status).map(s => s.last_sync));
       showMirror(status); if (changed) explorer.serversChanged();
     } catch (error) {
       showMirror({ ...mirrorState, state: "offline", result: { reason: error instanceof Error ? error.message : String(error) } });
     } finally { mirrorPolling = false; }
   }
   async function configureMirror() {
-    const config = mirrorConfiguration();
-    if (!config && !lastConfigured) return;
+    const configs = mirrorConfiguration();
+    if (!configs.length && !lastConfigured.length) return;
     const client = await storeClient();
-    if (config) {
-      await client.configure(config); lastConfigured = JSON.stringify(config);
-    } else if (lastConfigured) { await client.disable(); lastConfigured = undefined; }
+    // Only an explicit settings removal stops a service this window configured. Disposing the
+    // window releases its UI resources; the server's grants and synchronization remain alive.
+    const current = mirrorChoices(await client.status());
+    for (const folder of lastConfigured.filter(folder => !configs.some(config => config.folder === folder))) {
+      const selected = current.find(item => item.config?.folder === folder);
+      if (selected) {
+        if (current.length > 1 && !selected.mirror_id) throw new Error("Mirror is initializing; retry after its identity is available.");
+        await client.disable(selected.mirror_id);
+      }
+    }
+    for (const config of configs) await client.configure(config);
+    lastConfigured = configs.map(config => config.folder);
     showMirror(await client.status());
     clearInterval(mirrorTimer);
-    if (config || mirrorState.state !== "disabled") mirrorTimer = setInterval(() => void pollMirror(), 5000);
+    if (configs.length || mirrorState.state !== "disabled") mirrorTimer = setInterval(() => void pollMirror(), 5000);
+  }
+  async function chooseMirror(client: StoreClient): Promise<MirrorStatus | undefined> {
+    const choices = mirrorChoices(await client.status());
+    if (!choices.length) throw new Error("Configure a mirror first.");
+    if (choices.length === 1) return choices[0];
+    const selected = (await vscode.window.showQuickPick(choices.map(status => ({ label: status.config?.folder ?? "Initializing mirror",
+      description: `${status.state} · ${status.config?.origin ?? status.origin?.url ?? ""}`, status })),
+    { title: "Choose the mirror for this action", placeHolder: "No mirror is the default" }))?.status;
+    if (selected && !selected.mirror_id) throw new Error("Mirror is initializing; retry after its identity is available.");
+    return selected;
   }
   let liveConfigured: string | undefined;
   /** Sets or stops the server's live source; a gateway that cannot be reached yet is the source's state, not an error. */
@@ -499,17 +521,28 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     } };
   }
   async function pinSession(pinned: boolean) {
-    const client = await storeClient(); const status = await client.status();
+    const client = await storeClient(); const status = await chooseMirror(client); if (!status) return;
     if (!status.origin) throw new Error("Configure a mirror and synchronize it before pinning sessions.");
+    if (status.replicas?.format_version === 2 && status.mirror_id) {
+      const ids = pinned ? await client.mirrorSessions(status.mirror_id) : status.origin.pinned_sessions;
+      const choices = ids.map(id => ({ label: id, id }));
+      if (pinned) choices.push({ label: "Enter a session ID…", id: "" });
+      const choice = await vscode.window.showQuickPick(choices, { title: pinned ? "Include session for acquisition" : "Remove explicit session inclusion" });
+      if (!choice) return;
+      const id = choice.id || await vscode.window.showInputBox({ title: "Session ID from the selected master's catalog", validateInput: value => value.trim() && value.length <= 1024 ? undefined : "Enter a session ID (up to 1024 characters)" });
+      if (!id) return;
+      await client.pin(id, pinned, status.mirror_id); await pollMirror(); return;
+    }
     explorer.logs.refresh();
-    const pit = explorer.pitSpec();
+    const candidate = explorer.pitSpec();
+    const pit = candidate && pitUrl() && peerUrl(pitUrl()!) === status.origin.url ? candidate : undefined;
     const listing = pit ? await explorer.logs.listing(pit) : undefined;
     const local = listing && listing.status !== "error" ? undefined : await explorer.logs.listing(explorer.spec());
     const available = local ? { ...local, logs: local.logs?.filter(log => log.session?.origin === status.origin!.url) } : listing!;
     const choices = sessionPicks(available, status.origin.pinned_sessions, !pinned);
-    const choice = await vscode.window.showQuickPick(choices, { title: pinned ? "Pin session" : "Unpin session", placeHolder: "Pins keep a session outside the day window and size cap" });
+    const choice = await vscode.window.showQuickPick(choices, { title: pinned ? "Pin session" : "Unpin session", placeHolder: "Pins include a session for acquisition; the storage cap still applies" });
     if (!choice) return;
-    await client.pin(choice.id, pinned);
+    await client.pin(choice.id, pinned, status.mirror_id);
     void vscode.window.showInformationMessage(`${pinned ? "Pin" : "Unpin"} queued for ${choice.label}. It takes effect after the current store job.`);
     await pollMirror();
   }
@@ -596,6 +629,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
     if (event.key.startsWith(PIT_SECRET_PREFIX)) { void refreshLease(); didChangeEmitter.fire(); explorer.serversChanged(); }
   }));
   const mirrorActions = [
+    { label: "Show Mirror Status", id: "status" }, { label: "Show Peer Discovery", id: "peers" },
+    { label: "Migrate Mirror for Replica Synchronization", id: "migrate" },
     { label: "Sync Now", id: "syncNow" }, { label: "Pin Session", id: "pinSession" },
     { label: "Unpin Session", id: "unpinSession" }, { label: "Open Mirror Folder", id: "openMirrorFolder" },
     { label: "Sync from Laptop", id: "syncFromLaptop" },
@@ -603,13 +638,27 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
   context.subscriptions.push(mirrorBar, { dispose: () => clearInterval(mirrorTimer) },
     vscode.commands.registerCommand("wpilog-mcp.mirrorActions", command(async () => {
       const action = await vscode.window.showQuickPick(mirrorActions, { title: mirrorStatusText(mirrorState).replace(/\$\([^)]+\) /g, "") });
-      if (action) await vscode.commands.executeCommand(`wpilog-mcp.${action.id}`);
+      if (action?.id === "status" || action?.id === "peers") {
+        const client = await storeClient();
+        const value = action.id === "peers" ? await client.peers() : await chooseMirror(client);
+        if (value) { outputChannel.appendLine(JSON.stringify(value, null, 2)); outputChannel.show(true); }
+      } else if (action?.id === "migrate") {
+        const client = await storeClient(), selected = await chooseMirror(client); if (!selected) return;
+        if (!selected.mirror_id) throw new Error("Mirror is initializing; retry when its identity is available.");
+        if (selected.replicas?.format_version === 2) { void vscode.window.showInformationMessage("This mirror already uses replica synchronization."); return; }
+        const confirmed = await vscode.window.showWarningMessage(`Migrate ${selected.config?.folder}? Existing files are preserved. Old mirror copies remain unconfirmed until their master identity can be established.`, { modal: true }, "Migrate");
+        if (confirmed === "Migrate") { await client.migrate(selected.mirror_id); await pollMirror(); }
+      } else if (action) await vscode.commands.executeCommand(`wpilog-mcp.${action.id}`);
     })),
     vscode.commands.registerCommand("wpilog-mcp.pinSession", command(() => pinSession(true))),
     vscode.commands.registerCommand("wpilog-mcp.unpinSession", command(() => pinSession(false))),
-    vscode.commands.registerCommand("wpilog-mcp.syncNow", command(async () => { await (await storeClient()).syncNow(); await pollMirror(); })),
+    vscode.commands.registerCommand("wpilog-mcp.syncNow", command(async () => {
+      const client = await storeClient(), selected = await chooseMirror(client); if (!selected) return;
+      await client.syncNow(selected.mirror_id); await pollMirror();
+    })),
     vscode.commands.registerCommand("wpilog-mcp.openMirrorFolder", command(async () => {
-      const folder = (await (await storeClient()).status()).config?.folder ?? mirrorConfiguration()?.folder;
+      const selected = await chooseMirror(await storeClient()); if (!selected) return;
+      const folder = selected.config?.folder;
       if (!folder) throw new Error("Configure a mirror first.");
       await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(folder));
     })),
@@ -638,7 +687,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionApi {
         void scheduleProjectOffers();
       }
       const liveChanged = event.affectsConfiguration("wpilog-mcp.pitServerUrl") || event.affectsConfiguration("wpilog-mcp.live");
-      const mirrorChanged = event.affectsConfiguration("wpilog-mcp.pitServerUrl") || event.affectsConfiguration("wpilog-mcp.mirror");
+      const mirrorChanged = event.affectsConfiguration("wpilog-mcp.pitServerUrl") || event.affectsConfiguration("wpilog-mcp.mirror") || event.affectsConfiguration("wpilog-mcp.mirrors");
       if (liveChanged || mirrorChanged) void configureServices(liveChanged, mirrorChanged);
       if (mirrorChanged || event.affectsConfiguration("wpilog-mcp.connections")) {
         didChangeEmitter.fire(); explorer.serversChanged();

@@ -201,6 +201,27 @@ public final class VisualizationLibrary implements AutoCloseable {
     return submit(caller, ref, input -> { requireReference("view", input); var value = read("view", LibraryReferences.uuid(input, "saved_view_id")).get("locator");
       return value.isJsonNull() ? new JsonObject() : value.getAsJsonObject(); });
   }
+  /** Local cleanup reports every affected definition or refuses an incomplete inspection.
+   * Compact rows are bounded by the library's object limit and the ordinary reply envelope. */
+  CompletableFuture<JsonObject> cleanupImpact(java.util.function.Predicate<JsonObject> matches) {
+    if (files == null && !closed) { var empty = new JsonObject(); empty.add("views", new JsonArray()); return CompletableFuture.completedFuture(empty); }
+    return submit(Authority.HTTP_LOCAL, new JsonObject(), input -> {
+      var out = new JsonObject(); var rows = new JsonArray(); out.add("views", rows);
+      if (Files.exists(files.path("objects"))) try (var entries = Files.newDirectoryStream(files.path("objects"), "view-*.json")) {
+        int seen = 0;
+        for (var file : entries) {
+          if (++seen > objectLimit) throw new IOException("VIEW_IMPACT_UNAVAILABLE: library exceeds object limit");
+          String name = file.getFileName().toString();
+          var object = read("view", UUID.fromString(name.substring(5, name.length() - 5))).getAsJsonObject("object");
+          if (!matches.test(object.getAsJsonObject("source_ref"))) continue;
+          var row = new JsonObject(); row.addProperty("kind", "library");
+          row.add("saved_view_ref", reference("view", object)); rows.add(row);
+        }
+      }
+      wire(out); return out;
+    });
+  }
+
   public CompletableFuture<JsonObject> list(Authority caller, JsonObject request) {
     if (files == null && !closed) {
       try { VisualizationAccess.require(caller, VisualizationAccess.Operation.LIBRARY); return CompletableFuture.completedFuture(listNow(request)); }

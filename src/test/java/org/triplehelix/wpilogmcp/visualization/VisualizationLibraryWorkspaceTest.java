@@ -163,4 +163,30 @@ class VisualizationLibraryWorkspaceTest {
     assertEquals(view.get("configuration"), first.getAsJsonObject("template").get("configuration"));
     assertEquals(changed, workspace.views.get(UUID.fromString(view.get("view_id").getAsString())).get("configuration"));
   }
+
+  @Test void replicaCleanupNamesWorkingLibraryAndLegacyViewsWithoutCrossingOwners() throws Exception {
+    String storeId = UUID.randomUUID().toString(), master = UUID.randomUUID().toString();
+    var entry = new org.triplehelix.wpilogmcp.store.ReplicaCatalog.Entry(UUID.randomUUID().toString(), null,
+        "retained.wpilog", "a".repeat(64), 123, "wpilog", null, "completed_import", "legacy_unconfirmed", true, null);
+    var header = new org.triplehelix.wpilogmcp.store.StoreManifest.Header(2, "2026-10-19T00:00:00Z", storeId, List.of(), Map.of(), true, List.of(),
+        new org.triplehelix.wpilogmcp.store.StoreManifest.MirrorOrigin(master, "http://127.0.0.1:9", null, List.of(), Map.of()),
+        new org.triplehelix.wpilogmcp.store.ReplicaCatalog(1, UUID.randomUUID().toString(), 1, List.of(entry), List.of(), List.of()));
+    var content = new JsonObject(); content.addProperty("kind", "recorded"); content.addProperty("origin_store_id", master); content.addProperty("content_sha256", entry.sha256());
+    var selected = VisualizationContracts.qualify(identity.id(), storeId, content);
+    var working = workspace.views.create(Authority.HTTP_LOCAL, UUID.randomUUID(), selected, VisualizationContracts.blank()).get();
+    var foreign = VisualizationContracts.qualify(identity.id(), UUID.randomUUID().toString(), content);
+    workspace.views.create(Authority.HTTP_LOCAL, UUID.randomUUID(), foreign, VisualizationContracts.blank()).get();
+    var object = new JsonObject(); object.addProperty("schema_version", 1); object.addProperty("saved_view_id", UUID.randomUUID().toString());
+    object.addProperty("revision", 1); object.addProperty("title", "Selected library view"); object.add("source_ref", selected);
+    object.add("configuration", VisualizationContracts.blank()); object.add("template_ref", JsonNull.INSTANCE);
+    workspace.library.save(Authority.HTTP_LOCAL, "view", UUID.randomUUID(), 0, object, null).get();
+    var legacyStore = logs.stores().store(temp.resolve("legacy")); UUID legacyId = UUID.randomUUID();
+    new org.triplehelix.wpilogmcp.store.VisualizationMetadata(legacyStore).save(Authority.HTTP_LOCAL, legacyId, 0, UUID.randomUUID(), "Legacy view", content, VisualizationContracts.blank()).get();
+    var impact = workspace.replicaCleanupImpact(header, List.of(entry));
+    assertEquals(Set.of("working", "library", "legacy"), impact.asList().stream().map(v -> v.getAsJsonObject().get("kind").getAsString()).collect(java.util.stream.Collectors.toSet()));
+    assertEquals(3, impact.size());
+    assertTrue(impact.asList().stream().anyMatch(v -> working.get("view_id").equals(v.getAsJsonObject().get("view_id"))));
+    Files.writeString(legacyStore.root().resolve("visualizations/saved-views/" + legacyId + ".json"), "broken");
+    assertTrue(assertThrows(java.io.IOException.class, () -> workspace.replicaCleanupImpact(header, List.of(entry))).getMessage().contains("VIEW_IMPACT_UNAVAILABLE"));
+  }
 }

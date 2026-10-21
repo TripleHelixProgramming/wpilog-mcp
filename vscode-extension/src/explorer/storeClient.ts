@@ -61,15 +61,31 @@ export class StoreClient {
     const stores = value.stores ?? (value.id ? [{ id: value.id, mirror: value.mirror ?? false }] : []);
     return { stores: stores.filter(store => !store.mirror), unreadable: value.unreadable ?? [] };
   }
-  status(): Promise<MirrorStatus> { return this.request("/store/mirror"); }
+  private mirrorRoute(suffix: string, id?: string): string { return `/store/mirror${suffix}${id === undefined ? "" : `?mirror=${encodeURIComponent(id)}`}`; }
+  status(id?: string): Promise<MirrorStatus> { return this.request(this.mirrorRoute("", id)); }
   configure(config: MirrorRequest): Promise<MirrorStatus> { return this.request("/store/mirror/configure", "POST", config); }
-  disable(): Promise<MirrorStatus> { return this.request("/store/mirror", "DELETE"); }
-  syncNow(): Promise<MirrorStatus> { return this.request("/store/mirror/sync", "POST", {}); }
+  disable(id?: string): Promise<MirrorStatus> { return this.request(this.mirrorRoute("", id), "DELETE"); }
+  syncNow(id?: string): Promise<MirrorStatus> { return this.request(this.mirrorRoute("/sync", id), "POST", {}); }
+  peers(): Promise<unknown> { return this.request("/store/mirror/peers"); }
+  migrate(id: string): Promise<MirrorStatus> { return this.request(this.mirrorRoute("/migrate", id), "POST", { store_id: id }); }
+  async mirrorSessions(id: string): Promise<string[]> {
+    const sessions = new Set<string>(); let offset = 0, epoch: string | undefined, revision: number | undefined;
+    for (;;) {
+      const page = await this.request<{ files: { placement?: { session_id?: string } }[]; offset: number; total: number; has_more: boolean; catalog_epoch: string; catalog_revision: number }>(
+        `${this.mirrorRoute("/files", id)}&offset=${offset}&limit=256`);
+      if (!Array.isArray(page.files) || page.files.length > 256 || page.offset !== offset || !Number.isSafeInteger(page.total) || page.total > 4096
+          || offset + page.files.length > page.total || page.has_more && page.files.length === 0
+          || epoch !== undefined && (page.catalog_epoch !== epoch || page.catalog_revision !== revision)) throw new Error("Mirror catalog changed or returned an invalid page; retry session selection.");
+      epoch = page.catalog_epoch; revision = page.catalog_revision;
+      for (const file of page.files) if (typeof file.placement?.session_id === "string") sessions.add(file.placement.session_id);
+      offset += page.files.length; if (!page.has_more) return [...sessions].sort();
+    }
+  }
   liveStatus(): Promise<LiveStatus> { return this.request("/store/live"); }
   configureLive(config: LiveRequest): Promise<LiveStatus> { return this.request("/store/live/configure", "POST", config); }
   disableLive(): Promise<LiveStatus> { return this.request("/store/live", "DELETE"); }
-  pin(sessionId: string, pinned: boolean): Promise<unknown> {
-    return this.request(`/store/mirror/${pinned ? "pin_session" : "unpin_session"}`, "POST", { session_id: sessionId });
+  pin(sessionId: string, pinned: boolean, id?: string): Promise<unknown> {
+    return this.request(this.mirrorRoute(`/${pinned ? "pin_session" : "unpin_session"}`, id), "POST", { session_id: sessionId });
   }
   targets(): Promise<{ stores: SyncTarget[]; unreadable: { path: string; reason: string }[] }> { return this.request("/store/sync"); }
   async sync(store: string, url: string, report: (job: SyncJob) => void,

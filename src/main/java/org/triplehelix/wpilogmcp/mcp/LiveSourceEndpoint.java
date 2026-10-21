@@ -35,6 +35,8 @@ final class LiveSourceEndpoint implements AutoCloseable {
   private final LogManager manager;
   private final AtomicReference<LiveCapture> live;
   private final Supplier<Path> mirrorFolder;
+  private volatile Supplier<java.util.List<Path>> mirrorFolders;
+  void mirrorFolders(Supplier<java.util.List<Path>> folders) { mirrorFolders = folders; }
   private final AtomicBoolean configuring;
   private volatile CaptureService configured;
   private volatile Running running;
@@ -67,6 +69,10 @@ final class LiveSourceEndpoint implements AutoCloseable {
       if (old != null && old.config().equals(config)) return;
       var mirror = mirrorFolder.get();
       if (mirror != null && sameFolder(mirror, config.store())) throw new IOException("The live folder cannot be the mirror folder; choose another folder");
+      var mirrors = mirrorFolders;
+      if (mirrors != null) for (var folder : mirrors.get())
+        if (sameFolder(folder, config.store()) || folder.startsWith(config.store()) || config.store().startsWith(folder))
+          throw new IOException("The live folder cannot overlap a mirror folder; choose another folder");
       manager.stores().store(config.store()); // A session lease or permanent configuration must admit this folder.
       stop();
       var next = new CaptureService(config, manager);

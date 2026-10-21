@@ -28,8 +28,29 @@ function hostFixture() {
   preview.loadData = (_page: unknown, _snapshot: unknown, signal: AbortSignal) => new Promise<void>(done => loads.push({ signal, done }));
   const paint = () => preview.paint(page.document);
   const edit = (change: (config: RecordedConfiguration) => void) => { const next = structuredClone(controller.snapshot); next.revision++; change(next.configuration); controller.snapshot = next; paint(); };
-  return { page, controller, messages, loads, paint, edit };
+  return { preview, page, controller, messages, loads, paint, edit };
 }
+test("a replica generation change cancels the old query and reloads the same qualified source", () => {
+  const f = hostFixture(); let notify: (value: any) => void = () => {};
+  f.preview.healthMonitor = { watch: (_source: unknown, callback: (value: any) => void) => { notify = callback; return { dispose() {} }; } };
+  (f.controller.snapshot as any).source_ref = { schema_version: 2, server_instance_id: "server", scope_id: "mirror", content: { kind: "file_version", master_store_id: "master", file_id: "file", file_version: "version" } };
+  f.paint(); const original = structuredClone(f.controller.snapshot.source_ref);
+  notify({ kind: "ok", health: { replica: { generation: "old", content_sha256: "a".repeat(64), verification_basis: "provisional" } } });
+  notify({ kind: "ok", health: { replica: { generation: "new", content_sha256: "b".repeat(64), verification_basis: "verified" } } });
+  assert.equal(f.loads.length, 2, "new bytes require a fresh query and binding admission");
+  assert.equal(f.loads[0].signal.aborted, true); assert.deepEqual(f.controller.snapshot.source_ref, original);
+  assert.ok(f.messages.some((m: any) => m.type === "warning" && /Replica content changed/.test(m.message)));
+});
+test("the first health reply compares with the bytes already displayed", () => {
+  const f = hostFixture(); let notify: (value: any) => void = () => {};
+  f.preview.healthMonitor = { watch: (_source: unknown, callback: (value: any) => void) => { notify = callback; return { dispose() {} }; } };
+  (f.controller.snapshot as any).source_ref = { schema_version: 2, server_instance_id: "server", scope_id: "mirror", content: { kind: "file_version", master_store_id: "master", file_id: "file", file_version: "version" } };
+  f.page.inventory = { replica: { generation: "old", content_sha256: "a".repeat(64), verification_basis: "provisional" } };
+  f.paint();
+  notify({ kind: "ok", health: { replica: { generation: "new", content_sha256: "b".repeat(64), verification_basis: "verified" } } });
+  assert.equal(f.loads.length, 2, "a replacement before the first poll must not become the unchanged baseline");
+  assert.equal(f.loads[0].signal.aborted, true);
+});
 test("title, geometry, style and revision-only paints retain the same pending or loaded query", async () => {
   const f = hostFixture(); f.paint(); const key = f.page.key;
   f.edit(c => { c.panels[0].title = "Battery"; });
@@ -133,6 +154,15 @@ test("overview shows unreadable shared records beside its readable saved views",
     unreadable: [{ store_id: "store", file: "bad.json", reason: "Unsupported schema version" }] } });
   assert.match(r.get("saved").text(), /Readable/);
   assert.match(r.get("unreadable").text(), /bad.json.*Unsupported schema version/);
+});
+test("replica previews disclose provisional and master-disproved bytes", () => {
+  const r = renderer(true);
+  const inventory = { entries: [], clock_basis: "Robot time", replica: { authority_state: "provisional", content_sha256: "a".repeat(64), generation: "first" } };
+  r.send({ type: "inventory", inventory });
+  assert.match(r.get("inventory").text(), /Provisional replica/);
+  assert.match(r.get("inventory").text(), /aaaaaaaa/);
+  r.send({ type: "inventory", inventory: { ...inventory, replica: { ...inventory.replica, authority_state: "authoritative_mismatch" } } });
+  assert.match(r.get("inventory").text(), /Master disproved these bytes/);
 });
 
 test("a recording overview offers the bounded recording panel preview", () => {

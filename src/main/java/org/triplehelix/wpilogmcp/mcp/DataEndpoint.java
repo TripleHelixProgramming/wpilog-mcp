@@ -341,9 +341,9 @@ final class DataEndpoint {
       exchange.sendResponseHeaders(200, 0);
       try (var out = new BufferedOutputStream(exchange.getResponseBody(), 1 << 16)) {
         if (request.format().equals("arrow")) {
-          writeArrow(out, log, request, prepared, before);
+          writeArrow(out, log, request, prepared, before, use.replica());
         } else {
-          writeCsv(out, log, request, prepared, before);
+          writeCsv(out, log, request, prepared, before, use.replica());
         }
       }
     }
@@ -445,9 +445,10 @@ final class DataEndpoint {
   // ---- the metadata both formats carry ----
 
   private JsonObject inputs(LogData log, Request request, List<Prepared> prepared,
-      FileSnapshot snapshot) {
+      FileSnapshot snapshot, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) {
     var inputs = new JsonObject();
     inputs.addProperty("log", log.path());
+    if (replica != null) inputs.add("replica", org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJsonTree(replica));
     var entries = new JsonArray();
     for (var p : prepared) entries.add(p.series().name());
     inputs.add("entries", entries);
@@ -502,11 +503,11 @@ final class DataEndpoint {
   }
 
   private Map<String, String> schemaMetadata(LogData log, Request request, List<Prepared> prepared,
-      FileSnapshot snapshot) {
+      FileSnapshot snapshot, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) {
     var metadata = new LinkedHashMap<String, String>();
     metadata.put("server", "wpilog-mcp");
     metadata.put("server_version", Version.VERSION);
-    metadata.put("inputs", gson.toJson(inputs(log, request, prepared, snapshot)));
+    metadata.put("inputs", gson.toJson(inputs(log, request, prepared, snapshot, replica)));
     var range = new JsonObject();
     range.addProperty("start", log.minTimestamp());
     range.addProperty("end", log.maxTimestamp());
@@ -531,13 +532,13 @@ final class DataEndpoint {
       new Field("last", new ArrowType.Float64(), false));
 
   private void writeArrow(OutputStream out, LogData log, Request request, List<Prepared> prepared,
-      FileSnapshot before) throws IOException {
+      FileSnapshot before, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) throws IOException {
     boolean bucketed = request.maxPoints() != null;
     var fields = bucketed ? BUCKET_FIELDS : List.of(
         new Field("timestamp", new ArrowType.TimestampMicros(), false),
         new Field("value", prepared.get(0).valueType(), true));
     var writer = new ArrowStreamWriter(out, fields);
-    writer.writeSchema(schemaMetadata(log, request, prepared, before));
+    writer.writeSchema(schemaMetadata(log, request, prepared, before, replica));
     var columns = new ArrayList<ColumnBuilder>();
     for (var f : fields) columns.add(ColumnBuilder.of(f.type()));
     for (var p : prepared) {
@@ -594,10 +595,10 @@ final class DataEndpoint {
   // ---- CSV ----
 
   private void writeCsv(OutputStream out, LogData log, Request request, List<Prepared> prepared,
-      FileSnapshot before) throws IOException {
+      FileSnapshot before, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) throws IOException {
     Writer w = new OutputStreamWriter(out, StandardCharsets.UTF_8);
     w.write("# wpilog-mcp " + Version.VERSION + "\n");
-    w.write("# inputs: " + gson.toJson(inputs(log, request, prepared, before)) + "\n");
+    w.write("# inputs: " + gson.toJson(inputs(log, request, prepared, before, replica)) + "\n");
     w.write("# entries: " + gson.toJson(entriesMetadata(prepared)) + "\n");
     boolean first = true;
     for (var p : prepared) {

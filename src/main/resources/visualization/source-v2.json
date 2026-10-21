@@ -14,7 +14,22 @@
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
       "maxLength": 36
     },
-    "content": { "$ref": "contracts-v1.json#/$defs/source_ref" }
+    "content": {
+      "oneOf": [
+        { "$ref": "contracts-v1.json#/$defs/source_ref" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "enum": ["file_version"] },
+            "master_store_id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "maxLength": 36 },
+            "file_id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "maxLength": 36 },
+            "file_version": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "maxLength": 36 }
+          },
+          "required": ["kind", "master_store_id", "file_id", "file_version"],
+          "additionalProperties": false
+        }
+      ]
+    }
   },
   "required": ["schema_version", "server_instance_id", "scope_id", "content"],
   "additionalProperties": false

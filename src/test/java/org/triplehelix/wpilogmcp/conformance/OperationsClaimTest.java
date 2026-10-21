@@ -49,15 +49,15 @@ class OperationsClaimTest {
    * Account for every bare identifier rather than scanning only names already in the registry:
    * that would silently skip a misspelled tool. New prose identifiers need this classification. */
   private static final Set<String> NON_TOOLS = Set.of(("""
-      scope_id source_scope configuration_json resolved template_ref x_entry y_entry x_field y_field next_offset
+      scope_id source_scope configuration_json resolved template_ref x_entry y_entry x_field y_field next_offset ready mirrors mirror_id
       brownout_threshold_basis brownout_voltage_entry bus_name bytes_per_sec camera_settings
       capture cause channel_analysis chooser_entry complete confidence_level conflicts connect
-      connected current_entry current_session data_quality development df disabled diskcachesize dmesg end_reason end_time
+      connected current_entry current_session data_quality development df disabled diskcachesize dmesg end_reason end_time replica_publication_failure
       ended_at entries entry error event event_code field folder following gateway growing
       has_more high hint histogram host http imports inputs insufficient journalctl jvm jvm_crash
       kernel kind last_seconds last_sync limit listening log_directories looked_for low lvuser
       managed match_number match_type matching_reason max_error_ms measured_entry measurement_entry mechanism_name
-      medium migration_required mirror name no_match not_applicable offline offset offset_ms ok origin partial path writer_not_ready
+      medium migration_required mirror name no_match not_applicable offline offset offset_ms ok origin partial path writer_not_ready protocol_not_ready request_id store_id catalog_epoch catalog_revision policy_revision keys maintenance_complete operation
       pattern pit port program rate_bytes reason records regex rio robot run sampling scatter
       scope server_analysis_directives server_instance_id servers setpoint_entry settle_sec sha256sum signal_key
       skipped source source_ref at_sec prefix problems stall_current_threshold stand_down start start_time stated_robot status sync

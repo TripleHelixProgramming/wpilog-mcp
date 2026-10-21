@@ -127,6 +127,22 @@ public class LogManager {
    */
   private final ConcurrentHashMap<String, Loaded> loaded = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, LiveLog> captures = new ConcurrentHashMap<>();
+  private final org.triplehelix.wpilogmcp.read.server.VerifiedContentHashes replicaHashes =
+      new org.triplehelix.wpilogmcp.read.server.VerifiedContentHashes();
+  private final String replicaReadEpoch = java.util.UUID.randomUUID().toString();
+  /** Capture authority separately from content so a later promotion cannot relabel a read. */
+  public org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replicaFacts(Path path) throws IOException {
+    securityValidator.validate(path);
+    return org.triplehelix.wpilogmcp.store.ReplicaReads.facts(path, securityValidator, replicaReadEpoch);
+  }
+  public org.triplehelix.wpilogmcp.store.ReplicaCatalog.Entry replicaEntry(Path path) throws IOException {
+    securityValidator.validate(path);
+    return org.triplehelix.wpilogmcp.store.ReplicaReads.entry(path, securityValidator);
+  }
+  /** The caller chooses the root; this lookup never searches another copy for equal bytes. */
+  public Path resolveReplica(Path root, org.triplehelix.wpilogmcp.store.ReplicaCatalog.Identity identity) throws IOException {
+    return org.triplehelix.wpilogmcp.store.ReplicaReads.resolve(root, securityValidator, identity);
+  }
   private final java.util.concurrent.atomic.AtomicLong catalogPublication = new java.util.concurrent.atomic.AtomicLong();
   /** A durable store write wakes read-side publication probes without joining its queue. */
   public void catalogPublished() { catalogPublication.incrementAndGet(); }
@@ -292,7 +308,7 @@ public class LogManager {
     logger.info("Shutting down LogManager");
     try { readAccess.close(); }
     catch (IOException e) { logger.warn("Could not retire read access", e); }
-    stores.close();
+    stores.close(); replicaHashes.close();
     evictionScheduler.shutdownNow();
     syncExecutor.shutdownNow();
     try {
@@ -367,6 +383,7 @@ public class LogManager {
     securityValidator.validate(path);
     var resolved = stores.resolveMoved(path);
     securityValidator.validate(resolved);
+    StoreCatalog.requirePublishedMirror(resolved, securityValidator);
     return resolved.toRealPath();
   }
 
@@ -412,9 +429,13 @@ public class LogManager {
     private final LogData log;
     private final FileSnapshot snapshot;
     private final LogFileAccess.Lease readClaim;
+    private final org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica;
+    public org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica() { return replica; }
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    private LogUse(LogData log, FileSnapshot snapshot, LogFileAccess.Lease readClaim) {
+    private LogUse(LogData log, FileSnapshot snapshot, LogFileAccess.Lease readClaim,
+        org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) {
+      this.replica = replica;
       this.log = log;
       this.snapshot = snapshot;
       this.readClaim = readClaim;
@@ -440,20 +461,21 @@ public class LogManager {
     }
   }
 
-  private static LogUse retain(LogData log, FileSnapshot snapshot) throws IOException {
+  private static LogUse retain(LogData log, FileSnapshot snapshot) throws IOException { return retain(log, snapshot, null); }
+  private static LogUse retain(LogData log, FileSnapshot snapshot, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) throws IOException {
     if (log instanceof LiveLog live) {
       var view = live.retainView();
-      return view == null ? null : new LogUse(view, snapshot, view::close);
+      return view == null ? null : new LogUse(view, snapshot, view::close, replica);
     }
     if (log instanceof LazyParsedLog lazy) {
       if (snapshot == null || !lazy.retain()) return null;
-      return new LogUse(log, snapshot, () -> {});
+      return new LogUse(log, snapshot, () -> {}, replica);
     }
     // Eager results hold no mapping, but moving their source mid-call would invalidate the
     // call's file snapshot too. Synthetic in-memory logs have no file to claim.
     var path = Path.of(log.path());
     var claim = Files.isRegularFile(path) ? LogFileAccess.read(path) : (LogFileAccess.Lease) () -> {};
-    return new LogUse(log, snapshot, claim);
+    return new LogUse(log, snapshot, claim, replica);
   }
 
   /**
@@ -476,20 +498,24 @@ public class LogManager {
       if (!destination.equals(filePath)) securityValidator.validate(destination);
       filePath = destination;
     }
+    // One canonical catalog admission supplies both the byte proof and the immutable facts
+    // carried with this read. Non-store cached logs retain their established admission policy.
+    var replica = org.triplehelix.wpilogmcp.store.ReplicaReads.facts(filePath, securityValidator, replicaReadEpoch);
+    if (replica != null) replicaHashes.verify(filePath.toRealPath(), FileSnapshot.of(filePath), replica.contentSha256());
     LogFileAccess.checkReadable(filePath);
 
     // Check if already cached (fast path, no lock needed), and still the file on disk
     String normalizedPath = filePath.toString();
     var capture = captureAt(filePath);
     if (capture != null) {
-      var use = retain(capture, null);
+      var use = retain(capture, null, replica);
       if (use != null) return use;
     }
     LogData cachedLog = logCache.get(normalizedPath);
     if (cachedLog != null && !(synchronize && autoSyncEnabled && nativeSyncPending.contains(cachedLog))
         && changeSinceLoad(normalizedPath, cachedLog) == null) {
       logger.debug("Returning cached log: {}", filePath);
-      var use = retain(cachedLog, snapshotOf(path, cachedLog));
+      var use = retain(cachedLog, snapshotOf(path, cachedLog), replica);
       if (use != null) return use;
     }
 
@@ -499,7 +525,7 @@ public class LogManager {
       LogFileAccess.checkReadable(filePath);
       capture = captureAt(filePath);
       if (capture != null) {
-        var use = retain(capture, null);
+        var use = retain(capture, null, replica);
         if (use != null) return use;
       }
       // Double-check cache after acquiring lock (another thread may have finished parsing,
@@ -511,7 +537,7 @@ public class LogManager {
         var change = changeSinceLoad(normalizedPath, cachedLog);
         if (change == null) {
           logger.debug("Returning cached log (loaded by another thread): {}", filePath);
-          var use = retain(cachedLog, snapshotOf(path, cachedLog));
+          var use = retain(cachedLog, snapshotOf(path, cachedLog), replica);
           if (use != null) {
             try {
               if (synchronize && autoSyncEnabled && nativeSyncPending.remove(cachedLog)) startAutoSync(cachedLog);
@@ -591,7 +617,7 @@ public class LogManager {
 
       // Retain before publishing: even immediate heap-pressure eviction must leave this
       // caller a readable mapping. A concurrent import may have reserved the source meanwhile.
-      var use = retain(log, snapshot);
+      var use = retain(log, snapshot, replica);
       try {
         LogFileAccess.checkReadable(filePath);
         loaded.put(normalizedPath, new Loaded(log, snapshot));
@@ -629,7 +655,12 @@ public class LogManager {
    * the rename, so requests arriving during it cannot reopen the file. Rechecking the cache
    * also catches a load that was already scanning when the reservation was taken.
    */
-  public Release release(Path path) throws IOException {
+  public Release release(Path path) throws IOException { return release(path, Duration.ofSeconds(3)); }
+
+  /** Retirement can evict cached mappings without waiting on a reader; its durable journal
+   * retains ownership and disk charges until a later attempt finds the generation drained. */
+  public Release release(Path path, Duration budget) throws IOException {
+    if (budget.isNegative() || budget.compareTo(Duration.ofSeconds(3)) > 0) throw new IllegalArgumentException("Invalid release budget");
     securityValidator.validate(path);
     var real = Files.exists(path) ? path.toRealPath() : path.toAbsolutePath().normalize();
     for (var capture : captures.values()) {
@@ -638,7 +669,7 @@ public class LogManager {
         return new Release(false, "An active capture is still writing in " + path);
       }
     }
-    long deadline = releaseClock.getAsLong() + Duration.ofSeconds(3).toNanos();
+    long deadline = releaseClock.getAsLong() + budget.toNanos();
     do {
       for (var entry : logCache.getAllEntries().entrySet()) {
         var cached = Path.of(entry.getKey());

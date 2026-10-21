@@ -113,7 +113,9 @@ final class DescriptionOutputs {
    * Guidance terms present only in situations the fixture sweep does not create, each checked
    * by the named test instead.
    */
-  static final Map<String, String> GUIDANCE_VERIFIED_ELSEWHERE = Map.ofEntries();
+  static final Map<String, String> GUIDANCE_VERIFIED_ELSEWHERE = Map.ofEntries(
+      Map.entry("authoritative_mismatch", "ReplicaTransfersTest.analysisWarnsWhenTheMasterHasDisprovedTheHeldBytes"),
+      Map.entry("legacy_unconfirmed", "ReplicaTransfersTest.unconfirmedAnalysisNeverClaimsMasterAuthority"));
 
   /**
    * Every snake_case term the server guidance names that is neither a tool, a parameter, a

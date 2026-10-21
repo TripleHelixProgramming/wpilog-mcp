@@ -28,7 +28,8 @@ export interface RecordedConfiguration extends Configuration {
   time: { recorded: { mode: "full" } | { mode: "fixed"; start_sec: number; end_sec: number }; live: unknown };
 }
 export interface Signal { name: string; type: string; sample_count: number; field?: string; }
-export interface Inventory { path: string; label: string; entries: Signal[]; clock_basis: string; truncated: boolean; damaged: boolean; }
+export interface Inventory { path: string; label: string; entries: Signal[]; clock_basis: string; truncated: boolean; damaged: boolean;
+  replica?: { generation: string; content_sha256: string; authority_state?: string; verification_basis?: string; server_epoch?: string }; }
 export type LayoutAction = "earlier" | "later" | "left" | "right" | "wider" | "narrower" | "taller" | "shorter" | "remove";
 
 /** Presentation changes are pure; the server alone admits their schema and revisions. */

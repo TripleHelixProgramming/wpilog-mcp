@@ -41,7 +41,7 @@ public record ReplicaCatalog(int schemaVersion, String epoch, long revision, Lis
       String sha256, long sizeBytes, String finalizationBasis) {
     public MasterRecord {
       Objects.requireNonNull(identity); uuid(catalogEpoch); hash(sha256);
-      if (catalogRevision < 1 || sizeBytes < 0 || !Set.of("closed_capture", "completed_import").contains(finalizationBasis))
+      if (catalogRevision < 1 || sizeBytes < 0 || !Set.of("closed_capture", "completed_import", "closed_clock").contains(finalizationBasis))
         throw new IllegalArgumentException("Invalid master finalization record");
     }
   }
@@ -55,18 +55,63 @@ public record ReplicaCatalog(int schemaVersion, String epoch, long revision, Lis
     }
   }
 
+  /** Placement is evidence independent of payload verification; unknown dates stay unknown. */
+  public record Placement(String robot, String sessionId, String event, String endedAt, String timeBasis,
+      String recordingState, String evidenceBasis, Relationships relationships) {
+    public Placement(String robot, String sessionId, String event, String endedAt, String timeBasis,
+        String recordingState, String evidenceBasis) {
+      this(robot, sessionId, event, endedAt, timeBasis, recordingState, evidenceBasis, null);
+    }
+    public Placement {
+      for (var value : new String[] {robot, sessionId, event, endedAt, timeBasis, recordingState, evidenceBasis})
+        if (value != null && value.length() > 1024) throw new IllegalArgumentException("Replica placement field exceeds 1024 characters");
+    }
+  }
+  /** These are separate claims: confirming payload bytes never certifies peer placement or clock
+   * relationships. Their size cap also bounds untrusted nested provenance and alignment records. */
+  public record Relationships(StoreManifest.Provenance provenance, StoreManifest.Matching matching,
+      StoreManifest.ClockRecord clock, Identity capture) {
+    public Relationships {
+      int bytes = StoreJson.JSON.toJson(java.util.Arrays.asList(provenance, matching, clock, capture))
+          .getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+      if (bytes > 65_536) throw new IllegalArgumentException("Replica relationship metadata exceeds 64 KiB");
+      if (clock != null) try { ClockRecords.validate(clock); }
+      catch (java.io.IOException invalid) { throw new IllegalArgumentException(invalid.getMessage(), invalid); }
+    }
+  }
   public record Entry(String key, Identity identity, String path, String sha256, long sizeBytes,
       String kind, String sessionId, String completionBasis, String verificationBasis,
-      boolean transferVerified, Confirmation confirmation) {
+      boolean transferVerified, Confirmation confirmation, StoreManifest.LogFile descriptor, Placement placement) {
+    public Entry(String key, Identity identity, String path, String sha256, long sizeBytes,
+        String kind, String sessionId, String completionBasis, String verificationBasis,
+        boolean transferVerified, Confirmation confirmation, StoreManifest.LogFile descriptor) {
+      this(key, identity, path, sha256, sizeBytes, kind, sessionId, completionBasis, verificationBasis,
+          transferVerified, confirmation, descriptor, null);
+    }
+    public Entry(String key, Identity identity, String path, String sha256, long sizeBytes,
+        String kind, String sessionId, String completionBasis, String verificationBasis,
+        boolean transferVerified, Confirmation confirmation) {
+      this(key, identity, path, sha256, sizeBytes, kind, sessionId, completionBasis, verificationBasis,
+          transferVerified, confirmation, null, null);
+    }
     public Entry {
       uuid(key); hash(sha256);
       if (path == null || path.isBlank() || path.startsWith("/") || path.contains("\\") || path.contains(":"))
         throw new IllegalArgumentException("Invalid replica path");
       for (var part : path.split("/", -1)) StoreFiles.component(part);
-      if (sizeBytes < 0 || !Set.of("wpilog", "revlog").contains(kind)
-          || !Set.of("closed_capture", "completed_import").contains(completionBasis)
+      if (sizeBytes < 0 || !Set.of("wpilog", "revlog", "clock_record").contains(kind)
+          || !Set.of("closed_capture", "completed_import", "closed_clock").contains(completionBasis)
           || !Set.of("master_local", "legacy_unconfirmed", "provisional", "verified").contains(verificationBasis))
         throw new IllegalArgumentException("Invalid replica facts");
+      if (kind.equals("clock_record") && (!completionBasis.equals("closed_clock") || sizeBytes > StoreFiles.MAX_MANIFEST_BYTES
+          || placement == null || placement.relationships() == null || placement.relationships().clock() == null
+          || !sha256.equals(placement.relationships().clock().sha256()) || sizeBytes != placement.relationships().clock().sizeBytes()))
+        throw new IllegalArgumentException("Clock companion requires its bounded completed receipt");
+      if (descriptor != null && (!path.equals(descriptor.path()) || !sha256.equals(descriptor.sha256())
+          || sizeBytes != descriptor.sizeBytes() || !kind.equals(descriptor.kind()) || !descriptor.verified()
+          || descriptor.provenance() == null || !Double.isFinite(descriptor.minTimestampSec())
+          || !Double.isFinite(descriptor.maxTimestampSec()) || descriptor.minTimestampSec() > descriptor.maxTimestampSec()))
+        throw new IllegalArgumentException("Replica descriptor differs from published bytes");
       boolean confirmed = verificationBasis.equals("verified") || verificationBasis.equals("master_local");
       if (confirmed && (!transferVerified || identity == null || confirmation == null
           || !identity.equals(confirmation.record().identity()) || !sha256.equals(confirmation.record().sha256())

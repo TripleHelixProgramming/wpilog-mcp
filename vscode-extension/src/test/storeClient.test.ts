@@ -10,6 +10,34 @@ async function server(handler: http.RequestListener) {
   const address = server.address() as import("net").AddressInfo;
   return { server, url: `http://127.0.0.1:${address.port}/mcp`, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
 }
+test("every mirror control carries the explicitly selected mirror identity", async () => {
+  const routes: string[] = [];
+  const host = await server((request, response) => { routes.push(request.url!); response.end('{"state":"ready"}'); });
+  try {
+    const client: any = new StoreClient(host.url), id = "11111111-1111-4111-8111-111111111111";
+    await client.status(id); await client.syncNow(id); await client.pin("session", true, id); await client.disable(id);
+    assert.deepEqual(routes, ["", "/sync", "/pin_session", ""].map(suffix => `/store/mirror${suffix}?mirror=${id}`));
+  } finally { await host.close(); }
+});
+test("migration and replica session selection remain on one mirror and traverse byte-short pages", async () => {
+  const seen: { route: string; body: string }[] = [];
+  const host = await server(async (request, response) => {
+    let body = ""; for await (const chunk of request) body += chunk;
+    seen.push({ route: request.url!, body });
+    if (request.url!.includes("/files")) {
+      const offset = Number(new URL(request.url!, "http://test").searchParams.get("offset"));
+      response.end(JSON.stringify({ files: [{ placement: { session_id: offset ? "second" : "first" } }], total: 2, offset, catalog_epoch: "epoch", catalog_revision: 1, has_more: offset === 0 }));
+    } else response.end('{"state":"migrating"}');
+  });
+  try {
+    const client: any = new StoreClient(host.url), id = "11111111-1111-4111-8111-111111111111";
+    await client.migrate(id); assert.deepEqual(await client.mirrorSessions(id), ["first", "second"]);
+    assert.deepEqual(seen, [
+      { route: `/store/mirror/migrate?mirror=${id}`, body: JSON.stringify({ store_id: id }) },
+      ...[0, 1].map(offset => ({ route: `/store/mirror/files?mirror=${id}&offset=${offset}&limit=256`, body: "" })),
+    ]);
+  } finally { await host.close(); }
+});
 test("mirror requests use local controls and exact configuration and session IDs", async () => {
   const seen: { route: string | undefined; method: string | undefined; body: any }[] = [];
   const host = await server(async (request, response) => {

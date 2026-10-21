@@ -587,7 +587,7 @@
           "wpilog-mcp.mirror.enabled": {
             "type": "boolean",
             "default": false,
-            "markdownDescription": "Keep an offline mirror of the logs the pit pulled or was given when a pit server URL is set; has no effect without a URL. The local server performs the copying. [Sync Now](command:wpilog-mcp.syncNow).",
+            "markdownDescription": "Configure one mirror of the pit server's finalized logs. Use mirrors instead for several independent masters. Explicit format-2 migration is required; only the server's mirror engine writes here. [Sync Now](command:wpilog-mcp.syncNow).",
             "order": 60
           },
           "wpilog-mcp.mirror.folder": {
@@ -600,14 +600,14 @@
             "type": "integer",
             "default": 14,
             "minimum": 0,
-            "markdownDescription": "Keep recent sessions for this many days. Named events and pins extend the window.",
+            "markdownDescription": "Acquire finalized files with known dates in this window. Named events and pins extend acquisition; changing the window never deletes held files.",
             "order": 80
           },
           "wpilog-mcp.mirror.maxSizeGb": {
             "type": "number",
             "default": 20,
             "exclusiveMinimum": 0,
-            "markdownDescription": "Payload cap in decimal GB. Evict oldest unpinned sessions first, only when the origin still holds them. Pins and origin-missing copies may exceed the cap.",
+            "markdownDescription": "Storage cap in decimal GB, including staging, replacement generations and reserved metadata. At capacity synchronization pauses and never automatically deletes held files. Pins do not bypass the cap.",
             "order": 90
           },
           "wpilog-mcp.mirror.robots": {
@@ -634,6 +634,33 @@
             "default": 30,
             "markdownDescription": "Seconds between mirror attempts. An interrupted copy resumes from its verified prefix.",
             "order": 120
+          },
+          "wpilog-mcp.mirrors": {
+            "type": "array",
+            "default": [],
+            "maxItems": 8,
+            "markdownDescription": "Independent server-owned mirrors. Each names its master origin and exclusive local folder; none is a default source. Disable mirror.enabled when using this list. Manual peers use the replica handshake; discovery supplies provisional candidates only. Closing a window does not stop synchronization. [Mirror Actions](command:wpilog-mcp.mirrorActions).",
+            "items": {
+              "type": "object",
+              "required": ["origin", "folder"],
+              "additionalProperties": false,
+              "properties": {
+                "origin": { "type": "string", "description": "Master HTTP(S) endpoint; append ?store=<UUID> when needed." },
+                "folder": { "type": "string", "description": "Exclusive absolute mirror directory; must not overlap another mirror or live capture." },
+                "masterStoreId": { "type": "string", "description": "Pinned master UUID, needed to accept provisional peers before the first direct master handshake." },
+                "scope": { "type": "string", "enum": ["all", "filtered"], "default": "filtered" },
+                "days": { "type": "integer", "minimum": 0, "default": 14 },
+                "maxSizeGb": { "type": "number", "exclusiveMinimum": 0, "default": 20 },
+                "robots": { "type": "array", "items": { "type": "string" }, "default": [] },
+                "events": { "type": "array", "items": { "type": "string" }, "default": [] },
+                "intervalSec": { "type": "integer", "minimum": 1, "default": 30 },
+                "rateBytes": { "type": "integer", "minimum": 0, "default": 0 },
+                "metadataReserveBytes": { "type": "integer", "minimum": 4096, "maximum": 134217728, "default": 1048576 },
+                "peers": { "type": "array", "maxItems": 64, "items": { "type": "string" }, "default": [] },
+                "discovery": { "type": "boolean", "default": true }
+              }
+            },
+            "order": 121
           },
           "wpilog-mcp.live.enabled": {
             "type": "boolean",

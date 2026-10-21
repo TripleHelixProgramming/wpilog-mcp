@@ -68,7 +68,15 @@ public final class CaptureStore implements CaptureWriter.Observer {
   /** The NT4 loop publishes these facts before any asynchronous manifest work. */
   public record Status(Path path, Instant startedAt, Instant endedAt, String address, boolean open,
       String endReason, org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity,
-      org.triplehelix.wpilogmcp.capture.CaptureStats statistics, String event, String matchType, Integer matchNumber) {}
+      org.triplehelix.wpilogmcp.capture.CaptureStats statistics, String event, String matchType, Integer matchNumber,
+      String replicaPublicationFailure) {
+    public Status(Path path, Instant startedAt, Instant endedAt, String address, boolean open, String endReason,
+        org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity, org.triplehelix.wpilogmcp.capture.CaptureStats statistics,
+        String event, String matchType, Integer matchNumber) {
+      this(path, startedAt, endedAt, address, open, endReason, identity, statistics, event, matchType, matchNumber, null);
+    }
+  }
+  private volatile Status lastStatus;
   private java.util.function.Consumer<Status> status = ignored -> {};
   public void onStatus(java.util.function.Consumer<Status> listener) { status = listener; }
   private BiConsumer<Path, Path> moved = (from, to) -> {};
@@ -81,7 +89,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
 
   /** Startup joins the same queue as imports; no client can write until this sweep finishes. */
   public CompletableFuture<Void> recoverAsync() {
-    return store.captureAsync(io -> { CaptureRecovery.run(io, store.root()); return null; });
+    return store.recordingAsync(io -> { CaptureRecovery.run(io, store.root()); return null; });
   }
 
   @Override public Path create(String address, Instant start) throws IOException {
@@ -103,7 +111,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
       event = null; matchType = null; matchNumber = null; teamNumber = null; typeOrdinal = 0; number = 0;
     }
     var preceding = completion;
-    var result = preceding.thenCompose(ignored -> store.captureAsync(io -> {
+    var result = preceding.thenCompose(ignored -> store.recordingAsync(io -> {
       if (identity != null) {
         RobotIdentityStore.record(io, store.root(), identity, clock.instant());
         RobotIdentityStore.promote(io, store.root(), manager, null, identity, clock.instant());
@@ -150,7 +158,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
     return result;
   }
   @Override public CompletableFuture<Void> abandoned(Path path, Instant endedAt, String reason) {
-    var result = store.captureAsync(io -> {
+    var result = store.recordingAsync(io -> {
       var manifest = io.check(path).getParent().resolve("session.json");
       var old = io.read(manifest, Session.class);
       var previous = reopening.remove(path);
@@ -213,8 +221,9 @@ public final class CaptureStore implements CaptureWriter.Observer {
       }
     });
     var statistics = capture.statistics();
-    status.accept(new Status(capture.path(), capture.startedAt(), capture.endedAt(), capture.address(), capture.open(),
-        capture.endReason(), capture.identity(), statistics, event, matchType, matchNumber));
+    var current = new Status(capture.path(), capture.startedAt(), capture.endedAt(), capture.address(), capture.open(),
+        capture.endReason(), capture.identity(), statistics, event, matchType, matchNumber, store.replicaPublicationFailure());
+    lastStatus = current; status.accept(current);
     long now = capture.observedAtUs();
     boolean due = factChanged || now - submittedAtUs >= UPDATE_PERIOD_US;
     if (!due && pending.get() == null) return;
@@ -233,7 +242,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
     if (!queued.compareAndSet(false, true)) return;
     submissions.incrementAndGet();
     var selected = new AtomicReference<Pending>();
-    store.captureAsync(io -> {
+    store.recordingAsync(io -> {
       var next = pending.getAndSet(null); selected.set(next);
       if (next != null) write(io, next.update());
       return null;
@@ -244,6 +253,10 @@ public final class CaptureStore implements CaptureWriter.Observer {
         if (error == null) next.done().complete(null); else next.done().completeExceptionally(error);
       }
       if (error != null) org.slf4j.LoggerFactory.getLogger(CaptureStore.class).error("Capture manifest update failed", error);
+      var current = lastStatus;
+      if (current != null && store.replicaPublicationFailure() != null) status.accept(new Status(current.path(), current.startedAt(), current.endedAt(),
+          current.address(), current.open(), current.endReason(), current.identity(), current.statistics(), current.event(), current.matchType(),
+          current.matchNumber(), store.replicaPublicationFailure()));
       // A file that just closed has its hash; its clock record is read off this queue.
       if (error == null && next != null) {
         var update = next.update();

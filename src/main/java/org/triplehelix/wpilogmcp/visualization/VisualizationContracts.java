@@ -86,7 +86,7 @@ public final class VisualizationContracts {
     var source = parse(input.toString());
     if (source.has("schema_version")) {
       check(source, SOURCE_V2, "source_ref");
-      source(source.getAsJsonObject("content"));
+      if (!kind(source).equals("file_version")) source(source.getAsJsonObject("content"));
       return source;
     }
     check(source, SCHEMA.getAsJsonObject("$defs").getAsJsonObject("source_ref"), "source_ref");

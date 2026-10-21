@@ -273,7 +273,7 @@ public class Main {
       // The stop token comes from the start that spawned this daemon, in the environment
       var stopToken = "--internal-daemon".equals(args[0]) && !managed ? System.getenv(DaemonManager.STOP_TOKEN_ENV) : null;
       initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath,
-          daemonOrigins, stopToken, config.idleExit().orElse(null), config.effectiveCapture(), config.mirror(), config.metrics(), configName, loaded.file(), config.dataStoreEnabled());
+          daemonOrigins, stopToken, config.idleExit().orElse(null), config.effectiveCapture(), config.effectiveMirrors(), config.metrics(), configName, loaded.file(), config.dataStoreEnabled());
     } catch (ConfigException | IllegalArgumentException e) {
       logger().error("{}", e.getMessage());
       System.exit(1);
@@ -734,7 +734,7 @@ public class Main {
   private static void initializeAndRun(boolean httpMode, int httpPort,
       String httpBind, String httpPath, Set<String> allowedOrigins,
       String stopToken, Duration idleExit, org.triplehelix.wpilogmcp.config.CaptureConfig captureConfig,
-      org.triplehelix.wpilogmcp.config.MirrorConfig mirrorConfig, org.triplehelix.wpilogmcp.config.MetricsConfig metricsConfig,
+      java.util.List<org.triplehelix.wpilogmcp.config.MirrorConfig> mirrorConfigs, org.triplehelix.wpilogmcp.config.MetricsConfig metricsConfig,
       String configurationName, Path configurationFile, boolean dataStoreEnabled) {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
@@ -829,7 +829,8 @@ public class Main {
       if (publicRun) cleanSignalExit();
       try {
         httpTransport.start();
-        if (mirrorConfig != null) httpTransport.configureMirror(mirrorConfig);
+        httpTransport.startReplicaDiscovery();
+        if (mirrorConfigs != null) for (var mirror : mirrorConfigs) httpTransport.configureMirror(mirror);
         if (capture != null) capture.start();
         // The guide tells an agent with shell access where to get every sample of an entry
         DiscoveryTools.setDataEndpoint(

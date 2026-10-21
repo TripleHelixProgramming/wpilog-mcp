@@ -51,7 +51,7 @@ public final class ManagedLogAccess implements LogAccess {
     ManagedReadSnapshot snapshot;
     try {
       if (scope != null) manager.sourceScopes().recheckPath(Path.of(use.log().path()), scope);
-      snapshot = new ManagedReadSnapshot(this, use, orders, callerOwnsUse, scope);
+      snapshot = new ManagedReadSnapshot(this, use, orders, callerOwnsUse, scope, use.replica());
     }
     catch (Throwable failure) { use.close(); throw failure; }
     synchronized (this) {

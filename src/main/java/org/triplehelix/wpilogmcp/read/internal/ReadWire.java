@@ -229,6 +229,7 @@ public final class ReadWire {
   private static JsonObject descriptor(String id, ReadSnapshot snapshot, Map<String, EntryInfo> entries,
       Collection<String> roots, boolean dependencies, int maxBytes) {
     var budget = new Budget(maxBytes); budget.charge(512); budget.text(snapshot.path().toString());
+    if (snapshot.replica() != null) budget.text(JSON.toJson(snapshot.replica()));
     for (var entry : entries.values()) {
       budget.charge(256); budget.text(entry.name()); budget.text(entry.type()); budget.text(entry.metadata());
     }
@@ -255,6 +256,7 @@ public final class ReadWire {
     out.addProperty("truncation_message", snapshot.truncationMessage());
     out.add("schemas", JSON.toJsonTree(schemas));
     if (!snapshot.sources().isEmpty()) out.add("sources", JSON.toJsonTree(snapshot.sources()));
+    if (snapshot.replica() != null) out.add("replica", JSON.toJsonTree(snapshot.replica()));
     if (!snapshot.excludedSources().isEmpty()) out.add("excluded_sources", JSON.toJsonTree(snapshot.excludedSources()));
     return out;
   }

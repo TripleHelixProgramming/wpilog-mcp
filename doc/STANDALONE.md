@@ -648,14 +648,15 @@ local authority. This admission policy is not an authentication system. API 2 ad
 - `POST /source` with `path` and optional `scope_id`, returning a qualified reference.
 
 A qualified reference has `schema_version: 2`, persistent `server_instance_id`, `scope_id`,
-and strict legacy `content` (`recorded`, anchored `session`, or `unmanaged`). A store scope
+and strict `content` (`recorded`, anchored `session`, `unmanaged`, or `file_version`). A store scope
 uses its own UUID, including a mirror's UUID. Directory scope UUIDs are derived from canonical
 configured roots, stable across restart and reordering; moving a directory changes that scope.
 These IDs grant no access. Reads revalidate current grants, server identity and serving scope;
 matching hashes on a different mirror or master never supply a fallback. Legacy origin/hash
-references with several serving copies refuse before searching for the hash. Future logical
-`file_version` identities are persisted by explicit format-2 migration; visualization references
-using them still await generation-aware admission and are not accepted yet.
+references with several serving copies refuse before searching for the hash. After explicit format-2
+migration, `POST /source` returns `file_version` for files with replica identities. API 2 resolves
+the current generation within that selected scope and carries its verification and authority basis;
+see [the mirror reference](pit-server/STANDALONE.md#the-mirror).
 
 The raw `/read/v1/follows` source/query form rejects qualified references and `scope_id` with
 400 `INVALID_REQUEST`. Follow an API 2 working view with `view_binding` to retain its serving
@@ -1437,10 +1438,11 @@ session IDs or credentials. Existing unqualified requests retain their legacy be
 
 ### Explicit replica-format migration
 
-The M4 mirror checkpoint pauses automatic mirror transfers and retention. Existing files remain
+Format-1 mirrors keep automatic transfers paused; format-2 mirrors pull finalized replicas without retention eviction. Existing files remain
 readable. Configure a mirror, observe `migration_required`, then use its local
 `POST /store/mirror/migrate` control with the exact store UUID. A successful upgrade reports
-`writer_not_ready`: payload transfer and cleanup remain gated on M5.
+`ready`; the next synchronization pass contacts the configured master and eligible peers.
+Generation recovery and explicit local cleanup are available; see the mirror reference for revision-bound requests.
 
 For a master, `POST /store/replicas/migrate` accepts `{ "store_id": "<UUID>" }` and returns 202
 with `job_id`. Poll `GET /store/replicas/jobs/<job_id>` for `running`, `complete` or `error`.
@@ -1452,5 +1454,5 @@ requests are 400, forbidden callers 403 and unknown jobs 404. Migration bodies a
 progress deadlines; saturation returns retryable 503 without occupying health dispatch.
 
 See [the mirror reference](pit-server/STANDALONE.md#the-mirror) for preservation, capacity,
-format backups, page limits and the explicit M5/M6 integration gates. No production migration
+format backups, page limits, the replica wire protocol and discovery configuration. No production migration
 is performed merely by configuring or starting the server.

@@ -179,6 +179,18 @@ public abstract class LogRequiringTool extends ToolBase {
         if (object.has("inputs") && object.get("inputs").isJsonObject()) {
           var inputs = object.getAsJsonObject("inputs");
           if (scope != null) inputs.addProperty("scope_id", scope);
+          if (use.replica() != null) {
+            var replica = use.replica();
+            inputs.add("replica", org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJsonTree(replica));
+            if (replica.authorityState().equals("authoritative_mismatch")) {
+              var warnings = object.has("warnings") ? object.getAsJsonArray("warnings") : new JsonArray();
+              var master = replica.confirmation().record();
+              warnings.add("This result uses a held replica that differs from the configured master's immutable version: held SHA-256 "
+                  + replica.contentSha256() + " (" + replica.sizeBytes() + " bytes), master SHA-256 " + master.sha256()
+                  + " (" + master.sizeBytes() + " bytes). Treat it as disproved replica content; select the master or wait for replacement.");
+              object.add("warnings", warnings);
+            }
+          }
           if (before != null) inputs.addProperty("file_size_bytes", before.size());
           log.recordSessionRange(inputs);
           if (relative) {

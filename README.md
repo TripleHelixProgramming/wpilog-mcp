@@ -214,6 +214,6 @@ MIT License. See [LICENSE](LICENSE).
 - [Anthropic](https://anthropic.com) for MCP and Claude
 - [FRC Team 2363 Triple Helix](https://team2363.org)
 
-Mirror development has reached the M4 preservation checkpoint: existing copies remain readable,
-while automatic transfers and retention are paused pending the new publication owner. Explicit
-format-2 migration and its limits are described in [the mirror reference](doc/pit-server/STANDALONE.md#the-mirror).
+Mirror development has reached the M5–M7 checkpoints: immutable generation recovery and
+explicit local cleanup, paged peer reconciliation and server-owned discovery are implemented. Existing
+copies remain readable and scope changes never evict them. Format-2 migration and limits are in [the mirror reference](doc/pit-server/STANDALONE.md#the-mirror).

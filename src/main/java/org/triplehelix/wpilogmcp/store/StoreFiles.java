@@ -22,6 +22,7 @@ import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 
 /** All store paths pass both configured-directory and store-local containment checks. */
 final class StoreFiles {
+  static final java.util.concurrent.atomic.AtomicLong headerReads = new java.util.concurrent.atomic.AtomicLong();
   static final long MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
   static final Gson JSON = new GsonBuilder().setPrettyPrinting().serializeNulls()
       .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES).create();
@@ -52,8 +53,12 @@ final class StoreFiles {
     containment.addAllowedDirectory(this.root);
   }
 
+  private java.util.function.Consumer<String> capturePublicationFailure;
+  void recording(java.util.function.Consumer<String> failure) { capturePublicationFailure = failure; }
   private StoreCatalog.PathObserver observer = path -> {};
   void observe(StoreCatalog.PathObserver observer) { this.observer = observer; }
+
+  Path root() { return root; }
 
   Path check(Path path) throws IOException {
     observer.inspect(path);
@@ -104,6 +109,7 @@ final class StoreFiles {
 
   <T> T read(Path path, Class<T> type) throws IOException {
     check(path);
+    if (type == StoreManifest.Header.class) return type.cast(ReplicaCatalogFiles.read(this, path).header());
     if (Files.size(path) > MAX_MANIFEST_BYTES) throw new IOException("Manifest is too large: " + path);
     try (var reader = Files.newBufferedReader(path)) {
       var value = JSON.fromJson(reader, type);
@@ -123,12 +129,14 @@ final class StoreFiles {
 
   private void write(Path path, Object value, boolean durable) throws IOException {
     check(path);
+    if (path.equals(root.resolve("store.json")) && value instanceof StoreManifest.Header header)
+      value = ReplicaMasters.moved(root, header);
     Files.createDirectories(path.getParent());
     check(path);
     var temporary = Files.createTempFile(path.getParent(), ".manifest-", ".tmp");
     try {
       try (var writer = Files.newBufferedWriter(temporary)) {
-        JSON.toJson(value, writer);
+        JSON.toJson(value instanceof StoreManifest.Header header ? ReplicaCatalogFiles.store(this, header) : value, writer);
       }
       if (Files.size(temporary) > MAX_MANIFEST_BYTES) {
         throw new IOException("Manifest is too large (maximum " + MAX_MANIFEST_BYTES
@@ -139,13 +147,43 @@ final class StoreFiles {
       }
       // A crash leaves the old manifest or the complete new one, never a half-written catalog.
       // A filesystem without atomic rename is refused rather than weakening that guarantee.
+      if (capturePublicationFailure == null) ReplicaMasters.prepare(root, this, path, value, temporary);
+      else ReplicaMasters.prepareCapture(root, this, path, value, temporary);
       replace(temporary, path);
+      if (value instanceof StoreManifest.Header && path.equals(root.resolve("store.json"))) {
+        ReplicaCatalogFiles.invalidate(path);
+        try { ReplicaCatalogFiles.published(this); }
+        catch (IOException cleanup) { org.slf4j.LoggerFactory.getLogger(StoreFiles.class).warn("Catalog is published; old metadata cleanup is pending: {}", cleanup.getMessage()); }
+      }
+      if (capturePublicationFailure == null) {
+        ReplicaMasters.published(root, this, path, value);
+        if (value instanceof StoreManifest.Session || value instanceof StoreManifest.LogFile) Files.deleteIfExists(check(root.resolve(ReplicaMasters.PENDING)));
+      } else if (value instanceof StoreManifest.Session) {
+        try {
+          ReplicaMasters.published(root, this, path, value);
+          Files.deleteIfExists(check(path.resolveSibling(ReplicaMasters.CAPTURE_PENDING)));
+        } catch (IOException | RuntimeException publication) {
+          String reason = "PUBLICATION_PENDING: capture is recorded; replica catalog publication failed: " + publication.getMessage();
+          capturePublicationFailure.accept(reason.length() > 2048 ? reason.substring(0, 2048) : reason);
+        }
+      }
       published.accept(path, value);
     } catch (IOException | RuntimeException | Error failure) {
       try { Files.deleteIfExists(temporary); }
       catch (IOException cleanup) { failure.addSuppressed(cleanup); }
       throw failure;
     }
+  }
+
+  /** Catalog parts use the same forced atomic replacement as other store metadata. */
+  void writeBytes(Path path, byte[] bytes, boolean durable) throws IOException {
+    check(path); Files.createDirectories(path.getParent());
+    var temporary = Files.createTempFile(path.getParent(), ".manifest-", ".tmp");
+    try {
+      Files.write(temporary, bytes);
+      if (durable) try (var channel = java.nio.channels.FileChannel.open(temporary, java.nio.file.StandardOpenOption.WRITE)) { channel.force(true); }
+      replace(temporary, path);
+    } finally { Files.deleteIfExists(temporary); }
   }
 
   /** Windows can deny replacement transiently. Retry only that error, for at most 620 ms

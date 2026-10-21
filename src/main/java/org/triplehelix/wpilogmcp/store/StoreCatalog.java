@@ -124,7 +124,15 @@ public final class StoreCatalog {
 
   /** Store membership follows the file's directory ancestry, not its extension or filename. */
   public static Optional<Path> containing(Path file) {
-    var parent = file.toAbsolutePath().normalize().getParent();
+    var absolute = file.toAbsolutePath().normalize();
+    // Store membership must use the same canonical ancestry as payload admission. Otherwise
+    // a symlink (or a case alias) can lose the master receipt or hide a published mirror file.
+    // Missing moved paths still use their existing parent so recorded aliases remain resolvable.
+    var parent = absolute.getParent();
+    try { parent = absolute.toRealPath().getParent(); }
+    catch (IOException missing) {
+      if (parent != null) try { parent = parent.toRealPath(); } catch (IOException unavailable) { /* The caller validates availability. */ }
+    }
     while (parent != null) {
       if (isStore(parent)) return Optional.of(parent);
       parent = parent.getParent();
@@ -203,6 +211,14 @@ public final class StoreCatalog {
       var path = io.check(root.resolve(".replicas").resolve(name));
       if (Files.isRegularFile(path)) { io.read(path, Header.class); managed.add(path); }
     }
+    boolean replicaMirror = header.mirror() && header.replicas() != null;
+    var replicaPaths = replicaMirror ? header.replicas().files().stream().map(ReplicaCatalog.Entry::path)
+        .collect(java.util.stream.Collectors.toSet()) : java.util.Set.<String>of();
+    SessionReader selectedReader = replicaMirror ? (filesIo, manifest) -> {
+      var original = reader.read(filesIo, manifest);
+      return original.withFiles(original.files().stream().filter(file -> replicaPaths.contains(
+          StoreFiles.relative(root, manifest.getParent().resolve(file.path())))).toList());
+    } : reader;
     var robots = new ArrayList<RobotDirectory>();
     var files = new ArrayList<StoredFile>();
     var openCaptures = new ArrayList<StoredFile>();
@@ -263,7 +279,7 @@ public final class StoreCatalog {
             var manifest = sessionDir.resolve("session.json");
             if (!Files.isDirectory(sessionDir) || !Files.isRegularFile(manifest)) continue;
             try {
-              var inventory = sessionInventory(io, root, sessionDir, robot, reader);
+              var inventory = sessionInventory(io, root, sessionDir, robot, selectedReader);
               for (var path : inventory.managed()) {
                 if (managed.contains(path)) throw new IOException("File listed twice: " + path);
               }
@@ -286,8 +302,9 @@ public final class StoreCatalog {
         try {
           var file = io.read(manifest, LogFile.class);
           var path = io.resolve(bucket, file.path());
-          validate(file, path);
           managed.add(manifest);
+          if (replicaMirror && !replicaPaths.contains(StoreFiles.relative(root, path))) continue;
+          validate(file, path);
           if (!managed.add(path)) throw new IOException("File listed twice: " + path);
           files.add(new StoredFile(path, manifest, null, null, file));
         } catch (IOException | RuntimeException invalid) {
@@ -295,6 +312,17 @@ public final class StoreCatalog {
           skipped.accept(manifest, invalid.getMessage());
         }
       }
+    }
+    if (replicaMirror) {
+      for (var entry : header.replicas().files()) {
+        var path = io.resolve(root, entry.path());
+        if (entry.kind().equals("clock_record")) { managed.add(path); continue; }
+        if (files.stream().anyMatch(file -> file.path().equals(path))) continue;
+        if (entry.descriptor() == null) throw new IOException("Replica generation has no catalog descriptor: " + entry.path());
+        validate(entry.descriptor(), path); managed.add(path);
+        files.add(new StoredFile(path, headerPath, null, null, entry.descriptor()));
+      }
+      managed.addAll(ReplicaJournal.owned(root, io, ReplicaJournal.read(root, io)));
     }
     var unmanaged = new ArrayList<Path>();
     if (strays) managed.addAll(StoreTransferInventory.peerFiles(root, io));
@@ -311,7 +339,7 @@ public final class StoreCatalog {
               && Files.getLastModifiedTime(path).toInstant().isAfter(Instant.now().minus(Duration.ofMinutes(1)))) continue;
           io.check(path);
         } catch (java.nio.file.NoSuchFileException vanished) { continue; }
-        if (!managed.contains(path)) unmanaged.add(path);
+        if (!managed.contains(path) && !ReplicaCatalogFiles.owned(root, path) && !path.getFileName().toString().equals(ReplicaMasters.CAPTURE_PENDING)) unmanaged.add(path);
       }
     }
     var moved = new ArrayList<Move>();
@@ -372,6 +400,17 @@ public final class StoreCatalog {
   public static Payload payload(Path directory, String relative, SecurityValidator security) throws IOException {
     var root = directory.toRealPath(); var io = new StoreFiles(root, security);
     var path = io.resolve(root, relative);
+    var header = io.read(root.resolve("store.json"), Header.class);
+    if (header.mirror() && header.replicas() != null) {
+      var entry = header.replicas().files().stream().filter(file -> file.path().equals(relative)).findFirst();
+      if (entry.isPresent()) {
+        var file = entry.get();
+        if (!Files.isRegularFile(path) || Files.size(path) != file.sizeBytes()) throw new IOException("Replica generation is missing or changed");
+        return new Payload(path, file.sizeBytes());
+      }
+      if (relative.startsWith(".replicas/") || relative.endsWith(".wpilog") || relative.endsWith(".revlog"))
+        throw new IOException("File is not a published mirror generation");
+    }
     var parts = root.relativize(path);
     Path parent; Session session = null; LogFile file = null;
     if (parts.getNameCount() >= 4 && parts.getName(0).toString().equals("robots") && parts.getName(2).toString().equals("system")) {
@@ -406,11 +445,20 @@ public final class StoreCatalog {
     if (path.equals(parent.resolve("session.json")) || path.equals(parent.resolve("import.json"))) {
       throw new IOException("Not a store log path");
     }
-    if (file != null) { validate(file, path); return new Payload(path, file.sizeBytes()); }
+    if (file != null) {
+      if (header.mirror() && header.replicas() != null) throw new IOException("File is not a published mirror generation");
+      validate(file, path); return new Payload(path, file.sizeBytes());
+    }
     if (session != null && session.openCapture() != null
         && io.resolve(parent, session.openCapture().path()).equals(path)
         && "captured".equals(session.openCapture().provenance().kind()) && Files.isRegularFile(path)) return new Payload(path, Files.size(path));
     throw new IOException("File is not in the store catalog");
+  }
+
+  /** Mirror staging and retired generations are never a source, even through a known absolute
+   * path or an already cached decode. Existing readers retain their own generation lease. */
+  public static ReplicaCatalog.Entry requirePublishedMirror(Path path, SecurityValidator security) throws IOException {
+    return ReplicaReads.publishedMirror(path, security);
   }
 
   private static Payload clockPayload(Path path, StoreManifest.ClockRecord record) throws IOException {

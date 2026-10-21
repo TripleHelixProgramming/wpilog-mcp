@@ -1009,7 +1009,37 @@ automatic eviction and capture-exclusion tests do not describe the current produ
 JAR alone. The synthetic shop timeline explicitly selects its known store; the gateway probe
 directory remains a separate source and cannot supply an implicit default.
 
-M4 performs no payload transfers or cleanup execution. M5 must test durable exclusion receipts,
-affected views, immutable publication, retirement and crash recovery before enabling that writer.
+M4 performs no payload transfers or cleanup execution. M5's `ReplicaTransfersTest` exercises
+synthetic generation transfers, strict size/hash/format checks, resumable flushed prefixes,
+capacity with incumbent bytes, blocked read/cancellation/shutdown ownership, file-lock release,
+publication/cleanup crash boundaries and reader retirement. `MirrorEndpointTest` drives cleanup,
+affected working views, persistent exclusions and retry through real HTTP. Raw-read corruption
+checks exercise the shared verified-hash owner. These seams simulate I/O failures and process
+interruption; they do not prove physical disk exhaustion, kernel hangs or power-loss durability.
 Run destructive mutation plants in an isolated scratch copy. Native durability/platform checks
 and throughput measurements remain separate gates.
+
+
+### Replica protocol and discovery checkpoint
+
+The synthetic `ReplicaProtocolTest`, `ReplicaProtocolBoundsTest`, `ReplicaNetworkTest`,
+`ReplicaClientTest`, `ReplicaMasterRecoveryTest`, `MirrorReplicaStatusTest`, `ClockRecordsTest`,
+`PeerDiscoveryTest` and `MirrorEndpointTest` exercise real HTTP pages/streams, owner limits,
+correction, exact MCP/Arrow numbers, history byte budgets, crash recovery and service grants.
+Extension checks cover plural configuration, selected control routes, bounded session traversal,
+renderer disclosure and generation changes before/during initial display.
+
+Native multicast is opt-in: `WPILOG_MDNS_PROOF=1 ./gradlew test --tests '*MdnsPeersTest'` uses a
+random synthetic service type and an eligible private interface. Ordinary tests skip this proof
+and do not use production service advertisements. The macOS private-interface proof passed;
+loopback did not discover its peer. Linux/Windows, interface churn, physical power loss and scale
+are not established by these tests. JmDNS is pinned to 3.6.2, Apache-2.0, with a bundled notice;
+see its [release](https://github.com/jmdns/jmdns/releases/tag/v3.6.2) and
+[build metadata](https://github.com/jmdns/jmdns/blob/v3.6.2/pom.xml).
+
+Before native editor validation, obtain permission to open the already-installed VS Code
+versions. Check 1.101.0 and stable: configure two synthetic mirrors, select each explicitly,
+inspect discovery/status, migrate a legacy fixture, include a session, close the window and
+observe the daemon continuing, then reopen a provisional preview and correct it through its
+master. It must disclose and refresh the same logical source. These checks do not require real
+robot data, a production daemon or installed extensions. Native checks remain a release gate.

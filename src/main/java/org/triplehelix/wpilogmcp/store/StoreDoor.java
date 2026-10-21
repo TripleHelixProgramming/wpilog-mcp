@@ -84,7 +84,9 @@ public final class StoreDoor {
 
   /** Read one known store's identity without walking any catalog or neighboring root. */
   public Description describe(Path root) throws IOException {
-    var security = new SecurityValidator(); configured.get().forEach(security::addAllowedDirectory);
+    var directories = Set.copyOf(configured.get());
+    if (directories.isEmpty()) throw new IOException("SOURCE_UNAVAILABLE: no configured store roots");
+    var security = new SecurityValidator(); directories.forEach(security::addAllowedDirectory);
     return inspect(root, security).description();
   }
   private static Selected inspect(Path root, SecurityValidator security) throws IOException {

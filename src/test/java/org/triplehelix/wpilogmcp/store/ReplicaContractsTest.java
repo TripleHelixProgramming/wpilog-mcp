@@ -91,7 +91,8 @@ class ReplicaContractsTest {
     assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(partial)); assertArrayEquals(new byte[]{8, 9}, Files.readAllBytes(stray));
     assertEquals(List.of(stray), StoreCatalog.read(store.root(), manager.testGetSecurityValidator()).unmanaged());
     var result = store.mirror(new MirrorConfig("http://127.0.0.1:9", store.root(), 0, 1, List.of(), List.of(), 30, 0), p -> {}).get();
-    assertEquals("writer_not_ready", result.state()); assertTrue(result.evicted().isEmpty());
+    assertEquals("partial", result.state()); assertTrue(result.evicted().isEmpty());
+    assertFalse(result.refusals().isEmpty(), "unreachable master must not imply complete synchronization");
   }
 
   @Test void stalePreparationAndCorruptionCannotPublishTheFormatMarker() throws Exception {

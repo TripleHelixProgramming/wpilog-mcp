@@ -39,7 +39,7 @@ class ReadLibraryTest {
 
   @Test void readerDependenciesArePrivateAndRedistributionIncludesWpilibNotice() throws Exception {
     try (var jar = new JarFile(System.getProperty("read.testJar"))) {
-      for (String prefix : List.of("edu/wpi/", "com/google/gson/", "com/google/flatbuffers/", "org/apache/arrow/", "org/slf4j/")) {
+      for (String prefix : List.of("edu/wpi/", "com/google/gson/", "com/google/flatbuffers/", "org/apache/arrow/", "org/slf4j/", "com/github/benmanes/caffeine/")) {
         assertTrue(jar.stream().noneMatch(e -> e.getName().endsWith(".class") && e.getName().startsWith(prefix)), "Unrelocated dependency: " + prefix);
       }
       var notice = jar.getEntry("META-INF/LICENSE-WPILib"); assertNotNull(notice);

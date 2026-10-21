@@ -35,6 +35,12 @@ public final class MirrorCapacity {
     var payloads = new java.util.HashSet<java.nio.file.Path>();
     catalog.allFiles().forEach(file -> payloads.add(file.path()));
     var io = new StoreFiles(root, security);
+    var journal = ReplicaJournal.read(root, io);
+    for (var entry : journal.retired()) payloads.add(io.resolve(root, entry.path()));
+    if (journal.pending() != null && journal.pending().operation().equals("transfer")) {
+      payloads.add(io.resolve(root, journal.pending().target().path()));
+      payloads.add(io.resolve(root, journal.pending().staging()));
+    }
     for (var session : catalog.sessions()) {
       for (var clock : session.session().clocks()) payloads.add(ClockRecords.resolve(io, session.path(), clock));
       for (var text : session.session().systemLogs().files())
@@ -42,11 +48,16 @@ public final class MirrorCapacity {
     }
     for (var robot : catalog.robots()) for (var text : SystemLogIndex.read(io, robot.path()).files())
       payloads.add(SystemLogFiles.shared(io, root, robot.path(), text.file()));
+    java.nio.file.Path linkedStage = null;
+    if (journal.pending() != null && journal.pending().operation().equals("transfer")) {
+      var stage = io.resolve(root, journal.pending().staging()); var object = io.resolve(root, journal.pending().target().path());
+      if (java.nio.file.Files.exists(stage) && java.nio.file.Files.exists(object) && java.nio.file.Files.isSameFile(stage, object)) linkedStage = stage;
+    }
     long held = 0, metadata = 0;
     try {
       for (var path : StoreCatalog.regularFiles(root)) {
         io.check(path);
-        if (unmanaged.contains(path) || path.equals(root.resolve("store.lock"))) continue;
+        if (unmanaged.contains(path) || path.equals(root.resolve("store.lock")) || path.equals(linkedStage)) continue;
         long bytes = java.nio.file.Files.size(path);
         if (payloads.contains(path) || path.startsWith(root.resolve(".mirror/files"))) held = Math.addExact(held, bytes);
         else metadata = Math.addExact(metadata, bytes);

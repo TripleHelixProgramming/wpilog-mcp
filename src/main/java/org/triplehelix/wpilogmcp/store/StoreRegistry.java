@@ -103,6 +103,10 @@ public final class StoreRegistry implements AutoCloseable {
     }
     security.validate(path);
   }
+  /** Local configuration must already admit the root before it can become server-owned. */
+  public AutoCloseable retainMirrorRoot(Path root) throws IOException {
+    validate(root); return security.retainServiceDirectory(root.toRealPath());
+  }
 
   public java.util.Optional<SystemLogFiles.Snapshot> systemLogs(Path capture) throws IOException {
     security.validate(capture);

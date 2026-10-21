@@ -1,11 +1,10 @@
 # Explorer sources and mirror implementation plan
 
-Status: M1 source contracts, M2 server-library persistence and M3 direct connections are
-committed as `643cdfd` on 2026-10-19, including the reviewed corrections. M4 identity and
-preservation foundations are implemented locally, with automated verification complete, and
-remain uncommitted for review. Payload transfer,
-cleanup execution and affected-view enumeration remain gated on M5 publication ownership;
-peer protocol and later checkpoints remain pending.
+Status: M1–M3 are committed as `643cdfd`, and M4 identity/preservation foundations as `ee0004b`
+on 2026-10-19. M5–M7 are implemented in the working tree for independent review: immutable
+publication, paged peer reconciliation, replica-aware reads, discovery and multiple-mirror
+configuration. Nothing in these checkpoints has been pushed. Native Linux/Windows provider,
+filesystem durability and the M9 scale gates remain unproved; M8 display handoff remains pending.
 
 Explorer will connect directly to the server that owns the selected source. A laptop
 can browse, analyze, follow and visualize remote recordings without a local MCP server
@@ -131,9 +130,8 @@ downloading recording files or launching a local daemon is not a prerequisite.
 | Recording identity | Existing provenance-backed recording identity and anchored member relationships. Session aliases nominate members; they do not prove membership by themselves. |
 
 Introduce source-reference schema 2 alongside schema 1. M1 wraps the existing recorded, session
-and unmanaged forms; M4 now persists logical file/version identities in format-2 master catalogs. The following
-wire content still requires generation-aware admission with M5/M6 and is not accepted by
-current visualization routes. A future catalog file example is:
+and unmanaged forms; M4 now persists logical file/version identities in format-2 master catalogs. Generation-aware API 2 admission now accepts the following
+logical content reference while API 1 retains hash-pinned reads:
 
 ```json
 {
@@ -883,7 +881,7 @@ be reproduced. Format-1 synchronization reports `migration_required` before any 
 After explicit migration it reports `writer_not_ready`. This follows the existing M4/M5 gate: no
 policy-only intermediate state can feed the old eviction or replacement engine.
 
-Format-2 headers own bounded file/version and replica records. Master migration assigns distinct
+Format-2 headers atomically select bounded external file/version and replica catalog parts. Master migration assigns distinct
 UUIDs and exact hash/size/finalization records. Legacy mirror transfers retain a
 `legacy_unconfirmed` basis with no invented master file identity; old `verified` booleans do not
 supply authority. Payloads, captures, clock records, system text, pins, partial journals and strays
@@ -921,3 +919,137 @@ unsupported-format fixture; both were corrected. The shop fixture was updated to
 known store explicitly alongside its separate gateway-probe directory. Formats 1 and 2 now run
 through an external consumer using only the reader JAR. This is macOS synthetic evidence, not
 native editor, Linux/Windows, power-loss, production or throughput validation.
+
+
+## M5 checkpoint: transfer and publication ownership (2026-10-19)
+
+M4 is committed as `ee0004b`; this checkpoint builds the destination writer without enabling
+automatic peer downloads. `LogStore` owns one transfer owner per mirror; two workers server-wide
+have no waiting queue. Payload I/O, hashing and format scans run outside the store queue. Short
+metadata turns publish an immutable generation through the atomic header. Old admitted readers
+retain the old generation, which stays charged until its lease drains and retirement completes.
+
+One durable journal binds a request to the store, policy, catalog revision, incumbent and exact
+private generation. Transfers flush and checkpoint at 64 KiB steps and verify the reusable prefix
+before resuming. A size/hash/format check precedes no-replace generation publication. Recovery
+finishes committed receipts but never promotes an unpublished intent just because the process
+restarted. A 30-second no-progress deadline revokes publication; blocked I/O retains its worker,
+owner lock and budget until it unwinds. Cancellation cannot succeed after publication admission.
+
+Cleanup now has explicit local execution. Preview names the selected files and affected working,
+server-library and legacy views. Execution rechecks store/catalog/policy facts, persists acquisition
+exclusions, removes catalog membership and retires bytes through the same lease owner. Definitions
+remain saved. Re-inclusion removes only explicitly selected exclusions. Legacy exclusions block
+exact content without inventing a logical identity. Recent 128 request receipts support exact
+retries; older cleanup/re-inclusion requests fail their revision checks, while old transfer retries
+revalidate already-held bytes. Exclusions are never pruned to make room for receipts.
+
+The disk budget includes staging, the incumbent during replacement, deferred retired bytes and
+peak metadata replacements. Restart recovery and format-2 pins also reserve metadata; pin failures
+are visible in operation status. Occupied unowned staging/destination paths are preserved. Raw
+mirror reads admit only published generations and revalidate their expected hash through the
+shared verified-hash implementation when filesystem boundaries change.
+
+These are logical accounting bounds and synthetic recovery tests, not measurements of JVM heap,
+filesystem allocation, power-loss durability or sustained throughput. Hard-link publication is
+required; unsupported filesystems refuse without overwriting. M6 owns the public offer/byte
+protocol, direct-master wire authority, reconciliation, logical file-version reads and replica-basis
+propagation. Automatic synchronization remains `protocol_not_ready`. Linux/Windows, production
+stores, real robots and native editor checks were not exercised by this checkpoint.
+
+Local verification: 4,383 Java tests passed, 85 skipped; license/build checks green. The extension
+passed 882 tests with five broker-only skips, and all five real-server broker tests passed on the
+freshly built JAR. The synthetic harness passed four cases with nine optional/native cases skipped
+(`-PconformanceNative=none`). Twenty-eight isolated mutation plants each produced their intended
+assertion failure and were restored to matching hashes. The full gate was rerun after the late
+recovery/exclusion and pin-status corrections; earlier results remain iteration evidence.
+
+M5 changes 33 implementation/documentation paths and remains unstaged and uncommitted. The
+24 pre-existing untracked notes/AGENTS and all 30 protected hashes remain unchanged; HEAD is
+still the M4 commit. No push, tag, version change, installation or production operation occurred.
+
+
+## M6/M7 checkpoint: replica exchange and discovery (2026-10-19)
+
+This checkpoint builds on the incoming, uncommitted M5 owner. M6 adds protocol-1 handshake,
+fixed paged offer inventories, immutable byte ranges and client reconciliation through that
+owner. M7 adds a replaceable JmDNS provider, bounded handshakes, explicit manual peers and up to
+eight independent mirror configurations. YAML and Explorer controls retain each selected mirror;
+discovery never chooses an Explorer source or changes a configured master.
+
+The three-hop synthetic proof starts with provisional bytes, propagates them through two HTTP
+suppliers (including discovery-supplied selection), then reconnects the configured master.
+Identical candidates deduplicate; only direct master evidence corrects provisional bytes. MCP
+statistics and decoded Arrow values follow the admitted generation/hash/basis, and old returned
+answers remain unchanged. Ordinary master and mirror reads reject changed bytes. A verified
+corruption repair stages the established hash into a new generation; unexpected changed retired
+bytes remain quarantined and charged. No replica request submits upstream.
+
+Closed clock companions receive independent immutable identities. Migration and later closed
+capture receipts preserve their exact bytes and capture/recording relationships; their format
+is checked by the shared clock reader. Provisional metadata remains explicitly separate from
+payload confirmation. No session manifest is copied wholesale to imply missing members are held;
+continuous system-text replication stays disabled. A bounded master receipt intent recovers
+header publication after a committed receipt, and explicit store move aliases preserve identity.
+
+API 2 accepts qualified `file_version` content. Fresh source/reader admission retains the selected
+scope and the shared verified-hash owners. Health observation is metadata-only. Visible overview
+and file previews disclose the hash and authority state, invalidate old queries and refresh the
+same logical source, including replacements before the first health response or during initial
+loading. Hidden and disposed previews stop observing. This is independent of M8 display handoff.
+
+The replica protocol fixes its wire routes as `/replicas/v1/handshake`, `/catalog`, `/file` and
+`/close`; the earlier plural-path sketch was provisional. The reference documents negotiated
+fields, expiry, workers, response budgets and failure envelopes. Application accounting is not a
+JVM heap measurement. Pagination is tested by complete expected identity sets, Unicode byte
+shortening, cursor ownership and actual payload-open/hash counters. Slow readers retain their
+own replica reservations while visualization, health, ping and close remain usable. Timed-out builders remain charged until
+uninterruptible test I/O unwinds and cannot publish afterwards.
+
+Discovery uses JmDNS 3.6.2 with bundled Apache-2.0 notice and the unregistered experimental service
+name `_wpilog-replica._tcp.local.`. The provider is isolated from policy/authority. A synthetic
+macOS private-interface announcement, resolution, HTTP handshake and removal proof passed after
+a loopback-only attempt failed to discover its peer. This does not establish Linux/Windows
+support, multicast across routed networks, or native interface-churn recovery. Manual endpoints
+work without discovery. The application bounds candidates/probes; provider caches and OS buffers
+remain outside that accounting. Closing an editor lease leaves the server-owned service grant.
+
+Disposition: implementation is held unstaged for review. The verification record accompanies this
+working tree under `build/reports/source-mirror-m6-m7/`, including failing-first logs, scratch-only
+mutation definitions/restoration hashes, command timestamps, final patch and protected-file audit.
+That generated evidence is local to this checkout; it is not a portable documentation link.
+Native editor checks (1.101.0 and stable), Linux/Windows, physical power-loss durability, native
+interface churn and the M9 throughput/season-scale gates remain outstanding. M8 and M9 are not
+started by this checkpoint. No production store, robot, installation, version, commit or push is
+part of this work.
+
+Final local gates: 4,415 Java tests passed, 86 skipped; build/license checks passed. The extension
+passed 892 tests with five broker-only skips; all five broker tests passed separately. The synthetic
+shop harness passed four cases with nine optional/native cases skipped. Thirty-seven isolated
+mutation plants produced assertion failures and restored matching hashes. Failed build iterations,
+fixture/setup failures and an invalid early mutation attempt remain in the evidence and are excluded
+from that plant count. The native mDNS proof is separate from the ordinary suite's skipped case.
+
+The final build also exposed test-order-sensitive REV fixtures that bypassed explicit path admission;
+they now use the shared fixture owner, with a failing-first strict-lease regression. Legacy cached
+non-store reads retain their existing admission policy, independently tested in a fresh process.
+The reader JAR includes the replica DTO's JSON dependency, and extension configuration mocks now
+carry the real status route's folder and mirror identity. No production access rule was weakened to
+make these fixtures pass. This checkpoint awaits review before M8 or integrated M9 acceptance.
+
+
+### M6/M7 review corrections (2026-10-19)
+
+The review's F1–F11 corrections keep this checkpoint uncommitted for review. The chosen storage
+layout uses separate immutable catalog parts and a small atomic header, retaining inline format-2
+compatibility. Count/byte limits are preflighted before import receipts; capture publication can
+remain pending without stopping recording. The architecture and mirror reference own the detailed
+bounds and recovery rules. Catalog parsing and relative-path lookup share a bounded cache whose
+hits still recheck access and filesystem boundaries.
+
+Reconciliation enumerates bounded listings before slow payloads and renews expired byte sessions
+without reopening the listing or changing the selected supplier. Unchanged confirmed versions keep
+their original evidence and revision. Replica metadata/download admission is separate from
+visualization, runtime mirror configuration starts discovery through the server owner, refusal
+codes/remedies survive the client, and known authority mismatches warn on analysis results.
+These corrections do not complete M8/M9, native platform checks or the sustained throughput gate.

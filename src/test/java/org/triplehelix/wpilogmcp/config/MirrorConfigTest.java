@@ -15,6 +15,16 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 class MirrorConfigTest {
+  @Test void anExplicitMasterIdentityCanSeedAnOfflineMirrorWithoutGuessingFromAPeer() throws Exception {
+    var body = new com.google.gson.JsonObject();
+    body.addProperty("origin", "http://127.0.0.1:9"); body.addProperty("folder", "offline-mirror");
+    body.addProperty("master_store_id", "11111111-1111-4111-8111-111111111111");
+    var parsed = MirrorConfig.parse(body, s -> s);
+    assertEquals("11111111-1111-4111-8111-111111111111",
+        org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJsonTree(parsed).getAsJsonObject().get("master_store_id").getAsString());
+    body.addProperty("master_store_id", "not-an-identity");
+    assertThrows(ConfigException.class, () -> MirrorConfig.parse(body, s -> s));
+  }
   @TempDir Path temp;
   @Test void defaultsAndExplicitKeysAreAppliedAndTheFolderIsAdmitted() throws Exception {
     var file = temp.resolve("servers.yaml");
@@ -44,5 +54,15 @@ class MirrorConfigTest {
     for (String key : MirrorConfig.KEYS) assertTrue(guide.contains("`mirror." + key + "`"), key);
     for (String route : List.of("/store/mirror/configure", "/store/mirror/sync", "/store/mirror/pin_session", "/store/mirror/unpin_session")) assertTrue(guide.contains(route), route);
     assertTrue(guide.contains("not assistant tools")); assertTrue(guide.contains("default `0` means unlimited"));
+  }
+  @Test void configuredMirrorsAdmitEveryIndependentDestinationWithoutChoosingADefault() throws Exception {
+    var file = temp.resolve("multiple.yaml"); var first = temp.resolve("one"); var second = temp.resolve("two");
+    Files.writeString(file, "servers:\n  local:\n    transport: http\n    mirrors:\n"
+        + "      - {origin: 'http://127.0.0.1:9', folder: '" + first.toString().replace("\\", "/") + "', discovery: false}\n"
+        + "      - {origin: 'http://127.0.0.1:10', folder: '" + second.toString().replace("\\", "/") + "', peers: ['http://127.0.0.1:11']}\n");
+    var config = new ConfigLoader().load("local", file);
+    assertEquals(java.util.Set.of(first.toString(), second.toString()), java.util.Set.copyOf(config.effectiveLogdirs()),
+        "every configured mirror needs an independent source scope");
+    assertNull(config.mirror(), "the legacy singular accessor must not silently pick a mirror");
   }
 }

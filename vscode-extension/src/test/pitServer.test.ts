@@ -1,6 +1,27 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as path from "node:path";
+import * as pitConfiguration from "../explorer/pitServer";
+test("independent mirror configurations refuse overlaps and never inherit a pit default", () => {
+  const configure = (pitConfiguration as any).mirrorConfigurations;
+  assert.equal(typeof configure, "function", "multiple mirrors need their own explicit configuration parser");
+  const settings = [{ origin: "http://a", folder: "/replica-a", discovery: false }, { origin: "http://b", folder: "/replica-b", scope: "all" }];
+  const all = configure("http://unrelated", {}, settings, "/storage", path.posix);
+  assert.deepEqual(all.map((c: any) => c.origin), ["http://a", "http://b"]);
+  assert.throws(() => configure("http://pit", { enabled: true }, settings, "/storage", path.posix), /both/);
+  assert.throws(() => configure(undefined, {}, [{ origin: "http://a", folder: "/a" }, { origin: "http://b", folder: "/a/b" }], "/storage", path.posix), /overlap/);
+  assert.throws(() => configure("http://pit", {}, [{ folder: "/a" }], "/storage", path.posix), /origin/);
+});
+test("mirror requests retain acquisition, discovery and explicit master choices", () => {
+  const request = mirrorRequest("http://pit:2363", { enabled: true, scope: "all", discovery: false,
+    peers: ["other-laptop:2363"], masterStoreId: "11111111-1111-4111-8111-111111111111" } as any, "/storage", path.posix) as any;
+  assert.equal(request.scope, "all"); assert.equal(request.discovery, false);
+  assert.deepEqual(request.peers, ["http://other-laptop:2363"]);
+  assert.equal(request.master_store_id, "11111111-1111-4111-8111-111111111111");
+});
+test("multiple mirror status exposes the count without selecting a default", () => {
+  assert.equal(mirrorStatusText({ state: "multiple", mirrors: [{ state: "ready" }, { state: "partial" }] } as any), "$(database) 2 mirrors · choose for actions");
+});
 import { ageText, liveRequest, mirrorRequest, mirroredCopy, mirrorStatusText, peerUrl, pitEndpoint, pitLogTree, pitOverview, readRemoteLogUri, remoteLogUri, serverDefinitions, sessionPicks } from "../explorer/pitServer";
 import { ListedLog } from "../explorer/logsTree";
 

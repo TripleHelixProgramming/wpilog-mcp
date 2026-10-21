@@ -132,6 +132,9 @@ dependencies {
     // NT4 gateway framing only (nt4/server); the client uses java.net.http.WebSocket.
     implementation 'org.java-websocket:Java-WebSocket:1.6.0'
 
+    // DNS-SD/mDNS provider; no Bonjour/Avahi install or platform native library is required.
+    implementation 'org.jmdns:jmdns:3.6.2'
+
     // SSH exec and SFTP confined to capture/pull; JDK 17 provides Ed25519 without extra crypto JARs.
     implementation 'com.github.mwiede:jsch:2.28.7'
 
@@ -320,7 +323,7 @@ def readerOwners = [
     'log/LogFileAccess', 'log/FileSnapshot', 'log/LogFileException', 'log/TimestampedValue',
     'log/RobotCandidates', 'log/LogData', 'log/subsystems/EntryDecoder', 'log/subsystems/BinaryReader',
     'log/subsystems/SecurityValidator', 'config/ClientLeases',
-    'store/StoreCatalog', 'store/StoreManifest', 'store/ReplicaCatalog', 'store/StoreFiles', 'store/FileNameEncoding', 'store/CaptureRecording',
+    'store/StoreCatalog', 'store/StoreManifest', 'store/ReplicaCatalog', 'store/ReplicaJournal', 'store/ReplicaMasters', 'store/ReplicaReads', 'store/StoreFiles', 'store/StoreJson', 'store/FileNameEncoding', 'store/CaptureRecording',
     'store/SystemLogState', 'store/SystemLogFiles', 'store/SystemLogIndex', 'store/ClockRecords', 'store/RecordedClocks',
     'store/StoreTransferInventory', 'capture/CaptureLease', 'capture/CaptureStats',
     'capture/TopicCost', 'capture/context/DeviceIdentity', 'capture/context/ProviderStatus',
@@ -345,13 +348,16 @@ tasks.register('readerJar', com.github.jengelman.gradle.plugins.shadow.tasks.Sha
     dependencies {
         include dependency('edu.wpi.first.wpiutil:wpiutil-java:.*')
         include dependency('com.google.code.gson:gson:.*')
+        include dependency('com.github.ben-manes.caffeine:caffeine:.*')
+        include dependency('org.checkerframework:checker-qual:.*')
+        include dependency('com.google.errorprone:error_prone_annotations:.*')
         include dependency('org.apache.arrow:arrow-format:.*')
         include dependency('com.google.flatbuffers:flatbuffers-java:.*')
         include dependency('org.slf4j:slf4j-api:.*')
     }
     // Keep the reader independent of the embedding application's WPILib season and JSON/Arrow
     // versions. DataLogAccess moves with WPILib, avoiding an exported split package as well.
-    ['edu.wpi.first.util', 'com.google.gson', 'com.google.flatbuffers', 'org.apache.arrow', 'org.slf4j'].each { name ->
+    ['edu.wpi.first.util', 'com.google.gson', 'com.google.flatbuffers', 'org.apache.arrow', 'org.slf4j', 'com.github.benmanes.caffeine', 'org.checkerframework', 'com.google.errorprone'].each { name ->
         relocate name, 'org.triplehelix.wpilogmcp.reader.internal.' + name
     }
     // Only the pure Java DataLog record classes are used; do not ship JNI loaders or their

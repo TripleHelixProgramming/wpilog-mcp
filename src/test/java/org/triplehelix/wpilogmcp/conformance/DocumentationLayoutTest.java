@@ -36,6 +36,16 @@ class DocumentationLayoutTest {
     assertTrue(checked > 0, "No visualization version claims checked");
   }
 
+  @Test void replicaReferencesDescribeTheImplementedCheckpoint() throws Exception {
+    String standalone = Files.readString(Path.of("doc/STANDALONE.md"));
+    assertTrue(standalone.contains("`content` (`recorded`, anchored `session`, `unmanaged`, or `file_version`)"));
+    assertFalse(standalone.contains("using them still await generation-aware admission"));
+    String pit = Files.readString(Path.of("doc/pit-server/STANDALONE.md"));
+    assertTrue(pit.contains("Format-2 mirrors do not yet carry system-log text"));
+    assertFalse(pit.contains("a mirror carries the shared files that its sessions' spans"));
+    assertTrue(Files.readString(Path.of("README.md")).contains("M5–M7 checkpoints"));
+  }
+
   @Test void mainGuidesDescribeCapabilitiesWithoutPromotingASeparateProduct() throws Exception {
     // Direct remote source connections are a normal reader feature; NT4 acquisition setup
     // remains in the experimental guide and must not be promoted as a validated deployment.

@@ -442,8 +442,35 @@ No failed remote request substitutes a mirror or starts the local daemon. To use
 open that connection's source as a separate document. Later mirror-engine and display-handoff
 work is tracked in [the source and mirror plan](../doc/SOURCE_AND_MIRROR_PLAN.md).
 
-The M4 server checkpoint pauses mirror downloads while replacing the old retention writer.
-Existing copies remain readable; a configured mirror reports `migration_required`, then
-`writer_not_ready` after explicit format-2 migration. Direct remote visualization is independent
-of this gate. Migration does not enable synchronization, cleanup or peer exchange. See
+Format-2 mirrors synchronize finalized files from their master and eligible peers. A legacy mirror
+reports `migration_required`; Mirror Actions → Migrate Mirror for Replica Synchronization performs
+the explicit, file-preserving upgrade. Direct remote visualization needs no mirror. Cleanup
+preview/execution remain local HTTP operations; Mirror Actions exposes status, discovery, selected
+synchronization, session inclusion and folder access. See
 [the mirror reference](../doc/pit-server/STANDALONE.md#the-mirror) for local controls and limits.
+
+
+Configure independent replicas with `wpilog-mcp.mirrors`, for example:
+
+```json
+"wpilog-mcp.mirrors": [
+  { "origin": "http://pit-server:2363", "folder": "/logs/pit-replica", "scope": "all", "discovery": true },
+  { "origin": "http://practice-server:2363", "folder": "/logs/practice-replica", "peers": ["http://teammate:2363"], "discovery": false }
+]
+```
+
+Up to eight entries are allowed; each requires an explicit origin and distinct folder. Do not
+combine this list with the legacy `wpilog-mcp.mirror.enabled` setting. Optional `masterStoreId`
+allows peer acquisition while a known master is initially offline; it cannot retarget a bound
+mirror. Mirror Actions asks which mirror to operate on when several exist. No availability or
+name match chooses a default. Show Peer Discovery displays provider availability and bounded
+handshake candidates; it does not configure Explorer sources. Add manual endpoints when local
+multicast is unavailable. A running daemon owns synchronization after the window closes; durable
+restart configuration belongs in server YAML.
+
+A visible file-version preview displays its admitted content hash and provisional, verified or
+master-disproved basis. Generation/authority changes trigger fresh admission in the same selected
+source, including a replacement during initial loading. Hidden or disposed previews stop polling.
+Session inclusion selects from the chosen mirror's paged catalog or accepts an explicit master
+session ID; it never pins another mirror by a matching session name. It affects acquisition only.
+The native editor checks for these controls remain outstanding on VS Code 1.101.0 and stable.

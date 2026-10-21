@@ -30,6 +30,18 @@ public final class VerifiedContentHashes implements AutoCloseable {
 
   public VerifiedContentHashes() { this(LogStore::contentHash); }
   public VerifiedContentHashes(Hasher hasher) { this(MAX_ENTRIES, IDLE_LIFETIME, Ticker.systemTicker(), hasher); }
+  /** A replica destination owns at most 4096 records; keeping that bounded working set avoids
+   * evicting every proof on each ordinary reconciliation of a catalog larger than 256 files. */
+  public static VerifiedContentHashes replicaCatalog(Hasher hasher) {
+    return new VerifiedContentHashes(4096, IDLE_LIFETIME, Ticker.systemTicker(), hasher);
+  }
+  /** A known proof still requires a current boundary; false asks the bounded I/O worker to hash. */
+  public boolean remembered(Path path, FileSnapshot boundary, String expected) throws IOException {
+    if (boundary == null || expected == null) return false;
+    boolean found;
+    synchronized (this) { found = !closed && verified.getIfPresent(new Key(path, boundary, expected)) != null; }
+    unchanged(path, boundary); return found;
+  }
   VerifiedContentHashes(int limit, Duration lifetime, Ticker ticker, Hasher hasher) {
     this.hasher = Objects.requireNonNull(hasher);
     verified = Caffeine.newBuilder().maximumSize(limit).expireAfterAccess(lifetime).ticker(ticker).build();

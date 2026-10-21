@@ -67,9 +67,15 @@ class AnalysisGuidanceTest {
           "not_applicable",
           "looked_for",
           "numeric_leaf_paths",
-          "change_only");
+          "change_only", "legacy_unconfirmed", "authoritative_mismatch");
 
   private static final Pattern SNAKE_CASE = Pattern.compile("\\b[a-z]+(?:_[a-z0-9]+)+\\b");
+
+  @Test void replicaGuidanceDistinguishesUnconfirmedFromDisprovedBytes() {
+    String guidance = AnalysisGuidance.analysisPrinciples().toString();
+    assertTrue(guidance.contains("provisional") && guidance.contains("legacy_unconfirmed") && guidance.contains("not master-confirmed"));
+    assertTrue(guidance.contains("authoritative_mismatch") && guidance.contains("known to differ"));
+  }
 
   @Test void instructionsKeepTheFourConcreteCautions() {
     for (String phrase : List.of("whole-log numbers mix in disabled time and boot", "absent data is not absent problems",

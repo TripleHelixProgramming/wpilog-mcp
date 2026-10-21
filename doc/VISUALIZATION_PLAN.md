@@ -2899,5 +2899,5 @@ locally and uncommitted. Its acceptance evidence and pending M2/M3 boundaries ar
 As of 2026-10-19, M1–M3 and their reviewed corrections are committed as `643cdfd`.
 The [M4 checkpoint](SOURCE_AND_MIRROR_PLAN.md#m4-checkpoint-identity-and-preservation-foundations-2026-10-19)
 adds explicit format migration and mirror preservation foundations. The legacy mirror writer
-is paused; payload transfer and cleanup wait for M5 publication ownership. This supersedes the
+is paused. M5–M7 supply generation ownership, explicit cleanup, replica-aware reads, paged reconciliation and server-owned discovery. This supersedes the
 historical capture-exclusion and automatic mirror-eviction rules above.

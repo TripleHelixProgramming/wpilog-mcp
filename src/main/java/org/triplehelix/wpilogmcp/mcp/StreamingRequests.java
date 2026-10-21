@@ -58,7 +58,10 @@ final class StreamingRequests implements AutoCloseable {
   /** Final refusals have their own bounded IO ownership. With no slot left, abort before
    * response headers: closing a committed response can make the JDK drain an unread body. */
   void refuse(HttpExchange exchange) {
-    try { refusals.execute(() -> run(exchange, StreamingRequests::busy)); }
+    refuse(exchange, StreamingRequests::busy);
+  }
+  void refuse(HttpExchange exchange, HttpHandler refusal) {
+    try { refusals.execute(() -> run(exchange, refusal)); }
     catch (RejectedExecutionException full) { exchange.close(); }
   }
   private static void busy(HttpExchange exchange) throws IOException {

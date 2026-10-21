@@ -1572,6 +1572,118 @@ mirror manifest observers and migration continuations run outside the store lock
 `MirrorCapacity` accounts logical held/staged bytes and metadata headroom with checked arithmetic;
 `MirrorSync` supplies acquisition and finalization predicates. No new payload is downloaded and no
 held file is deleted in M4. Cleanup previews and prospective exact-version exclusions are defined,
-while execution and affected-view enumeration await M5's publication and reader-retirement owner.
-Peer transport/reconciliation and logical file-version read references remain later integration.
+M5 implements their execution and affected-view inspection through the publication owner below.
+Peer transport/reconciliation and logical file-version reads use the owners described below.
 See [the mirror reference](pit-server/STANDALONE.md#the-mirror) for current routes and limits.
+
+
+### Replica generation publication owner
+
+`ReplicaTransfers` belongs to `LogStore`. Two daemon workers server-wide, one per destination,
+use no payload queue; a polling mirror coalesces retries. A cross-process owner lock protects the
+journal and private staging while short turns on the store queue take `store.lock` to publish
+bounded metadata. Network reads, payload hashing/format scans and retirement do not hold
+`store.lock`. Notifications and public future completion run after both file locks are released.
+
+A durable intent binds request UUID, store identity, policy fingerprint, catalog epoch/revision,
+incumbent and destination generation. Transfers use a 64 KiB application block, force bytes before
+checkpointing their exact prefix hash, and revalidate that prefix before resuming. A complete
+size/hash and format check precedes an immutable hard link into a unique generation directory.
+Filesystems without hard-link support refuse publication; they never fall back to overwriting.
+An atomic header replacement selects the current generation. The completion receipt and deferred
+retirement list are recovered idempotently. Recovery completes an already committed publication;
+unpublished intents require an explicit retry or discard, and are never promoted merely by restart.
+
+A 30-second no-progress deadline revokes publication and returns an error. A blocked operation
+retains its worker, cross-process owner and capacity charge until it actually unwinds. Cancellation
+has a single publication admission point immediately before atomic header replacement; a request
+already admitted there cannot report a successful cancellation. Shutdown stops admission and
+interrupts workers without waiting on network I/O. A cancelled/superseded worker cannot obtain
+that publication permit. This is process-recovery evidence, not a physical power-loss guarantee.
+
+Format-2 mirror catalogs list only their published generations. Old cached mappings finish under
+`LogFileAccess` leases; fresh admission rejects retired/staged/unmanaged paths. The raw reader
+also rechecks the selected generation with `VerifiedContentHashes` before loading or using a cached
+decode. A changed boundary requires a fresh hash. This memory retains its existing limitation:
+an external edit preserving every observed filesystem attribute cannot be detected by that cache.
+Retirement reserves the path, evicts cached mappings without waiting, and defers deletion while a
+reader remains. Deferred bytes stay charged. Explicit cleanup first persists exact exclusions
+and removes catalog membership, then uses the same retirement path; it leaves view definitions intact.
+A legacy exclusion with no logical identity blocks its exact content hash without assigning identity.
+Restart recovery reserves peak metadata space again before completing a receipt or retirement.
+Format-2 pin changes share the same bounded owner and metadata admission.
+
+The 4 MiB per-manifest bound, 4,096 replica/exclusion records, 32 deferred generations and bounded
+receipts limit durable metadata. `ReplicaCatalogFiles` stores immutable parts (256 rows/1 MiB,
+128 parts maximum) selected by a hashed index in the small header, with 32 MiB aggregate encoded
+catalog/header metadata. Inline format-2 catalogs remain readable. Publication forces parts before
+the atomic header; orphan cleanup preserves both the current catalog and migration preparation.
+The parsed-header cache accounts four times encoded bytes plus a fixed overhead against 128 MiB,
+expires idle entries after ten minutes, indexes relative paths, and rechecks grants and all file
+boundaries on every hit. Its weight is an estimate, not measured heap. Changed parts refuse even
+when the header did not change; readers racing retirement retry only after a header change. Capacity includes published/staged/retired objects and peak
+metadata replacements inside the configured cap. Status reports conservative logical reservations,
+not JVM heap, filesystem blocks or free disk space. Shared format scanners have their own memory
+costs; the 64 KiB transfer buffer is not a bound on the complete scan's heap. Physical durability,
+Windows/Linux behavior and sustained throughput remain separate gates. Format-2 mirrors now
+reconcile paged offers through this owner. `ready` means migrated, while `synchronized` requires
+a complete selected master catalog traversal; peer-only availability remains `partial`.
+
+
+### Replica exchange and discovery ownership
+
+`ReplicaProtocol` owns bounded, session-bound fixed offer inventories; `ReplicaEndpoint` adapts
+HTTP without moving ownership into handlers. Pages enumerate immutable metadata without payload
+opens/hashes. Current authority and access are rechecked on cached retries. `ReplicaClient` pulls
+bounded pages into a complete fixed listing before byte transfers; its two coordinators account
+at most 32 MiB each. Expired incomplete enumeration retries at most twice; later byte-session
+renewal retains the exact selected supplier. `ReplicaReconciler` supplies the existing
+`ReplicaTransfers` owner, never an adapter-owned writer. It maintains a bounded fair retry per
+configured mirror. Unchanged confirmed versions reuse boundary/hash proofs without per-file
+confirmation, receipt or observation rewrites; coverage and last-sync are recorded once per pass.
+Cold proofs still use the bounded transfer workers. Replica metadata has four workers and its
+own 8 MiB response budget, separate from four payload workers and visualization reservations.
+Only the configured master's channel enters confirmation. Forwarded verification is provisional;
+contrary master evidence is durable before a separately reserved replacement. Complete observed
+master coverage has its own epoch, revision and timestamp and is never inferred from a truncated
+page or a peer's inventory. No pass evicts by omission, date, scope or capacity.
+
+Completed master receipts publish file/version identities through `ReplicaMasters`. Import
+preflight checks count and encoded budgets before moving bytes or replacing a receipt. Its bounded
+durable intent bridges receipt and header replacement, with exact prepared receipt hash recovery.
+Capture writes instead retain a per-session `.replica-publication.json` marker if catalog publication
+fails. The capture completion barrier still succeeds and status reports deferred publication; the
+next recording never waits for a full catalog to recover. Explicit recovery scans at most 32768
+paths and reports a remaining limit or I/O failure. A pending import intent refuses a catalog build
+until its store owner recovers. Explicit store move aliases preserve logical identity; equal bytes elsewhere
+are not aliases. Closed clock companions retain independent identities and capture relationships,
+and transfer validation uses `ClockRecords`. Provenance, clock/matching and placement claims
+remain separate from payload authority. Clock companions are managed payloads, not log rows.
+
+Read admission captures generation/hash/scope/authority facts once. MCP inputs, shared reader
+metadata, Arrow and visualization inventories carry that snapshot. `file_version` API 2 references
+resolve only inside their selected scope. Old reads retain their pinned generation or refuse a
+source change; returned answers are never relabelled. Store ancestry is canonicalized before
+membership lookup, so symlink and case aliases retain the same hash admission. An analysis of
+`authoritative_mismatch` bytes includes a warning naming held and master hashes and sizes;
+provisional and legacy-unconfirmed states never establish authority. The source health observer reads generation
+metadata without hashing. Visible previews compare it with admitted bytes, cancel obsolete work
+and re-admit the same logical source after replacement or authority change.
+
+`MirrorEndpoint` publishes up to eight independent owners. An owner retains its own admitted root
+grant until explicit disable or daemon shutdown; editor lease disposal cannot stop it. Plural
+configuration rejects overlapping roots and requires a selection for controls. Native discovery
+belongs to the launcher and server, not to Explorer trees. `PeerDiscovery` bounds candidate TTLs,
+handshakes and retries; `MdnsPeers` adapts JmDNS on dedicated daemon threads. Callbacks publish
+metadata outside shared ownership locks. No network fetch, store I/O or completion callback occurs
+under the candidate monitor. The [wire reference](pit-server/STANDALONE.md#replica-protocol-and-multiple-mirrors)
+owns exact limits and service fields.
+
+JmDNS 3.6.2 was selected over invoking native platform commands or an external service dependency:
+it supports the project's Java runtime and runs in-process on the supported operating systems.
+Its Apache-2.0 notice is bundled. This is a provider choice, not a native-platform support claim:
+synthetic macOS private-interface advertisement/discovery/handshake/removal passed, while loopback
+multicast did not discover its peer; native Linux/Windows and interface churn remain separate gates.
+The project service name is experimental and not IANA-registered. Our accounted candidate and
+inventory limits exclude provider caches, JVM overhead and kernel buffers; no heap or throughput
+claim follows from them. Manual endpoints remain available when multicast is unavailable.

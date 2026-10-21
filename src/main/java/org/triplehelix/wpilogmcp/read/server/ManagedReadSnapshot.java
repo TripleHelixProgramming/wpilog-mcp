@@ -35,13 +35,16 @@ public final class ManagedReadSnapshot implements ReadSnapshot {
   private SharedTimeOrders.Lease orderLease;
   private final boolean callerOwnsUse;
   private final SourceScopes.Scope scope;
+  private final org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica;
   private int cursors;
   private boolean retired, callerClosed, released;
 
-  ManagedReadSnapshot(ManagedLogAccess owner, LogManager.LogUse use, SharedTimeOrders orders, boolean callerOwnsUse, SourceScopes.Scope scope) {
+  ManagedReadSnapshot(ManagedLogAccess owner, LogManager.LogUse use, SharedTimeOrders orders, boolean callerOwnsUse, SourceScopes.Scope scope,
+      org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) {
     this.owner = owner; this.use = use; this.orders = orders;
-    this.callerOwnsUse = callerOwnsUse; this.scope = scope;
+    this.callerOwnsUse = callerOwnsUse; this.scope = scope; this.replica = replica;
   }
+  @Override public org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica() { return replica; }
 
   /** Legacy whole-entry caching and diagnostics are a policy over the shared record cursor.
    * Do not wrap this object: the manager's reload hooks compare its original identity. */

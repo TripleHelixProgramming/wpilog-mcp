@@ -1,6 +1,14 @@
 // Tests for the settings the extension declares in package.json (no VS Code needed): npm test
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+test("independent mirrors are explicitly configured without eviction promises", () => {
+  const packageFile = require("../../package.json");
+  const groups = packageFile.contributes.configuration;
+  const definitions = Object.assign({}, ...(Array.isArray(groups) ? groups : [groups]).map((group: any) => group.properties));
+  assert.equal(definitions["wpilog-mcp.mirrors"]?.type, "array");
+  assert.deepEqual(definitions["wpilog-mcp.mirrors"].default, []);
+  assert.match(definitions["wpilog-mcp.mirror.maxSizeGb"].markdownDescription, /never.*delete/i);
+});
 import * as fs from "fs";
 import * as path from "path";
 import { overlaySettings } from "../logDirectories";
@@ -74,6 +82,7 @@ test("the settings appear in a fixed order: where the logs are, then the team an
     "wpilog-mcp.mirror.robots",
     "wpilog-mcp.mirror.events",
     "wpilog-mcp.mirror.intervalSec",
+    "wpilog-mcp.mirrors",
     "wpilog-mcp.live.enabled",
     "wpilog-mcp.live.folder",
     "wpilog-mcp.live.gatewayPort",
