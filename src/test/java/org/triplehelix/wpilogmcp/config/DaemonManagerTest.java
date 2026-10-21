@@ -810,6 +810,8 @@ class DaemonManagerTest {
     volatile boolean forceWorks = true;
     /** Runs when a process is ended, so the fake daemon it stands for can close its port. */
     volatile Runnable onEnd = () -> {};
+    /** Runs between the two steps of ending a process, so a test can hold that window open. */
+    volatile Runnable betweenEndSteps = () -> {};
 
     @Override
     public boolean isAlive(long pid) {
@@ -833,9 +835,15 @@ class DaemonManagerTest {
       return true;
     }
 
+    /**
+     * A real process exit closes its ports before the system reports the process gone. Ending
+     * a fake in the other order let a restart see the process dead while its old port still
+     * answered, probe that port and refuse to launch.
+     */
     void end(long pid) {
-      alive.put(pid, false);
       onEnd.run();
+      betweenEndSteps.run();
+      alive.put(pid, false);
     }
   }
 
@@ -853,6 +861,8 @@ class DaemonManagerTest {
     /** Whether an accepted stop request ends the process, as it does in a real daemon. */
     volatile boolean exitsOnStop = true;
     volatile boolean managed;
+    /** Runs after each {@code /health} answer, so a test can see who probed the port. */
+    volatile Runnable onHealth = () -> {};
 
     FakeDaemon(int port, long pid, String version, boolean hasStop, String token,
         FakeProcesses processes) throws IOException {
@@ -860,11 +870,16 @@ class DaemonManagerTest {
       processes.alive.put(pid, true);
       server = com.sun.net.httpserver.HttpServer.create(
           new java.net.InetSocketAddress("127.0.0.1", port), 0);
-      processes.onEnd = () -> server.stop(0);
+      processes.onEnd = () -> {
+        // Called off the dispatcher thread, stop joins it and returns with the listener closed.
+        server.stop(0);
+        assertNotListening(port);
+      };
       server.createContext("/health", exchange -> {
         var body = "{\"status\":\"ok\",\"sessions\":0,\"pid\":" + pid
             + (version == null ? "" : ",\"version\":\"" + version + "\"") + ",\"managed\":" + managed + "}";
         reply(exchange, 200, body);
+        onHealth.run();
       });
       server.createContext("/stop", exchange -> {
         if (!hasStop) {
@@ -884,6 +899,16 @@ class DaemonManagerTest {
         }
       });
       server.start();
+    }
+
+    /** Nothing accepts: a refusal or an unanswered connect, never a connection. */
+    private static void assertNotListening(int port) {
+      try (var socket = new java.net.Socket()) {
+        socket.connect(new java.net.InetSocketAddress("127.0.0.1", port), 200);
+      } catch (IOException refusedOrUnanswered) {
+        return;
+      }
+      throw new AssertionError("The fake daemon's port " + port + " still accepts after it stopped");
     }
 
     private static void reply(com.sun.net.httpserver.HttpExchange exchange, int status,
@@ -1127,6 +1152,59 @@ class DaemonManagerTest {
           pool.shutdownNow();
           launcher.stop();
         }
+      }
+    }
+
+    @Test
+    @DisplayName("a restart launches only after the old daemon's port has closed")
+    void aRestartLaunchesOnlyAfterTheOldPortCloses() throws Exception {
+      // The second hardening run's timeout: the fake reported its process dead while its port
+      // still answered, so the restart's probe found the old daemon there and refused to launch.
+      // The window between the two steps of ending the process stays open until the restart
+      // has acted in it: by waiting while nothing listens, or by probing a port that answers.
+      int port = freePort();
+      var launcher = new FakeLauncher(port, false);
+      var portClosed = new AtomicBoolean();
+      var actedInWindow = new CountDownLatch(1);
+      var observing = new DaemonManager.Processes() {
+        @Override
+        public boolean isAlive(long pid) {
+          boolean alive = processes.isAlive(pid);
+          if (pid == FAKE_PID && alive && portClosed.get()) actedInWindow.countDown();
+          return alive;
+        }
+
+        @Override
+        public boolean destroy(long pid) {
+          return processes.destroy(pid);
+        }
+
+        @Override
+        public boolean destroyForcibly(long pid) {
+          return processes.destroyForcibly(pid);
+        }
+      };
+      var manager = new DaemonManager(tempDir, Duration.ofSeconds(8), launcher,
+          DaemonManager.FILE_SYSTEM, observing, Version.VERSION);
+      manager.writeToken("test", "tok");
+      manager.writePidFile("test", FAKE_PID, port);
+      try (var old = new FakeDaemon(port, FAKE_PID, "0.1.0", true, "tok", processes)) {
+        var close = processes.onEnd;
+        processes.onEnd = () -> {
+          close.run();
+          portClosed.set(true);
+        };
+        old.onHealth = () -> {
+          if (old.stopRequests.get() > 0) actedInWindow.countDown();
+        };
+        processes.betweenEndSteps = () -> awaitLatch(actedInWindow);
+        assertTrue(manager.spawnDaemon("test", port, null), "the restart did not start its daemon");
+        assertEquals(1, launcher.launches.get(), "daemons started");
+        assertEquals(1, old.stopRequests.get(), "stop requests");
+        assertEquals(record(OWN_PID, port), pidFileLines(manager, "test"));
+        assertEquals(Version.VERSION, manager.probe(port).version(), "the daemon on the port");
+      } finally {
+        launcher.stop();
       }
     }
 

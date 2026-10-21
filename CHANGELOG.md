@@ -558,6 +558,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check enforced this boundary for the recording process.
 - The unreleased decision index now has a claim check for dates, statuses and local heading
   links; previously no index exposed superseded decisions or detected broken record links.
+- The daemon tests' fake daemon now closes its port, and checks that nothing accepts a
+  connection, before it reports its process gone, as a real exit does. Previously a restart
+  could see the old process dead while its port still answered, refuse to launch, and time out
+  the concurrent restart test; a latch-held regression reproduces the old order.
 - The store-lock symbolic-link admission test now probes link support once in an empty
   directory and fails when its own link cannot be made. Previously any I/O error turned it into
   a skip, including a lock file that already existed.
