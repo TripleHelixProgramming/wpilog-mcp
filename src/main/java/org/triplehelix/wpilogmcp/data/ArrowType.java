@@ -31,8 +31,10 @@ public sealed interface ArrowType {
   /** Bytes as logged, with 32-bit offsets: a raw entry. */
   record Binary() implements ArrowType {}
 
-  /** A timestamp in microseconds with no time zone: the log's own clock, as it stores it. */
-  record TimestampMicros() implements ArrowType {}
+  /** A missing zone preserves the log's own clock; UTC identifies a measured epoch column. */
+  record TimestampMicros(String timezone) implements ArrowType {
+    public TimestampMicros() { this(null); }
+  }
 
   /** A struct with named children: a decoded struct value. */
   record Struct(List<Field> fields) implements ArrowType {

@@ -617,17 +617,26 @@ Read an entry's values in time order, one page at a time, optionally within a ti
 - `limit` (optional): Max samples to return (default 100; larger values are cut to 10000; zero or less is an error)
 - `offset` (optional): Samples to skip (default 0; negative is an error)
 - `max_points` (optional): Read at a resolution: at most this many buckets over the window (see below; 1 to 10000, zero or less is an error)
+- `angle` (optional): Treat a plain numeric value as `radians` or `degrees` (`rad`/`deg` aliases accepted), unwrapping shortest turns before exact output or reduction. Scalar struct-angle fields are recognized automatically in resolution reads.
 
 **Returns:** `name`, `type`, `total_in_range` (the true count), `returned_count`, `offset`, `limit`, `has_more`, `samples` (each `timestamp_sec` and `value`), and `limits.samples` (total after `offset` vs returned). An unknown entry name is an error with suggestions.
 
 **At a resolution (`max_points`):** for a numeric entry, or an entry with a [field path](#field-paths) appended as `get_statistics` takes it. When the window holds no more samples than `max_points`, the read is exact, as above, with `bucketed: false`.
+
+Selected scalar angles unwrap within the requested interval before either branch: 179° then
+−179° gives 179°, 181°, and a one-bucket mean of 180°. Each interval starts with its own first
+logged value; nonfinite samples remain counted without resetting continuity. Wildcard fields
+remain unordered arithmetic pools. An explicit `angle` also selects numeric presentation
+without `max_points`, with ordinary paging defaults. Without either option, whole-value reads
+retain their raw structs, arrays and exact integer values. An explicit angle requires a numeric
+selection; it never guesses a field from a whole struct.
 
 When it holds more, the window (`start_time` to `end_time`, or the samples' own span where a bound is not given) is divided into `max_points` buckets of equal duration, `bucket_sec` long, the last one including the window's end. `samples` then holds one object per bucket that has samples:
 
 - `timestamp_sec`: the bucket's start
 - `count`, `min`, and `max`
 - `mean`: over the finite samples; `null` when none is finite
-- `first` and `last`: the first and last samples as logged
+- `first` and `last`: the first and last chronological values after any requested angle preparation
 
 WPILOG bucket membership uses original integer microseconds, and first/last use that order;
 equal original timestamps retain file order. Explicit seconds bounds round to the nearest
@@ -862,9 +871,15 @@ Server status: version, loaded log count, TBA configuration, whether a revlog sy
 
 **Parameters:** None
 
-**Returns:** `server_version`, `loaded_logs`, `tba_available` (a key is registered by a live session or configured; `get_tba_status` checks that it works), `revlog_sync_in_progress`, `jvm_memory` (`used_mb`, `total_mb`, `max_mb`, `free_mb`), `jvm_heap_used_mb`, and the two disk caches, which share one directory. Each counts only its own files:
+**Returns:** `success`, `server_version`, `loaded_logs`, `tba_available` (a key is registered by a live session or configured; `get_tba_status` checks that it works), `revlog_sync_in_progress`, `jvm_memory` (`used_mb`, `total_mb`, `max_mb`, `free_mb`), `jvm_heap_used_mb`, and the two disk caches, which share one directory. Each counts only its own files:
+
 - `sync_disk_cache`: the revlog sync-result cache, which is in use (`enabled`, `directory`, `cached_files`, `total_size_mb`)
-- `parsed_log_disk_cache`: the parsed-log cache of releases before 0.8.0 (`enabled`, `directory`, `cached_files`, `total_size_mb`, `format_version`). It reports `used_by_load_path: false` because logs are now parsed lazily from memory-mapped files, but it is still configured and its directory is cleaned at startup.
+- `scan_index_disk_cache`: persistent scan indexes (`enabled`, `directory`, `entry_count`,
+  `size_bytes`, `hits`, `misses`, `format_version`, `recipe_version`). `hits` and `misses`
+  count eligible disk lookups since this process started. Loaded-memory hits, disabled
+  caching and known active or growing sources do not increment them. File counts and sizes
+  are a current directory sample, not a heap measurement. This replaces the released
+  `parsed_log_disk_cache` block. An unavailable cache directory reports `error`.
 
 ---
 
@@ -1066,6 +1081,16 @@ timestamps with a year and zone map through recorded `systemTime` (prefer the pu
 its recorded alignment), with basis `system_time`. A wall-clock pair supplies the measured
 offset within the session. A date without a year or zone is not guessed. On a journald image
 a kernel message can occur as both kernel/uptime_pairing and syslog/system_time.
+
+Identical repeated wall-clock pairs are redundant. Conflicting epoch readings at one log
+timestamp, one epoch reading at distinct log timestamps, backward epoch readings, or a
+non-finite aligned log coordinate make the wall mapping unavailable. Such lines keep null
+`timestamp_sec` and an explicit ambiguity reason. An unambiguous inverse preserves exact
+recognized journal decimals and ISO seconds/nanoseconds, raw clock microseconds, and the
+exact value of an aligned clock's existing binary-double coordinate. It interpolates with
+rational arithmetic and rounds only the final `timestamp_sec` to the nearest binary double,
+ties to even. The accepted timestamp grammar and finite range, selection of clock readings,
+first/last-offset extrapolation and session bounds are unchanged; kernel mapping is unchanged.
 
 Unmapped lines have null `timestamp_sec` and a reason; they remain visible even in a requested
 window because their membership in it is unknown.
@@ -3347,7 +3372,10 @@ by member ID then physical ordinal. Nonfinite values, absent projected leaves an
 outside ±(2^53−1) count as unplottable gaps; unavailable numbers are null. Signed and unsigned
 integers, including enum fields, are checked before conversion. Booleans use 0/1; enums use
 their stored numeric values.
-First/last describe chronological values, without interpolation or unwrapping. Plot summaries
+Declared scalar struct-angle fields unwrap after member merging and before reduction, using the
+same rule as chart preparation. Continuity crosses input batches and rollover members, and starts
+anew for each requested interval. Plain numeric values remain arithmetic; there is no angle
+override parameter on this operation. First/last describe those chronological values, without interpolation. Plot summaries
 are not inputs to statistics or evidence of a cause. Admission refuses conflicting declarations,
 revoked access, changed files and work limits. See the standalone guide for capacity and retry.
 

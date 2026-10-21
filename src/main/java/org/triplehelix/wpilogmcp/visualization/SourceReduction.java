@@ -12,10 +12,11 @@ import java.util.function.*;
 import org.triplehelix.wpilogmcp.read.*;
 import org.triplehelix.wpilogmcp.read.catalog.SessionCursor;
 import org.triplehelix.wpilogmcp.read.internal.ReadWire;
+import org.triplehelix.wpilogmcp.tools.VisualizationBindings;
 
 /** Drawing buckets over a freshly proven source, never over the client's retained tail.
  * Session merging and min/max/mean arithmetic belong to the native reader. This owner only
- * admits the prefix, budgets work and translates unplottable values into explicit gaps.
+ * admits the prefix, budgets work and presents declared angles and explicit numeric gaps.
  * No decoded history is retained: only bounded merge lookahead and at most 4096 buckets. */
 final class SourceReduction {
   record Limits(int records, int recordBytes, int resultBytes, long nanos) {
@@ -56,9 +57,13 @@ final class SourceReduction {
         if (!bound.result().getAsJsonArray("bindings").get(0).getAsJsonObject().get("state").getAsString().equals("resolved"))
           throw new IOException("SOURCE_UNAVAILABLE: reduction declarations or schemas disagree: " + bound.result().get("bindings"));
         var prefix = bound.admission().prefix(); var summary = RecordingInventory.summary(prefix);
+        // Admission already proved the present members agree. Metadata chooses the angle
+        // rule without reading values or constructing another selected-entry history.
+        var selected = prefix.members().stream().map(m -> m.snapshot()).filter(m -> m.entries().containsKey(entry)).findFirst().orElseThrow();
+        double anglePeriod = VisualizationBindings.anglePeriod(
+            new BindingEvidence(selected, new BindingEvidence.Budget(clock)), entry, field);
         if (request.has("last_seconds") && !request.get("last_seconds").isJsonNull()) {
-          var snapshot = prefix.members().stream().map(m -> m.snapshot()).filter(m -> m.entries().containsKey(entry)).findFirst().orElseThrow();
-          var history = new RecordingAnalysis.History(prefix.recordingId(), snapshot.entries().get(entry), snapshot.schemas(), List.of(), summary, new RecordingAnalysis.Problems());
+          var history = new RecordingAnalysis.History(prefix.recordingId(), selected.entries().get(entry), selected.schemas(), List.of(), summary, new RecordingAnalysis.Problems());
           var range = org.triplehelix.wpilogmcp.tools.VisualizationBindings.statisticsArguments(history, request);
           from = micros(range.get("start_time")); to = micros(range.get("end_time"));
         }
@@ -96,7 +101,7 @@ final class SourceReduction {
               @Override public void close() throws IOException { cursor.close(); }
             });
           }
-          try (var reduced = SampleCursors.reduce(SessionCursor.onCommonClock(cursors, query), query, start, end)) {
+          try (var reduced = SampleCursors.reduce(presentAngles(SessionCursor.onCommonClock(cursors, query), anglePeriod), query, start, end)) {
             // The merged cursor now owns the children, including close on every refusal.
             cursors = new TreeMap<>();
             while (true) {
@@ -135,6 +140,29 @@ final class SourceReduction {
         budget.check(); return result;
       }
     } finally { slots.release(); }
+  }
+  /**
+   * One trajectory belongs to the requested window after all members have been merged.
+   * Resetting at a batch or member boundary turns an ordinary wrap into a false excursion.
+   * Native reduction remains arithmetic; this bounded adapter owns only presentation.
+   */
+  private static SampleCursor presentAngles(SampleCursor source, double period) {
+    if (period == 0) return source;
+    var angles = new AngleUnwrapper(period);
+    return new SampleCursor() {
+      @Override public SampleBatch next() throws IOException {
+        var batch = source.next();
+        var values = new ArrayList<Sample>(batch.samples().size());
+        for (var sample : batch.samples()) {
+          double value = angles.apply(((Number) sample.value()).doubleValue());
+          values.add(new Sample(sample.timestampUs(), sample.recordOffset(), sample.ordinal(),
+              value, sample.payloadBytes(), sample.source()));
+        }
+        return new SampleBatch(values, batch.problems(), batch.recordsVisited(),
+            batch.payloadBytes(), batch.complete());
+      }
+      @Override public void close() throws IOException { source.close(); }
+    };
   }
   private static ReadException limited(String reason) { return new ReadException(ReadProblem.Code.RESOURCE_LIMIT, "Source reduction " + reason); }
   private static long optionalTime(JsonElement value, long fallback) { return value == null || value.isJsonNull() ? fallback : micros(value); }

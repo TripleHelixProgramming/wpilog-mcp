@@ -234,6 +234,15 @@ and external libraries too; the explicit source list cannot discover their seman
 Hashes normalize CRLF. When changing the guard, plant a behavioral REV-source change and
 invalid compatibility decisions, verify their assertions, and restore exact source bytes.
 
+**Scan-index compatibility.** `ScanIndexVersionGuardTest` checks the reviewed source
+digests in `src/test/resources/conformance/scan-index-inputs.json`, the index format and
+scan recipe versions, and a dated compatibility explanation. Its explicit inputs cover
+the serializer, cache owner, log loading, scan construction and file snapshots, offset
+ordering, mapped/scoped readers, and the WPILib access adapter. Changes that alter an
+encoded index or its interpretation require the appropriate version bump; unchanged
+answers require a recorded explanation. As with REV caches, source hashes normalize
+CRLF, and changing the baseline alone does not prove compatibility.
+
 **Runtime-native guard.** `./gradlew build` reaches `verifyRuntimeNativeLibraries` through
 `check`. The guard inspects the main application runtime classpath, including resource directories and
 JAR/ZIP members, and the completed `-all` JAR for `.so`, `.dylib`, `.jnilib` and `.dll`
@@ -303,6 +312,18 @@ Use your own team's logs. Logs that another team has deliberately published can 
 ```
 
 The stress tests also need real logs, but they are Gradle tasks of their own rather than properties on `test`. The in-process test loads every log in the directory, runs the tools group by group on the first one, loads and evicts logs to stress the caches, and calls tools from several threads at once. It runs the REV log tools on the first log that has a REV log, and there checks the disk cache. It synchronizes the log with the cache off, then twice with it on, the second time from the cache; the REV log tools must give the same answers each time.
+
+The in-process suite also compares each log with scan-index caching disabled, on the
+first enabled open, and after unloading and reopening. It compares all entry declarations
+and counts, source bounds and damage facts, plus the first 1,000 exact microsecond
+coordinates and `read_entry`/`get_statistics` results for up to three numeric entries.
+The cache hit counter distinguishes a persisted index from an in-memory reuse or fresh
+scan. An oversized or ineligible log still has every selected answer compared and is
+reported as a fresh-scan fallback; the test is skipped with an explanation if no log
+exercises a persisted hit. `ScanIndexStressComparisonTest` calls the same helper in the
+ordinary suite with synthetic logs, requires real persisted hits, and checks independently
+derived values, statistics and exact coordinates. `ScanIndexCoverageTest` pins the opt-in
+call so this comparison cannot disappear silently.
 
 The HTTP test drives the HTTP transport as several clients would: sessions, concurrent calls, batches, and protocol edge cases, with its REV log calls on that same log. Both hold the results of their sequential calls to the conformance checks. A failing test fails the build. When the log directory does not exist, every test is skipped.
 

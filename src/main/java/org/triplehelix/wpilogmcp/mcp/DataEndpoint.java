@@ -18,6 +18,9 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -36,6 +39,7 @@ import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.LogFileException;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
+import org.triplehelix.wpilogmcp.read.UtcTimeMapping;
 import org.triplehelix.wpilogmcp.read.server.SourceScopes;
 import org.triplehelix.wpilogmcp.tools.Buckets;
 import org.triplehelix.wpilogmcp.tools.EntryData;
@@ -51,7 +55,11 @@ import org.triplehelix.wpilogmcp.tools.EntryData;
  * <p>Query parameters: {@code path} (the log), {@code names} (entries or field paths, comma
  * separated, or repeated), {@code start_time} and {@code end_time} (seconds), {@code max_points}
  * (buckets, by {@link Buckets}' rule, the same as {@code read_entry}'s), and {@code format}
- * ({@code arrow}, the default, or {@code csv}). An Arrow stream has one schema, so every entry
+ * ({@code arrow}, the default, or {@code csv}). Optional {@code utc=true} adds a nullable
+ * timestamp measured from the log's WallClock readings, with its basis beside each series.
+ * Scalar struct angles unwrap before presentation; {@code angle=radians|degrees} declares
+ * the same treatment for plain numbers.
+ * An Arrow stream has one schema, so every entry
  * in one request must have the same Arrow value type (several doubles, say); a bucketed request
  * needs only numeric entries. The stream's schema metadata carries what a tool result would (the
  * server version, {@code inputs}, the log's time range, and per entry its sampling class, the
@@ -69,6 +77,8 @@ final class DataEndpoint {
   static final int BATCH_ROWS = 4096;
   /** A response may be this large by default: generous, and far below a heap exhausted. */
   static final long DEFAULT_MAX_BYTES = 512L * 1024 * 1024;
+  private static final DateTimeFormatter UTC_FORMAT =
+      new DateTimeFormatterBuilder().appendInstant(6).toFormatter(Locale.ROOT);
 
   private final LogManager logManager;
   private final org.triplehelix.wpilogmcp.read.server.ManagedLogAccess logAccess;
@@ -107,7 +117,8 @@ final class DataEndpoint {
 
   /** A request, parsed. */
   private record Request(String path, List<String> names, Double startTime, Double endTime,
-      Integer maxPoints, String format, String scopeId, JsonObject source) {}
+      Integer maxPoints, String format, String scopeId, JsonObject source, boolean utc,
+      String angle) {}
 
   @FunctionalInterface interface SourceResolver { java.nio.file.Path resolve(JsonObject source) throws IOException; }
 
@@ -187,6 +198,12 @@ final class DataEndpoint {
     if (!format.equals("arrow") && !format.equals("csv")) {
       throw new Refusal(400, "format must be arrow or csv, not " + format, null);
     }
+    String utc = one(q, "utc");
+    if (utc != null && !utc.equals("true") && !utc.equals("false"))
+      throw new Refusal(400, "utc must be true or false", null);
+    String angle = one(q, "angle");
+    try { EntryData.validateAngle(angle); }
+    catch (IllegalArgumentException invalid) { throw new Refusal(400, invalid.getMessage(), null); }
     String scope = one(q, "scope_id"), reference = one(q, "source_ref");
     JsonObject source = null;
     try {
@@ -201,7 +218,8 @@ final class DataEndpoint {
         scope = source.get("scope_id").getAsString();
       }
     } catch (RuntimeException invalid) { throw new Refusal(400, "Invalid data source qualification: " + invalid.getMessage(), null); }
-    return new Request(paths.get(0), List.copyOf(names), start, end, maxPoints, format, scope, source);
+    return new Request(paths.get(0), List.copyOf(names), start, end, maxPoints, format, scope,
+        source, "true".equals(utc), angle);
   }
 
   private static String one(Map<String, List<String>> q, String name) throws Refusal {
@@ -227,7 +245,7 @@ final class DataEndpoint {
   /** A series with what the response says about it; {@code rev} for a REV log signal. */
   private record Prepared(EntryData.Series series, List<TimestampedValue> values,
       ArrowType valueType, Buckets.Result buckets, String sampling, String unit,
-      EntryData.RevSync rev, JsonObject decoding) {}
+      EntryData.RevSync rev, JsonObject decoding, JsonObject utcBasis) {}
 
   private void serve(HttpExchange exchange, Request request, SourceResolver sources) throws IOException, Refusal {
     org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot use;
@@ -245,6 +263,7 @@ final class DataEndpoint {
     try (use) {
       var log = use.log();
       var before = use.snapshot();
+      var utc = request.utc() ? UtcTimeMapping.from(log) : null;
 
       var prepared = new ArrayList<Prepared>();
       var revValidators = new ArrayList<EntryData.RevValidator>();
@@ -272,7 +291,14 @@ final class DataEndpoint {
                 + "lists an entry's numeric field paths");
           }
         }
-        var values = series.inWindow(request.startTime(), request.endTime());
+        EntryData.Prepared presentation;
+        try {
+          presentation = EntryData.prepare(log, series, request.startTime(), request.endTime(),
+              request.angle());
+        } catch (IllegalArgumentException invalid) {
+          throw new Refusal(400, invalid.getMessage(), "Select a numeric entry or scalar field for angle presentation");
+        }
+        var values = presentation.values();
         Buckets.Result buckets = null;
         ArrowType valueType;
         if (request.maxPoints() != null) {
@@ -290,13 +316,18 @@ final class DataEndpoint {
         } else {
           valueType = EntryData.arrowType(log, series);
         }
+        // An integer measured in radians can acquire a fractional full-turn adjustment.
+        // Ordinary typed reads still use their original Arrow representation.
+        if (presentation.angle()) valueType = new ArrowType.Float64();
         long count = buckets != null ? buckets.buckets().size() : values.size();
         rows += count;
         estimatedBytes += buckets != null ? count * 56 : size(values, valueType);
+        if (utc != null) estimatedBytes += utcSize(request, values, buckets, count, utc);
         prepared.add(new Prepared(series, values, valueType, buckets,
             EntryData.sampling(log, series),
             rev != null && rev.unit() != null ? rev.unit() : EntryData.unitFromName(name), rev,
-            EntryData.decodingMetadata(log, series)));
+            EntryData.decodingMetadata(log, series),
+            utc == null ? null : utcBasis(utc, values, buckets)));
       }
       if (estimatedBytes > maxBytes) {
         var refusal = new Refusal(413, "The response would be about " + estimatedBytes + " bytes ("
@@ -341,9 +372,9 @@ final class DataEndpoint {
       exchange.sendResponseHeaders(200, 0);
       try (var out = new BufferedOutputStream(exchange.getResponseBody(), 1 << 16)) {
         if (request.format().equals("arrow")) {
-          writeArrow(out, log, request, prepared, before, use.replica());
+          writeArrow(out, log, request, prepared, before, use.replica(), utc);
         } else {
-          writeCsv(out, log, request, prepared, before, use.replica());
+          writeCsv(out, log, request, prepared, before, use.replica(), utc);
         }
       }
     }
@@ -374,6 +405,58 @@ final class DataEndpoint {
     long total = 0;
     for (var tv : values) total += perRow + sizeOf(tv.value());
     return total;
+  }
+
+  /** CSV expands arrays into rows, so their repeated UTC cells must also count toward the cap. */
+  private static long utcSize(Request request, List<TimestampedValue> values,
+      Buckets.Result buckets, long count, UtcTimeMapping utc) {
+    if (request.format().equals("arrow")) return count * 9; // int64 plus rounded-up validity
+    long bytes = 0;
+    for (int i = 0; i < count; i++) {
+      long logUs = buckets == null ? values.get(i).timestampUs() : buckets.startUs(i);
+      // Four-digit years need 28 bytes including the comma; extended years need more.
+      int cellBytes = Math.max(28, utcText(utc.at(logUs).epochMicros()).length() + 1);
+      long rows = 1;
+      if (request.maxPoints() == null) {
+        var value = values.get(i).value();
+        rows = value instanceof List<?> list ? list.size()
+            : value != null && value.getClass().isArray() && !(value instanceof byte[])
+                ? java.lang.reflect.Array.getLength(value) : 1;
+      }
+      bytes += rows * cellBytes;
+    }
+    return bytes;
+  }
+
+  /** Count emitted coordinates, not expanded CSV array rows, and retain a reason for each null. */
+  private static JsonObject utcBasis(UtcTimeMapping utc, List<TimestampedValue> values,
+      Buckets.Result buckets) {
+    var basis = utc.basis();
+    var out = new JsonObject();
+    out.addProperty("entry", basis.entry());
+    out.addProperty("reading_count", basis.readingCount());
+    out.addProperty("first_offset_us", basis.firstOffsetUs());
+    out.addProperty("last_offset_us", basis.lastOffsetUs());
+    out.addProperty("max_offset_change_us", basis.maxOffsetChangeUs());
+    out.addProperty("rounding", basis.rounding());
+    var reasons = new LinkedHashMap<String, Long>();
+    int count = buckets == null ? values.size() : buckets.buckets().size();
+    for (int i = 0; i < count; i++) {
+      var mapped = utc.at(buckets == null ? values.get(i).timestampUs() : buckets.startUs(i));
+      if (mapped.epochMicros() == null) reasons.merge(mapped.reason(), 1L, Long::sum);
+    }
+    long nulls = 0;
+    var rows = new JsonArray();
+    for (var reason : reasons.entrySet()) {
+      var row = new JsonObject();
+      row.addProperty("reason", reason.getKey());
+      row.addProperty("count", reason.getValue());
+      rows.add(row);
+      nulls += reason.getValue();
+    }
+    out.addProperty("null_sample_count", nulls);
+    out.add("null_reasons", rows);
+    return out;
   }
 
   private static long sizeOf(Object value) {
@@ -457,6 +540,8 @@ final class DataEndpoint {
     if (request.endTime() != null) window.addProperty("end_time", request.endTime());
     inputs.add("window", window);
     if (request.maxPoints() != null) inputs.addProperty("max_points", request.maxPoints());
+    if (request.utc()) inputs.addProperty("utc", true);
+    if (request.angle() != null) inputs.addProperty("angle", request.angle());
     if (snapshot != null) {
       var file = new JsonObject();
       file.addProperty("size", snapshot.size());
@@ -481,6 +566,7 @@ final class DataEndpoint {
       p.decoding().entrySet().forEach(field -> e.add(field.getKey(), field.getValue()));
       e.addProperty("total_in_range", p.values().size());
       e.addProperty("bucketed", p.buckets() != null);
+      if (p.utcBasis() != null) e.add("utc_basis", p.utcBasis());
       if (p.buckets() != null) {
         e.addProperty("bucket_sec", p.buckets().bucketSec());
         e.addProperty("bucket_count", p.buckets().buckets().size());
@@ -532,11 +618,14 @@ final class DataEndpoint {
       new Field("last", new ArrowType.Float64(), false));
 
   private void writeArrow(OutputStream out, LogData log, Request request, List<Prepared> prepared,
-      FileSnapshot before, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) throws IOException {
+      FileSnapshot before, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica,
+      UtcTimeMapping utc) throws IOException {
     boolean bucketed = request.maxPoints() != null;
-    var fields = bucketed ? BUCKET_FIELDS : List.of(
+    var fields = new ArrayList<>(bucketed ? BUCKET_FIELDS : List.of(
         new Field("timestamp", new ArrowType.TimestampMicros(), false),
-        new Field("value", prepared.get(0).valueType(), true));
+        new Field("value", prepared.get(0).valueType(), true)));
+    if (utc != null) fields.add(1, new Field("timestamp_utc", new ArrowType.TimestampMicros("UTC"), true));
+    int offset = utc == null ? 0 : 1;
     var writer = new ArrowStreamWriter(out, fields);
     writer.writeSchema(schemaMetadata(log, request, prepared, before, replica));
     var columns = new ArrayList<ColumnBuilder>();
@@ -547,34 +636,34 @@ final class DataEndpoint {
         if (p.buckets() != null) {
           for (int i = 0; i < p.buckets().buckets().size(); i++) {
             var b = p.buckets().buckets().get(i);
-            columns.get(0).append(p.buckets().startUs(i));
-            columns.get(1).append((long) b.count());
-            columns.get(2).append(b.min());
-            columns.get(3).append(b.max());
-            columns.get(4).append(b.mean());
-            columns.get(5).append(b.first());
-            columns.get(6).append(b.last());
+            appendTime(columns, p.buckets().startUs(i), utc);
+            columns.get(1 + offset).append((long) b.count());
+            columns.get(2 + offset).append(b.min());
+            columns.get(3 + offset).append(b.max());
+            columns.get(4 + offset).append(b.mean());
+            columns.get(5 + offset).append(b.first());
+            columns.get(6 + offset).append(b.last());
             if (columns.get(0).length() >= BATCH_ROWS) writer.writeBatch(columns, tag);
           }
         } else {
           // Few enough samples: each is its own bucket of one, exact
           for (var tv : p.values()) {
             double v = ((Number) tv.value()).doubleValue();
-            columns.get(0).append(tv.timestampUs());
-            columns.get(1).append(1L);
+            appendTime(columns, tv.timestampUs(), utc);
+            columns.get(1 + offset).append(1L);
             Double finite = Double.isFinite(v) ? v : null;
-            columns.get(2).append(finite);
-            columns.get(3).append(finite);
-            columns.get(4).append(finite);
-            columns.get(5).append(v);
-            columns.get(6).append(v);
+            columns.get(2 + offset).append(finite);
+            columns.get(3 + offset).append(finite);
+            columns.get(4 + offset).append(finite);
+            columns.get(5 + offset).append(v);
+            columns.get(6 + offset).append(v);
             if (columns.get(0).length() >= BATCH_ROWS) writer.writeBatch(columns, tag);
           }
         }
       } else {
         for (var tv : p.values()) {
-          columns.get(0).append(tv.timestampUs());
-          columns.get(1).append(tv.value());
+          appendTime(columns, tv.timestampUs(), utc);
+          columns.get(1 + offset).append(tv.value());
           if (columns.get(0).length() >= BATCH_ROWS) writer.writeBatch(columns, tag);
         }
       }
@@ -588,6 +677,11 @@ final class DataEndpoint {
     writer.finish();
   }
 
+  private static void appendTime(List<ColumnBuilder> columns, long logUs, UtcTimeMapping utc) {
+    columns.get(0).append(logUs);
+    if (utc != null) columns.get(1).append(utc.at(logUs).epochMicros());
+  }
+
   /** Seconds to the log's microseconds, as the file stores them. */
   static long micros(double seconds) {
     return Math.round(seconds * 1e6);
@@ -596,7 +690,8 @@ final class DataEndpoint {
   // ---- CSV ----
 
   private void writeCsv(OutputStream out, LogData log, Request request, List<Prepared> prepared,
-      FileSnapshot before, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) throws IOException {
+      FileSnapshot before, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica,
+      UtcTimeMapping utc) throws IOException {
     Writer w = new OutputStreamWriter(out, StandardCharsets.UTF_8);
     w.write("# wpilog-mcp " + Version.VERSION + "\n");
     w.write("# inputs: " + gson.toJson(inputs(log, request, prepared, before, replica)) + "\n");
@@ -607,23 +702,31 @@ final class DataEndpoint {
       first = false;
       w.write("# entry: " + p.series().name() + "\n");
       if (p.buckets() != null) {
-        w.write("timestamp_sec,count,min,max,mean,first,last\n");
-        for (var b : p.buckets().buckets()) {
-          w.write(b.start() + "," + b.count() + "," + cell(b.min()) + "," + cell(b.max()) + ","
+        w.write("timestamp_sec," + (utc == null ? "" : "timestamp_utc,") + "count,min,max,mean,first,last\n");
+        for (int i = 0; i < p.buckets().buckets().size(); i++) {
+          var b = p.buckets().buckets().get(i);
+          w.write(b.start() + "," + utcCell(utc, p.buckets().startUs(i)) + b.count() + "," + cell(b.min()) + "," + cell(b.max()) + ","
               + cell(b.mean()) + "," + b.first() + "," + b.last() + "\n");
         }
       } else if (request.maxPoints() != null) {
-        w.write("timestamp_sec,count,min,max,mean,first,last\n");
+        w.write("timestamp_sec," + (utc == null ? "" : "timestamp_utc,") + "count,min,max,mean,first,last\n");
         for (var tv : p.values()) {
           double v = ((Number) tv.value()).doubleValue();
           var finite = Double.isFinite(v) ? String.valueOf(v) : "";
-          w.write(tv.timestamp() + ",1," + finite + "," + finite + "," + finite + "," + v + "," + v + "\n");
+          w.write(tv.timestamp() + "," + utcCell(utc, tv.timestampUs()) + "1," + finite + "," + finite + "," + finite + "," + v + "," + v + "\n");
         }
       } else {
         var columns = EntryData.csvColumns(p.values());
-        w.write(String.join(",", columns) + "\n");
+        var outputColumns = new ArrayList<>(columns);
+        if (utc != null) outputColumns.add(1, "timestamp_utc");
+        w.write(String.join(",", outputColumns) + "\n");
         for (var tv : p.values()) {
-          for (var row : EntryData.csvRows(tv, columns)) w.write(String.join(",", row) + "\n");
+          for (var row : EntryData.csvRows(tv, columns)) {
+            // The legacy column order tells csvRows how to expand arrays. Insert UTC afterwards.
+            var outputRow = new ArrayList<>(row);
+            if (utc != null) outputRow.add(1, utcText(utc.at(tv.timestampUs()).epochMicros()));
+            w.write(String.join(",", outputRow) + "\n");
+          }
         }
       }
     }
@@ -632,6 +735,15 @@ final class DataEndpoint {
       w.write("\n# file_changed: " + change + "\n");
     }
     w.flush();
+  }
+
+  private static String utcCell(UtcTimeMapping utc, long logUs) {
+    return utc == null ? "" : utcText(utc.at(logUs).epochMicros()) + ",";
+  }
+
+  private static String utcText(Long epochUs) {
+    return epochUs == null ? "" : UTC_FORMAT.format(Instant.ofEpochSecond(
+        Math.floorDiv(epochUs, 1_000_000L), Math.floorMod(epochUs, 1_000_000L) * 1000));
   }
 
   private static String cell(Double d) {

@@ -58,16 +58,16 @@ public final class LegacyMirrorFixture {
   }
   static java.util.concurrent.CompletableFuture<MirrorSync.Result> sync(LogStore store, MirrorConfig config,
       Consumer<MirrorSync.Progress> progress, Clock clock, StoreSync.Source source) {
-    return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+    return sync(store, config, progress, clock, source, java.util.concurrent.ForkJoinPool.commonPool());
+  }
+  /** The direct scheduler proves admission ordering without racing common-pool scheduling. */
+  static java.util.concurrent.CompletableFuture<MirrorSync.Result> sync(LogStore store, MirrorConfig config,
+      Consumer<MirrorSync.Progress> progress, Clock clock, StoreSync.Source source,
+      java.util.concurrent.Executor scheduler) {
+    return java.util.concurrent.CompletableFuture.supplyAsync(() -> store.replicaTurn(io -> {
       var manager = LogManager.getInstance(); var security = manager.testGetSecurityValidator();
-      try (var lock = StoreLock.acquire(store.root(), security)) {
-        var io = new StoreFiles(store.root(), security);
-        if (!StoreCatalog.isStore(store.root())) io.write(store.root().resolve("store.json"),
-            new Header(1, clock.instant().toString(), UUID.randomUUID().toString(), List.of()));
-        return new LegacyMirrorFixture(store.root(), io, security, manager, clock, progress).run(config, source);
-      } catch (IOException e) { throw new java.util.concurrent.CompletionException(e); }
-      finally { Thread.interrupted(); }
-    });
+      return new LegacyMirrorFixture(store.root(), io, security, manager, clock, progress).run(config, source);
+    }), scheduler).thenCompose(java.util.function.Function.identity());
   }
   private record Item(String key, String remotePath, Path destination, long size, long mtime,
       LogFile file, SystemLogIndex.Entry text, ClockRecord clock, StoreDoor.Session session) {}

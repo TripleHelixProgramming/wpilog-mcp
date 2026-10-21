@@ -167,7 +167,7 @@ public final class ArrowSpecReader {
         if (data.remaining() < 8L * n) throw new IllegalStateException("float64 data too short");
         for (int i = 0; i < n; i++) out.add(valid[i] ? data.getDouble(8 * i) : null);
       }
-      case "int64", "timestamp[us]" -> {
+      case "int64", "timestamp[us]", "timestamp[us],UTC" -> {
         var data = buffer(batch, body, cursor[1]++);
         if (data.remaining() < 8L * n) throw new IllegalStateException("int64 data too short");
         for (int i = 0; i < n; i++) out.add(valid[i] ? data.getLong(8 * i) : null);

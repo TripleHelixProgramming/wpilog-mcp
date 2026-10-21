@@ -681,7 +681,10 @@ public final class CoreTools {
           + "max, mean (null when no sample is finite), first, and last, so a spike one sample "
           + "wide is still seen in min or max; with no more samples than max_points the read is "
           + "exact (bucketed false). A non-numeric entry is read exactly and max_points is "
-          + "reported in skipped.";
+          + "reported in skipped. Numeric presentation unwraps declared scalar angle fields "
+          + "before exact output or reduction; angle declares radians/degrees for a plain "
+          + "number, including without max_points. A wildcard [*] remains an arithmetic pool. "
+          + "With neither option, whole-value reads retain their recorded types and values.";
     }
 
     @Override
@@ -698,6 +701,7 @@ public final class CoreTools {
               + "last (a numeric entry, or an entry with a field path appended, as get_statistics "
               + "takes); a window with no more samples than this is read exactly (max: "
               + ReadEntryTool.MAX_SAMPLES + ")", false, null)
+          .addProperty("angle", "string", NumericSignal.ANGLE_PARAM, false)
           .build();
     }
 
@@ -706,6 +710,7 @@ public final class CoreTools {
       validateTimeRange(getOptDouble(arguments, "start_time"),
           getOptDouble(arguments, "end_time"));
       var name = getRequiredString(arguments, "name");
+      var angle = NumericSignal.angleArgument(arguments);
       Integer maxPoints = arguments.has("max_points") && !arguments.get("max_points").isJsonNull()
           ? getOptInt(arguments, "max_points", 0) : null;
       if (maxPoints != null) {
@@ -718,6 +723,7 @@ public final class CoreTools {
         if (bucketed != null) return bucketed;
         // Not numeric: read exactly below, saying why the resolution was not applied
       }
+      if (angle != null) return readAtResolution(log, name, null, arguments);
       var allValues = requireEntry(log, name); // not found: error with suggestions
       var problem = log.decodeProblem(name);
       if (allValues.isEmpty() && problem.isPresent()) {
@@ -787,14 +793,16 @@ public final class CoreTools {
      * the field the name's path names, over the window, exact when they number no more than
      * {@code maxPoints}, else bucketed. Returns null when the entry exists but is not numeric,
      * for the exact read to handle; an entry that does not exist is an error with suggestions.
+     * A null resolution is the caller's explicit angle presentation without reduction, whose
+     * paging retains the ordinary read's default.
      */
-    private JsonObject readAtResolution(LogData log, String name, int maxPoints,
+    private JsonObject readAtResolution(LogData log, String name, Integer maxPoints,
         JsonObject arguments) {
       NumericSignal signal;
       try {
-        signal = NumericSignal.resolve(log, name, null);
+        signal = NumericSignal.resolve(log, name, null).withAngleArgument(arguments);
       } catch (IllegalArgumentException e) {
-        if (log.entries().containsKey(name)) return null;
+        if (NumericSignal.angleArgument(arguments) == null && log.entries().containsKey(name)) return null;
         throw e;
       }
       var startTime = getOptDouble(arguments, "start_time");
@@ -807,6 +815,7 @@ public final class CoreTools {
           .filter(tv -> startTime == null || tv.timestamp() >= startTime)
           .filter(tv -> endTime == null || tv.timestamp() <= endTime)
           .toList();
+      if (!signal.multiValued()) filtered = signal.unwrap(filtered);
       int totalInRange = filtered.size();
 
       var result = new JsonObject();
@@ -814,10 +823,10 @@ public final class CoreTools {
       result.addProperty("name", name);
       result.addProperty("type", signal.type());
       result.addProperty("total_in_range", totalInRange);
-      result.addProperty("max_points", maxPoints);
-      if (totalInRange <= maxPoints) {
+      if (maxPoints != null) result.addProperty("max_points", maxPoints);
+      if (maxPoints == null || totalInRange <= maxPoints) {
         // Exact: the page is the samples, as the plain read gives them
-        int limit = Math.min(MAX_SAMPLES, getOptInt(arguments, "limit", maxPoints));
+        int limit = Math.min(MAX_SAMPLES, getOptInt(arguments, "limit", maxPoints == null ? 100 : maxPoints));
         if (limit <= 0) {
           throw new IllegalArgumentException("Parameter 'limit' must be positive, got " + limit);
         }
@@ -829,7 +838,7 @@ public final class CoreTools {
           sample.add("value", sampleToJson(tv.value()));
           samples.add(sample);
         }
-        result.addProperty("bucketed", false);
+        if (maxPoints != null) result.addProperty("bucketed", false);
         result.addProperty("returned_count", paged.size());
         result.addProperty("offset", offset);
         result.addProperty("limit", limit);
@@ -1126,7 +1135,14 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "Verify server is working correctly and get system status.";
+      return "Verify server operation: success, server_version, loaded_logs, tba_available, "
+          + "revlog_sync_in_progress, jvm_memory (used_mb, total_mb, max_mb, free_mb), "
+          + "and jvm_heap_used_mb. sync_disk_cache reports enabled, directory, cached_files "
+          + "and total_size_mb. scan_index_disk_cache reports enabled, directory, entry_count, "
+          + "size_bytes, hits, misses, format_version and recipe_version. Hits and misses count "
+          + "eligible persistent-index lookups since this process started; memory-cache hits "
+          + "and disabled or growing-source bypasses are excluded. Disk sizes are sampled, "
+          + "not a performance or correctness verdict.";
     }
 
     @Override
@@ -1161,37 +1177,37 @@ public final class CoreTools {
       // JVM heap usage (includes caches, tool execution, and all other allocations)
       result.addProperty("jvm_heap_used_mb", logManager.getEstimatedMemoryUsageMb());
 
-      // Disk caches, both in one directory. The revlog sync cache (SyncDiskCache) is in use.
-      // The parsed-log cache (DiskCache) has not been on the load path since 0.8.0 — logs are
-      // parsed lazily from memory-mapped files — but it is still configured and its directory
-      // cleaned at startup, so its state is reported under a label that says so.
+      // The shared directory owns capacity for both representations; only eligible disk
+      // lookups contribute to index counters, so loaded-memory hits cannot imply disk reuse.
       var syncCache = new JsonObject();
       syncCache.addProperty("enabled", logManager.getSyncDiskCache().isEnabled());
-      var parsedLogCache = new JsonObject();
-      parsedLogCache.addProperty("used_by_load_path", false);
-      parsedLogCache.addProperty("enabled", logManager.getDiskCache().isEnabled());
+      var scanCache = new JsonObject();
+      scanCache.addProperty("enabled", logManager.getDiskCache().isEnabled());
       try {
         var cacheDir = logManager.getCacheDirectory().getPath();
         syncCache.addProperty("directory", cacheDir.toString());
-        parsedLogCache.addProperty("directory", cacheDir.toString());
+        scanCache.addProperty("directory", cacheDir.toString());
         if (java.nio.file.Files.isDirectory(cacheDir)) {
-          java.util.Map<Boolean, java.util.List<java.nio.file.Path>> bySyncCache;
           try (var stream = java.nio.file.Files.list(cacheDir)) {
-            bySyncCache = stream.filter(f -> f.toString().endsWith(".msgpack"))
-                .collect(java.util.stream.Collectors.partitioningBy(
-                    f -> f.getFileName().toString().endsWith("-sync.msgpack")));
+            addCacheFileStats(syncCache,
+                stream.filter(f -> f.getFileName().toString().endsWith("-sync.msgpack")).toList());
           }
-          addCacheFileStats(syncCache, bySyncCache.get(true));
-          addCacheFileStats(parsedLogCache, bySyncCache.get(false));
         }
+        var stats = logManager.getDiskCache().scanStats();
+        scanCache.addProperty("entry_count", stats.entryCount());
+        scanCache.addProperty("size_bytes", stats.sizeBytes());
+        scanCache.addProperty("hits", stats.hits());
+        scanCache.addProperty("misses", stats.misses());
       } catch (Exception e) {
         syncCache.addProperty("error", e.getMessage());
-        parsedLogCache.addProperty("error", e.getMessage());
+        scanCache.addProperty("error", e.getMessage());
       }
-      parsedLogCache.addProperty("format_version",
-          org.triplehelix.wpilogmcp.cache.DiskCacheSerializer.CURRENT_FORMAT_VERSION);
+      scanCache.addProperty("format_version",
+          org.triplehelix.wpilogmcp.cache.ScanIndexSerializer.FORMAT_VERSION);
+      scanCache.addProperty("recipe_version",
+          org.triplehelix.wpilogmcp.cache.ScanIndexSerializer.RECIPE_VERSION);
       result.add("sync_disk_cache", syncCache);
-      result.add("parsed_log_disk_cache", parsedLogCache);
+      result.add("scan_index_disk_cache", scanCache);
 
       return result;
     }

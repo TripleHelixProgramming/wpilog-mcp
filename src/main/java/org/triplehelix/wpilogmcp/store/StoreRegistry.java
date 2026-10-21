@@ -97,6 +97,11 @@ public final class StoreRegistry implements AutoCloseable {
 
   public List<DiskSpaceBudgets.Snapshot> diskSnapshots() { return diskSpace.snapshots(); }
 
+  /** Status reads must neither create a store nor start filesystem recovery on a request worker. */
+  public java.util.Optional<LogStore> registered(Path canonicalRoot) {
+    return java.util.Optional.ofNullable(stores.get(canonicalRoot));
+  }
+
   public LogStore store(Path directory) throws IOException {
     validate(directory);
     Files.createDirectories(directory);
@@ -220,6 +225,16 @@ public final class StoreRegistry implements AutoCloseable {
   public List<CatalogCapacity> catalogCapacities() {
     return stores.values().stream().map(LogStore::catalogCapacity).filter(java.util.Objects::nonNull)
         .filter(value -> value.catalogCapacity() != null).sorted(java.util.Comparator.comparing(CatalogCapacity::storeId)).toList();
+  }
+
+  /** Unknown totals are omitted: an interrupted recovery is not evidence of an empty inventory. */
+  public record PendingCount(String storeId, int totalPendingCount) {}
+  public List<PendingCount> publicationCounts() {
+    return stores.values().stream().map(LogStore::publicationStatus)
+        .filter(value -> value.state() == ReplicaPublications.State.READY
+            && value.storeId() != null && value.totalPendingCount() != null)
+        .map(value -> new PendingCount(value.storeId(), value.totalPendingCount()))
+        .sorted(java.util.Comparator.comparing(PendingCount::storeId)).toList();
   }
 
   /** Published accounting is safe for health and metrics without joining any store owner. */

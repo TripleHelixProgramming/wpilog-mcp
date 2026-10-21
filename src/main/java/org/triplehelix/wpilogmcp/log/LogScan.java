@@ -64,6 +64,10 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
     boolean damaged, String truncationMessage, long resumePoint, long scannedFrom, Continuation continuation) {
 
   private static final Logger logger = LoggerFactory.getLogger(LogScan.class);
+  private static final java.util.concurrent.atomic.AtomicLong PASSES = new java.util.concurrent.atomic.AtomicLong();
+
+  /** Counts real scan/resume passes so a persisted hit cannot be mistaken for a loaded-log hit. */
+  static long passCount() { return PASSES.get(); }
 
   /** A forward jump in time larger than this (a day) cannot happen within one log. */
   static final double MAX_FORWARD_JUMP_SEC = 86_400.0;
@@ -150,6 +154,7 @@ public record LogScan(Map<String, EntryInfo> entries, Map<String, RecordOffsets>
   }
 
   private static LogScan scan(LogScan previous, LogReader reader, Path path, long controlLimit) throws IOException {
+    PASSES.incrementAndGet();
     var entriesById = new HashMap<Integer, EntryInfo>();
     var ignoredIds = new HashSet<Integer>(); // declared, deliberately not indexed
     var entriesByName = new LinkedHashMap<String, EntryInfo>();

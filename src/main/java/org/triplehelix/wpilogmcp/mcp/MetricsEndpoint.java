@@ -63,7 +63,8 @@ public final class MetricsEndpoint {
     var bytes = render(config, live == null ? null : live.metrics(), components.get(), Jvm.sample(),
         org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores().queueMetrics(),
         diskSpace.get(),
-        org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores().catalogCapacities()).getBytes(StandardCharsets.UTF_8);
+        org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores().catalogCapacities(),
+        org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores().publicationCounts()).getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
     exchange.getResponseHeaders().set("Cache-Control", "no-store");
     exchange.sendResponseHeaders(200, bytes.length);
@@ -90,7 +91,25 @@ public final class MetricsEndpoint {
   static String render(MetricsConfig config, LiveCapture.Metrics live, Components components, Jvm jvm,
       StoreRegistry.QueueMetrics queues, List<DiskSpaceBudgets.Snapshot> filesystems,
       List<StoreRegistry.CatalogCapacity> catalogs) {
+    return render(config, live, components, jvm, queues, filesystems, catalogs, List.of());
+  }
+
+  /** Only complete owner publications have a count; a scrape never starts recovery to fill one. */
+  static String render(MetricsConfig config, LiveCapture.Metrics live, Components components, Jvm jvm,
+      StoreRegistry.QueueMetrics queues, List<DiskSpaceBudgets.Snapshot> filesystems,
+      List<StoreRegistry.CatalogCapacity> catalogs, List<StoreRegistry.PendingCount> pending) {
     var out = new Exposition();
+    out.counter("wpilog_log_dropped_lines_total",
+        "Complete server log lines dropped by the bounded stderr buffer in this process.",
+        Map.of(), org.triplehelix.wpilogmcp.logging.BufferedLogOutput.droppedLines());
+    // Copied roots can retain one identity. Its label cannot distinguish those owners, and
+    // neither summing nor choosing one would describe the selected store's pending count.
+    var occurrences = pending.stream().collect(java.util.stream.Collectors.groupingBy(
+        StoreRegistry.PendingCount::storeId, java.util.stream.Collectors.counting()));
+    for (var published : pending) if (occurrences.get(published.storeId()) == 1)
+      out.gauge("wpilog_replica_pending_publications",
+          "Pending capture publications after a complete recovery inventory.",
+          Map.of("store_id", published.storeId()), published.totalPendingCount());
     for (var published : catalogs) {
       var labels = Map.of("store_id", published.storeId()); var capacity = published.catalogCapacity();
       out.gauge("wpilog_replica_catalog_records", "Replica records in the last published catalog.", labels, capacity.records());

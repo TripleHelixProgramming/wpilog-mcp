@@ -313,16 +313,17 @@ class CoreToolsLogicTest extends ToolTestBase {
       assertTrue(syncCache.has("enabled"), "Should report the sync cache's enabled status");
       assertTrue(syncCache.has("directory"), "Should report the cache directory");
 
-      assertTrue(resultObj.has("parsed_log_disk_cache"),
-          "Should include the parsed-log disk cache under a label that says it is unused");
-      var parsedLogCache = resultObj.getAsJsonObject("parsed_log_disk_cache");
-      assertFalse(parsedLogCache.get("used_by_load_path").getAsBoolean(),
-          "The parsed-log cache has not been on the load path since 0.8.0");
-      assertTrue(parsedLogCache.has("enabled"), "Should report enabled status");
-      assertTrue(parsedLogCache.has("format_version"), "Should report format version");
-      assertTrue(parsedLogCache.has("directory"), "Should report cache directory");
-      assertEquals(org.triplehelix.wpilogmcp.cache.DiskCacheSerializer.CURRENT_FORMAT_VERSION,
-          parsedLogCache.get("format_version").getAsInt());
+      assertTrue(resultObj.has("scan_index_disk_cache"), "Should report the active persistent scan index");
+      var scanIndex = resultObj.getAsJsonObject("scan_index_disk_cache");
+      assertTrue(scanIndex.has("enabled"), "Should report enabled status");
+      assertTrue(scanIndex.has("directory"), "Should report cache directory");
+      assertEquals(org.triplehelix.wpilogmcp.cache.ScanIndexSerializer.FORMAT_VERSION,
+          scanIndex.get("format_version").getAsInt());
+      assertEquals(org.triplehelix.wpilogmcp.cache.ScanIndexSerializer.RECIPE_VERSION,
+          scanIndex.get("recipe_version").getAsInt());
+      for (String field : List.of("entry_count", "size_bytes", "hits", "misses"))
+        assertTrue(scanIndex.get(field).getAsLong() >= 0, "Should report nonnegative " + field);
+      assertFalse(resultObj.has("parsed_log_disk_cache"), "The unused parsed-log field is replaced");
       assertFalse(resultObj.has("disk_cache"),
           "The block that reported the unused cache as the disk cache is gone");
     }

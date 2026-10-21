@@ -288,6 +288,27 @@ class StressTest {
         System.out.println("  read_entry (max_points 20): " + returned + " samples/buckets, bucketed="
             + (result.has("bucketed") ? result.get("bucketed") : "n/a"));
       });
+      var numeric = LogManager.getInstance().getOrLoad(logPath).entries().values().stream()
+          .filter(entry -> List.of("double", "float", "int64").contains(entry.type()))
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).sorted().findFirst();
+      if (numeric.isPresent()) {
+        // Explicit units exercise the override; this does not infer the entry's physical unit.
+        for (String unit : List.of("degrees", "radians")) {
+          for (boolean reduced : List.of(false, true)) {
+            var angleArgs = new JsonObject();
+            angleArgs.addProperty("path", logPath);
+            angleArgs.addProperty("name", numeric.get());
+            angleArgs.addProperty("angle", unit);
+            if (reduced) angleArgs.addProperty("max_points", 20);
+            else angleArgs.addProperty("limit", 10);
+            testTool("read_entry", angleArgs, result -> {
+              assertTrue(result.has("samples"), "angle presentation must return samples");
+              System.out.println("  read_entry (angle " + unit + ", reduced " + reduced + "): "
+                  + result.getAsJsonArray("samples").size() + " samples/buckets");
+            });
+          }
+        }
+      }
     }
 
     testTool("list_loaded_logs", new JsonObject(), result -> {
@@ -972,6 +993,124 @@ class StressTest {
     }
     assertEquals(fresh.keySet(), cached.keySet());
     System.out.println("  every answer is the same");
+  }
+
+  @Test
+  @Order(9)
+  @DisplayName("9. Scan index: a persisted scan gives the fresh scan's answers")
+  void scanIndexCacheMatchesFreshScan() throws Exception {
+    assumeTrue(availableLogPaths != null && !availableLogPaths.isEmpty());
+    var manager = LogManager.getInstance();
+    assumeTrue(manager.getDiskCache().isEnabled(), "The scan-index cache is disabled");
+    int persistedComparisons = 0;
+    for (String logPath : availableLogPaths) {
+      var comparison = compareScanIndexWithFreshScan(manager, logPath, tools, false);
+      if (comparison.indexHit()) persistedComparisons++;
+      System.out.println("  scan-index answers agree: " + Path.of(logPath).getFileName()
+          + " (" + comparison.answers().size() + " answers; "
+          + (comparison.indexHit() ? "persisted index hit" : "not indexed; fresh scan fallback") + ")");
+    }
+    assumeTrue(persistedComparisons > 0,
+        "Every log's answers were compared, but no eligible persisted index was exercised");
+  }
+
+  /**
+   * Normal synthetic tests invoke this exact stress comparison, including its measured disk hit.
+   * A second tool call alone proves only an in-memory hit; unloading between phases is essential.
+   */
+  static Map<String, JsonObject> compareScanIndexWithFreshScan(LogManager manager,
+      String logPath, List<Tool> selectedTools) throws Exception {
+    return compareScanIndexWithFreshScan(manager, logPath, selectedTools, true).answers();
+  }
+
+  record ScanIndexComparison(Map<String, JsonObject> answers, boolean indexHit) {}
+
+  /** Oversized or ineligible logs still need answer parity, but cannot prove a persisted hit. */
+  private static ScanIndexComparison compareScanIndexWithFreshScan(LogManager manager,
+      String logPath, List<Tool> selectedTools, boolean requireHit) throws Exception {
+    var cache = manager.getDiskCache();
+    boolean enabled = cache.isEnabled();
+    try {
+      manager.unloadAllLogs();
+      cache.setEnabled(false);
+      var fresh = scanIndexAnswers(manager, logPath, selectedTools);
+      manager.unloadAllLogs();
+      cache.setEnabled(true);
+      var first = scanIndexAnswers(manager, logPath, selectedTools);
+      manager.unloadAllLogs();
+      long before = cache.scanStats().hits();
+      var persisted = scanIndexAnswers(manager, logPath, selectedTools);
+      boolean indexHit = cache.scanStats().hits() > before;
+      if (requireHit) assertTrue(indexHit,
+          "The reopened comparison must exercise a persisted scan-index hit: " + logPath);
+      assertEquals(fresh.keySet(), first.keySet());
+      assertEquals(fresh.keySet(), persisted.keySet());
+      for (var answer : fresh.entrySet()) {
+        for (var other : List.of(Map.entry("first indexed open", first), Map.entry("persisted index", persisted))) {
+          String difference = firstDifference(answer.getValue(), other.getValue().get(answer.getKey()), answer.getKey());
+          assertNull(difference, other.getKey() + " differs from a fresh scan at " + difference);
+        }
+      }
+      return new ScanIndexComparison(persisted, indexHit);
+    } finally {
+      manager.unloadAllLogs();
+      cache.setEnabled(enabled);
+    }
+  }
+
+  private static Map<String, JsonObject> scanIndexAnswers(LogManager manager,
+      String logPath, List<Tool> selectedTools) throws Exception {
+    var answers = new LinkedHashMap<String, JsonObject>();
+    List<String> numeric;
+    try (var use = manager.acquire(logPath)) {
+      var log = use.log();
+      var metadata = new JsonObject();
+      metadata.addProperty("min_timestamp_sec", log.minTimestamp());
+      metadata.addProperty("max_timestamp_sec", log.maxTimestamp());
+      metadata.addProperty("truncated", log.truncated());
+      metadata.addProperty("damaged", log.damaged());
+      metadata.addProperty("truncation_message", log.truncationMessage());
+      var declarations = new com.google.gson.JsonArray();
+      for (var entry : log.entries().values()) {
+        var row = new JsonObject();
+        row.addProperty("id", entry.id());
+        row.addProperty("name", entry.name());
+        row.addProperty("type", entry.type());
+        row.addProperty("metadata", entry.metadata());
+        row.addProperty("sample_count", log.sampleCount(entry.name()));
+        declarations.add(row);
+      }
+      metadata.add("entries", declarations);
+      answers.put("scan_metadata", metadata);
+      numeric = log.entries().values().stream()
+          .filter(entry -> java.util.Set.of("double", "float", "int64").contains(entry.type()))
+          .map(entry -> entry.name()).sorted().limit(3).toList();
+      var json = new com.google.gson.GsonBuilder().serializeSpecialFloatingPointValues().create();
+      for (String name : numeric) {
+        var exact = new JsonObject();
+        var samples = new com.google.gson.JsonArray();
+        for (var value : log.values().get(name).stream().limit(1000).toList()) {
+          var row = new JsonObject();
+          row.addProperty("timestamp_us", Long.toString(value.timestampUs()));
+          row.add("value", json.toJsonTree(value.value()));
+          samples.add(row);
+        }
+        exact.add("samples", samples);
+        answers.put("exact_coordinates " + name, exact);
+      }
+    }
+    for (String name : numeric) {
+      for (String toolName : List.of("read_entry", "get_statistics")) {
+        var tool = selectedTools.stream().filter(value -> value.name().equals(toolName))
+            .findFirst().orElseThrow(() -> new AssertionError("Missing comparison tool " + toolName));
+        var args = new JsonObject();
+        args.addProperty("path", logPath);
+        args.addProperty("name", name);
+        if (toolName.equals("read_entry")) args.addProperty("limit", 1000);
+        answers.put(toolName + " " + name, tool.execute(args).getAsJsonObject());
+      }
+    }
+    return answers;
   }
 
   // ==================== 10. In-Memory Cache Eviction ====================

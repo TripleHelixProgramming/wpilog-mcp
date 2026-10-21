@@ -181,7 +181,7 @@ The installer's file also has a `stresstest` server, which only the project's st
 | `tba_key` | The Blue Alliance API key | `TBA_API_KEY` from the environment |
 | `transport` | `stdio` or `http` | `stdio` |
 | `port` | HTTP port, 1–65535; `run` also accepts `0` for an OS-assigned port | `2363` |
-| `diskcachedir` | Directory for persistent REV synchronization results and shared cache cleanup | `WPILOG_DISK_CACHE_DIR` from the environment, else the system's default (below) |
+| `diskcachedir` | Shared directory for persistent scan indexes and REV synchronization results | `WPILOG_DISK_CACHE_DIR` from the environment, else the system's default (below) |
 | `diskcachesize` | Maximum shared disk cache size, in MB; still enforced by startup cleanup | `8192` |
 | `diskcachedisable` | Turn off the persistent disk cache | `false` |
 | `exportdir` | Directory for CSV exports | `wpilog-export` in the system's temporary directory |
@@ -242,6 +242,15 @@ foreground. Logs go to stderr; it writes no PID file and spawns no background se
 transport stop returns 0; a bad configuration or failed HTTP bind returns nonzero with the
 reason. Ctrl-C or SIGTERM requests exit 0 after the shutdown hooks finish. Windows' forced
 process termination cannot be caught; a stdio EOF is a clean stop there.
+
+Server logs use a 1 MiB memory buffer and a daemon that writes to stderr. A blocked terminal,
+pipe or journal does not stop recording or request work. Lines that do not fit are dropped
+whole; when output resumes, a line such as
+`[wpilog] Dropped log output: lines=2, bytes=80` reports the loss before later accepted lines.
+The `wpilog_log_dropped_lines_total` metric counts lost lines for the process. Shutdown
+finishes server cleanup, then waits at most two seconds for log output. A hard crash or a
+still-blocked sink can lose buffered lines. Short-lived command errors remain direct and
+ordered; MCP JSON-RPC output keeps its separate stdout.
 
 For a temporary foreground HTTP server, `port: 0` lets the operating system bind an available
 port in one step. Read the actual port from the `MCP HTTP server listening on` line on stderr.
@@ -824,7 +833,10 @@ and `max_bytes` (4096–1048576, default 1048576). Missing bounds use the admitt
 Alternatively, `last_seconds` uses the shared relative-window resolver on the admitted clock
 (robot estimate when available, otherwise recorded time); it cannot combine with explicit
 bounds, and the result reports absolute bounds. A fresh prefix proves all members; values are merged in timestamp/member/ordinal order before
-using the native min/max/mean reducer. The response identifies that independent prefix and
+using the native min/max/mean reducer. Scalar struct-angle fields unwrap on that merged
+trajectory, across rollover members and input batches, starting anew for each requested
+interval. Plain numbers remain arithmetic; the preview has no angle override control.
+The response identifies that independent prefix and
 absolute `window`, includes counts and chronological first/last, and reports decode problems
 with at most 100 member-qualified details. Empty windows are `no_match` with a refresh hint.
 Nonfinite values, absent projected array elements and integers outside ±(2^53−1) become
@@ -1256,7 +1268,7 @@ Paths from flags and the project YAML are combined and resolved against the brid
 An `http` server also serves every sample of an entry in one request, for a script, a notebook, a dashboard, or the VS Code extension's viewer, where a tool result cannot carry a hundred thousand samples:
 
 ```
-GET /data/entries?path=<log>&names=<entry>[,<entry>...][&start_time=<s>][&end_time=<s>][&max_points=<n>][&format=arrow|csv]
+GET /data/entries?path=<log>&names=<entry>[,<entry>...][&start_time=<s>][&end_time=<s>][&max_points=<n>][&format=arrow|csv][&utc=true|false][&angle=radians|degrees]
 ```
 
 `path` is the log, as `list_available_logs` lists it. `names` is a comma-separated list of one or more of: an entry; an entry with a field path appended (`/Drive/Pose.translation.x`, as `get_statistics` takes it); or a REV log signal's key as `list_revlog_signals` gives it (`REV/SparkMax_3/AppliedOutput`). `start_time` and `end_time` are seconds, as every tool takes them. `max_points` buckets by the same rule as `read_entry`'s `max_points` (see [TOOLS.md](TOOLS.md#read_entry)): at most that many buckets of equal duration over the window, each with its count, minimum, maximum, mean, first, and last.
@@ -1266,16 +1278,73 @@ timestamps retain file order. Explicit second bounds round to the nearest micros
 last bucket includes the window end. Arrow retains original long timestamps and exact bucket
 starts. CSV seconds labels can round adjacent large timestamps to the same displayed number.
 
+Selected scalar struct-angle fields unwrap in time order before exact output or reduction:
+179° followed by −179° becomes 179°, 181°. For plain numeric values, `angle=radians` or
+`angle=degrees` requests the same treatment (`rad` and `deg` are accepted aliases).
+The option applies to every selected series and is validated even for an empty window.
+Each requested window starts with its first logged value; nonfinite rows stay counted and
+do not reset continuity. Wildcard fields remain unordered arithmetic pools. An explicit
+angle on a whole struct is refused: select its numeric field. An unwrapped integer series
+uses Arrow float64 so fractional turns are not truncated; ordinary typed reads keep their types.
+
+`utc=true` adds measured calendar time beside the existing log timestamp. Only the literal
+values `true` and `false` are accepted, once; omission or `utc=false` preserves the existing
+columns and metadata. The clock comes from the log's selected `systemTime` or supported
+`EpochTimeMicros` entry, including its existing `NT:` and AdvantageKit aliases. The existing
+clock-set policy retains plausible readings after the last clock jump. UTC interpolates epoch
+microseconds between those readings, keeps the last reading's offset afterward, and is null
+before the first valid reading. The final epoch is rounded once to the nearest microsecond,
+ties to the even epoch microsecond. A filename, file modification time or server clock never
+supplies this value. Reduced rows map the bucket's exact start, which can precede the first
+valid clock reading even when a later sample in the bucket has a set clock.
+
+The wall-clock inverse used by [`search_system_logs`](TOOLS.md#search_system_logs) shares
+the exact mapping arithmetic and ambiguity checks, rounding only its final robot-seconds
+result to a binary double. It retains its existing first/last-offset extrapolation and
+session bounds; the data endpoint's before-first-reading UTC value remains null.
+
 A REV signal streams on the wpilog's clock, as `get_revlog_data` reads it. Its entry metadata carries `rev` with the device, the signal, the bus, `sync_method`, `timestamps_aligned`, `offset_seconds`, and `sync_confidence`, so a reader knows the offset's basis. A REV log that could not be synchronized is refused with the reason; one still synchronizing answers `503` with `Retry-After`.
 
 - `format=arrow` (the default) is the Apache Arrow IPC streaming format, `application/vnd.apache.arrow.stream`.
   - Columns: a `timestamp` column in the log's microseconds and a `value` column typed by the entry (a float, an integer, a boolean, text, a struct with the schema's fields, a list for an array). Bucketed: `timestamp`, `count`, `min`, `max`, `mean` (null where no sample in the bucket is finite), `first`, and `last`.
+  - With `utc=true`, nullable `timestamp_utc` follows `timestamp`; it is an Arrow timestamp with microsecond units and zone `UTC`. The original timestamp remains unchanged.
   - One stream has one schema, so the entries in one request must share a value type; bucketed, any numeric entries go together.
   - Enum fields carry `value` and `label`; a number absent from the schema has a null label (CSV keeps the number at the field name and an empty `.label` cell).
   - Each record batch is tagged with its entry in its message metadata. The schema's metadata carries what a tool result would: the server version, `inputs`, the log's time range, and per entry its type, its sampling class (periodic, change-only, event), the unit its name states by a conventional suffix where it does, its decoded `sample_count`, its original `total_records`, and, bucketed, its bucket length.
   - An entry with decoding failures also carries `decode_problem` (`entry`, `failed_records`, `total_records`, and the first failure’s `reason`) and the same `warning` text tools return; CSV carries these fields in its `# entries:` comment.
   - `pyarrow.ipc.open_stream` or `polars.read_ipc_stream` reads the response bytes; `read_next_batch_with_custom_metadata()` gives each batch's entry.
 - `format=csv` is one table per entry in the form `export_csv` writes (`timestamp_sec`, then the value's flattened columns, or the bucket columns), after `#` comment lines with the server version, `inputs`, and the entries' metadata, and a `# entry: <name>` line before each table.
+  With `utc=true`, `timestamp_utc` follows `timestamp_sec`, in ISO 8601 with six fractional
+  digits and `Z`; null is an empty cell. Expanded array rows repeat UTC and keep their index.
+
+With UTC enabled, `inputs.utc` is true and each entry's metadata adds `utc_basis`, in the
+Arrow schema's `entries` metadata or CSV's `# entries:` comment:
+
+| Field | Meaning |
+|---|---|
+| `entry` | Exact selected wall-clock entry name, or null when none exists. |
+| `reading_count` | Retained valid readings, including identical repeated pairs. |
+| `first_offset_us` | First retained epoch minus its log coordinate, as an exact decimal string. |
+| `last_offset_us` | Last retained epoch minus its log coordinate, as an exact decimal string. |
+| `max_offset_change_us` | Largest absolute change between consecutive retained offsets, as an exact decimal string; zero with one reading. |
+| `rounding` | `nearest_microsecond_ties_to_even`. |
+| `null_sample_count` | Null logical sample or bucket coordinates, counted before CSV array expansion. |
+| `null_reasons` | Objects with `reason` and `count`, one for each cause of null coordinates. |
+
+The three offset fields are null when there are no valid readings. An ambiguous clock retains
+its measured basis but supplies no UTC timestamps. Identical repeated pairs are redundant;
+conflicting duplicate coordinates or a backward epoch mapping make the retained mapping
+unavailable. `null_reasons` uses these reasons:
+
+- `No wall-clock entry`
+- `No valid wall-clock readings`
+- `Before the first valid wall-clock reading`
+- `Ambiguous wall-clock mapping: one log timestamp has conflicting epoch readings`
+- `Ambiguous wall-clock mapping: one epoch reading names multiple log timestamps`
+- `Ambiguous wall-clock mapping: epoch readings move backwards`
+- `Mapped UTC timestamp is outside the signed 64-bit microsecond range`
+
+The added UTC payload participates in the response size estimate. `/read/v1` has no UTC option.
 
 ```bash
 curl 'http://127.0.0.1:2363/data/entries?path=/Users/me/riologs/akit_26-03-21_16-29-56_vache_q10.wpilog&names=/SystemStats/BatteryVoltage&start_time=20&end_time=40&format=csv'
@@ -1505,7 +1574,7 @@ The replica summary's `catalog_capacity` reports record and exclusion counts, th
 and `near_limit`, which becomes true at 3,277 of either 4,096-count limit. A missing catalog
 capacity means no valid catalog facts are available, not an empty catalog. Encoded metadata
 limits and payload capacity are separate. See the [mirror reference](pit-server/STANDALONE.md#the-mirror)
-for pending-publication limitations and the count gauges.
+for metadata limits and the count gauges.
 
 For a master, `POST /store/replicas/migrate` accepts `{ "store_id": "<UUID>" }` and returns 202
 with `job_id`. Poll `GET /store/replicas/jobs/<job_id>` for `running`, `complete` or `error`.
@@ -1519,3 +1588,36 @@ progress deadlines; saturation returns retryable 503 without occupying health di
 See [the mirror reference](pit-server/STANDALONE.md#the-mirror) for preservation, capacity,
 format backups, page limits, the replica wire protocol and discovery configuration. No production migration
 is performed merely by configuring or starting the server.
+
+### Remote replica publication status
+
+After `GET /replicas/v1/handshake`, send its `session_id` in `Replica-Session` and
+`POST /replicas/v1/status` with `store_id` from that handshake. The optional `limit` is
+1–256 (default 64). This network read route uses the ordinary Origin checks, 64 KiB request
+cap, 1 MiB encoded reply cap and replica metadata workers; it does not require loopback.
+The handshake advertises the additive `publication_status` capability.
+
+A complete reply has `status: "ok"`, `store_id`, `catalog_epoch`, `catalog_revision`,
+`catalog_capacity`, `publication_state: "ready"`, `pending_total`, `known_pending_count`,
+`oldest_failed_at`, `oldest_time_complete` and a `pending_publications` array. Each entry
+contains `session_id`, `code`, a safe `message`, `first_failed_at`, `failed_at` and
+`cause_durable`. Missing old diagnostic fields mean `CAUSE_NOT_RECORDED` and null times.
+An unknown first-failure time makes `oldest_time_complete` false and `oldest_failed_at` null.
+Count or byte shortening adds `limits.pending_publications` with `returned`, true `total`
+and requested `limit`; it does not change the total.
+
+Add exact `session_id` to look up a session beyond the summary. A known pending receipt
+returns HTTP 409, `code: "PUBLICATION_PENDING"`, `retryable: true`, the selected IDs and
+its structured `cause`. A published session returns `publication_state: "published"`.
+A proven absent session returns nonretryable `SOURCE_UNAVAILABLE`. Unfinished or incomplete
+recovery returns retryable 503 `BUSY`, except that a known pending session may still return
+its specific cause. Duplicate pending session identities refuse selection. Failed disk
+annotation reports `cause_durable: false`; the safe cause is visible in memory, but may not
+survive restart. Status never initiates recovery, discovers roots or waits for a store turn.
+
+The route accepts only `store_id`, `session_id` and `limit`; malformed or unknown fields
+return 400, denied Origins 403, oversized bodies 413 and expired sessions 409. Retryable
+status refusals include `Retry-After: 1`. A revoked directory grant or replaced store is
+rechecked on every read. New stores require a new handshake. `/replicas/v1/file` still
+requires an already published immutable file identity and SHA-256; session status does not
+grant file access or invent an identity for unpublished content.

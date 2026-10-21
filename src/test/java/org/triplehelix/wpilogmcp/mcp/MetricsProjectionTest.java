@@ -117,7 +117,9 @@ class MetricsProjectionTest {
       assertEquals(1.25, view.value("wpilog_jvm_gc_duration_seconds_total", Map.of("collector", "collector")));
       assertEquals(3, view.value("wpilog_store_queue_over_budget_turns_total", Map.of()));
       assertEquals(1.234567, view.value("wpilog_store_queue_longest_turn_seconds", Map.of()));
-      assertEquals(expected.size() + topics.size() + 23, view.samples().size(), "Every emitted sample has an independent assertion");
+      assertEquals(0, view.value("wpilog_log_dropped_lines_total", Map.of()),
+          "This JVM has no installed buffered stderr and therefore has lost no lines");
+      assertEquals(expected.size() + topics.size() + 24, view.samples().size(), "Every emitted sample has an independent assertion");
       view.types().forEach((name, type) -> assertEquals(name.endsWith("_total") ? "counter" : "gauge", type));
     }
   }

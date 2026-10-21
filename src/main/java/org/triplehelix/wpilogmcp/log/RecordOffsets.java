@@ -5,6 +5,7 @@
 package org.triplehelix.wpilogmcp.log;
 
 import java.util.Arrays;
+import java.io.IOException;
 
 /** Long addresses without doubling ordinary logs' index memory. Upgrade only the entry that
  * first reaches a wide address, then compact once after scanning. No boxed offset per record. */
@@ -15,6 +16,55 @@ public final class RecordOffsets {
   private int firstUnordered = Integer.MAX_VALUE;
   private long lastTimestampUs;
   private boolean lastTimestampKnown;
+
+  /** Persist the exact ordering proof; reconstructing positions alone cannot prove time order. */
+  public record OrderState(int firstUnordered, long lastTimestampUs, boolean lastTimestampKnown) {}
+
+  public OrderState orderState() {
+    return new OrderState(firstUnordered, lastTimestampUs, lastTimestampKnown);
+  }
+
+  public boolean wide() { return wide != null; }
+
+  /** A bounded decoder supplies scalar positions without an intermediate boxed/long array. */
+  @FunctionalInterface public interface OffsetReader { long read() throws IOException; }
+
+  /**
+   * Reconstruct one already-budgeted persisted array without growing it or guessing its
+   * timestamp order. The enclosing decoder owns the aggregate allocation allowance.
+   */
+  public static RecordOffsets readPersisted(int count, boolean wide, OrderState state,
+      long sourceSize, OffsetReader input) throws IOException {
+    validateOrderState(count, state);
+    if (sourceSize < 12) throw new IOException("Invalid persisted source size");
+    var result = new RecordOffsets();
+    result.narrow = wide ? null : new int[count];
+    result.wide = wide ? new long[count] : null;
+    long preceding = -1;
+    for (int i = 0; i < count; i++) {
+      long position = input.read();
+      if (position < 12 || position > sourceSize - 4 || position <= preceding
+          || !wide && position > Integer.MAX_VALUE)
+        throw new IOException("Invalid persisted record position");
+      if (wide) result.wide[i] = position;
+      else result.narrow[i] = (int) position;
+      preceding = position;
+    }
+    result.size = count;
+    result.firstUnordered = state.firstUnordered();
+    result.lastTimestampUs = state.lastTimestampUs();
+    result.lastTimestampKnown = state.lastTimestampKnown();
+    return result;
+  }
+
+  /** The serializer also validates this when inspecting without allocating an offset array. */
+  public static void validateOrderState(int count, OrderState state) throws IOException {
+    if (count < 0 || state == null
+        || state.firstUnordered() != Integer.MAX_VALUE
+            && (state.firstUnordered() < 1 || state.firstUnordered() >= count)
+        || count == 0 && state.lastTimestampKnown())
+      throw new IOException("Invalid persisted timestamp ordering state");
+  }
 
   /** The scan already has the timestamp; remember ordering without another array per entry. */
   public void add(long offset, long timestampUs) {
@@ -68,7 +118,9 @@ public final class RecordOffsets {
     if (size > 0) { lastTimestampUs = precedingTimestampUs; lastTimestampKnown = true; }
   }
   public RecordOffsets compact() {
-    if (wide == null) narrow = Arrays.copyOf(narrow, size); else wide = Arrays.copyOf(wide, size);
+    if (wide == null) {
+      if (narrow.length != size) narrow = Arrays.copyOf(narrow, size);
+    } else if (wide.length != size) wide = Arrays.copyOf(wide, size);
     return this;
   }
   /** A resumed index owns its arrays; an in-flight reader keeps the old prefix unchanged. */

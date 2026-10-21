@@ -9,6 +9,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.Instant;
@@ -28,7 +29,7 @@ import org.triplehelix.wpilogmcp.revlog.dbc.DbcLoader;
 import org.triplehelix.wpilogmcp.store.StoreManifest.*;
 import org.triplehelix.wpilogmcp.sync.*;
 
-/** Pull placement shares the import queue, lock, path validator, readers and move reservations. */
+/** Pull placement shares store publication rules; payload copies and reader drains stay off its queue. */
 public final class PullStore implements FileTransfer.Local {
   /** Several publish cycles of jitter are plausible; seconds of clock shift are another session. */
   public static final long MAX_MATCH_OFFSET_US = 250_000;
@@ -65,9 +66,15 @@ public final class PullStore implements FileTransfer.Local {
   private final SecurityValidator security;
   private final DeviceIdentity identity;
   private final Clock clock;
+  private final LogStore.Mover mover;
   private final Path robotRoot, manifest;
   PullStore(LogStore store, LogManager manager, SecurityValidator security, DeviceIdentity identity, Clock clock) {
+    this(store, manager, security, identity, clock, store.mover());
+  }
+  PullStore(LogStore store, LogManager manager, SecurityValidator security, DeviceIdentity identity,
+      Clock clock, LogStore.Mover mover) {
     this.store = store; this.manager = manager; this.security = security; this.identity = identity; this.clock = clock;
+    this.mover = mover;
     robotRoot = store.root().resolve("robots").resolve(StoreFiles.component(identity.serialNumber()));
     manifest = robotRoot.resolve("pull.json");
   }
@@ -223,13 +230,18 @@ public final class PullStore implements FileTransfer.Local {
     try (var reservation = LogFileAccess.reserveMove(List.of(move.from()))) {
       var released = manager.release(move.from());
       if (!released.released()) throw new IOException(released.reason());
-      return copyLeases.await(store.captureAsync(io -> {
-        if (!move.from().equals(path(io, name))
-            || !move.snapshot().sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(move.from()))) {
-          throw new IOException("Pulled file changed before relocation; retry");
-        }
-        return moveReserved(io, move.from(), move.target(), retain);
-      }));
+      try (var placement = prepareMove(move.from(), move.target(), move.snapshot(), null)) {
+        String result = awaitPlacement(store.captureAsync(io -> {
+          if (!move.from().equals(path(io, name))
+              || !move.snapshot().sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(move.from()))) {
+            throw new IOException("Pulled file changed before relocation; retry");
+          }
+          if (Files.exists(io.check(move.target()))) throw new IOException("Pull relocation destination changed; retry");
+          return moveReserved(io, placement, retain);
+        }));
+        placement.removeOriginal();
+        return result;
+      }
     }
   }
   @Override public void save(PullManifest progress) throws IOException {
@@ -349,9 +361,7 @@ public final class PullStore implements FileTransfer.Local {
     try (var reservation = LogFileAccess.reserveMove(List.of(source))) {
       var released = manager.release(source);
       if (!released.released()) throw new IOException(released.reason());
-      // Test mutations need the same mapping-free window as placement on Windows.
-      beforePlacement.accept(source);
-      return copyLeases.await(store.captureAsync(io -> {
+      var plan = awaitPlacement(store.captureAsync(io -> {
         if (!source.equals(path(io, entry.localName())) || !input.snapshot().sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(source))) {
           throw new IOException("Pulled file changed after verification; retry before placement");
         }
@@ -386,31 +396,166 @@ public final class PullStore implements FileTransfer.Local {
         if (Files.exists(target)) target = target.getParent().resolve(input.hash().substring(0, 16)).resolve(source.getFileName());
         if (Files.exists(target)) target = target.getParent().resolve(UUID.randomUUID().toString()).resolve(source.getFileName());
         Files.createDirectories(target.getParent()); io.check(target);
-        moveReserved(io, source, target, false);
-        var files = new ArrayList<>(session.files());
-        // A capture still recording has no hash yet, so its recording names the clock this was measured on.
-        var recording = match == null ? null : CaptureRecording.of(match.candidate().file().provenance(),
-            io.read(store.root().resolve("store.json"), Header.class).id()).orElse(null);
-        Matching evidence = match == null ? null : new Matching("by_correlation", match.candidate().file().sha256(),
-            match.result().offsetMicros(), match.result().confidence(), match.result().driftRateNanosPerSec(), match.result().referenceTimeSec(), match.basis(), match.result(), recording);
-        files.add(new LogFile(StoreFiles.relative(sessionPath.getParent(), target), input.hash(), input.size(), input.kind(),
-            new Provenance("pulled", entry.remoteName(), entry.remoteName().substring(entry.remoteName().lastIndexOf('/') + 1), clock.instant().toString(), true, identity.serialNumber()),
-            true, input.min(), input.max(), input.start() == null ? session.startedAt() : input.start().toString(),
-            input.end() == null ? session.endedAt() : input.end().toString(), input.startBasis(), false, evidence, input.robotFingerprint(), decision.reason()));
-        var conflicts = new ArrayList<>(session.identityConflicts());
-        if (conflict != null) conflicts.add(new IdentityConflict(StoreFiles.relative(sessionPath.getParent(), target), serial, identity.serialNumber()));
-        io.write(sessionPath, copy(session, files, conflicts));
-        return relative(target);
+        return new PlacementPlan(sessionPath, session, target, serial, conflict, match == null);
       }));
+      try (var placement = prepareMove(source, plan.target(), input.snapshot(), input.hash())) {
+        // Test mutations need the same mapping-free window as final placement on Windows.
+        beforePlacement.accept(source);
+        String result = awaitPlacement(store.captureAsync(io -> {
+          if (!source.equals(path(io, entry.localName()))
+              || !input.snapshot().sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(source))) {
+            throw new IOException("Pulled file changed after verification; retry before placement");
+          }
+          var progress = io.read(manifest, PullManifest.class).files().stream()
+              .filter(e -> e.localName().equals(entry.localName())).findFirst().orElse(null);
+          if (!entry.equals(progress) || !entry.equals(held.progress())) throw new IOException("Pull progress changed before placement; retry");
+          if (!candidates.remainsValid(candidates(input))) throw new IOException("Pull matching candidates changed before placement; retry correlation");
+          if (Files.exists(io.check(plan.target()))) throw new IOException("Pull placement destination changed; retry");
+          Session session;
+          if (plan.newSession()) {
+            if (Files.exists(io.check(plan.manifest()))) throw new IOException("Pull session changed before placement; retry");
+            session = plan.session();
+          } else {
+            session = io.read(plan.manifest(), Session.class);
+            if (!session.id().equals(plan.session().id())) throw new IOException("Pull session changed before placement; retry");
+          }
+          moveReserved(io, placement, false);
+          var target = plan.target(); var sessionPath = plan.manifest(); var match = decision.match();
+          var files = new ArrayList<>(session.files());
+          // A capture still recording has no hash yet, so its recording names the clock this was measured on.
+          var recording = match == null ? null : CaptureRecording.of(match.candidate().file().provenance(),
+              io.read(store.root().resolve("store.json"), Header.class).id()).orElse(null);
+          Matching evidence = match == null ? null : new Matching("by_correlation", match.candidate().file().sha256(),
+              match.result().offsetMicros(), match.result().confidence(), match.result().driftRateNanosPerSec(), match.result().referenceTimeSec(), match.basis(), match.result(), recording);
+          files.add(new LogFile(StoreFiles.relative(sessionPath.getParent(), target), input.hash(), input.size(), input.kind(),
+              new Provenance("pulled", entry.remoteName(), entry.remoteName().substring(entry.remoteName().lastIndexOf('/') + 1), clock.instant().toString(), true, identity.serialNumber()),
+              true, input.min(), input.max(), input.start() == null ? session.startedAt() : input.start().toString(),
+              input.end() == null ? session.endedAt() : input.end().toString(), input.startBasis(), false, evidence, input.robotFingerprint(), decision.reason()));
+          var conflicts = new ArrayList<>(session.identityConflicts());
+          if (plan.conflict() != null) conflicts.add(new IdentityConflict(StoreFiles.relative(sessionPath.getParent(), target), plan.serial(), identity.serialNumber()));
+          io.write(sessionPath, copy(session, files, conflicts));
+          return relative(target);
+        }));
+        placement.removeOriginal();
+        return result;
+      }
     }
   }
+
+  private record PlacementPlan(Path manifest, Session session, Path target, String serial,
+      IdentityConflict conflict, boolean newSession) {}
 
   private static Session copy(Session s, List<LogFile> files, List<IdentityConflict> conflicts) {
     return new Session(s.id(), s.startedAt(), s.endedAt(), s.startBasis(), s.event(), s.matchType(), s.matchNumber(), s.teamNumber(),
         files, s.openCapture(), s.endReason(), s.deviceIdentity(), conflicts, s.conflicts(), s.captureStats(), s.systemLogs(), s.mergedSessionIds(), s.clocks());
   }
+  /**
+   * Prepared copies own their allocation and marker until the admitted publication unwinds.
+   * A filesystem provider must never silently turn a store-queue rename into a payload copy.
+   */
+  private final class PreparedMove implements AutoCloseable {
+    final Path from, target, staged;
+    final ImportStage owner;
+    final DiskSpaceBudgets.Reservation disk;
+    final org.triplehelix.wpilogmcp.log.FileSnapshot sourceSnapshot;
+    final String sourceHash;
+    org.triplehelix.wpilogmcp.log.FileSnapshot stagedSnapshot;
+    PreparedMove(Path from, Path target, Path staged, ImportStage owner,
+        DiskSpaceBudgets.Reservation disk,
+        org.triplehelix.wpilogmcp.log.FileSnapshot sourceSnapshot, String sourceHash) {
+      this.from = from; this.target = target; this.staged = staged; this.owner = owner; this.disk = disk;
+      this.sourceSnapshot = sourceSnapshot; this.sourceHash = sourceHash;
+    }
+    void place(StoreFiles io) throws IOException {
+      var moving = io.check(staged == null ? from : staged);
+      if (staged != null && (stagedSnapshot == null
+          || !stagedSnapshot.sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(moving)))) {
+        throw new IOException("Prepared pull copy changed before placement; retry");
+      }
+      mover.move(moving, io.check(target), StandardCopyOption.ATOMIC_MOVE);
+    }
+    void removeOriginal() throws IOException {
+      if (staged == null) return;
+      security.validate(from);
+      if (!sourceSnapshot.sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(from))
+          || !sourceHash.equals(StoreFiles.hash(from))) {
+        throw new IOException("Pulled source changed after placement; original retained");
+      }
+      mover.delete(from);
+    }
+    @Override public void close() throws IOException {
+      try { if (staged != null && Files.exists(staged)) mover.discardCopy(staged); }
+      finally {
+        try { if (owner != null) owner.close(); }
+        finally { if (disk != null) disk.close(); }
+      }
+    }
+  }
+
+  /** The source already has a move reservation, so neither reader drains nor copying use a turn. */
+  private PreparedMove prepareMove(Path from, Path target,
+      org.triplehelix.wpilogmcp.log.FileSnapshot snapshot, String expectedHash) throws IOException {
+    var io = new StoreFiles(store.root(), security);
+    Files.createDirectories(io.check(target.getParent()));
+    if (mover.sameFileStore(from, target)) {
+      return new PreparedMove(from, target, null, null, null, snapshot, null);
+    }
+    ImportStage owner = null;
+    DiskSpaceBudgets.Reservation disk = null;
+    PreparedMove result = null;
+    try {
+      owner = ImportStage.create(io, target.getParent());
+      var staged = owner.path(Path.of("payload"));
+      if (!Files.getFileStore(staged.getParent()).equals(Files.getFileStore(target.getParent()))) {
+        throw new IOException("Pull placement stage is not on the destination filesystem");
+      }
+      disk = store.reserveDiskCopy(staged.getParent(), snapshot.size());
+      String sourceHash = expectedHash == null ? StoreFiles.hash(from) : expectedHash;
+      result = new PreparedMove(from, target, staged, owner, disk, snapshot, sourceHash);
+      var attributes = mover.copy(from, staged, snapshot.size());
+      if (Files.size(staged) != snapshot.size() || !sourceHash.equals(StoreFiles.hash(staged))) {
+        throw new IOException("Cross-filesystem pull copy differs from its verified source");
+      }
+      mover.force(staged);
+      attributes.restore(staged);
+      // Publication checks this fixed copy without hashing its payload on the store queue.
+      result.stagedSnapshot = org.triplehelix.wpilogmcp.log.FileSnapshot.of(staged);
+      if (!snapshot.sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(from))) {
+        throw new IOException("Pulled file changed during cross-filesystem copy; retry");
+      }
+      return result;
+    } catch (IOException | RuntimeException | Error failure) {
+      if (result != null) {
+        try { result.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+      } else {
+        try { if (owner != null) owner.close(); }
+        catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+        finally { if (disk != null) disk.close(); }
+      }
+      throw failure;
+    }
+  }
+
+  /**
+   * An already admitted short turn owns its stage and reader barrier through completion.
+   * Preserve interruption without retiring those resources while the store still uses them.
+   */
+  private static <T> T awaitPlacement(java.util.concurrent.CompletableFuture<T> operation) throws IOException {
+    boolean interrupted = false;
+    try {
+      for (;;) {
+        try { return operation.get(); }
+        catch (InterruptedException stopped) { interrupted = true; }
+        catch (java.util.concurrent.ExecutionException failed) {
+          throw new IOException("Pull placement failed: " + failed.getCause().getMessage(), failed.getCause());
+        }
+      }
+    } finally { if (interrupted) Thread.currentThread().interrupt(); }
+  }
+
   /** The caller reserved and drained this source outside the queue. Only its own session changes. */
-  private String moveReserved(StoreFiles io, Path from, Path target, boolean retain) throws IOException {
+  private String moveReserved(StoreFiles io, PreparedMove placement, boolean retain) throws IOException {
+    var from = placement.from; var target = placement.target;
     Path sessionPath = null; Session session = null; var records = new ArrayList<LogFile>();
     if (!from.startsWith(robotRoot.resolve("pulled"))) {
       var parts = store.root().relativize(from);
@@ -422,7 +567,7 @@ public final class PullStore implements FileTransfer.Local {
             file.provenance(), file.verified(), file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(), file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint(), file.matchingReason(), file.placementMethod()));
       }
     }
-    Files.createDirectories(target.getParent()); Files.move(io.check(from), io.check(target));
+    placement.place(io);
     if (session != null) io.write(sessionPath, copy(session, records, session.identityConflicts()));
     var header = io.read(store.root().resolve("store.json"), Header.class); var moves = new ArrayList<Move>();
     for (var m : header.moves()) moves.add(new Move(m.originalPath(), io.resolve(store.root(), m.movedTo()).equals(from) ? relative(target) : m.movedTo(), m.movedAt()));

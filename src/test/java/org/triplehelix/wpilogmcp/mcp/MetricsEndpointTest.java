@@ -12,6 +12,16 @@ import java.net.http.HttpResponse;
 import org.junit.jupiter.api.Test;
 
 class MetricsEndpointTest {
+  @Test void logLossIsVisibleWithoutARecorder() {
+    var text = MetricsEndpoint.render(org.triplehelix.wpilogmcp.config.MetricsConfig.DEFAULT,
+        null, MetricsEndpoint.Components.NONE,
+        new MetricsEndpoint.Jvm(java.util.List.of(), java.util.List.of()));
+    assertTrue(text.contains("# TYPE wpilog_log_dropped_lines_total counter\n"),
+        "Log loss must be a process counter even without capture");
+    assertTrue(text.contains("wpilog_log_dropped_lines_total 0\n"),
+        "No buffered stderr is installed in this test JVM, so no lines have been dropped");
+  }
+
   @Test void storeQueueCostsAreVisibleWithoutAConfiguredCapture() throws Exception {
     var server = new HttpTransport(new ToolRegistry(), 0); server.start();
     try {

@@ -19,7 +19,12 @@ import org.triplehelix.wpilogmcp.sync.PullManifest;
  * catalog readers exclude staging bytes without loading transfer workers or acquiring write locks. */
 final class StoreTransferInventory {
   private StoreTransferInventory() {}
-  record Placement(String staged, String destination, String manifest, LogFile file, boolean committed) {}
+  record Placement(String staged, String destination, String manifest, LogFile file, boolean committed,
+      boolean selectionChecked, String sessionId, String manifestSha256) {
+    Placement committedReceipt() {
+      return new Placement(staged, destination, manifest, file, true, selectionChecked, sessionId, manifestSha256);
+    }
+  }
   record Merge(String sourceDirectory, String destinationDirectory, String manifest,
       Session session, String movedAt, boolean committed) {}
   static String peerDirectory(String id) { return "peer-" + StoreFiles.component(id); }
@@ -30,6 +35,9 @@ final class StoreTransferInventory {
     if (!Files.isDirectory(directory)) return List.of();
     try (var peers = Files.list(directory)) {
       for (var peer : peers.toList()) {
+        if (peer.getFileName().toString().equals(SyncPublication.LOCK_NAME)) {
+          result.add(io.check(peer)); continue;
+        }
         if (peer.getFileName().toString().equals("merges")) {
           try (var receipts = Files.list(peer)) {
             for (var receipt : receipts.toList()) { io.read(receipt, Merge.class); result.add(io.check(receipt)); }

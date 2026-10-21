@@ -49,6 +49,7 @@ class OperationsClaimTest {
    * Account for every bare identifier rather than scanning only names already in the registry:
    * that would silently skip a misspelled tool. New prose identifiers need this classification. */
   private static final Set<String> NON_TOOLS = Set.of(("""
+      cause_durable code failed_at first_failed_at message pending_total requested_bytes session_id
       scope_id source_scope configuration_json resolved template_ref x_entry y_entry x_field y_field next_offset ready mirrors mirror_id
       low_disk startup_failed admission_failed write_failed last_write_age_ms waiting_admission recording stopped
       brownout_threshold_basis brownout_voltage_entry bus_name bytes_per_sec camera_settings

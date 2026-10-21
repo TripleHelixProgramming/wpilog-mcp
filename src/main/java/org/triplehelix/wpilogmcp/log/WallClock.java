@@ -36,6 +36,9 @@ public final class WallClock {
   /** A plausible wall-clock reading: the log time it was logged at, and its epoch microseconds. */
   public record Reading(double logTime, long epochMicros) {}
 
+  /** A logged coordinate must survive the seconds view, which can merge adjacent microseconds. */
+  public record ExactReading(long logMicros, long epochMicros) {}
+
   /**
    * The zone offset in which to read the times in REV log filenames recorded with a wpilog, and
    * the basis for it.
@@ -115,6 +118,35 @@ public final class WallClock {
       if (plausible(reading.epochMicros())) valid.add(reading);
     }
     return valid;
+  }
+
+  /**
+   * The same retained readings as {@link #validReadings}, with their original log coordinates.
+   * The jump decision deliberately keeps the legacy seconds arithmetic: presenting exact UTC
+   * must not silently change which clock was selected, or change REV's existing alignment.
+   */
+  public static List<ExactReading> validExactReadings(LogData log) {
+    var clock = entry(log);
+    if (clock.isEmpty()) return List.of();
+    var values = log.values().get(clock.get());
+    if (values == null) return List.of();
+    var valid = new ArrayList<ExactReading>();
+    double previousLogTime = 0;
+    for (var value : values) {
+      if (!(value.value() instanceof Number number)) continue;
+      long epochMicros = number.longValue();
+      if (!valid.isEmpty()) {
+        var previous = valid.get(valid.size() - 1);
+        double wallStep = (epochMicros - previous.epochMicros()) / 1e6;
+        double fpgaStep = value.timestamp() - previousLogTime;
+        if (Math.abs(wallStep - fpgaStep) > JUMP_SEC) valid.clear();
+      }
+      if (plausible(epochMicros)) {
+        valid.add(new ExactReading(value.timestampUs(), epochMicros));
+        previousLogTime = value.timestamp();
+      }
+    }
+    return List.copyOf(valid);
   }
 
   /** Every numeric reading of the wall-clock entry, in log order (1970 included). */

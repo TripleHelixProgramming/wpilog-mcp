@@ -108,7 +108,11 @@ That choice survives editor restoration as UI state; a newly opened fixed view s
 seconds. Full recording is available for files and finalized recordings; requesting it after
 finalization reads earlier samples even if the saved policy was already full while following. Historical recording
 plots use server min/max bands and means over the whole admitted interval, with original-sample
-counts and an independent prefix. The bucket count fits the shared byte allowance (at most
+counts and an independent prefix. Declared scalar struct angles unwrap before these history
+buckets are calculated, so 179° followed by −179° is drawn as 179°, 181°. Continuity crosses
+rollover members; each requested interval starts at its own first value. Plain numeric fields
+retain arithmetic values; the preview has no angle override control.
+The bucket count fits the shared byte allowance (at most
 4,096); zoom in for detail. A limit produces an explained refusal instead of a truncated history. A statistics
 window with no finite samples shows a hint and refreshes on the next completed recording
 prefix. New data needs no manual Retry; invalid selectors and resource refusals still do.

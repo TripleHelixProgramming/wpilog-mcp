@@ -33,7 +33,8 @@ public final class LogReader implements Iterable<DataLogRecord> {
     for (int i = 0; i < bytes; i++) value |= (source.get(offset + i) & 255L) << (i * 8);
     return value;
   }
-  /** Hash only an anchor, in bounded chunks; never hash the entire indexed prefix. */
+  /** Hash a range in bounded chunks. Resume callers request only header/tail anchors;
+   * persisted-index admission explicitly requests the whole file through contentSha256. */
   byte[] fingerprint(long start, long end) {
     if (source == null) return null; // Legacy buffer readers do not supply resume checkpoints.
     try {
@@ -44,6 +45,12 @@ public final class LogReader implements Iterable<DataLogRecord> {
       }
       return digest.digest();
     } catch (java.security.NoSuchAlgorithmException e) { throw new AssertionError(e); }
+  }
+  /** A persisted index needs a current whole-content proof, not the resume path's two anchors.
+   * The bounded views belong to the reader's existing lease and never allocate a file-sized array. */
+  String contentSha256() {
+    if (source == null) throw new IllegalStateException("Content proof requires an owned byte source");
+    return java.util.HexFormat.of().formatHex(fingerprint(0, size()));
   }
   public long recordEnd(long offset) {
     if (legacy != null) return DataLogAccess.recordEnd(legacy, Math.toIntExact(offset));

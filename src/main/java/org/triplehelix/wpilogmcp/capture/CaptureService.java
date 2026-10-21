@@ -139,7 +139,8 @@ public final class CaptureService implements AutoCloseable {
     // The initial publication enters the same ordered listener before client.start() does.
     // Joining it here would couple store recovery to a listener that the caller may not yet run.
     if (diskMonitor != null) diskMonitor.start();
-    starting = placement.recoverAsync().thenCompose(ignored -> store.refreshStatus()).thenRun(() -> {
+    starting = placement.recoverAsync().thenCompose(ignored -> store.refreshStatus()
+        .exceptionally(CaptureService::publicationMayRemainPending)).thenRun(() -> {
       if (!stopping.get()) { watchdog.start(); if (providers != null) providers.start(); client.start(); if (pull != null) pull.start(); }
       // Captures closed before this start, and those recovery just closed, get their clock records.
       if (!stopping.get()) store.keepClocks();
@@ -151,6 +152,16 @@ public final class CaptureService implements AutoCloseable {
       }
     });
     return starting;
+  }
+
+  /** Only a completed safe receipt sweep may defer publication; a message is not that proof. */
+  static Void publicationMayRemainPending(Throwable failure) {
+    Throwable cause = failure;
+    while ((cause instanceof java.util.concurrent.CompletionException
+        || cause instanceof java.util.concurrent.ExecutionException) && cause.getCause() != null)
+      cause = cause.getCause();
+    if (cause instanceof org.triplehelix.wpilogmcp.store.PublicationPendingException) return null;
+    throw new java.util.concurrent.CompletionException(cause);
   }
 
   @Override public void close() {

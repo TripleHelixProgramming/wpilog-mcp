@@ -14,6 +14,20 @@ import org.triplehelix.wpilogmcp.visualization.VisualizationContracts;
  * fall back to roles, and resolver candidates remain candidates. No browser infers bindings. */
 public final class VisualizationBindings {
   private VisualizationBindings() {}
+  /**
+   * Declared scalar angle period after source admission has proved the selected members'
+   * declarations and schemas agree. Only metadata is consulted: bounded preview admission
+   * must not materialize a history merely to choose the presentation rule.
+   */
+  public static double anglePeriod(LogData log, String entry, String field) {
+    if (field == null || field.isBlank()) return 0;
+    var path = FieldPath.parse(field);
+    if (path.isRoot() || path.hasWildcard()) return 0;
+    var info = log.entries().get(entry);
+    if (info == null) return 0;
+    String struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(info.type());
+    return struct == null ? 0 : NumericSignal.angleUnit(log.structSchemas(), struct, path).period;
+  }
   public static JsonArray roles() { var out = new JsonArray(); for (var r : SignalResolver.Role.values()) out.add(r.name().toLowerCase(Locale.ROOT)); return out; }
   public static JsonObject check(LogData log, JsonObject configuration) {
     return check(log, configuration, false);

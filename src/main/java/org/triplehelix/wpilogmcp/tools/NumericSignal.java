@@ -5,6 +5,7 @@
 package org.triplehelix.wpilogmcp.tools;
 
 import org.triplehelix.wpilogmcp.read.FieldPath;
+import org.triplehelix.wpilogmcp.read.AngleUnwrapper;
 
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
@@ -212,17 +213,11 @@ final class NumericSignal {
   List<TimestampedValue> unwrap(List<TimestampedValue> values) {
     if (!isAngle() || values.isEmpty()) return values;
     var out = new ArrayList<TimestampedValue>(values.size());
-    double previous = Double.NaN;
-    double turns = 0; // whole turns added so far: values stay exact between wraps
+    var unwrapper = new AngleUnwrapper(angle.period);
     for (var tv : values) {
       double v = (Double) tv.value();
-      if (!Double.isFinite(v)) {
-        out.add(tv);
-        continue;
-      }
-      if (!Double.isNaN(previous)) turns -= Math.rint((v - previous) / angle.period);
-      out.add(turns == 0 ? tv : tv.withValue(v + turns * angle.period));
-      previous = v;
+      double unwrapped = unwrapper.apply(v);
+      out.add(!Double.isFinite(v) || unwrapped == v ? tv : tv.withValue(unwrapped));
     }
     return out;
   }

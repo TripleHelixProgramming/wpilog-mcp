@@ -12,19 +12,28 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.LongAdder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
+import org.triplehelix.wpilogmcp.log.LogScan;
 
 /**
- * Persistent disk cache for parsed WPILOG files.
+ * Shared disk-cache capacity and cleanup owner for scan indexes and REV results.
  *
- * <p>Avoids reparsing log files on server restart by caching the parsed representation
- * to disk as MessagePack binary files. Cache files are keyed by content fingerprint
- * (not path), so identical files in different directories share a single cache entry.
+ * <p>The ordinary load path persists bounded scan indexes, not decoded values. Its caller
+ * supplies a fresh whole-content proof while holding the source read lease. Legacy eager
+ * serialization remains available to its existing callers; its sampled fingerprint is
+ * never a scan-index proof. The configured size limit is enforced by cleanup, shared with
+ * REV results, rather than a reservation on each write.
  *
  * <p>Concurrency safety:
  * <ul>
@@ -40,6 +49,9 @@ public class DiskCache {
 
   private final CacheDirectory cacheDirectory;
   private final DiskCacheSerializer serializer;
+  private final ScanIndexSerializer scanSerializer = new ScanIndexSerializer();
+  private final LongAdder scanHits = new LongAdder();
+  private final LongAdder scanMisses = new LongAdder();
   private final String serverVersion;
   private final ExecutorService writeExecutor;
   /** Tracks in-flight writes within this JVM to avoid OverlappingFileLockException. */
@@ -93,6 +105,105 @@ public class DiskCache {
    */
   public void setMaxTotalSizeMb(long mb) {
     this.maxTotalSizeMb = mb;
+  }
+
+  /** Versions belong in the identity so a new recipe cannot overwrite another recipe's entry. */
+  public static String scanFileName(ScanIndexSerializer.Source source) {
+    try {
+      var digest = MessageDigest.getInstance("SHA-256");
+      digest.update(source.identity().getBytes(StandardCharsets.UTF_8));
+      digest.update((byte) 0);
+      digest.update(Long.toString(source.sizeBytes()).getBytes(StandardCharsets.US_ASCII));
+      return "v" + ScanIndexSerializer.FORMAT_VERSION + "-r" + ScanIndexSerializer.RECIPE_VERSION
+          + "-" + HexFormat.of().formatHex(digest.digest()) + "-scan.idx";
+    } catch (NoSuchAlgorithmException impossible) {
+      throw new AssertionError(impossible);
+    }
+  }
+
+  /** An eligible disk lookup counts once; disabled and known-growing bypasses do not count. */
+  public LogScan loadScanIndex(ScanIndexSerializer.Source source) {
+    if (!enabled) return null;
+    try {
+      var scan = scanSerializer.read(cacheDirectory.getPath().resolve(scanFileName(source)), source);
+      if (scan != null) {
+        scanHits.increment();
+        return scan;
+      }
+    } catch (IOException optionalCacheFailure) {
+      logger.debug("Scan index lookup unavailable: {}", optionalCacheFailure.getClass().getSimpleName());
+    }
+    scanMisses.increment();
+    return null;
+  }
+
+  /**
+   * Encode on the exclusive loading request before its mutable index is published.
+   * Each attempt owns only its CREATE_NEW temporary; atomic replacement permits competing
+   * processes without a lock or a background queue retaining mapped sources.
+   */
+  public void saveScanIndex(ScanIndexSerializer.Source source, LogScan scan) {
+    try {
+      saveScanIndex(source, scan, () -> true);
+    } catch (IOException impossibleSourceRefusal) {
+      throw new AssertionError(impossibleSourceRefusal);
+    }
+  }
+
+  @FunctionalInterface public interface IndexPublication {
+    boolean allowed() throws IOException;
+  }
+
+  /** The source owner rechecks its generation after optional encoding, immediately before rename. */
+  public void saveScanIndex(ScanIndexSerializer.Source source, LogScan scan, IndexPublication publication)
+      throws IOException {
+    if (!enabled) return;
+    Path target;
+    try {
+      target = cacheDirectory.getPath().resolve(scanFileName(source));
+    } catch (IOException optionalCacheFailure) {
+      logger.debug("Scan index directory unavailable: {}", optionalCacheFailure.getClass().getSimpleName());
+      return;
+    }
+    var temporary = target.resolveSibling(target.getFileName() + ".tmp." + UUID.randomUUID());
+    try {
+      try {
+        if (!scanSerializer.write(temporary, source, scan)) return;
+      } catch (IOException optionalCacheFailure) {
+        logger.debug("Scan index encoding unavailable: {}", optionalCacheFailure.getClass().getSimpleName());
+        return;
+      }
+      // This belongs to source admission, not optional cache I/O. Its refusal must reach
+      // the loader even when the index itself was encoded successfully.
+      if (!publication.allowed()) return;
+      try {
+        Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      } catch (IOException optionalCacheFailure) {
+        logger.debug("Scan index publication unavailable: {}", optionalCacheFailure.getClass().getSimpleName());
+      }
+    } finally {
+      deleteQuietly(temporary);
+    }
+  }
+
+  public record ScanStats(long entryCount, long sizeBytes, long hits, long misses) {}
+
+  /** Disk sizes describe current artifacts; lookup counters describe this process's eligible reads. */
+  public ScanStats scanStats() throws IOException {
+    long entries = 0;
+    long bytes = 0;
+    try (var files = Files.newDirectoryStream(cacheDirectory.getPath(), "*-scan.idx")) {
+      for (var file : files) {
+        if (!Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+        try {
+          bytes = Math.addExact(bytes, Files.size(file));
+          entries++;
+        } catch (java.nio.file.NoSuchFileException concurrentlyRemoved) {
+          // Cleanup is allowed to remove an entry while health samples the directory.
+        }
+      }
+    }
+    return new ScanStats(entries, bytes, scanHits.sum(), scanMisses.sum());
   }
 
   /**
@@ -283,6 +394,19 @@ public class DiskCache {
       long totalSize = 0;
       int deleted = 0;
 
+      // Index inspection streams the checksum and structure without allocating offset arrays.
+      try (var indexes = Files.newDirectoryStream(cacheDir, "*-scan.idx")) {
+        for (var file : indexes) {
+          var header = scanSerializer.inspect(file);
+          if (header == null) {
+            deleteQuietly(file);
+            deleted++;
+          } else {
+            totalSize += header.encodedBytes();
+          }
+        }
+      }
+
       // Also clean up stale sync cache files
       var syncSerializer = new SyncCacheSerializer();
       try (DirectoryStream<Path> syncStream = Files.newDirectoryStream(cacheDir, "*-sync.msgpack")) {
@@ -343,7 +467,7 @@ public class DiskCache {
         try (var files = Files.list(cacheDir)) {
           long[] runningSize = {totalSize};
           files
-              .filter(f -> f.toString().endsWith(".msgpack"))
+              .filter(f -> f.toString().endsWith(".msgpack") || f.toString().endsWith("-scan.idx"))
               .sorted((a, b) -> {
                 try {
                   return Long.compare(

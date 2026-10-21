@@ -25,6 +25,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.cache.DiskCache;
+import org.triplehelix.wpilogmcp.cache.ScanIndexSerializer;
 import org.triplehelix.wpilogmcp.log.struct.EnumValue;
 import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
 import org.triplehelix.wpilogmcp.log.struct.StructMap;
@@ -109,6 +111,104 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     }
   }
 
+  enum OpenPhase { BEFORE_HASH, AFTER_SCAN, BEFORE_INDEX_PUBLICATION, AFTER_INDEX_ENCODING }
+  @FunctionalInterface interface OpenObserver { void at(OpenPhase phase, Path path) throws IOException; }
+  @FunctionalInterface interface IndexEligibility { boolean allowed() throws IOException; }
+
+  /** Optional index work stays with this request's reader, outside the manager's admission claim.
+   * A resumed growing prefix remains an in-memory checkpoint and is never written to disk. */
+  static LazyParsedLog open(Path path, long budget, LogScan previous, DiskCache indexes,
+      FileSnapshot boundary, String expectedManifestSha256, IndexEligibility eligible,
+      OpenObserver observer) throws IOException {
+    var owned = new ScopedLogReader(path);
+    try {
+      var reader = owned.reader();
+      ScanIndexSerializer.Source source = null;
+      LogScan restored = null;
+      if (previous == null && indexes.isEnabled()
+          && indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
+        String hash = contentProof(reader, path, expectedManifestSha256, observer, true);
+        if (expectedManifestSha256 != null && !expectedManifestSha256.equals(hash)) {
+          throw new LogFileException("SOURCE_UNAVAILABLE: recorded bytes do not match their manifested hash");
+        }
+        if (indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
+          String identity = expectedManifestSha256 != null ? "sha256:" + expectedManifestSha256
+              : "attributes:" + attributeIdentity(boundary);
+          source = new ScanIndexSerializer.Source(identity, boundary.size(), hash);
+          restored = indexes.loadScanIndex(source);
+        }
+      }
+      var log = new LazyParsedLog(path.toString(), reader, budget, previous, restored);
+      if (restored == null) observer.at(OpenPhase.AFTER_SCAN, path);
+      if (source != null && restored == null
+          && indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
+        // Proof after scanning prevents old offsets being attached to a later content hash.
+        String after = contentProof(reader, path, expectedManifestSha256, observer, false);
+        if (expectedManifestSha256 != null && !expectedManifestSha256.equals(after)) {
+          throw new LogFileException("SOURCE_UNAVAILABLE: recorded file changed during index construction");
+        }
+        if (source.sha256().equals(after)) {
+          observer.at(OpenPhase.BEFORE_INDEX_PUBLICATION, path);
+          if (indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
+            indexes.saveScanIndex(source, log.scan, () -> {
+              observer.at(OpenPhase.AFTER_INDEX_ENCODING, path);
+              return indexEligible(eligible, path, boundary, reader, expectedManifestSha256);
+            });
+          }
+        }
+      }
+      log.ownedReader = owned;
+      return log;
+    } catch (Throwable failure) {
+      try { owned.close(); } catch (IOException close) { failure.addSuppressed(close); }
+      throw failure;
+    }
+  }
+
+  private static String contentProof(LogReader reader, Path path, String expectedManifestSha256,
+      OpenObserver observer, boolean notify) throws IOException {
+    return guardedIndexSourceOperation(expectedManifestSha256, () -> {
+      if (notify) observer.at(OpenPhase.BEFORE_HASH, path);
+      return reader.contentSha256();
+    });
+  }
+
+  private static boolean indexEligible(IndexEligibility eligible, Path path, FileSnapshot boundary,
+      LogReader reader, String expectedManifestSha256) throws IOException {
+    return guardedIndexSourceOperation(expectedManifestSha256,
+        () -> eligible.allowed() && stable(path, boundary, reader));
+  }
+
+  @FunctionalInterface private interface IndexSourceOperation<T> { T read() throws IOException; }
+
+  /** A remembered admission cannot replace a failed new source check or full-content proof.
+   * Optional cache I/O handles its own misses; legacy constructor errors retain their fallback. */
+  private static <T> T guardedIndexSourceOperation(String expectedManifestSha256,
+      IndexSourceOperation<T> operation) throws IOException {
+    try {
+      return operation.read();
+    } catch (IOException | RuntimeException failure) {
+      if (expectedManifestSha256 == null) throw failure;
+      var refusal = new LogFileException("SOURCE_UNAVAILABLE: current content proof could not be completed: "
+          + failure.getMessage());
+      refusal.initCause(failure);
+      throw refusal;
+    }
+  }
+
+  private static boolean stable(Path path, FileSnapshot boundary, LogReader reader) throws IOException {
+    return boundary != null && reader.size() == boundary.size() && boundary.sameAs(FileSnapshot.of(path));
+  }
+
+  private static String attributeIdentity(FileSnapshot boundary) {
+    String attributes = boundary.size() + "\n" + boundary.modified() + "\n" + boundary.fileKey()
+        + "\n" + boundary.created();
+    try {
+      return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+          .digest(attributes.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    } catch (java.security.NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
+  }
+
   /** Retaining and retiring are one decision, so an evicted mapping cannot acquire a new user. */
   synchronized boolean retain() {
     if (closed && ownedReader != null) return false;
@@ -163,6 +263,11 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   }
 
   private LazyParsedLog(String path, LogReader reader, long maxCacheWeightBytes, LogScan previous) throws IOException {
+    this(path, reader, maxCacheWeightBytes, previous, null);
+  }
+
+  private LazyParsedLog(String path, LogReader reader, long maxCacheWeightBytes, LogScan previous,
+      LogScan restored) throws IOException {
     if (!reader.isValid()) {
       throw LogFileException.invalid(Path.of(path));
     }
@@ -173,9 +278,10 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     // One pass over the records (shared with LogParser): entries in declaration order, each
     // data record's byte offset for random-access decoding later, and where the file stops being
     // a valid log (a damaged tail is not read; see LogScan)
-    logger.debug("Scanning log: {}", path);
+    if (restored == null) logger.debug("Scanning log: {}", path);
     long startTime = System.nanoTime();
-    this.scan = previous == null ? LogScan.of(reader, Path.of(path)) : LogScan.resume(previous, reader, Path.of(path));
+    this.scan = restored != null ? restored : previous == null ? LogScan.of(reader, Path.of(path))
+        : LogScan.resume(previous, reader, Path.of(path));
     var entriesByName = scan.entries();
     var offsetLists = scan.offsets();
     int totalDataRecords = scan.dataRecords();
@@ -235,7 +341,8 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
     long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
     long offsetMemoryKb = recordOffsets.values().stream().mapToLong(RecordOffsets::storageBytes).sum() / 1024;
-    logger.info("Scanned {}: {} entries, {} records, {} KB offsets in {}ms",
+    logger.info(restored == null ? "Scanned {}: {} entries, {} records, {} KB offsets in {}ms"
+        : "Restored scan index for {}: {} entries, {} records, {} KB offsets in {}ms",
         Path.of(path).getFileName(), entries.size(),
         totalDataRecords, offsetMemoryKb, elapsedMs);
 

@@ -17,6 +17,8 @@ import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
+import org.triplehelix.wpilogmcp.read.AngleUnwrapper;
+import org.triplehelix.wpilogmcp.read.FieldPath;
 import org.triplehelix.wpilogmcp.sync.SyncMethod;
 
 /**
@@ -51,6 +53,50 @@ public final class EntryData {
           .filter(tv -> endTime == null || tv.timestamp() <= endTime)
           .toList();
     }
+  }
+
+  /** Prepared presentation values and whether Arrow must represent them as floating point. */
+  public record Prepared(List<TimestampedValue> values, boolean angle) {}
+
+  /** Invalid explicit units are refused even when the selected interval contains no records. */
+  public static void validateAngle(String angle) {
+    angleArgument(angle);
+  }
+
+  private static NumericSignal.AngleUnit angleArgument(String angle) {
+    var arguments = new JsonObject();
+    if (angle != null) arguments.addProperty("angle", angle);
+    return NumericSignal.angleArgument(arguments);
+  }
+
+  /**
+   * Applies presentation to the requested interval before either exact output or reduction.
+   * Ordinary whole-value reads keep their decoded types, including exact int64 values; only
+   * a scalar angle becomes floating point. Wildcards are unordered pools, never a sequence
+   * of turns. Already-resolved REV values need no second log lookup.
+   */
+  public static Prepared prepare(LogData log, Series series, Double start, Double end,
+      String angle) {
+    var explicit = angleArgument(angle);
+    boolean numeric = series.numeric() || "boolean".equals(series.type());
+    if (explicit != null && !numeric)
+      throw new IllegalArgumentException("Entry " + series.name() + " is " + series.type()
+          + "; angle requires a numeric scalar or selected numeric field");
+    var values = series.inWindow(start, end);
+    if (series.field() != null && FieldPath.parse(series.field()).hasWildcard())
+      return new Prepared(values, false);
+    double period = explicit == null
+        ? VisualizationBindings.anglePeriod(log, series.entry(), series.field()) : explicit.period;
+    if (period == 0) return new Prepared(values, false);
+    var unwrapper = new AngleUnwrapper(period);
+    var prepared = new ArrayList<TimestampedValue>(values.size());
+    for (var value : values) {
+      var number = FieldPath.toNumber(value.value());
+      if (number == null)
+        throw new IllegalArgumentException("Entry " + series.name() + " has a non-numeric angle value");
+      prepared.add(value.withValue(unwrapper.apply(number)));
+    }
+    return new Prepared(prepared, true);
   }
 
   /**

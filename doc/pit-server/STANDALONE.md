@@ -82,12 +82,13 @@ requires restarting the server. Reservations stay charged until copying I/O actu
 even if the caller has timed out. This is conservative process accounting, not an OS quota:
 bytes already written may still be reserved, and other processes can consume space.
 
-The currently admitted paths are import staging, uploads, replica transfers and known-length
-pull staging. Legacy
-queued system-log copies, cross-filesystem pull placement and peer-sync copies are not yet
-admitted (moving them outside the store worker, with space reserved first, is decided but not
-implemented), and unknown-length command output remains pending; do not
-treat the reserve as protection against those paths.
+The admitted paths are import staging, uploads, replica transfers, known-length robot pulls
+and peer-sync downloads. Immutable copies of pulled or peer-synced system text, and
+cross-filesystem placement copies for pulls and peer sync, reserve their additional allocation
+on the destination filesystem before copying. These copies, hashes and forces run outside
+the store worker; a short turn rechecks the prepared facts and publishes the file.
+Unknown-length command output remains outside this admission policy; do not treat the
+reserve as protection against that path.
 Usable-space queries run outside the listener and store queue. A failed query publishes an
 unknown reading; it neither invents zero nor establishes that a paused capture may resume.
 
@@ -818,8 +819,14 @@ one. Use `--store <dir>` to choose another destination inside the configured dir
 `?store=<id>` on the peer URL when it publishes several stores. The URL is remembered in
 `store.json`; `wpilog-mcp sync` with no URL visits every remembered peer in turn.
 
-**Who runs it.** A running daemon owns the job. Without one, the command runs under the same
-`store.lock` as import; a daemon refusal or a failed request never starts a second writer.
+**Who runs it.** A running daemon owns the job. Without one, the command uses the same sync
+ownership and publication protocol. A daemon refusal or a failed request never starts a
+second writer. One sync holds `.sync/.owner.lock` for its journal and partial files; a second
+sync to that store is refused. Downloads, pacing and verification run outside the store
+worker and `store.lock`. Short publication turns take `store.lock`, recheck the store role,
+selected session, duplicates and prepared bytes, then rename and record the file. Capture
+admission can proceed while a sync waits on its peer or copies a payload. Leave both lock
+files in place: their persistent identity prevents two processes from locking different files.
 
 **Transfers.** Transfers reuse the puller's content proofs, 64 KiB blocks and durable progress.
 HTTP sync defaults to unlimited pacing; `--rate-bytes <bytes/sec>` sets a cap (`0` means
@@ -828,6 +835,12 @@ completed copy must match the advertised hash and load through the ordinary impo
 An already imported power-cut tail keeps its truncation note. An open capture waits for its
 final hash: it is reported as a refusal for this sync, while the read-only door continues to
 serve its current bytes.
+
+Each missing file reserves its remaining download size before reading payload bytes. A
+separate destination copy, when needed, has its own reservation. A low-space refusal reports
+`free_bytes`, `reserved_bytes`, `capture_reserve_bytes` and `requested_bytes`; free space or
+adjust the configured reserve before retrying. Cancellation does not release a reservation
+while the underlying I/O still uses it.
 
 Overlapping sessions of the same serial join, using the lexicographically smallest session id
 so both transfer orders converge. Existing paths remain usable when closed session fragments
@@ -844,8 +857,12 @@ The result lists `sessions_created`, `files_copied` (including new network `byte
 `size_bytes`), `files_present`, `conflicts`, `refusals`, and `stopped` with the peer, file and
 held byte count. Exit 0 means no refusals or stopped peers, 1 reports an incomplete or refused
 sync, and 2 is a command-line error. Partial bytes remain journaled; rerun the command to
-resume. Before contacting any peer, the next sync completes pending file/manifest placements
-left by a process exit.
+resume. Before contacting any peer, the next sync recovers pending file/manifest placements
+left by a process exit, even if that peer is offline. Journal-owned incomplete downloads and
+system-text prefixes remain available for proved resume. Recovery removes abandoned owned
+placement copies and, after verifying a completed cross-filesystem telemetry copy, its original
+staging bytes; a committed receipt still owns that cleanup. A changed original remains with an
+explained refusal. The peer must prove a held prefix before a transfer resumes.
 
 **The daemon API.** `POST /store/sync` takes optional `url`, `store` (local directory) and
 `rate_bytes` fields, for example `{"url":"http://other-laptop:2363","rate_bytes":0}`. An absent
@@ -956,15 +973,20 @@ capacity refusal removes the import's owned, uncommitted stage bytes; it does no
 source or an already committed file. Capture remains
 independent of catalog capacity: a completed recording stays in its session receipt with a
 `.replica-publication.json` recovery marker if publication fails. `list_sessions` reports
-`replica_publication_failure` for the current capture, and the server logs the failure. Explicit
-status/recovery retries those markers with a 32768-path inspection limit; publication failures
-remain reported and never block admission of the next recording, including after restart.
+`replica_publication_failure` for the current capture, and the server logs the failure. Store
+initialization and explicit recovery retry those markers with a 32768-path inspection limit.
+Read-only status and metrics use the published inventory without starting recovery or waiting
+for the store queue. A complete, safe receipt sweep with publication failures permits capture
+startup, including after restart; malformed intents and unsafe receipt paths still stop it.
 The marker retains both receipt hashes while replacing a receipt, so a failed replacement cannot
 erase an earlier completed capture's pending publication.
-The marker does not preserve a durable aggregate failure cause, so mirror status does not yet
-explain every pending capture publication after restart. A count warning is not evidence that
-the mirror's catalog includes every completed capture. That refusal/status design remains
-pending; existing immutable inventory pages keep their original admission.
+It also retains a safe failure code and first/latest failure times. Old markers without those
+fields report `CAUSE_NOT_RECORDED` with null times; diagnostic-write failure leaves the latest
+safe cause in memory with `cause_durable: false`. A count warning is not evidence that the
+mirror's catalog includes every completed capture. The separate
+[remote publication status route](../STANDALONE.md#remote-replica-publication-status) explains
+pending sessions with retryable `PUBLICATION_PENDING`; the local mirror summary continues to
+describe its own replica catalog. Existing immutable inventory and file admission stay unchanged.
 
 Master stores use the separate [local migration job route](../STANDALONE.md#explicit-replica-format-migration);
 mirrors use the capacity-checked controls below. Local controls require direct loopback access
@@ -1023,12 +1045,13 @@ until a separately staged correction can fit; it never overwrites a verified gen
 |---|---|
 | `GET /replicas/v1/handshake` | Protocol 1, opaque session ID, capabilities, up to 64 serving store/master identities; at most 64 KiB |
 | `POST /replicas/v1/catalog` | `Replica-Session` header; `store_id`, `limit` (1–256), then `inventory_id` and `cursor`; fixed catalog epoch/revision, true total, ordered offers and continuation |
+| `POST /replicas/v1/status` | Same session; `store_id`, optional `session_id` and `limit` (default 64, 1–256); complete pending count, bounded safe causes and origin catalog capacity. A selected pending session returns retryable `PUBLICATION_PENDING`. |
 | `POST /replicas/v1/file` | Same session; `store_id`, `master_store_id`, `file_id`, `file_version`, `sha256`, `offset`; immutable bytes with exact hash, offset and remaining Content-Length headers |
 | `POST /replicas/v1/close` | Same session and `{}`; idempotently releases its inventories even after access revocation |
 | `GET /store/mirror/peers` | Loopback-only provider status and bounded discovered candidates; discovery never adds Explorer sources |
 
 All routes check Origin. Replica read routes may serve the configured network bind; controls
-remain loopback-only. There is no replica upload route. Bodies are at most 64 KiB and catalog
+remain loopback-only. There is no replica upload route. Bodies are at most 64 KiB and catalog/status
 replies at most 1 MiB, including JSON encoding. Pages shorten by encoded bytes as needed. IDs
 are random UUIDs, session-bound and invalid after server restart. Replaying a page rechecks
 the serving store and grants; it does not reopen or rehash payloads. Byte admission uses the
@@ -1268,6 +1291,7 @@ NaN and infinities retain their Prometheus spellings. Each emitted topic gets on
 | `wpilog_nt_address_info` | 1 with the last connected `address`; absent before any connection. |
 | `wpilog_capture_open` | 0/1 recording session state. |
 | `wpilog_capture_topics` | Session entry count, including finished entries. |
+| `wpilog_log_dropped_lines_total` | Process count of complete log lines dropped by the bounded stderr buffer; recording and requests never wait for a blocked log sink. |
 | `wpilog_store_queue_over_budget_turns_total` | Process count of mutation actions observed above the one-second budget, summed across open stores. Each action counts once; observation never interrupts it. |
 | `wpilog_store_queue_longest_turn_seconds` | Longest externally observed mutation action across open stores, including an action still running. |
 | `wpilog_store_filesystem_space_known` | 1 when the last usable-space query succeeded, otherwise 0; opaque `filesystem_id` label, with no path or filesystem name. |
@@ -1277,6 +1301,7 @@ NaN and infinities retain their Prometheus spellings. Each emitted topic gets on
 | `wpilog_replica_catalog_records`, `wpilog_replica_catalog_records_limit` | Last validated catalog record count and its 4,096 limit, by opaque `store_id`. |
 | `wpilog_replica_catalog_exclusions`, `wpilog_replica_catalog_exclusions_limit` | Last validated catalog exclusion count and its 4,096 limit, by opaque `store_id`. |
 | `wpilog_replica_catalog_near_limit` | 1 when either count reaches 3,277 (at least 80 percent of its limit), otherwise 0, by opaque `store_id`. |
+| `wpilog_replica_pending_publications` | Completed local capture receipts awaiting catalog publication, by opaque `store_id`. Emitted only for a complete pending inventory; unknown or incomplete totals have no sample. |
 | `wpilog_capture_records_total`, `wpilog_capture_bytes_total` | The live tools' recorder counts across rollover files: NT4 value records and bytes including record headers, excluding context/control records and copied schema seeds. The `session_started_at` label identifies the counter lifetime; snapshots refresh after the 250 ms asynchronous flush completes. |
 | `wpilog_nt_time_offset_seconds`, `wpilog_nt_round_trip_seconds` | Selected clock estimate (robot minus local monotonic time) and its round trip; absent without sync. |
 | `wpilog_gateway_clients` | Connected downstream gateway clients; 0 when the gateway is disabled. Independent of the robot-side connection. |
@@ -1289,14 +1314,21 @@ NaN and infinities retain their Prometheus spellings. Each emitted topic gets on
 | `wpilog_jvm_memory_used_bytes`, `wpilog_jvm_memory_committed_bytes`, `wpilog_jvm_memory_max_bytes` | Platform MBean memory by `area` (`heap`, `nonheap`); an undefined maximum is omitted. |
 | `wpilog_jvm_gc_collections_total`, `wpilog_jvm_gc_duration_seconds_total` | Collection count and total collection seconds by `collector`; unsupported MBean values are omitted. |
 
-Store turn metrics currently exclude a blocked completion-report callback after the mutation
-action. That callback can still hold the owner; a blocked observer sink can delay observations.
-The unresolved logging policy is recorded in
-[the hardening plan](../ARCHITECTURE_HARDENING_PLAN.md#implementation-disposition--2026-10-20).
+Store turn metrics measure the mutation action and exclude its completion report. Server
+logging now uses a separate daemon and a 1 MiB buffer, including partial, queued and in-flight
+bytes. A blocked sink cannot hold the owner or observer. Overflow drops whole lines; one
+loss line gives their count and byte count when output resumes. Shutdown waits at most two
+seconds for output after server cleanup; a hard crash may lose buffered lines.
 
 Catalog gauges use the initial validated header and subsequent publications in store-owner
 order. Delayed notifications cannot overwrite a newer count. Unavailable or invalid initial
 facts have no sample; the scrape neither joins store work nor rereads the filesystem.
+Pending-publication gauges also read published store-owner state. A known empty inventory
+emits zero; initialization or incomplete recovery omits the count. The gauge includes no
+session id, receipt path, failure message or robot identity. Use the replica publication
+status route for the selected session's safe refusal details. If configured copies share a
+store id, its pending-count series is omitted: the label cannot distinguish the copies,
+and neither summing them nor choosing one would describe the selected store.
 
 Topic count and record/byte counters have the same `session_started_at` label. Components are
 independent published snapshots, as in the live tools; a scrape never waits for the NT4 loop,

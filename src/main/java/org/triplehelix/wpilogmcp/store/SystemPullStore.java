@@ -9,6 +9,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.util.ArrayList;
@@ -18,6 +19,7 @@ import java.util.UUID;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.capture.context.DeviceIdentity;
 import org.triplehelix.wpilogmcp.capture.pull.KernelLines;
+import org.triplehelix.wpilogmcp.log.LogFileAccess;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 import org.triplehelix.wpilogmcp.store.StoreManifest.*;
 import org.triplehelix.wpilogmcp.sync.*;
@@ -31,6 +33,10 @@ public final class SystemPullStore implements FileTransfer.Local {
       long from, long to, Path previous, long previousBytes) {}
   private final LogStore store;
   private final CopyLeaseGroup copyLeases = new CopyLeaseGroup();
+  private LogStore.Mover copier = new LogStore.Mover();
+
+  /** A stalled destination copy must not occupy the store owner or capture admission. */
+  void copier(LogStore.Mover value) { copier = java.util.Objects.requireNonNull(value); }
   private final SecurityValidator security;
   private final DeviceIdentity identity;
   private final Clock wall;
@@ -202,9 +208,90 @@ public final class SystemPullStore implements FileTransfer.Local {
     store.capture(io -> { if (!Files.isRegularFile(staged(io, name))) throw new IOException("Missing system file"); return null; });
   }
   @Override public String verified(PullManifest.Entry entry) throws IOException {
-    var text = copyLeases.await(store.captureAsync(io -> place(io, staged(io, entry.localName()), entry.remoteName(), source(entry.remoteName()))));
-    store.publishedSystemText(text);
-    return entry.localName(); // Keep the prefix in staging for content-checked resume after growth.
+    var io = new StoreFiles(store.root(), security);
+    // Only disposable, lock-owned stages are recovered. The pull journal still owns its prefix.
+    ImportStage.recover(io);
+    var from = staged(io, entry.localName());
+    var lease = LogFileAccess.read(from);
+    Prepared prepared = null;
+    boolean admitted = false;
+    try {
+      var before = stamp(from);
+      if (before.size() != entry.size() || entry.bytesCopied() != entry.size())
+        throw new IOException("System transfer size changed after verification");
+      String hash = StoreFiles.hash(from);
+      checkSource(from, before);
+      var plan = copyLeases.await(store.captureAsync(files -> prepare(files, from, before,
+          entry.remoteName(), source(entry.remoteName()), hash)));
+      prepared = new Prepared(lease, copier);
+      if (Files.exists(io.check(plan.to()))) {
+        prepared.existing = stamp(plan.to());
+        if (!hash.equals(StoreFiles.hash(plan.to())))
+          throw new IOException("System file content differs from its hash");
+        checkSource(plan.to(), prepared.existing);
+      } else {
+        // The prefix and immutable snapshot coexist; reserve both physical allocations.
+        prepared.stage = ImportStage.create(io, plan.to().getParent());
+        prepared.copy = prepared.stage.path(plan.to().getFileName());
+        prepared.reservation = store.reserveDiskCopy(prepared.copy.getParent(), before.size());
+        if (!Files.getFileStore(prepared.copy.getParent()).equals(Files.getFileStore(plan.to().getParent())))
+          throw new IOException("System placement stage is not on the destination filesystem");
+        var attributes = copier.copy(from, prepared.copy, before.size());
+        if (Files.size(prepared.copy) != before.size() || !hash.equals(StoreFiles.hash(prepared.copy)))
+          throw new IOException("System transfer content changed while copying");
+        copier.force(prepared.copy);
+        attributes.restore(prepared.copy);
+        prepared.copyStamp = stamp(prepared.copy);
+      }
+      checkSource(from, before);
+      if (!hash.equals(StoreFiles.hash(from)))
+        throw new IOException("System transfer content changed while copying");
+      var span = plan.shared() ? SystemLogIndex.span(
+          prepared.copy == null ? plan.to() : prepared.copy, plan.format()) : null;
+      var owned = prepared;
+      var publication = store.captureAsync(files -> publish(files, plan, owned, span));
+      // A timed-out/interrupted caller does not own the admitted turn's lifetime. Retain the
+      // stage and both leases until publication and its cleanup really unwind.
+      var completed = publication.whenComplete((text, failure) -> owned.close());
+      admitted = true;
+      var text = copyLeases.await(completed);
+      store.publishedSystemText(text);
+      return entry.localName(); // Keep the durable prefix for content-checked resume after growth.
+    } finally {
+      if (!admitted) {
+        if (prepared != null) prepared.close();
+        else lease.close();
+      }
+    }
+  }
+
+  private static void checkSource(Path path, Stamp expected) throws IOException {
+    if (!expected.equals(stamp(path))) throw new IOException("System transfer source changed: " + path);
+  }
+
+  /** Own temporary bytes through the underlying publication, not just its response waiter. */
+  private static final class Prepared implements AutoCloseable {
+    private final LogFileAccess.Lease lease;
+    private final LogStore.Mover copier;
+    private DiskSpaceBudgets.Reservation reservation;
+    private ImportStage stage;
+    private Path copy;
+    private Stamp copyStamp;
+    private Stamp existing;
+    private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
+    Prepared(LogFileAccess.Lease lease, LogStore.Mover copier) { this.lease = lease; this.copier = copier; }
+    @Override public void close() {
+      if (!closed.compareAndSet(false, true)) return;
+      try {
+        if (copy != null && Files.exists(copy)) copier.discardCopy(copy);
+      } catch (IOException failure) {
+        LoggerFactory.getLogger(SystemPullStore.class).warn("System placement stage cleanup failed: {}", failure.getMessage());
+      } finally {
+        if (stage != null) stage.close();
+        lease.close();
+        if (reservation != null) reservation.close();
+      }
+    }
   }
   private String source(String name) throws IOException {
     String value = sources.get(name); if (value == null) throw new IOException("Unlisted system source: " + name); return value;
@@ -226,38 +313,94 @@ public final class SystemPullStore implements FileTransfer.Local {
   private Provenance provenance(String remote) {
     return new Provenance("pulled", remote, remote.substring(remote.lastIndexOf('/') + 1), wall.instant().toString(), false, identity.serialNumber());
   }
-  private Text place(StoreFiles io, Path from, String remote, String source) throws IOException {
-    String hash = StoreFiles.hash(from); String basename = remote.substring(remote.lastIndexOf('/') + 1);
+  private record Placement(Path from, Stamp stamp, String storeId, Path selectedManifest,
+      String selectedId, Path manifest, String targetId, String openCapture, String pid,
+      String remote, String source, String hash, String format, String note, boolean shared,
+      Path to, List<SystemLogState.File> earlier) {}
+
+  /** Only metadata selection is serialized; the immutable payload is prepared by the puller. */
+  private Placement prepare(StoreFiles io, Path from, Stamp stamp, String remote, String source,
+      String hash) throws IOException {
+    checkSource(io.check(from), stamp);
+    String basename = remote.substring(remote.lastIndexOf('/') + 1);
     try { StoreFiles.component(basename); } catch (IllegalArgumentException e) { basename = "remote.txt"; }
-    Path destinationManifest = manifest(io); Session target = session(io); String note = null;
+    Path selectedManifest = manifest(io);
+    var selected = io.read(selectedManifest, Session.class);
+    if (!selected.id().equals(current.session().id()))
+      throw new IOException("System pull selected session changed");
+    Path destinationManifest = selectedManifest;
+    Session target = selected;
+    String note = null, selectedPid = null;
     if (source.equals("jvm_crash")) {
       var pid = java.util.regex.Pattern.compile("hs_err_pid([0-9]+)\\.log").matcher(basename);
       var matches = pid.matches() ? sessions.stream().filter(s -> hasPid(s.session(), pid.group(1))).toList() : List.<StoreCatalog.SessionDirectory>of();
-      if (matches.size() == 1) { destinationManifest = io.check(matches.get(0).path().resolve("session.json")); target = io.read(destinationManifest, Session.class); }
-      else note = matches.isEmpty() ? "No session records this program pid" : "Several sessions record this program pid; placement is unassigned";
+      if (matches.size() == 1) {
+        destinationManifest = io.check(matches.get(0).path().resolve("session.json"));
+        target = io.read(destinationManifest, Session.class);
+        selectedPid = pid.group(1);
+        if (!target.id().equals(matches.get(0).session().id()) || !hasPid(target, selectedPid))
+          throw new IOException("System pull selected pid session changed");
+      } else note = matches.isEmpty() ? "No session records this program pid" : "Several sessions record this program pid; placement is unassigned";
     }
     boolean shared = source.equals("syslog");
-    var earlier = shared ? SystemLogIndex.read(io, robot).files().stream().map(SystemLogIndex.Entry::file).toList() : target.systemLogs().files();
-    boolean held = earlier.stream().anyMatch(f -> f.source().equals(source) && f.sha256().equals(hash));
-    // Receipts are appended in commit order. The longest historical file may predate a rotation;
-    // using it would replay the shorter replacement on every growth until it exceeded that size.
-    var previous = earlier.stream().filter(f -> f.source().equals(source) && remote.equals(f.provenance().originalPath()))
-        .reduce((before, after) -> after).orElse(null);
-    Path previousPath = previous == null ? null : SystemLogFiles.resolve(io, store.root(), destinationManifest.getParent(), target, previous);
+    var earlier = receipts(io, target, shared, source);
     Path parent = shared ? robot.resolve("system") : destinationManifest.getParent().resolve("robot/system");
     if (note != null) parent = parent.resolve("unassigned");
-    var to = io.check(parent.resolve(hash).resolve(basename)); Files.createDirectories(to.getParent());
-    if (!Files.exists(to)) Files.copy(from, io.check(to));
-    if (!hash.equals(StoreFiles.hash(to))) throw new IOException("System file content differs from its hash");
+    var to = io.check(parent.resolve(hash).resolve(basename));
+    Files.createDirectories(to.getParent());
     String format = basename.endsWith(".gz") ? "gzip_text" : "text";
-    var receipt = new SystemLogState.File(shared ? SystemLogState.Location.STORE : SystemLogState.Location.SESSION,
-        StoreFiles.relative(shared ? store.root() : destinationManifest.getParent(), to), source, format, hash, Files.size(to), provenance(remote), note);
-    if (shared) {
-      SystemLogIndex.put(io, robot, new SystemLogIndex.Entry(receipt, SystemLogIndex.span(to, format)));
-      known.put(hash, receipt);
-    } else record(io, destinationManifest, target, receipt);
-    return held || note != null || target.openCapture() == null ? null : new Text(target.id(), io.resolve(destinationManifest.getParent(), target.openCapture().path()),
-        to, source, format, remote, 0, receipt.sizeBytes(), previousPath, previous == null ? 0 : previous.sizeBytes());
+    return new Placement(from, stamp, io.read(store.root().resolve("store.json"), Header.class).id(),
+        selectedManifest, selected.id(), destinationManifest, target.id(),
+        target.openCapture() == null ? null : target.openCapture().path(), selectedPid,
+        remote, source, hash, format, note, shared, to, earlier);
+  }
+
+  private List<SystemLogState.File> receipts(StoreFiles io, Session session, boolean shared,
+      String source) throws IOException {
+    var files = shared ? SystemLogIndex.read(io, robot).files().stream().map(SystemLogIndex.Entry::file).toList()
+        : session.systemLogs().files();
+    return files.stream().filter(file -> file.source().equals(source)).toList();
+  }
+
+  /** Recheck selection and duplicates before one same-filesystem rename and its receipt. */
+  private Text publish(StoreFiles io, Placement plan, Prepared prepared, SystemLogIndex.Span span)
+      throws IOException {
+    checkSource(io.check(plan.from()), plan.stamp());
+    var header = io.read(store.root().resolve("store.json"), Header.class);
+    if (!header.id().equals(plan.storeId()) || header.mirror())
+      throw new IOException("System pull destination store changed");
+    if (!io.read(plan.selectedManifest(), Session.class).id().equals(plan.selectedId()))
+      throw new IOException("System pull selected session changed");
+    var target = io.read(plan.manifest(), Session.class);
+    if (!target.id().equals(plan.targetId()) || !java.util.Objects.equals(plan.openCapture(),
+        target.openCapture() == null ? null : target.openCapture().path())
+        || plan.pid() != null && !hasPid(target, plan.pid()))
+      throw new IOException("System pull destination session changed");
+    var earlier = receipts(io, target, plan.shared(), plan.source());
+    if (!earlier.equals(plan.earlier())) throw new IOException("System pull duplicate facts changed");
+    var to = io.check(plan.to());
+    if (prepared.existing != null) checkSource(to, prepared.existing);
+    else {
+      if (Files.exists(to)) throw new IOException("System pull destination appeared while copying");
+      checkSource(io.check(prepared.copy), prepared.copyStamp);
+      prepared.copier.move(io.check(prepared.copy), to, StandardCopyOption.ATOMIC_MOVE);
+    }
+    boolean held = earlier.stream().anyMatch(file -> file.sha256().equals(plan.hash()));
+    // Receipt order, rather than longest size, identifies the predecessor after rotation.
+    var previous = earlier.stream().filter(file -> plan.remote().equals(file.provenance().originalPath()))
+        .reduce((before, after) -> after).orElse(null);
+    Path previousPath = previous == null ? null : SystemLogFiles.resolve(io, store.root(),
+        plan.manifest().getParent(), target, previous);
+    var receipt = new SystemLogState.File(plan.shared() ? SystemLogState.Location.STORE : SystemLogState.Location.SESSION,
+        StoreFiles.relative(plan.shared() ? store.root() : plan.manifest().getParent(), to), plan.source(),
+        plan.format(), plan.hash(), plan.stamp().size(), provenance(plan.remote()), plan.note());
+    if (plan.shared()) {
+      SystemLogIndex.put(io, robot, new SystemLogIndex.Entry(receipt, span));
+      known.put(plan.hash(), receipt);
+    } else record(io, plan.manifest(), target, receipt);
+    return held || plan.note() != null || target.openCapture() == null ? null : new Text(target.id(),
+        io.resolve(plan.manifest().getParent(), target.openCapture().path()), to, plan.source(), plan.format(),
+        plan.remote(), 0, receipt.sizeBytes(), previousPath, previous == null ? 0 : previous.sizeBytes());
   }
 
   private static boolean hasPid(Session session, String text) {

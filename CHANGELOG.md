@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- The unreleased `health_check` now reports `scan_index_disk_cache`, with current entry and
+  byte counts and process hit/miss counters; previously the released `parsed_log_disk_cache`
+  block described an eager cache unused by ordinary reads. REV cache fields remain.
+
 - Automatic mirror synchronization now uses the format-2 replica protocol. Previously
   scope and capacity could evict collected files and the writer excluded finalized captures.
   Legacy mirrors now require explicit format-2 migration; old files, pins and journals survive
@@ -33,20 +37,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The unreleased replica service now records each deferred capture publication's safe cause
+  and failure times, and serves bounded remote status and exact pending-session lookup.
+  Previously markers lost the explanation across restart and peers had no pending-session
+  status route. Complete pending counts are also available as a metric.
+
+- The unreleased lazy reader now persists bounded, versioned scan indexes in the shared
+  disk cache, with fresh whole-source verification before reuse; previously every evicted
+  ordinary log was scanned again. Known active and growing sources bypass persistence.
+
+- The unreleased presentation reads now unwrap declared scalar angles before exact output
+  or reduction on `read_entry`, the data endpoint and recording previews, using the chart's
+  existing rule. `read_entry` and the data endpoint also accept explicit angle units for
+  plain numbers. Previously a 179° to −179° crossing reduced to a mean of 0° on those paths;
+  it now gives 180°. Native `/read/v1` retains raw values and arithmetic means.
+
+- The unreleased data endpoint now accepts `utc=true`, adding a nullable measured UTC
+  timestamp to Arrow and CSV beside the original log timestamp, with per-entry clock and
+  null-sample basis; previously it returned only log-clock timestamps.
+
 - The unreleased replica status and metrics now warn when records or exclusions reach
   80 percent of their separate count limits; previously operators had no count warning
   before catalog publication reached the cap. Metrics use validated facts in store-owner
-  order and omit unavailable facts; pending capture-publication causes remain a separate gap.
+  order and omit unavailable facts. Pending capture-publication causes are reported separately.
 
 - The unreleased capture service now publishes bounded recorder state and write/stall ages
   in `/health`; previously a stopped recorder was indistinguishable from an active one there.
   A stopped recorder keeps process health `ok`. Synthetic and targeted checks passed;
   real-robot validation remains outstanding.
 - The unreleased store now shares physical disk reservations across stores on the same
-  filesystem for import staging, uploads, replica transfers and known-length pull staging,
-  retaining reservations until
+  filesystem for import staging, uploads, replica transfers, known-length robot/peer downloads
+  and additional immutable or cross-filesystem placement copies, retaining reservations until
   I/O unwinds; previously these writers could consume capture's reserve before failing.
-  Legacy queued-copy and peer-sync integration remains pending.
+  Unknown-length command output remains outside that admission policy.
 - The unreleased health and metrics routes now expose published usable, reserved and capture
   reserve bytes with opaque filesystem labels; previously server disk space was not measured.
 
@@ -251,6 +274,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The unreleased capture service now continues startup after verified local receipts encounter
+  publication-only failures; previously a full replica catalog could stop recording after
+  restart. Unsafe or corrupt recovery still fails startup.
+
+- `search_system_logs` now preserves recognized written timestamps and clock anchors through
+  exact rational wall-clock inversion, rounding only the final robot seconds to a binary
+  double. Previously epoch-sized floating-point arithmetic lost fractional precision, and
+  distinct large robot-clock anchors could collapse to one double and leave a valid time
+  unplaced. Timestamp grammar, clock selection, session bounds, endpoint extrapolation and
+  kernel mapping are unchanged.
+
+- `search_system_logs` now leaves ambiguous wall-clock mappings unplaced with an explicit
+  reason; previously conflicting duplicate clock coordinates could select a plausible but
+  unsupported robot time.
+
+- The unreleased peer synchronization now downloads, paces and verifies on a staging worker,
+  with a separate persistent journal lock and short store publication turns. Previously a slow
+  peer held `store.lock` and the mutation owner for the whole sync, preventing capture admission.
+  Publication rechecks selected-session, duplicate, store-role and byte proofs; the next sync
+  recovers receipts before peer contact while preserving incomplete-download and system-text
+  resume prefixes. A completed cross-filesystem telemetry copy's original staging bytes are
+  removed only after destination and source proof, including recovery of a committed receipt.
+- The unreleased peer and robot-pull copy paths now reserve their additional destination
+  allocations before payload I/O, and prepare immutable system-text or cross-filesystem copies
+  outside the store worker. Previously those copies bypassed the capture reserve or could run
+  on the owner through a filesystem move. Prepared copies are rechecked before atomic placement;
+  changed originals remain after a committed copy instead of being deleted during cleanup.
+- Server log output now uses a bounded 1 MiB buffer and a separate daemon, with whole-line
+  loss counts and an ordered loss notice. Previously a blocked stderr could hold logging
+  threads, including recording and the store owner. Normal shutdown drains after server
+  cleanup for at most two seconds; a blocked sink or crash can still lose queued lines.
 - The unreleased WPILOG reader now rejects synchronization-cache format 12 when adopting exact
   sample order; previously a cached REV alignment could survive a change to the ordering of its
   WPILOG clock inputs. Format 13 recomputes those answers from original microseconds.
@@ -263,9 +317,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the store queue and lock, then publishes rechecked groups in short turns. Capture turns take
   priority, an independent watchdog counts actions exceeding one second, and shutdown
   retains active staging resources until I/O finishes. Previously a long import could exhaust
-  capture admission and stop recording for the rest of a robot boot. A blocked logging callback
-  can still hold the owner after its action timer ends; the decided fix, a bounded log buffer, is
-  not yet implemented.
+  capture admission and stop recording for the rest of a robot boot. Its completion report now
+  uses the shared bounded log buffer, so blocked stderr cannot hold the owner after the action.
 - The unreleased capture admission now retries a held `store.lock` with bounded backoff until
   its admission deadline; previously transient contention from another importer stopped it at
   the first attempt.
@@ -572,7 +625,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The unreleased architecture guide now states six recording and resource principles with
   the failures that motivated them, and `doc/DECISIONS.md` locates standing, superseded and
   rejected choices; previously those rules were scattered through plans and reviews. The
-  disk-reserve principle explicitly records the remaining gaps in writer admission.
+  disk-reserve principle records copying-writer coverage and the remaining unknown-length
+  command-output gap.
 - The unreleased experimental Explorer plan is now named
   `doc/pit-server/EXPLORER_REMOTE_SESSIONS.md`; previously it shared `EXPLORER_PLAN.md`
   with the main viewer plan, making bare citations ambiguous.
@@ -597,7 +651,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The JFR plan now distinguishes chunk clock anchors from flush delivery time and specifies the measurement needed before streaming; the shop checklist explicitly checks team-owned JMX launch flags, reachability and sampling state.
 - Guides describe the shared server, session leases, user-scope registration, safe legacy migration, capture/store/live layers and their concurrency and network rules. Previously the architecture overview and setup instructions still described private per-project servers. Detailed configuration, testing and remaining manual checks stay in their owning guides.
 - `doc/PIT_SERVER_PLAN.md` and `doc/EXPLORER_PLAN.md` record the implemented pit and viewer layers, their decisions and the work still proposed, linked from `doc/IDEAS.md`. These workflows previously had no team-facing overview or shared development specification.
-- `doc/COLUMNAR_STORE_PLAN.md` records the proposed DuckDB and Parquet analytics cache and why it was rejected: it named no measured problem, Grafana's path already runs through the data endpoint, and a native engine would share the process that records. The weaknesses that review found in the current design are addressed by `doc/ARCHITECTURE_HARDENING_PLAN.md`: an import can stop a recording, nothing measures free disk space, `/health` cannot see a stalled capture, two read paths bucket samples differently, several costs grow with the whole store, and the rules behind these choices were not written down. Previously the risk an import poses to a recording and the missing disk measurement were undocumented. Hardening item 1 and the safe copy/capture subset of item 2 have targeted checks and mutation tests. Item 8 adds the principles, native-artifact guard, decision index and plan rename; its targeted checks and behavioral plants pass. Item 3's full synthetic soak, public health/restart targeted checks and behavioral plants pass. Item 4 corrects integer-microsecond membership and order. Item 5 adds rechecked listing reuse, catalog count warnings and a synchronization-cache compatibility guard, with synthetic before/after measurements. Item 7 records the planned multi-session contract and synthetic measurements. The run stopped at choices about blocked logging, legacy copies, item 6's wall-clock mapping, route differences, the scan index, publication-failure reporting and the multi-session tool; the plan now records the maintainer's decision on each, none yet implemented. The hardening run's one full build failed on four outdated test expectations; the corrected tests pass in targeted runs, but no second full build has run. Its extension, follow-broker, native-sample harness and native-library checks passed. The columnar proposal remains rejected.
+- `doc/COLUMNAR_STORE_PLAN.md` records the proposed DuckDB and Parquet analytics cache and why it was rejected: it named no measured problem, Grafana's path already runs through the data endpoint, and a native engine would share the process that records. The weaknesses that review found in the current design are addressed by `doc/ARCHITECTURE_HARDENING_PLAN.md`: an import can stop a recording, nothing measures free disk space, `/health` cannot see a stalled capture, two read paths bucket samples differently, several costs grow with the whole store, and the rules behind these choices were not written down. Previously the risk an import poses to a recording and the missing disk measurement were undocumented. Hardening item 1 and the safe copy/capture subset of item 2 have targeted checks and mutation tests. Item 8 adds the principles, native-artifact guard, decision index and plan rename; its targeted checks and behavioral plants pass. Item 3's full synthetic soak, public health/restart targeted checks and behavioral plants pass. Item 4 corrects integer-microsecond membership and order. Item 5 adds rechecked listing reuse, catalog count warnings and a synchronization-cache compatibility guard, with synthetic before/after measurements. Item 7 records the planned multi-session contract and synthetic measurements. The run stopped at choices about blocked logging, legacy copies, item 6's wall-clock mapping, route differences, the scan index, publication-failure reporting and the multi-session tool; the plan records the maintainer's decision on each. The second run implements bounded server logging and item 2's remaining copy ownership, with targeted checks and behavioral plants complete. Item 6 adds the optional UTC column, shared ambiguity handling and exact wall-clock inversion, with targeted checks complete and 37 of 38 plant attempts caught, all restored. Item 4 now has angle presentation and the five-route differential matrix, with targeted verification complete and all 23 second-run behavioral plants caught and restored. Item 5a now persists verified scan indexes, with targeted checks, all 31 behavioral plants caught and restored, and synthetic before/after measurements. The maintainer also approved bounded remote replica status, pending-session lookup and continuation of capture startup after verified publication-only failures; that implementation has passed targeted owner/transport verification and all 42 behavioral plants, with exact restoration. Item 7 now has a detailed design and synthetic cost/response measurements, and stops for approval before a tool is built. The first run's full build failed on four outdated test expectations; corrected targeted checks and its extension, broker, native-sample and native-library checks passed. The second run's full build failed with six failures from missing standalone-reader dependencies, documentation field classifications and a historical fixture bypassing the store queue. Those corrections pass targeted checks and their five behavioral plants were caught and restored. The approved second full build resolved those failures but timed out in the existing daemon-restart concurrency test; its single isolated retry and the native-library guard passed. The second-run extension, broker and macOS native-sample checks passed. Full-build acceptance remains open, and item 7 still stops at design approval. The columnar proposal remains rejected.
 
 ## [0.9.1] - 2026-10-04
 

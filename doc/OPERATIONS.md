@@ -739,6 +739,26 @@ An unassigned file appears under **Unassigned** in the Logs view and under `unas
 the server; the HTTP route is `POST /store/assign`
 ([The Import Endpoint](STANDALONE.md#the-import-endpoint)).
 
+#### 7.4 Syncing from another laptop
+
+Run `wpilog-mcp sync http://other-laptop:2363`, or use **Sync from Laptop**, to bring missing
+files into the selected local store. The owning server downloads, verifies and prepares
+copies away from the store mutation worker, so capture admission does not wait for a peer
+read or a payload copy. Short turns recheck and publish each file; shared filesystem latency
+still affects both operations.
+
+A copy that would consume capture's reserve is refused before payload I/O. Its reason names
+`free_bytes`, `reserved_bytes`, `capture_reserve_bytes` and `requested_bytes`. Free space or
+adjust the configured reserve before retrying. Interrupted transfers keep their journaled
+prefixes, and the peer must prove those bytes before they resume. At the next sync, pending
+placement receipts recover before any peer connection. Incomplete downloads and system-text
+prefixes stay available for resume. A completed cross-filesystem telemetry copy's original
+staging bytes are removed after verification, including when recovery finds an already
+committed receipt; changed originals remain with a refusal. Do not delete `.sync` or its
+lock file to force a retry. A second sync to the same store is refused.
+See [Syncing Stores Between Laptops](pit-server/STANDALONE.md#syncing-stores-between-laptops)
+for server selection, rate limits and result fields.
+
 ### 8. Maintenance
 
 - **Upgrading.** Run the installer again ([6.6](#66-upgrade-replace-uninstall)). A background
@@ -753,8 +773,9 @@ the server; the HTTP route is `POST /store/assign`
   by removing or moving files you intend to retire, then leave the server running: a new
   recording starts once usable space exceeds 768 MiB. The old low-disk end reason and the
   new session's start time show the unrecorded interval. Unknown space leaves the current
-  state unchanged. See [capture disk settings](pit-server/STANDALONE.md#pit-server), including
-  the copy paths whose reserve integration remains pending.
+  state unchanged. Import, upload, replica, known-length robot/peer downloads and their
+  additional placement copies share the reserve. Unknown-length command output remains
+  outside that admission policy. See [capture disk settings](pit-server/STANDALONE.md#pit-server).
 - **Memory.** `WPILOG_MAX_HEAP` (default `4g`) sets the server's heap. Large logs may need
   `8g`; the extension's `maxHeap` setting supplies the heap when it starts the server.
 - **Secrets.** Keep the TBA key in YAML, the environment or the extension's secret storage,
@@ -772,6 +793,7 @@ the server; the HTTP route is `POST /store/assign`
 | Port 2363 is busy | `/health` answers from something else | Change `servers.http.port` in `servers.yaml` and restart |
 | Every tool answers `no_match` or an error naming the directory | `list_available_logs`: `log_directories` | The log is outside every configured or leased directory: add it ([6.3](#63-configure-the-server), [6.5](#65-project-directories)) |
 | Out of memory on a large log | The server log | `WPILOG_MAX_HEAP=8g`, or the extension's `maxHeap`, then restart |
+| `[wpilog] Dropped log output` appears | The line's lost-line and byte counts; `wpilog_log_dropped_lines_total` | The terminal or journal stopped keeping up with the 1 MiB log buffer. Restore its output path; recording and requests continue, but the discarded diagnostic lines cannot be recovered. |
 | A log is reported truncated | `_metadata.log_truncation` in results | Normal for a robot switched off while logging; every result says what was read |
 | An imported log sits in its own session | `matching_reason` in `list_available_logs` | The data proof failed or was ambiguous; the file is still readable by path. Nothing is guessed |
 | An import is refused as outside the configured directories | The command's output | Copy the files into the store's `inbox/` |
@@ -869,8 +891,23 @@ explains manual peers, offline master IDs, discovery limits and service ownershi
 If `list_sessions` reports `replica_publication_failure`, capture is still recording locally, but
 one or more completed receipts could not enter the replica catalog. Preserve the store and its
 `.replica-publication.json` markers. Check the reported capacity or I/O failure before retrying
-publication; restarting does not discard those receipts or prevent the next recording. The
+publication. A restart may continue recording when recovery verifies the local receipts and
+only catalog publication remains pending; unsafe or corrupt recovery still stops startup. The
 [mirror reference](pit-server/STANDALONE.md#the-mirror) lists the metadata limits and recovery bound.
-Mirror status does not yet preserve an aggregate reason for every pending capture publication
-across restart; inspect the capture's reported failure and server log instead of inferring the
-cause from the catalog count.
+
+To inspect the origin from another machine, obtain a replica handshake, select its exact
+`store_id`, and send `POST /replicas/v1/status` with that ID and the `Replica-Session` header.
+Read `pending_total` and each pending entry's `code`, safe `message`, `first_failed_at` and
+`failed_at`. A shortened summary reports its true total in `limits.pending_publications`;
+select an omitted session with the optional exact `session_id`. Its retryable
+`PUBLICATION_PENDING` reply carries the recorded cause. `CAUSE_NOT_RECORDED` means an older
+marker has no diagnostic, not that the catalog count proves a cause. If `cause_durable` is
+false, preserve the store and inspect local I/O errors: the current cause could not be saved.
+
+Resolve the reported metadata-capacity, authority or I/O problem before retrying recovery
+(including on restart); do not delete pending markers to hide it. A successful retry clears
+the entry and preserves its published file identities. `BUSY` means recovery or the selected
+publication changed; retry after the stated delay rather than treating the session as absent.
+The local Mirror Status view still describes the local replica. Use the origin's
+[remote publication status](STANDALONE.md#remote-replica-publication-status) for its pending
+receipts. Status reads do not themselves trigger retry or a filesystem walk.

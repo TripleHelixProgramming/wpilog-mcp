@@ -98,6 +98,13 @@ cross-process lock. Local prefix hashing also uses a retained read lease outside
 All pulled-file moves reserve and drain source readers on the pull worker; the reader-drain budget
 is three seconds, and exhaustion leaves the staged file for retry.
 
+Same-filesystem placement uses an atomic rename. A cross-filesystem move reserves the additional
+destination bytes and copies, hashes and forces an owned destination stage on the pull worker.
+The final turn rechecks the source and prepared copy before renaming and recording the result.
+The original is removed only after commit and a fresh source snapshot/hash check; a changed
+original stays with an explained cleanup refusal. Placement retains its existing aliases and
+retry behavior, without adding a robot-pull placement receipt.
+
 Short queued operations snapshot ownership and manifests, then recheck file identity/size/mtime,
 transfer progress and the complete matching candidate set before moving bytes and writing
 manifests. They do not repeat payload scans, hashes or correlation under the lock. A capture may
@@ -112,10 +119,13 @@ under `store.lock`. A changed source is refused. One mutation owner selects capt
 before waiting import turns; an import's payload inspection cannot occupy that owner.
 The one-second mutation-action budget is observed from a separate daemon and counted once per
 over-budget action, without interruption. It cannot preempt an operating-system operation.
-The current reporter can block in its log sink after the action timer ends, holding the owner
-without increasing that duration; its outside observer can also block while reporting.
-[The hardening plan](../ARCHITECTURE_HARDENING_PLAN.md#implementation-disposition--2026-10-20)
-records the pending policy for bounded reporting without delaying capture.
+The reporter admits its line to the process's bounded stderr buffer after the action timer
+ends. A separate daemon drains that buffer, so a blocked journal cannot hold either the store
+owner or its outside observer. The 1 MiB allowance includes incomplete, queued and in-flight
+bytes. Overflow discards whole lines and counts their bytes; one ordered loss line reports
+the gap when output resumes. Capture's periodic cost and error logging use the same owner.
+Shutdown drains after capture and reader cleanup, with at most a two-second output wait;
+a hard crash can lose queued logs. The WPILOG remains the recording.
 
 #### Session matching
 
@@ -345,6 +355,14 @@ are omitted. No candidate changes placement.
 #### Recovery
 
 The service queues recovery after HTTP is listening, then starts NT4 only when the sweep completes.
+Completed local receipts can remain unpublished when the replica catalog is full. The store
+classifies that outcome as `PublicationPendingException` only after a complete, safe receipt
+sweep. Capture startup tolerates that specific publication outcome while preserving its
+pending status; ordinary I/O errors, malformed publication intents and unsafe paths still
+fail startup. The tolerance applies to publication refresh after capture recovery, not to
+capture recovery itself, and never classifies a failure from its message text. A well-formed
+intent whose proposed and previous hashes match no committed receipt retains the existing
+uncommitted-attempt rollback behavior.
 Scanning and hashing an abandoned capture cannot delay the daemon health endpoint. Each
 `open_capture` is claimed with the same persistent sidecar lease as the writer, and a live writer is
 skipped. The OS lock covers other processes, and the local claim avoids opening a second channel to
@@ -358,7 +376,7 @@ facts without waiting for recovery, NT4 or the store owner. Listener and store i
 observations preserve completion racing a probe and leave cumulative metrics intact; every
 health caller shares the interval boundary. A force-only close does not reset the last
 record-write age, and stopped capture leaves process health `ok`. Store maxima retain the
-reporting limitation above.
+action-duration scope above.
 
 Recovery scans a readable file before hashing it, preserves an incomplete-tail flag and previously
 closed files, and uses file modification time for `ended_at`, with `end_reason` set to
@@ -453,7 +471,30 @@ Overlapping windows with the same serial describe one boot. Taking the smallest 
 
 A capture flush replaces only its own files and retains peer files and match facts. Peer captures go under `peer/<sha256>/`, because a currently unused `capture-N.wpilog` name still belongs to the local writer's future rollover. The original file provenance stays intact, with an append-only `copied_from` history. Local nonempty robot names/comments win, and disagreements go to session conflicts. None of these additive fields changes format 1.
 
-A sync is a reader of the peer and a queued, locked writer of its own store. The loopback-only `POST /store/sync` job and the offline command share that operation, and a second sync to the same store is refused. The command never bypasses a failing running daemon. `store.json` remembers peer URLs. `.sync/peer-<store-id>/pull.json` owns incomplete bytes and superseded transfer attempts without exposing them through the door. Atomic placement and session-merge receipts bridge filesystem moves and manifest replacements; the next sync finishes pending receipts before network contact, even with the peer offline. An occupied unmanifested path is kept as a stray, never adopted or overwritten. Results name copied bytes, existing hashes, conflicts, refusals and the offset of an interrupted file.
+A sync's daemon staging worker owns its journal, downloads, pacing, hashes, inspection and
+reader drains. The permanent `.sync/.owner.lock` excludes another sync process while releasing
+`store.lock` between short publication turns. The loopback-only `POST /store/sync` job and the
+offline command share that protocol; a second sync to the same store is refused. The command
+never bypasses a failing running daemon. Each publication rechecks the store's identity and
+role, selected session, duplicate inventory and prepared bytes before its receipt, atomic
+rename and manifest change. Peer waits and payload copies do not occupy the mutation owner.
+
+Each download reserves its remaining declared bytes before payload I/O. Cross-filesystem
+placement and immutable system-text copies reserve their additional allocation on the actual
+destination filesystem, then copy, verify and force off the owner. Transfers close on every
+exit; response cancellation cannot retire a journal owner or reservation before its I/O
+unwinds. Progress reporting, rate limits and job states remain attached to the same sync.
+
+`store.json` remembers peer URLs. `.sync/peer-<store-id>/pull.json` owns incomplete bytes and
+superseded attempts without exposing them through the door. Atomic placement and session-merge
+receipts bridge filesystem moves and manifest replacements; the next sync recovers pending
+receipts before network contact, even with the peer offline. Journal-owned incomplete downloads
+and system-text prefixes remain available for proved resume; abandoned owned placement copies
+can be removed. A completed cross-filesystem telemetry placement removes its original staging
+bytes only after destination and source proof. Recovery performs that cleanup even for a
+committed receipt, retaining a changed original with an explained refusal. An occupied
+unmanifested path is kept as a stray, never adopted or overwritten. Results name copied bytes,
+existing hashes, conflicts, refusals and the offset of an interrupted file.
 
 #### Mirrors
 
@@ -629,10 +670,14 @@ channel from opening. The next snapshot starts from the committed cursor, and SF
 prefix. A real-SSH regression caught this by opening a hash channel beside a paused ring-buffer
 reply.
 
-`store.SystemPullStore` serializes placement and atomic receipts on the store queue. Immutable
-snapshots preserve rotations. Kernel/journal append lengths and cursors commit together, and an
-interrupted append is truncated to that receipt before retry. Kernel and journal clocks remain
-different even when their messages happen to agree.
+`store.SystemPullStore` prepares immutable snapshots on the pull worker, retaining the source
+lease while it reserves the second allocation, copies, hashes and forces a private destination
+stage. A short store turn rechecks source, selected session, text receipts and destination,
+then atomically renames the copy and records it. The journal-owned prefix remains available
+for proved resume and rotations. Kernel/journal append lengths and cursors still commit
+together, and an interrupted append is truncated to that receipt before retry; those
+unknown-length command appends are outside this copy-admission change. Kernel and journal
+clocks remain different even when their messages happen to agree.
 
 `store.SystemPullStore` owns a parsed inventory and catalog snapshot for its connection.
 File/directory metadata detects manifest replacements, placements and session changes; an idle pass
@@ -656,6 +701,9 @@ text; tail entries are a timely receipt-time copy.
 The catalog-backed door exports session receipts and the shared index, with the same range,
 prefix-hash and path admission as telemetry. `SystemPeerSync` uses `FileTransfer` for held-prefix
 proof and pacing; text verifies by the receipt's hash and size instead of a telemetry decoder.
+A separate reservation covers its immutable destination copy while the journal retains the
+downloaded prefix. Hashing, copying and forcing run off the store owner; the publication turn
+rechecks source and metadata facts before its atomic rename and receipt update.
 A durable placement receipt recovers a copy interrupted before manifest publication. Mirror
 sync uses the same checks and keeps origin receipts, counts shared bytes once toward capacity,
 and releases them only after their last retained session and proof the origin still has them.

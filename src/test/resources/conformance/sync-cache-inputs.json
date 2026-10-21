@@ -1,8 +1,8 @@
 {
   "format_version": 13,
   "reviewed_at": "2026-10-20",
-  "decision": "format_bump",
-  "reason": "Exact WPILOG microsecond ordering now reaches REV synchronization inputs; format 13 invalidates prior cached answers. The accompanying store scheduling, transport, catalog, and capacity changes do not change the synchronization recipe.",
+  "decision": "cache_unaffected",
+  "reason": "Format 13 retains the earlier exact-microsecond ordering invalidation. The item 6 addition left legacy WallClock methods used by REV unchanged. Item 5a adds optional persisted scan indexes and bounded restoration of the same declarations, offsets, exact ordering proof, bounds and damage facts; fresh-scan selection, decoding and REV synchronization arithmetic remain unchanged. New whole-content proof and eligibility checks may refuse changed manifested sources but do not alter valid decoded answers. Cache-off, first indexed open and actual persisted-hit comparisons independently check sample order, duplicate and adjacent microseconds, metadata and statistics. No REV parser, decoder, synchronization algorithm or serialized synchronization result changed. Final ownership review preserves explicit new reads after shutdown through a generation fence, rechecks source eligibility after encoding, and separates source refusals from optional cache I/O; decoded scan facts and REV algorithms remain unchanged.",
   "source_sha256": {
     "edu/wpi/first/util/datalog/DataLogAccess.java": "9e6659d846e967a7a97ffb85ad288326f362c00e6bd32fbe9c2384f5cca79b11",
     "org/triplehelix/wpilogmcp/cache/ContentFingerprint.java": "a14b91a05ed93c9dc985852a76951f681592f9b61e8b998e29213a44aa80b148",
@@ -10,20 +10,20 @@
     "org/triplehelix/wpilogmcp/cache/SyncDiskCache.java": "59076b8d38ad521a423165a66123f91bea852152edb6fc660d752284106d5120",
     "org/triplehelix/wpilogmcp/log/EntryInfo.java": "c0c5958be7e2b1df9066349e8080f701a91d66235dc52cb06e37d42dd10edd3c",
     "org/triplehelix/wpilogmcp/log/FileSnapshot.java": "394586e261df0b8ead605f67ff09334b4d439c114ae526e7de332df0c65bc68b",
-    "org/triplehelix/wpilogmcp/log/LazyParsedLog.java": "23a37106f1184cc5839a1bafa34cbc334e503de6367a4ee317c4852786367e5d",
+    "org/triplehelix/wpilogmcp/log/LazyParsedLog.java": "d6a7a4c6e6a54c06c7edf8dff72db8cfb2530190b2f65811d6a5d082bb0c2323",
     "org/triplehelix/wpilogmcp/log/LiveLog.java": "46bce008b7372a344d34ab4214a1115b7c3e2eb0b1ab3e28c9f2bbf9556c4d6c",
     "org/triplehelix/wpilogmcp/log/LogBytes.java": "7132f203db4e70b6bbdff119acd960432944d87ec4fddfcc3da24a9580428a75",
     "org/triplehelix/wpilogmcp/log/LogData.java": "41036e6fdf50ba7b9009cf132f6a896e20ae5845eeb90ebdaf4b3d30ad8182e7",
     "org/triplehelix/wpilogmcp/log/LogDirectory.java": "b0fdee93e93536d098b1da5eb274c27f270e3acdc78fd054ad077c3a7f609339",
-    "org/triplehelix/wpilogmcp/log/LogManager.java": "fee479f39066407ebf294b8cbe11a0956ea72721332d0e39ffda8dae360f9de9",
-    "org/triplehelix/wpilogmcp/log/LogReader.java": "f7c65e1df27a0eca0d08750008606be109e766b09a37784d37d8f4c64db2d92d",
-    "org/triplehelix/wpilogmcp/log/LogScan.java": "2a40eafb495d34fef8895c034d2f598581494477d46ccfad693dfd9bb82b7f26",
+    "org/triplehelix/wpilogmcp/log/LogManager.java": "f577d323e519a9a14690a2b8bd553df66aa6247d67a24f9676dc37f5cc60a560",
+    "org/triplehelix/wpilogmcp/log/LogReader.java": "26a33fab7df00e7b255203d6a3570147df903f34cf58eec7befff7dca146d994",
+    "org/triplehelix/wpilogmcp/log/LogScan.java": "ae044f7252e8bfb98d13ea8a19644146db753126ffe7b91ded5f78b51703a9d5",
     "org/triplehelix/wpilogmcp/log/MappedLogBytes.java": "b7e3470779478fadd040f7facabe4812cc849875ff27f3740b072797090dd34a",
     "org/triplehelix/wpilogmcp/log/ParsedLog.java": "c2b1825754c6a52bf19af2e0d2bbb4c374b7f44b1e80246ebcfa15aa69969b6d",
-    "org/triplehelix/wpilogmcp/log/RecordOffsets.java": "1d35bc2ae83b427eae121c3f7b263329de5900d2e9f3b0794b664142eebf0113",
+    "org/triplehelix/wpilogmcp/log/RecordOffsets.java": "a9d97d722cb275ce205d628057cfb7da2621e5c6b80746581d669bece2fd37e5",
     "org/triplehelix/wpilogmcp/log/ScopedLogReader.java": "2fef74d5aace9df8d0dc19008d82756cfe7f6af49dfac69f9bfe6b33e7feb39e",
     "org/triplehelix/wpilogmcp/log/TimestampedValue.java": "537ea1fb575ba8666e48cc77995b5513a063c1193e8f3298caefc4d48f686bc2",
-    "org/triplehelix/wpilogmcp/log/WallClock.java": "ec723f1cbb597e38ecb0a7c2a82df9522b50670917477eb11955cc32488c684d",
+    "org/triplehelix/wpilogmcp/log/WallClock.java": "3f090e41b73126cb28e9707fa29637404bfe4e7ca019705d9b7e28fc1d4275c7",
     "org/triplehelix/wpilogmcp/log/subsystems/EntryDecoder.java": "39bbaaeebfd8f009a0dc7c98ce1bbd4cb252a268fbbe169d781bf69c7f00cf3b",
     "org/triplehelix/wpilogmcp/log/subsystems/LogParser.java": "3f4144734ed604ac324c135c63a4cbc96629b6752ec50e118b959d8da9317fd1",
     "org/triplehelix/wpilogmcp/read/LegacyMaterializer.java": "6dc4eb39f4a373322f2f23a533e1919f629b182b6daa2b4e0e0924ca16e87891",
@@ -52,5 +52,5 @@
     "org/triplehelix/wpilogmcp/sync/SyncResult.java": "ab3f6a095fb014f5af9a973b9ff72b0efc3d607a05a62eeaa0df11ad8ffd9b6c",
     "org/triplehelix/wpilogmcp/sync/SynchronizedLogs.java": "17c7e57c1bf22184de8e3f3da579a7bac328cd61431b42859b5757c37da8ae65"
   },
-  "previous_format_version": 12
+  "previous_format_version": 13
 }

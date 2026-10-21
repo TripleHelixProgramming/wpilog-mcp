@@ -93,6 +93,9 @@ is null. Projection changes the value, not its timestamp, offset or original ord
 `reduce(maxPoints)` requests numeric min/max/mean buckets, with 1..4,096 buckets per window.
 It requires time order and a scalar numeric value, optionally selected by `project`. Each bucket
 reports `start_us`, `end_us`, `count`, `finite_count`, `min`, `max`, `mean`, `first` and `last`.
+Means are plain arithmetic means of raw values, including declared angles. Native reads do
+not unwrap them; angle presentation belongs to `read_entry`, `/data/entries`, chart preparation
+and the recording preview.
 Non-finite values count as observations but not finite measurements; an unavailable or overflowed
 measurement is null. The membership rule is `floor((timestamp-start)*maxPoints/(end-start))`,
 capped at the final bucket; integer boundaries round up. The inclusive final timestamp belongs
@@ -228,6 +231,10 @@ unions, follows and typed values. `/data/entries` remains the bulk presentation 
 viewers, scripts and dashboards; the visualization routes serve the preview's admitted sources
 and panels. These roles retain Explorer decision 7 and do not merge admission or formats.
 
+`/read/v1` has no `utc` option or calendar-time column. It retains native log coordinates and
+the recorded alignment for session reads. Applications wanting the optional measured UTC
+column use [`/data/entries`](STANDALONE.md#the-data-endpoint).
+
 Every HTTP server exposes `/read/v1` under the same Origin and path admission as its existing
 read routes. The transport is unauthenticated: keep it on loopback or a private trusted network.
 Native snapshot opens do not start REV discovery, correlation or disk-cache writes; legacy MCP
@@ -356,8 +363,10 @@ The shared cursor owns selection and decoding; the legacy materializer preserves
 `/data/entries` encodings, diagnostics and pagination. WPILOG samples now retain original
 microsecond order, and both numeric reducers use exact integer bucket membership. This corrects
 boundary placement and first/last values when adjacent timestamps round to one double.
-Sparse exact-sample bypasses, chart filtering and angle preparation, and occupied chart-part
-windows keep their existing behavior, so complete route results are not interchangeable.
+The differential test permits four differences: presentation routes can return exact samples
+when they fit; charts bucket each occupied finite part; charts drop nonfinite samples; and
+native reads retain raw declared angles while presentation routes unwrap them. All available
+bucket statistics are still checked under those explicit rules.
 No analysis moves into Arrow; admission and resource lifetimes remain separate.
 
 The [frozen-build comparison](DEVELOPMENT.md#comparing-frozen-server-builds) runs unchanged calls

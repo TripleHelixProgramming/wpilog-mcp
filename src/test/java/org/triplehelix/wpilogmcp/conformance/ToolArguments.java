@@ -149,6 +149,17 @@ final class ToolArguments {
             atResolution.addProperty("max_points", 5);
             variants.add(new Variant(kind.label() + "-max_points", atResolution));
           }
+          if (toolName.equals("read_entry") && kind == Kind.NUMERIC) {
+            for (String unit : List.of("degrees", "radians")) {
+              var angle = args.deepCopy();
+              angle.addProperty("angle", unit);
+              variants.add(new Variant(kind.label() + "-angle-" + unit, angle));
+              var atResolution = angle.deepCopy();
+              atResolution.addProperty("max_points", 5);
+              variants.add(new Variant(kind.label() + "-angle-" + unit + "-max_points",
+                  atResolution));
+            }
+          }
         }
         if (variants.isEmpty()) {
           var args = base.deepCopy();

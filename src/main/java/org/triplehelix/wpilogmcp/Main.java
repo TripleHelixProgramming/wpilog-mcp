@@ -85,6 +85,14 @@ public class Main {
   private static boolean publicRun;
 
   public static void main(String[] args) {
+    // Configuration loading can log before transport selection. Keep short-lived CLI errors
+    // direct, but install before any logger in a process that may become a server.
+    boolean shortCommand = args.length > 0
+        && (List.of("service-unit", "robot-facts", "import", "sync", "install").contains(args[0])
+            || args.length >= 2 && List.of("stop", "connect").contains(args[0]));
+    if (!shortCommand) {
+      org.triplehelix.wpilogmcp.logging.BufferedLogOutput.install();
+    }
     publicRun = args.length > 0 && args[0].equals("run");
     managed = Arrays.asList(args).contains("--managed");
     // Decide the log level before any logger exists (see logger()). A configuration file's
@@ -818,14 +826,14 @@ public class Main {
       if (idleExit != null) {
         httpTransport.setIdleExit(idleExit, exit);
       }
-      Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      org.triplehelix.wpilogmcp.logging.BufferedLogOutput.onShutdown(() -> {
         logger().info("Shutdown signal received");
         // Order matters: drain in-flight HTTP requests first, then shut down LogManager
         // so that in-flight tool calls don't encounter closed logs.
         httpTransport.stop();
         if (capture != null) capture.close();
         logManager.shutdown();
-      }, "shutdown-hook"));
+      });
       if (publicRun) cleanSignalExit();
       try {
         httpTransport.start();
@@ -847,10 +855,10 @@ public class Main {
     } else {
       var finalLogManager = logManager;
       logManager.stores().startWatching();
-      Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      org.triplehelix.wpilogmcp.logging.BufferedLogOutput.onShutdown(() -> {
         logger().debug("Stdio shutdown: shutting down LogManager");
         finalLogManager.shutdown();
-      }, "stdio-shutdown-hook"));
+      });
       if (publicRun) cleanSignalExit();
       var server = new McpServer(toolRegistry);
       try {

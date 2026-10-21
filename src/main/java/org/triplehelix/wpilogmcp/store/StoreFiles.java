@@ -54,7 +54,25 @@ final class StoreFiles {
   }
 
   private java.util.function.Consumer<String> capturePublicationFailure;
-  void recording(java.util.function.Consumer<String> failure) { capturePublicationFailure = failure; }
+  private java.util.function.Consumer<ReplicaPublications.Event> capturePublication = event -> {};
+  private java.time.Clock publicationClock = java.time.Clock.systemUTC();
+  @FunctionalInterface interface AnnotationProbe { void before(Path marker) throws IOException; }
+  private AnnotationProbe annotationProbe = marker -> {};
+  void annotationProbe(AnnotationProbe probe) { annotationProbe = probe; }
+  void beforeCaptureAnnotation(Path marker) throws IOException { annotationProbe.before(marker); }
+  private java.util.function.Function<Path, ReplicaPublications.Cause> publicationCauses = receipt -> null;
+  void publicationCauses(java.util.function.Function<Path, ReplicaPublications.Cause> causes) { publicationCauses = causes; }
+  ReplicaPublications.Cause publicationCause(Path receipt) { return publicationCauses.apply(receipt); }
+  void recording(java.util.function.Consumer<String> failure) {
+    capturePublicationFailure = failure;
+  }
+  void publicationEvents(java.util.function.Consumer<ReplicaPublications.Event> publication, java.time.Clock clock) {
+    capturePublication = publication; publicationClock = clock;
+  }
+  void recording(java.util.function.Consumer<String> failure,
+      java.util.function.Consumer<ReplicaPublications.Event> publication, java.time.Clock clock) {
+    capturePublicationFailure = failure; capturePublication = publication; publicationClock = clock;
+  }
   private StoreCatalog.PathObserver observer = path -> {};
   void observe(StoreCatalog.PathObserver observer) { this.observer = observer; }
 
@@ -158,13 +176,16 @@ final class StoreFiles {
       if (capturePublicationFailure == null) {
         ReplicaMasters.published(root, this, path, value);
         if (value instanceof StoreManifest.Session || value instanceof StoreManifest.LogFile) Files.deleteIfExists(check(root.resolve(ReplicaMasters.PENDING)));
-      } else if (value instanceof StoreManifest.Session) {
+      } else if (value instanceof StoreManifest.Session session) {
         try {
           ReplicaMasters.published(root, this, path, value);
           Files.deleteIfExists(check(path.resolveSibling(ReplicaMasters.CAPTURE_PENDING)));
+          capturePublication.accept(new ReplicaPublications.Event(path, null));
         } catch (IOException | RuntimeException publication) {
-          String reason = "PUBLICATION_PENDING: capture is recorded; replica catalog publication failed: " + publication.getMessage();
-          capturePublicationFailure.accept(reason.length() > 2048 ? reason.substring(0, 2048) : reason);
+          var event = ReplicaMasters.captureFailed(root, this, path, session, publication, publicationClock);
+          capturePublication.accept(event);
+          var cause = event.pending().cause();
+          capturePublicationFailure.accept("PUBLICATION_PENDING: " + cause.code() + ": " + cause.message());
         }
       }
       published.accept(path, value);

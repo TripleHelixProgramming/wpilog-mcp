@@ -141,9 +141,9 @@ The October 2026 Windows keepalive failures judged a peer by when the stalled li
 processed its pong. The store's whole-import turns later repeated the same ownership mistake.
 Budgets detect and report excessive turns; they do not interrupt a mutation halfway through.
 Reporting is also owner work if its callback can block. Ending an action timer before that
-callback hides part of the owner stall. The current store reporter still has this limit;
-[item 1's disposition](ARCHITECTURE_HARDENING_PLAN.md#implementation-disposition--2026-10-20)
-stops its correction until a bounded logging policy is chosen.
+callback hid part of the owner stall. Server stderr now admits complete lines to a bounded
+buffer drained by a separate daemon. A blocked output device can lose counted log lines,
+but it cannot hold the store owner or its outside observer.
 
 ### Cost follows the change
 
@@ -182,16 +182,22 @@ therefore keep returning old results. The rejected columnar design reinforced th
 content-addressed, versioned derivations are sufficient; an extra scope-wide generation is not
 proof that their answers are current.
 
+Persisted scan indexes apply the same rule to declarations, byte offsets and exact timestamp
+ordering: both format and scan-recipe versions participate in the key, and a fresh whole-source
+hash is checked before reuse. File attributes alone cannot detect an interior rewrite whose
+size and modification time were restored.
+
 ### Capture has a disk reserve
 
-The intended rule is that every copying writer shares one budget per filesystem and reserves
-its known size before writing, so optional work cannot consume capture's reserve. The current
-implementation covers import copies, uploads, known-length pull staging and mirror transfers.
-Legacy peer-sync copies, system-log second allocations and cross-filesystem pull placement
-still need an off-owner admission design; [hardening item 2](ARCHITECTURE_HARDENING_PLAN.md#2-nothing-measures-free-disk-space)
-records that incomplete coverage. Capture has a lower floor at which it closes cleanly and a
-separate resume margin. Health and metrics expose capacity; capture progress must distinguish
-stopped from recording.
+Every copying writer shares one budget per filesystem and reserves its known size before
+writing, so optional work cannot consume capture's reserve. The implementation covers import
+copies, uploads, known-length robot and peer downloads, mirror transfers, immutable system-text
+copies and cross-filesystem pull or peer placement. Each simultaneous allocation has its own
+reservation on its destination filesystem. Unknown-length command output remains outside this
+policy; [hardening item 2](ARCHITECTURE_HARDENING_PLAN.md#2-nothing-measures-free-disk-space)
+records that limitation and the verification of the added copy paths. Capture has a
+lower floor at which it closes cleanly and a separate resume margin. Health and metrics expose
+capacity; capture progress must distinguish stopped from recording.
 
 The unreleased writers previously discovered exhaustion only when a write failed. An import
 or mirror transfer could consume the same remaining disk that capture needed, and a failed
@@ -515,6 +521,25 @@ existing admission deadline. The lock file stays in place after release: deletin
 give two processes different inodes to lock. Import payload reads, hashing, correlation and copying
 do not hold that lock; short manifest and rename operations still need it to serialize writers.
 
+Peer sync uses the same staging/publication separation. A daemon staging worker owns the
+transfer journal, network waits, rate limiting, hashing and inspection. Its permanent
+`.sync/.owner.lock` excludes another sync process without holding `store.lock` across those
+operations. Short publication turns recheck store identity and role, selected session and
+duplicate facts, and source/prepared-copy stamps. A changed preparation refuses rather than
+overwriting a concurrent import. System-text immutable copies and cross-filesystem placement
+copies reserve their additional destination bytes, copy, verify and force off the owner;
+publication uses a same-filesystem atomic rename. Notifications and future completions follow
+release of the mutation lock.
+
+The next sync recovers its placement and session-merge receipts before contacting a peer.
+Journal-owned incomplete downloads and system-text prefixes survive for proved resume.
+Abandoned owned placement copies are cleanup candidates. A completed cross-filesystem
+telemetry placement also retires its original staging bytes after destination and source
+proof, including when its receipt was already committed; a changed original remains with an
+explained refusal. A resumed download still requires peer prefix proof. Receipt recovery
+belongs to peer sync: robot pull placement retains its existing alias and retry behavior,
+without a new exactly-once placement receipt.
+
 Store shutdown stops new staging admission and cancels work that has not started. A running
 worker retains its staged files, read/move leases, upload and ingestion grants until it
 unwinds; interrupting its wait does not release bytes still used by a publication turn.
@@ -594,6 +619,35 @@ is the exact typed-read protocol for retained snapshots, sessions, follows and t
 The visualization routes serve the preview's admitted sources and panels. These roles retain
 Explorer decision 7; they do not merge formats or change admission.
 
+The read layer's immutable `UtcTimeMapping` supplies `/data/entries` with optional UTC beside
+the original log coordinate. It keeps exact integer WPILOG coordinates and interpolates
+measured epoch microseconds with rational arithmetic. After the last retained reading it
+keeps that reading's offset; before the first it returns null with a reason. Only the final
+epoch is rounded, to the nearest microsecond with ties to even. Per-entry basis reports the
+selected clock, retained reading count, first/last offsets, largest consecutive offset change
+and null-coordinate reasons. Reduced rows use exact bucket starts. `/read/v1` retains its
+native log and recorded session coordinates without a UTC option.
+
+`SystemLogClocks` shares the ambiguity validation: conflicting duplicate coordinates or
+backward epoch readings place neither forward UTC nor an inverse wall-clock time. Identical
+repeated pairs are redundant. Its wall-clock inverse also lives in `UtcTimeMapping`: recognized
+journal decimal timestamps and ISO seconds/nanoseconds retain their exact written value,
+raw robot anchors retain integer microseconds, and aligned robot anchors retain the exact
+value of their existing binary-double input. Rational interpolation and first/last-offset
+extrapolation round only the final robot-seconds result to the nearest binary double, ties
+to even. The existing timestamp grammar and finite-range gate, reading selection, session
+bounds and kernel mapping remain unchanged.
+
+Forward-to-inverse comparisons using the same anchors allow only the forward timestamp's
+half-microsecond UTC quantization and the inverse's final double rounding. Within one mapping
+segment, express both in UTC microseconds: the allowance is `0.5` plus the final
+robot-seconds rounding error multiplied by `1_000_000` and the segment's UTC/log slope.
+There is no additional numerical allowance for epoch arithmetic.
+`LogManager.estimateWallClockRange` and `ImportInspection` continue to use the first reading's
+offset as estimates for the REV-matching window and import start. REV alignment retains its
+existing interpolation and internal backward estimate. None of those estimates supplies a
+missing sample UTC.
+
 Both adapters feed `SampleCursors` through a borrowed `RecordSeries`. Local snapshots, cached
 WPILOGs and writer-owned live prefixes share this traversal; sorting permutations and cursor
 lifetime guards each have one owner. `LegacyMaterializer` preserves whole-entry decode counts,
@@ -650,10 +704,15 @@ A query selects one entry and explicit disjoint windows, with inclusive or exclu
 `read.FieldPath` owns projection for native and legacy callers; `NumericBucket` owns arithmetic
 for their reductions. Native and legacy numeric reducers share `BucketCoordinates` for exact
 integer-microsecond membership and use original-microsecond order. Explicit second bounds use
-the data endpoint's existing nearest-microsecond conversion. Route preparation remains distinct:
-sparse legacy reads can return exact rows, while chart preparation filters nonfinite values,
-unwraps declared angles and reduces each occupied scope part. Shared membership does not make
-those routes' complete results interchangeable. `TimeWindows` continues to share containment and
+the data endpoint's existing nearest-microsecond conversion. Presentation reads use the same
+`AngleUnwrapper` rule as chart/statistics preparation: declared scalar angles follow shortest
+turns, retaining the first finite value and continuity across nonfinite gaps. `read_entry` and
+the data endpoint also accept explicit angle units for plain numbers. Native `/read/v1`
+keeps raw values and plain arithmetic means. The differential test names exactly four
+differences: sparse presentation reads can return exact rows; chart buckets use each occupied
+scope part; charts drop nonfinite samples; and native reads retain raw declared angles.
+Each route still checks all available bucket statistics under its stated rule.
+`TimeWindows` continues to share containment and
 binary-boundary traversal without changing their existing window-selection contracts. Multi-entry
 reads admit their cursors together and return separate tables rather than inventing a join. A manifest-backed session union applies
 recorded clock transforms to an explicit anchor, rejects unexplained overlaps by default, and
@@ -852,6 +911,7 @@ If a call still runs out of memory, it returns an error that suggests a narrower
 | REV log sync results | Memory | Until the wpilog is unloaded |
 | REV signals shifted onto the wpilog's clock | Memory | Until the wpilog is unloaded |
 | REV log sync results | Disk | Until the cache's format version changes, or the cache is trimmed to its size limit |
+| Ordinary eligible-file scan indexes | Disk | Fresh content verification on reuse; format and recipe versions in the key; shared cleanup size limit |
 | The Blue Alliance responses | Memory | 24 hours; "not found" for 5 minutes; failures are not cached; 200 entries of each kind |
 | Game data | Memory | The life of the server |
 
@@ -867,7 +927,7 @@ as the source hashes; it does not decide semantic compatibility itself. The base
 CRLF so checkout line endings alone do not change it. New shared dependencies and external
 library changes still need review; the source list is not a dependency-completeness proof.
 
-Other choices in the disk cache:
+Other choices in the REV synchronization cache:
 
 - The fingerprint is a SHA-256 over the file's size and three 64 KB samples (its start, middle, and end), not the whole file. That is a trade of certainty for speed: a change confined to another part of a file would go unnoticed.
 - A sync cache file above 64 MiB is refused before its contents are opened and removed by the startup sweep. The read is also bounded by the measured size plus one byte, so growth after the size check cannot bypass the cap. This bounds optional encoded cache input, not source-log size or total decoded heap; an oversized entry is recomputed from the logs. The written format stays unchanged.
@@ -878,12 +938,40 @@ Other choices in the disk cache:
 
 [STANDALONE.md](STANDALONE.md#config-fields) says where the cache directory is and how to change it or its size limit. The VS Code extension's servers use a cache directory of their own, so the extension and a standalone install never delete each other's files when their versions differ.
 
-An older disk cache of parsed logs is still configured and cleaned, but normal parsed-log reads
-no longer use it now that logs are scanned lazily from memory-mapped files. Its `DiskCache`
-owner still performs startup cleanup and enforces the size budget shared with REV synchronization
-files. `diskcachedir` and `diskcachesize` remain active. Synthetic measurements alone do not
-settle whether to persist scan indexes or replace this cleanup owner; those changes remain
-stopped in the [hardening plan](ARCHITECTURE_HARDENING_PLAN.md#5-costs-grow-with-the-whole-store).
+Ordinary lazy opens persist their scan index as `*-scan.idx`, without decoded values.
+`DiskCache` owns the shared directory and startup cleanup budget for these indexes, legacy
+parsed artifacts and REV results. `diskcachedir` and `diskcachesize` remain active; the latter
+is a sweep-time limit, not a per-write reservation. `health_check.scan_index_disk_cache`
+reports scan artifacts and process lookup counters.
+
+Index keys include both encoding and scan-recipe versions. A verified store member uses its
+manifest SHA-256 identity; an ordinary file uses its size, full-precision modification time
+and filesystem identity. Every eligible reopen hashes the entire source again, even when
+attributes or remembered admission hashes match. A changed ordinary file is rescanned;
+a finalized store member whose bytes disagree with its manifest is refused. Before/after
+source proofs prevent publishing a scan under a later generation's hash. These checks do
+not provide an OS snapshot against a hostile writer changing and restoring bytes mid-read.
+
+Known active captures and observed growing files bypass persistence. In-memory growing
+indexes retain their copied resume state. Persisted indexes omit that continuation, so a
+later append requires a fresh scan. An external WPILOG has no definitive close footer:
+stable observed prefixes may be indexed, and later appends invalidate their keys.
+The separate native standalone reader retains its own stricter fresh-scan allocation limits.
+
+Encoding and decoding stream bounded records. Each index has a checksum and strict end
+boundary, a 64 MiB encoded ceiling, a 64 MiB accounted decoded budget, at most 200,000 entries,
+and at most 1 MiB per UTF-8 string. Accounting charges offset arrays and conservative entry
+and string overhead before allocation; it is not measured peak heap. An optional index that
+cannot fit is skipped, preserving ordinary source reads. Corrupt or incompatible artifacts
+are misses and are removed at cleanup. Atomic creation of an owned temporary and atomic
+rename prevent partial publication without a file lock.
+
+One in-flight claim elects the loading request for a path. Hashing, index I/O, callbacks and
+future completion happen outside shared locks; waiting requests repeat their own admission.
+The loading request encodes before publishing its mutable index, with no new background
+queue retaining mappings. `ScanIndexVersionGuardTest` checks reviewed source digests and
+both version decisions. The stress comparison requires an actual persistent hit and compares
+fresh and cached answers; synthetic timings do not establish real-season performance.
 
 ## REV Logs and Synchronization
 
@@ -964,10 +1052,19 @@ and import lanes, and an outside turn observer. The observer measures elapsed ti
 mutation action is still running: an over-one-second action is counted once and submitted to
 the log sink with its kind and observed duration, including when completion races observation.
 It never interrupts the owner. The metrics expose that count and the longest observed action;
-this is an operating budget, not a bound on filesystem latency. The action timer currently
-excludes a blocking completion-report callback, which can hold the owner; a blocked observer
-sink can also delay observations. The decided remedy, a bounded log buffer with its own
-writer, is not yet implemented; see [the hardening plan](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer).
+this is an operating budget, not a bound on filesystem latency. The action timer excludes
+the completion report, whose output no longer waits on stderr.
+
+`BufferedLogOutput` is installed before the first server logger, including named configuration
+loading. One daemon writes to the original stderr outside the buffer monitor. The 1,048,576-byte
+allowance includes queued lines, the current incomplete line and bytes in a blocked write.
+The fixed ring and 8 KiB drain scratch buffer are bounded allocations; the allowance is not a
+total heap measurement. A line that cannot fit is discarded in full through its newline,
+including across fragmented UTF-8 writes. One ordered loss line reports the dropped lines and
+bytes when output resumes. A metric retains the process total. Ordinary flush calls never
+wait for the sink. Shutdown runs server cleanup before draining for at most two seconds;
+a blocked daemon or a hard crash may leave lines unwritten. Short-lived command errors keep
+direct stderr. Existing MCP protocol stdout ownership is unchanged.
 
 Capture's public health facts have a separate bounded owner, `CaptureProgress`, instead of
 exposing the live source's private paths and errors. Writer transitions and successful header
@@ -976,7 +1073,7 @@ invent a new write. Health reads these facts and the independent listener/store 
 without joining their owners or doing filesystem I/O. Each interval maximum and its active
 work are published together, so completion racing a probe is not lost. All health callers
 share the probe boundary, an ongoing stall remains visible, and interval drains leave the
-cumulative metrics intact. Store observations retain the action-duration limitation above.
+cumulative metrics intact. Store observations measure the mutation action, as described above.
 
 On shutdown, the HTTP transport ends its event streams, waits up to 5 seconds for calls in progress, and closes its listener. Then the log manager stops its background threads and unloads the logs, so that calls in progress can finish before their logs are closed.
 
@@ -1455,7 +1552,11 @@ Access and boundaries are checked again before publication; refusals never retur
 success. Duplicate times retain member-ID/physical-ordinal order, and first/last are chronological.
 Numeric field conversion preserves signed/unsigned integral representations through the plot
 range check, including enum wrappers. Absent projected leaves, nonfinite values and unsafe
-plot integers become counted gaps; no interpolation or angle unwrapping is implied. Exact statistics continue through the original-sample owner.
+plot integers become counted gaps. After declaration/schema agreement, metadata-only angle
+selection applies the shared unwrapping rule once to the merged stream, before reduction.
+Its state crosses member and input-batch boundaries and resets for each request; no history
+is materialized to discover angle units. No interpolation is performed. Exact statistics
+continue through the original-sample owner.
 
 The window analysis scheduler admits reductions for fixed/full recording history, coalescing
 complete-prefix refreshes at one Hz. Thus late backward samples recompute their old buckets.
@@ -1822,11 +1923,32 @@ subsequent store-owner publications, without filesystem reads or joins. A delaye
 notification cannot replace newer facts. Replica turns publish these facts even when their other
 observers are suppressed. Invalid or unavailable initial facts are omitted, not reported as zero.
 
-A capture's pending replica-publication marker does not durably record an aggregate failure
-cause. Count warnings therefore do not prove that a mirror has seen every completed recording,
-or explain a pending publication after restart. The decided change, recording each pending
-publication's cause for catalog status and mirrors, is not yet implemented; existing admitted
-immutable pages are unchanged.
+A capture's adjacent `.replica-publication.json` marker retains its receipt witnesses and
+optional safe failure code/message, first-failure time and latest-failure time. A diagnostic
+never grants publication authority. Old markers read as `CAUSE_NOT_RECORDED` with unknown
+times; old readers ignore the added fields. Public messages come from a fixed vocabulary,
+not arbitrary exception or marker text. Failed diagnostic persistence leaves the committed
+capture intact and reports `cause_durable: false`; restart can recover only durable facts.
+
+`ReplicaPublications` publishes immutable pending facts from the store owner. Initial and
+explicit recovery enumerate off that owner, bounded to 32,768 paths; one short metadata turn
+rechecks each candidate's receipt witness before retrying publication. Payload hashes and tree
+walks stay outside the turn. Live outcomes take precedence over stale sweep observations.
+Retained pending facts and sweep bookkeeping share a 32 MiB accounted bound and 32,768-entry
+limits; these are accounting limits, not measured heap. Incomplete or failed recovery never
+reports a fabricated total of zero. Only a complete safe recovery may classify its remaining
+failure as publication-only. CaptureService tolerates that class while preserving fatal
+startup for unsafe or corrupt recovery; explicit recovery still reports the failure.
+
+`POST /replicas/v1/status` reads this owner publication, including true pending totals and
+safe causes. Its optional exact session lookup reaches entries outside the bounded summary
+and returns retryable `PUBLICATION_PENDING`. The peer handshake pins at most 64 known store
+choices; each status call rechecks the current grant and store identity without discovery,
+recovery or a queue join. Concurrent publication changes produce a retryable refusal.
+Requests remain bounded to 64 KiB, replies to 1 MiB encoded JSON and summaries to 256 entries
+(64 by default). A complete pending count is also published as a metric; unknown counts are
+omitted. Count warnings alone still do not prove that every completed recording reached a
+mirror. Immutable file identities and offer inventories retain their existing admission rules.
 
 
 ### Replica exchange and discovery ownership

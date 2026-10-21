@@ -14,6 +14,7 @@ import java.util.Comparator;
 import java.util.List;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.WallClock;
+import org.triplehelix.wpilogmcp.read.UtcTimeMapping;
 import org.triplehelix.wpilogmcp.capture.pull.KernelLines;
 import org.triplehelix.wpilogmcp.capture.pull.SystemLogTime;
 
@@ -21,8 +22,17 @@ import org.triplehelix.wpilogmcp.capture.pull.SystemLogTime;
  * boot-time guess would assign early kernel faults to a match that had not begun. */
 public final class SystemLogClocks {
   record Pair(double source, double robot) {}
+  /** Only an unchanged robot clock may reuse a raw microsecond coordinate for validation. */
+  record RobotTime(java.util.function.DoubleUnaryOperator mapping, boolean identity)
+      implements java.util.function.DoubleUnaryOperator {
+    @Override public double applyAsDouble(double value) { return mapping.applyAsDouble(value); }
+  }
   public record Mapped(String written, Double seconds, String basis, String reason) {}
-  private final List<Pair> kernel = new ArrayList<>(), wall = new ArrayList<>();
+  private final List<Pair> kernel = new ArrayList<>();
+  private final List<UtcTimeMapping.Coordinate> wallCoordinates = new ArrayList<>();
+  private UtcTimeMapping.Inverse wallInverse = UtcTimeMapping.inverse(List.of());
+  private String wallReason;
+  private boolean nonFiniteWallCoordinate;
   private final double start, end;
   SystemLogClocks(double start, double end) { this.start = start; this.end = end; }
   void add(LogData log, java.util.function.DoubleUnaryOperator robotTime, boolean includeWall, boolean includeKernel) {
@@ -30,25 +40,52 @@ public final class SystemLogClocks {
     if (uptime != null) for (var value : uptime) if (value.value() instanceof Number number && Double.isFinite(number.doubleValue())) {
       kernel.add(new Pair(number.doubleValue(), robotTime.applyAsDouble(value.timestamp())));
     }
-    if (includeWall) for (var reading : WallClock.validReadings(log)) {
-      wall.add(new Pair(reading.epochMicros() / 1e6, robotTime.applyAsDouble(reading.logTime())));
+    if (includeWall) {
+      boolean identity = robotTime instanceof RobotTime mapping && mapping.identity();
+      var exact = identity ? WallClock.validExactReadings(log) : List.<WallClock.ExactReading>of();
+      int index = 0;
+      for (var reading : WallClock.validReadings(log)) {
+        double robot = robotTime.applyAsDouble(reading.logTime());
+        if (Double.isFinite(robot)) {
+          var coordinate = identity ? java.math.BigDecimal.valueOf(exact.get(index).logMicros())
+              : new java.math.BigDecimal(robot).scaleByPowerOfTen(6);
+          wallCoordinates.add(new UtcTimeMapping.Coordinate(coordinate, reading.epochMicros()));
+        } else nonFiniteWallCoordinate = true;
+        index++;
+      }
     }
   }
   /** A clock record's pairs, already in the robot time of the capture it was read from. */
   void addKernel(java.util.List<double[]> pairs) { for (var pair : pairs) kernel.add(new Pair(pair[0], pair[1])); }
-  boolean hasWall() { return !wall.isEmpty(); }
-  void sort() { kernel.sort(Comparator.comparingDouble(Pair::source)); wall.sort(Comparator.comparingDouble(Pair::source)); }
+  boolean hasWall() { return !wallCoordinates.isEmpty() || nonFiniteWallCoordinate; }
+  void sort() {
+    kernel.sort(Comparator.comparingDouble(Pair::source));
+    wallInverse = UtcTimeMapping.inverse(wallCoordinates);
+    wallReason = nonFiniteWallCoordinate ? "Ambiguous wall-clock mapping: non-finite aligned log timestamp"
+        : wallInverse.reason();
+  }
   public Mapped map(String line, String format) {
     String written = SystemLogTime.written(line, format);
     boolean uptime = format.equals("dmesg");
     Double value = uptime ? KernelLines.seconds(line) : SystemLogTime.epoch(line, format);
     if (value == null) return new Mapped(written, null, null, "No unambiguous written timestamp (a wall clock needs a year and zone)");
-    var pairs = uptime ? kernel : wall;
-    if (pairs.isEmpty()) return new Mapped(written, null, null, uptime ? "No uptime_sec samples pair the kernel and FPGA clocks" : "No systemTime or measured wall-clock offset in this session");
-    Double mapped = interpolate(pairs, value, uptime);
+    if (!uptime && wallReason != null) return new Mapped(written, null, null, wallReason);
+    if (uptime ? kernel.isEmpty() : !hasWall()) return new Mapped(written, null, null, uptime ? "No uptime_sec samples pair the kernel and FPGA clocks" : "No systemTime or measured wall-clock offset in this session");
+    Double mapped = uptime ? interpolate(kernel, value, true) : wallInverse.at(exactEpochMicros(written, format));
     if (mapped == null || mapped < start || mapped > end) return new Mapped(written, null, null,
         uptime ? "Kernel timestamp is outside the measured uptime pairing or session; no extrapolation" : "Wall timestamp is outside this session's robot-clock range");
     return new Mapped(written, mapped, uptime ? "uptime_pairing" : "system_time", null);
+  }
+  /**
+   * The prior parser still gates grammar and finite range. Journal text contains no exponent;
+   * its decimal storage grows only with the already-read literal. ISO precision is the same
+   * OffsetDateTime precision accepted previously. Neither path rounds an epoch through double.
+   */
+  private static java.math.BigDecimal exactEpochMicros(String written, String format) {
+    if (format.equals("journal")) return new java.math.BigDecimal(written).scaleByPowerOfTen(6);
+    var instant = java.time.OffsetDateTime.parse(written).toInstant();
+    return java.math.BigDecimal.valueOf(instant.getEpochSecond()).scaleByPowerOfTen(6)
+        .add(java.math.BigDecimal.valueOf(instant.getNano()).scaleByPowerOfTen(-3));
   }
   public static SystemLogClocks read(LogData log, SystemLogFiles.Snapshot snapshot, JsonArray read,
       org.triplehelix.wpilogmcp.read.server.ManagedLogAccess logAccess) throws IOException {
@@ -114,12 +151,12 @@ public final class SystemLogClocks {
   /** A file's own time on the session's robot time, by the offset recorded when it was matched, or
    * as it is when it was not matched. Empty when the recorded offset is invalid: a damaged record
    * places nothing. */
-  private static java.util.Optional<java.util.function.DoubleUnaryOperator> onRobotTime(Path path, SystemLogFiles.Snapshot snapshot) {
+  private static java.util.Optional<RobotTime> onRobotTime(Path path, SystemLogFiles.Snapshot snapshot) {
     var receipt = receipt(path, snapshot);
-    if (receipt == null || receipt.matching() == null) return java.util.Optional.of(t -> t);
+    if (receipt == null || receipt.matching() == null) return java.util.Optional.of(new RobotTime(t -> t, true));
     var alignment = org.triplehelix.wpilogmcp.store.StoreCatalog.recordedAlignment(
         new org.triplehelix.wpilogmcp.store.StoreCatalog.StoredFile(path, snapshot.manifest(), null, snapshot.session(), receipt));
-    return alignment.isSuccessful() ? java.util.Optional.of(alignment::toFpgaTime) : java.util.Optional.empty();
+    return alignment.isSuccessful() ? java.util.Optional.of(new RobotTime(alignment::toFpgaTime, false)) : java.util.Optional.empty();
   }
   private static Double interpolate(List<Pair> pairs, double value, boolean bounded) {
     int low = 0, high = pairs.size();

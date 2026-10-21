@@ -405,6 +405,9 @@ public final class LogStore implements AutoCloseable {
     return stamps;
   }
 
+  /** Sync prepares the same manifest/ancestor witness off-owner before a short publication. */
+  Map<Path, FileSnapshot> syncStamps() throws IOException { return importStamps(); }
+
   private ImportCatalog readImportCatalog() throws IOException {
     for (int attempt = 0; attempt < 3; attempt++) {
       var before = importStamps();
@@ -620,6 +623,7 @@ public final class LogStore implements AutoCloseable {
       }
       if (!importsStopped.get()) initialCatalogCapacity();
     });
+    requestPublicationRecovery(false);
   }
 
   private final ReplicaTransfers replicaTransfers = new ReplicaTransfers(this);
@@ -654,6 +658,9 @@ public final class LogStore implements AutoCloseable {
   public Path root() {
     return root;
   }
+
+  /** Pull placement uses the same filesystem boundary as import placement. */
+  Mover mover() { return mover; }
 
   /** The capture service observes durable facts on the store queue; tools never join that queue. */
   public interface Observer {
@@ -704,6 +711,7 @@ public final class LogStore implements AutoCloseable {
    */
   private void publishCatalogCapacity(Path path, Object value) {
     if (!(value instanceof Header header) || !path.equals(root.resolve("store.json"))) return;
+    replicaPublications.header(header.id());
     try { catalogCapacity.set(capacityOf(header)); }
     catch (IOException invalid) {
       // A non-null unknown marker also prevents an older startup read from winning its CAS.
@@ -783,19 +791,202 @@ public final class LogStore implements AutoCloseable {
   }
   private volatile String replicaPublicationFailure;
   String replicaPublicationFailure() { return replicaPublicationFailure; }
-  public CompletableFuture<Void> refreshStatus() {
-    return captureAsync(io -> { recoverPublication(io); publishInventory(); return null; });
+  private final ReplicaPublications replicaPublications = new ReplicaPublications();
+  private volatile java.time.Clock publicationClock = java.time.Clock.systemUTC();
+  private final Object publicationRecoveryLock = new Object();
+  private CompletableFuture<Void> publicationRecovery, nextPublicationRecovery;
+  private CompletableFuture<Void> lastPublicationRecovery = CompletableFuture.completedFuture(null);
+  private final java.util.concurrent.atomic.AtomicLong publicationWalks = new java.util.concurrent.atomic.AtomicLong();
+  @FunctionalInterface interface PublicationRecoveryProbe { void observed(Path marker) throws IOException; }
+  private volatile PublicationRecoveryProbe publicationRecoveryProbe = marker -> {};
+  void publicationRecoveryProbe(PublicationRecoveryProbe probe) { publicationRecoveryProbe = Objects.requireNonNull(probe); }
+  @FunctionalInterface interface PublicationStartProbe { void selected(String storeId) throws IOException; }
+  private volatile PublicationStartProbe publicationStartProbe = identity -> {};
+  void publicationStartProbe(PublicationStartProbe probe) { publicationStartProbe = Objects.requireNonNull(probe); }
+  private volatile StoreFiles.AnnotationProbe publicationAnnotationProbe = marker -> {};
+  void publicationAnnotationProbe(StoreFiles.AnnotationProbe probe) { publicationAnnotationProbe = Objects.requireNonNull(probe); }
+  void publicationClock(java.time.Clock clock) { publicationClock = Objects.requireNonNull(clock); }
+
+  /** Status never starts a sweep, opens a receipt or waits for store work. */
+  public ReplicaPublications.Snapshot publicationStatus() { return replicaPublications.snapshot(); }
+  /** Counts actual recovery walk opens, independently of request or status counts. */
+  public long publicationWalks() { return publicationWalks.get(); }
+  public CompletableFuture<Void> publicationsSettled() {
+    synchronized (publicationRecoveryLock) { return lastPublicationRecovery; }
   }
-  private void recoverPublication(StoreFiles io) throws IOException {
-    try { ReplicaMasters.recover(root, io); ReplicaMasters.recoverCaptures(root, io); replicaPublicationFailure = null; }
-    catch (IOException | RuntimeException failure) {
-      replicaPublicationFailure = "PUBLICATION_PENDING: recorded captures remain local; " + failure.getMessage();
-      throw failure;
+
+  public CompletableFuture<Void> refreshStatus() { return requestPublicationRecovery(true); }
+  /** A request during a pass shares one follow-up, so its receipts cannot predate the selected pass. */
+  public CompletableFuture<Void> recoverMasterPublication() { return requestPublicationRecovery(true); }
+
+  private CompletableFuture<Void> requestPublicationRecovery(boolean followUp) {
+    CompletableFuture<Void> start = null, selected;
+    synchronized (publicationRecoveryLock) {
+      if (importsStopped.get()) return CompletableFuture.failedFuture(new IOException("Store is closed"));
+      if (publicationRecovery == null) {
+        publicationRecovery = new CompletableFuture<>(); start = publicationRecovery;
+        selected = publicationRecovery;
+      } else if (followUp) {
+        if (nextPublicationRecovery == null) nextPublicationRecovery = new CompletableFuture<>();
+        selected = nextPublicationRecovery;
+      } else selected = publicationRecovery;
+      lastPublicationRecovery = selected;
+    }
+    if (start != null) submitPublicationRecovery(start);
+    return selected;
+  }
+
+  private void submitPublicationRecovery(CompletableFuture<Void> result) {
+    try {
+      staging.execute(new StagedJob(result, () -> {
+        Throwable failure = null;
+        try { runPublicationRecovery(); }
+        catch (Throwable stopped) { failure = stopped; }
+        CompletableFuture<Void> next;
+        synchronized (publicationRecoveryLock) {
+          next = nextPublicationRecovery; nextPublicationRecovery = null; publicationRecovery = next;
+        }
+        if (failure == null) result.complete(null); else result.completeExceptionally(failure);
+        if (next != null) submitPublicationRecovery(next);
+      }));
+    } catch (java.util.concurrent.RejectedExecutionException stopped) {
+      result.completeExceptionally(new IOException("Store closed before publication recovery", stopped));
     }
   }
-  /** Explicit recovery has a bounded path budget and never blocks admission of a new capture. */
-  public CompletableFuture<Void> recoverMasterPublication() {
-    return mutate(io -> { recoverPublication(io); return null; }, false, false);
+
+  /** Only one bounded receipt is held while a staging worker awaits its short owner turn. */
+  private void runPublicationRecovery() throws IOException {
+    ensureImporting();
+    final StoreFiles io;
+    final String identity;
+    try {
+      if (!StoreCatalog.isStore(root)) {
+        publicationStartProbe.selected(null);
+        publicationMutation(null, files -> {
+          if (replicaPublications.snapshot().storeId() != null)
+            throw new IOException("SOURCE_UNAVAILABLE: known store disappeared");
+          return null;
+        }, ignored -> { replicaPublications.begin(null); replicaPublications.finish(true, null); });
+        return;
+      }
+      io = new StoreFiles(root, security);
+      identity = io.read(root.resolve("store.json"), Header.class).id();
+      publicationStartProbe.selected(identity);
+      publicationMutation(identity, files -> null, ignored -> replicaPublications.begin(identity));
+    } catch (IOException | RuntimeException unavailable) {
+      publicationState(() -> { replicaPublications.unavailable("SOURCE_UNAVAILABLE"); replicaPublications.publish(); });
+      throw unavailable instanceof IOException checked ? checked
+          : new IOException("Publication header could not be inspected", unavailable);
+    }
+    IOException failure = null;
+    try {
+      publicationMutation(identity, files -> { ReplicaMasters.recover(root, files); return null; }, ignored -> {});
+    } catch (IOException unsafe) { failure = unsafe; }
+    int inspected = 0, observed = 0;
+    publicationWalks.incrementAndGet();
+    try (var paths = Files.walk(root)) {
+      var iterator = paths.iterator();
+      while (iterator.hasNext()) {
+        ensureImporting();
+        var marker = iterator.next();
+        if (++inspected > ReplicaPublications.MAX_OBSERVATIONS)
+          throw new IOException("RESOURCE_LIMIT: capture publication recovery exceeds32768 paths");
+        if (!marker.getFileName().toString().equals(ReplicaMasters.CAPTURE_PENDING)) continue;
+        try {
+          var candidate = ReplicaMasters.inspectCapture(root, io, marker);
+          publicationRecoveryProbe.observed(marker);
+          publicationMutation(identity, files -> replicaPublications.changed(candidate.receipt()) ? null
+              : ReplicaMasters.retryCapture(root, files, candidate, publicationClock), event -> {
+                if (event != null) replicaPublications.observed(event);
+              });
+          if (++observed % 64 == 0) publicationState(replicaPublications::publish);
+        } catch (java.nio.file.NoSuchFileException missing) {
+          // Only a proven removed marker in the same store is benign. Missing receipt bytes
+          // or a vanished/replaced store cannot turn failed inspection into a complete zero.
+          boolean removed = false;
+          try {
+            removed = Files.notExists(io.check(marker)) && StoreCatalog.isStore(root)
+                && identity.equals(io.read(root.resolve("store.json"), Header.class).id());
+          } catch (IOException | RuntimeException unavailable) { /* Keep the original failed-read evidence. */ }
+          if (!removed && failure == null) failure = missing;
+        } catch (IOException | RuntimeException invalid) {
+          if (failure == null) failure = invalid instanceof IOException checked ? checked
+              : new IOException("Invalid capture publication recovery", invalid);
+        }
+      }
+    } catch (IOException | RuntimeException incomplete) {
+      if (failure == null) failure = incomplete instanceof IOException checked ? checked
+          : new IOException("Capture publication enumeration could not finish", incomplete);
+    }
+    var finalFailure = failure;
+    publicationState(() -> replicaPublications.finish(finalFailure == null,
+        finalFailure != null && finalFailure.getMessage() != null && finalFailure.getMessage().startsWith("RESOURCE_LIMIT:")
+            ? "RESOURCE_LIMIT" : "SOURCE_UNAVAILABLE"));
+    var snapshot = publicationStatus();
+    if (failure != null || snapshot.state() != ReplicaPublications.State.READY) {
+      replicaPublicationFailure = "PUBLICATION_PENDING: " + (snapshot.failureCode() == null ? "SOURCE_UNAVAILABLE" : snapshot.failureCode());
+      throw failure != null ? failure : new IOException(replicaPublicationFailure);
+    }
+    publishInventory();
+    if (snapshot.knownPendingCount() != 0) {
+      replicaPublicationFailure = "PUBLICATION_PENDING: recorded captures remain local; " + snapshot.entries().get(0).cause().code();
+      throw new PublicationPendingException(replicaPublicationFailure);
+    }
+    replicaPublicationFailure = null;
+  }
+
+  private void publicationState(Runnable update) throws IOException {
+    var completed = new CompletableFuture<Void>();
+    try {
+      queue.importTurn("publication-status", () -> {
+        try { update.run(); completed.complete(null); }
+        catch (Throwable failure) { completed.completeExceptionally(failure); }
+      });
+    } catch (java.util.concurrent.RejectedExecutionException stopped) { throw new IOException("Store is closed", stopped); }
+    awaitPublication(completed);
+  }
+
+  /** Recovery never creates a vanished store, and observers run only after store.lock is released. */
+  private <T> T publicationMutation(String identity, CaptureOperation<T> operation,
+      Consumer<T> applied) throws IOException {
+    var completed = new CompletableFuture<T>();
+    try {
+      queue.importTurn("capture-publication", () -> {
+        T value = null; Throwable failure = null;
+        var publications = new ArrayList<Map.Entry<Path, Object>>();
+        try {
+          ensureImporting();
+          try (var lock = StoreLock.acquire(root, security)) {
+            boolean exists = StoreCatalog.isStore(root);
+            if (!exists && identity != null) throw new IOException("SOURCE_UNAVAILABLE: store disappeared");
+            var files = new StoreFiles(root, security, (path, record) -> publications.add(Map.entry(path, record)));
+            files.annotationProbe(publicationAnnotationProbe);
+            files.publicationCauses(replicaPublications::cause);
+            if (exists && !Objects.equals(identity, files.read(root.resolve("store.json"), Header.class).id()))
+              throw new IOException("SOURCE_UNAVAILABLE: store identity changed");
+            value = operation.run(files);
+          }
+        } catch (Throwable stopped) { failure = stopped; }
+        for (var item : publications) publishCatalogCapacity(item.getKey(), item.getValue());
+        if (failure == null) {
+          try { applied.accept(value); completed.complete(value); }
+          catch (Throwable invalid) { completed.completeExceptionally(invalid); }
+        } else completed.completeExceptionally(failure);
+      });
+    } catch (java.util.concurrent.RejectedExecutionException stopped) { throw new IOException("Store is closed", stopped); }
+    return awaitPublication(completed);
+  }
+
+  private static <T> T awaitPublication(CompletableFuture<T> completed) throws IOException {
+    boolean interrupted = false;
+    try {
+      for (;;) try { return completed.get(); }
+      catch (InterruptedException stopping) { interrupted = true; }
+      catch (java.util.concurrent.ExecutionException failed) {
+        if (failed.getCause() instanceof IOException io) throw io;
+        throw new IOException("Publication recovery failed", failed.getCause());
+      }
+    } finally { if (interrupted) Thread.currentThread().interrupt(); }
   }
 
   /** Atomic manifest replacement permits nonblocking status reads while a sync is queued. */
@@ -931,6 +1122,8 @@ public final class LogStore implements AutoCloseable {
         if (result.isDone()) return;
         T value = null; Throwable failure = null;
         var publications = new ArrayList<Map.Entry<Path, Object>>();
+        var pendingPublications = new ArrayList<ReplicaPublications.Event>();
+        String observedStoreId = null;
         try {
           if (deadlineNanos != 0 && System.nanoTime() >= deadlineNanos)
             throw new IOException("Capture admission deadline expired before its store turn");
@@ -938,9 +1131,13 @@ public final class LogStore implements AutoCloseable {
             if (deadlineNanos != 0 && System.nanoTime() >= deadlineNanos)
               throw new IOException("Capture admission deadline expired while acquiring store.lock");
             var io = new StoreFiles(root, security, (path, record) -> publications.add(Map.entry(path, record)));
+            io.publicationEvents(pendingPublications::add, publicationClock);
+            io.annotationProbe(publicationAnnotationProbe);
+            io.publicationCauses(replicaPublications::cause);
             if (!StoreCatalog.isStore(root)) io.write(root.resolve("store.json"),
                 new Header(StoreManifest.FORMAT_VERSION, Instant.now().toString(), UUID.randomUUID().toString(), List.of()));
             var header = io.read(root.resolve("store.json"), Header.class);
+            observedStoreId = header.id();
             if (!StoreManifest.readable(header.formatVersion())) throw new IOException("Unsupported store format version " + header.formatVersion());
             if (header.mirror() && !allowMirror) throw new IOException("A mirror is written only by its mirror synchronization");
             value = operation.run(io);
@@ -957,6 +1154,8 @@ public final class LogStore implements AutoCloseable {
         } catch (Throwable e) { failure = e; }
         // Observers and future completions can run arbitrary caller code. Store ordering remains
         // on the queue, but none of those callbacks inherits the cross-process file lock.
+        if (observedStoreId != null) replicaPublications.header(observedStoreId);
+        pendingPublications.forEach(replicaPublications::live);
         if (inventory) for (var publication : publications) published(publication.getKey(), publication.getValue());
         else for (var publication : publications) publishCatalogCapacity(publication.getKey(), publication.getValue());
         if (failure == null && allowMirror && inventory) try { publishInventory(); } catch (Throwable e) { failure = e; }
@@ -1170,13 +1369,43 @@ public final class LogStore implements AutoCloseable {
 
   CompletableFuture<StoreSync.Result> sync(String url, long rateBytes, Consumer<StoreSync.Progress> progress,
       java.time.Clock clock, StoreSync.Source source) {
+    return sync(url, rateBytes, progress, clock, source, (boundary, staged, destination, manifest) -> {});
+  }
+
+  CompletableFuture<StoreSync.Result> sync(String url, long rateBytes, Consumer<StoreSync.Progress> progress,
+      java.time.Clock clock, StoreSync.Source source, StoreSync.Probe probe) {
     if (rateBytes < 0) throw new IllegalArgumentException("rate_bytes must be nonnegative (0 means unlimited)");
     if (!syncing.compareAndSet(false, true)) return CompletableFuture.failedFuture(new IOException("A sync is already running for this store"));
     pending.incrementAndGet();
+    var result = new CompletableFuture<StoreSync.Result>();
+    // Canceling a response cannot retire the journal owner or an in-flight disk reservation.
+    var completion = new CompletableFuture<StoreSync.Result>();
+    importJobs.add(completion);
+    completion.whenComplete((value, failure) -> {
+      importJobs.remove(completion); syncing.set(false); pending.decrementAndGet();
+      if (failure == null) result.complete(value); else result.completeExceptionally(failure);
+    });
     try {
-      return mutate(io -> new StoreSync(root, io, security, logManager, clock, source, progress).run(url, rateBytes), true)
-          .whenComplete((result, error) -> { syncing.set(false); pending.decrementAndGet(); });
-    } catch (RuntimeException e) { syncing.set(false); pending.decrementAndGet(); throw e; }
+      staging.execute(new StagedJob(completion, () -> {
+        try {
+          ensureImporting();
+          var header = StoreCatalog.isStore(root)
+              ? new StoreFiles(root, security).read(root.resolve("store.json"), Header.class)
+              : importTurn(io -> io.read(root.resolve("store.json"), Header.class));
+          // The daemon job remains queued until its first short owner turn actually starts.
+          // Mirrors are refused without mutating them; later turns recheck the admitted role.
+          if (!header.mirror()) header = importTurn(io -> io.read(root.resolve("store.json"), Header.class));
+          completion.complete(new StoreSync(this, security, logManager, clock, source, progress, probe)
+              .run(url, rateBytes, header));
+        } catch (Exception failure) { completion.completeExceptionally(failure); }
+        catch (OutOfMemoryError failure) {
+          completion.completeExceptionally(new IOException("Not enough heap to prepare peer sync", failure));
+        }
+      }));
+    } catch (RuntimeException closed) {
+      completion.completeExceptionally(new IOException("Store sync staging is closed", closed));
+    }
+    return result;
   }
 
   public CompletableFuture<MirrorSync.Result> mirror(org.triplehelix.wpilogmcp.config.MirrorConfig config,
@@ -1316,9 +1545,18 @@ public final class LogStore implements AutoCloseable {
 
   /** The staging worker may wait for a short publication turn; the owner never waits for it. */
   private <T> T importTurn(CaptureOperation<T> operation) throws IOException {
+    return stagingTurn(operation, false);
+  }
+
+  /** Prepared peer publications use the same ownership and shutdown rule as imports. */
+  <T> T syncTurn(CaptureOperation<T> operation) throws IOException {
+    return stagingTurn(operation, false);
+  }
+
+  private <T> T stagingTurn(CaptureOperation<T> operation, boolean allowMirror) throws IOException {
     ensureImporting();
     boolean interrupted = false;
-    var turn = mutate(io -> { ensureImporting(); return operation.run(io); }, false);
+    var turn = mutate(io -> { ensureImporting(); return operation.run(io); }, allowMirror);
     try {
       while (true) {
         try { return turn.get(); }
@@ -1345,6 +1583,9 @@ public final class LogStore implements AutoCloseable {
   void stopImports() {
     if (!importsStopped.compareAndSet(false, true)) return;
     for (var job : staging.shutdownNow()) if (job instanceof StagedJob staged) staged.abandon();
+    CompletableFuture<Void> queued;
+    synchronized (publicationRecoveryLock) { queued = nextPublicationRecovery; nextPublicationRecovery = null; }
+    if (queued != null) queued.completeExceptionally(new IOException("Store closed before publication recovery"));
   }
 
   @Override

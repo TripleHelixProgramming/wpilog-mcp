@@ -114,8 +114,14 @@ public class LogManager {
   private volatile boolean autoSyncEnabled = true;
   private final java.util.Set<LogData> nativeSyncPending = ConcurrentHashMap.newKeySet();
 
-  /** Per-path locks to prevent duplicate concurrent parses of the same log file. */
-  private final ConcurrentHashMap<String, Object> loadLocks = new ConcurrentHashMap<>();
+  /** Only the claim is atomic: file I/O, cache callbacks and waiter completion stay outside it. */
+  private final ConcurrentHashMap<String, CompletableFuture<Void>> loading = new ConcurrentHashMap<>();
+  // Shutdown invalidates work already admitted, while the established API permits a new
+  // synchronous read afterwards (background synchronization remains stopped).
+  private final java.util.concurrent.atomic.AtomicLong loadGeneration = new java.util.concurrent.atomic.AtomicLong();
+  private volatile LazyParsedLog.OpenObserver scanObserver = (phase, path) -> {};
+  /** Controlled stalls keep ownership tests on the real mapping, proof and publication path. */
+  void scanObserver(LazyParsedLog.OpenObserver observer) { scanObserver = java.util.Objects.requireNonNull(observer); }
 
   /** A loaded log with its file as the file looked just before the log was read. */
   private record Loaded(LogData log, FileSnapshot snapshot) {}
@@ -305,6 +311,7 @@ public class LogManager {
    * @since 0.9.0
    */
   public void shutdown() {
+    loadGeneration.incrementAndGet();
     logger.info("Shutting down LogManager");
     try { readAccess.close(); }
     catch (IOException e) { logger.warn("Could not retire read access", e); }
@@ -489,6 +496,15 @@ public class LogManager {
   public LogUse acquireReadOnly(String path) throws IOException { return acquire(path, false); }
 
   private LogUse acquire(String path, boolean synchronize) throws IOException {
+    long generation = loadGeneration.get();
+    for (;;) {
+      var use = acquireAttempt(path, synchronize, generation);
+      if (use != null) return use;
+    }
+  }
+
+  private LogUse acquireAttempt(String path, boolean synchronize, long generation) throws IOException {
+    if (loadGeneration.get() != generation) throw new LogFileException("Log manager is closed");
     Path filePath = Path.of(path).toAbsolutePath().normalize();
 
     // Validate path is allowed (or cache is already loaded)
@@ -519,16 +535,28 @@ public class LogManager {
       if (use != null) return use;
     }
 
-    // Keep per-path locks: removing one could give two callers different locks for one file.
-    Object lock = loadLocks.computeIfAbsent(normalizedPath, k -> new Object());
-    synchronized (lock) {
+    var completion = new CompletableFuture<Void>();
+    var pending = loading.putIfAbsent(normalizedPath, completion);
+    if (pending != null) {
+      try { pending.get(); }
+      catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        throw new IOException("Interrupted while waiting for a log to load", interrupted);
+      } catch (ExecutionException failed) {
+        throw new IOException("Could not wait for a log to load", failed.getCause());
+      }
+      // Each waiter repeats its own current path and catalog admission, and retains its own use.
+      return null;
+    }
+    try {
+      if (loadGeneration.get() != generation) throw new LogFileException("Log manager is closed");
       LogFileAccess.checkReadable(filePath);
       capture = captureAt(filePath);
       if (capture != null) {
         var use = retain(capture, null, replica);
         if (use != null) return use;
       }
-      // Double-check cache after acquiring lock (another thread may have finished parsing,
+      // Double-check cache after winning ownership (another thread may have finished parsing,
       // or reloaded the changed file)
       LogScan previousScan = null;
       FileSnapshot previousSnapshot = null;
@@ -596,7 +624,13 @@ public class LogManager {
       LogData log;
       try {
         long perLogBudgetBytes = valueBudget(lazyLogs().size() + 1);
-        log = LazyParsedLog.open(filePath, perLogBudgetBytes, snapshot.grewFrom(previousSnapshot) ? previousScan : null);
+        var admittedPath = filePath;
+        log = LazyParsedLog.open(filePath, perLogBudgetBytes,
+            snapshot.grewFrom(previousSnapshot) ? previousScan : null, diskCache, snapshot,
+            replica == null ? null : replica.contentSha256(),
+            () -> loadGeneration.get() == generation && captureAt(admittedPath) == null
+                && !org.triplehelix.wpilogmcp.store.ReplicaReads.openCapture(admittedPath, securityValidator),
+            scanObserver);
       } catch (LogFileException e) {
         // Not a log at all (empty, zeros, another format): the eager parser would only say
         // the same
@@ -617,12 +651,28 @@ public class LogManager {
 
       // Retain before publishing: even immediate heap-pressure eviction must leave this
       // caller a readable mapping. A concurrent import may have reserved the source meanwhile.
+      try {
+        if (loadGeneration.get() != generation || captureAt(filePath) != null) {
+          if (log instanceof LazyParsedLog lazy) lazy.close();
+          if (loadGeneration.get() != generation) throw new LogFileException("Log manager closed while loading a log");
+          return null;
+        }
+      } catch (IOException | RuntimeException | Error failure) {
+        if (log instanceof LazyParsedLog lazy) lazy.close();
+        throw failure;
+      }
       var use = retain(log, snapshot, replica);
       try {
         LogFileAccess.checkReadable(filePath);
         loaded.put(normalizedPath, new Loaded(log, snapshot));
         if (!synchronize) nativeSyncPending.add(log);
         logCache.put(normalizedPath, log);
+        if (loadGeneration.get() != generation || captureAt(filePath) != null) {
+          logCache.remove(normalizedPath, log);
+          use.close();
+          if (loadGeneration.get() != generation) throw new LogFileException("Log manager closed while loading a log");
+          return null;
+        }
         rebalanceValueBudgets();
         logger.debug(
             "Loaded log with {} entries spanning {} seconds",
@@ -639,6 +689,9 @@ public class LogManager {
         if (log instanceof LazyParsedLog lazy) lazy.close();
         throw e;
       }
+    } finally {
+      loading.remove(normalizedPath, completion);
+      completion.complete(null);
     }
   }
 

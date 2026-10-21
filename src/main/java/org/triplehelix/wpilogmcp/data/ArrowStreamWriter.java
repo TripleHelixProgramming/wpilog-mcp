@@ -180,9 +180,10 @@ public final class ArrowStreamWriter {
       org.apache.arrow.flatbuf.Binary.startBinary(b);
       type = org.apache.arrow.flatbuf.Binary.endBinary(b);
       childOffsets = new int[0];
-    } else if (t instanceof ArrowType.TimestampMicros) {
+    } else if (t instanceof ArrowType.TimestampMicros timestamp) {
       typeType = Type.Timestamp;
-      type = Timestamp.createTimestamp(b, TimeUnit.MICROSECOND, 0);
+      int timezone = timestamp.timezone() == null ? 0 : b.createString(timestamp.timezone());
+      type = Timestamp.createTimestamp(b, TimeUnit.MICROSECOND, timezone);
       childOffsets = new int[0];
     } else if (t instanceof ArrowType.Struct s) {
       childOffsets = new int[s.fields().size()];

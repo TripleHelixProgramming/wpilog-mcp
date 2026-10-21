@@ -18,6 +18,8 @@
     {"tool": "get_entry_info", "title": "A struct array: schema, source, leaf paths", "args": {"path": "${review}", "name": "/Vision/Camera3/PoseObservations"}},
     {"tool": "read_entry", "title": "A schema-decoded PoseObservation", "args": {"path": "${review}", "name": "/Vision/Camera3/PoseObservations", "start_time": 370, "limit": 1}},
     {"tool": "read_entry", "title": "At a resolution: five buckets of the battery voltage", "args": {"path": "${q10}", "name": "/SystemStats/BatteryVoltage", "start_time": 20, "end_time": 40, "max_points": 5}},
+    {"tool": "read_entry", "title": "Declared heading unwrapped before five presentation buckets", "args": {"path": "${review}", "name": "/RealOutputs/Drive/Pose.rotation._derived.degrees", "start_time": 362, "end_time": 394, "max_points": 5}},
+    {"tool": "read_entry", "title": "Explicit degree presentation of selected heading samples", "args": {"path": "${review}", "name": "/RealOutputs/Drive/Pose.rotation._derived.degrees", "start_time": 362, "end_time": 394, "angle": "degrees", "limit": 3}},
     {"tool": "render_chart", "title": "Battery chart with its window and inputs", "args": {"path": "${q10}", "name": "/SystemStats/BatteryVoltage", "start_time": 20, "end_time": 40, "width": 640, "height": 360}},
     {"tool": "list_struct_types", "title": "A log's struct types", "args": {"path": "${q10}"}},
     {"tool": "resolve_signals", "title": "Every role", "args": {"path": "${q10}"}},
