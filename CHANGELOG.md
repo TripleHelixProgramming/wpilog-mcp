@@ -675,6 +675,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- `doc/GRAFANA_PLAN.md` proposes the design of its first stage, live panels on the open capture,
+  with synthetic measurements and six questions for the maintainer. Previously the plan noted
+  that a live panel's cost on a recording in progress was not measured. The measurements show a
+  refresh's work growing with the session, and the open file's index holding about 82 bytes of
+  heap per recorded value until the file closes.
+
 - The hardening, source and mirror, pit server and ideas plans now state what has been built.
   Previously the hardening plan still called the multi-session tool unbuilt after
   `compare_sessions` landed and named a Grafana `json` format that the Grafana decisions

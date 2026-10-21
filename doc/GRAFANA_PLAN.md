@@ -3,7 +3,8 @@
 Status: proposed on 2026-10-21 at the maintainer's request, and its [decisions](#decisions)
 answered the same day. Nothing in it is implemented. Two answers differ from the proposal: a
 dashboard starts from a robot and a time range, and live panels on the open capture come first.
-The designs those answers need are agreed before they are built.
+The designs those answers need are agreed before they are built. The first stage's design is
+[proposed below](#stage-1-design-the-open-capture), with six questions for the maintainer.
 
 A server install already puts the robot's latest values on a wall. Every HTTP server serves
 `/metrics`, and the Compose example runs Prometheus and Grafana beside it
@@ -128,8 +129,9 @@ exact figures stay out of the repository and are rounded here.
 - The UTC column rebuilds and sorts the clock mapping on every request: about 13 ms for twenty
   minutes of one reading per 20 ms loop, about 110 ms for three hours.
 - A capture still recording is read through a fixed prefix whose decoded values start empty
-  for each request. A panel refreshing every few seconds would decode the session from its
-  start each time, in the process that records. This was not measured.
+  for each request. A panel refreshing every few seconds decodes the session from its start
+  each time, in the process that records; [stage 1's design](#stage-1-design-the-open-capture)
+  measures what that costs.
 - A decoded number occupies about 50 bytes of heap. The endpoint's REV path decodes every
   signal of a REV log together, about fifteen times the file's size.
 - Infinity reads a whole response into memory and builds one map per row. At 1,000 rows that
@@ -199,6 +201,134 @@ The maintainer put the open capture first.
    picker and the recorded-history dashboard, with the tests below. No new server dependency.
 3. **Across sessions.** Summaries and a columnar store measured against the target, then the
    chosen one built.
+
+## Stage 1 design: the open capture
+
+Proposed on 2026-10-21 for the maintainer's review. Nothing in it is built, and the
+[questions](#questions-for-the-maintainer) below decide parts of it.
+
+### What a person sees
+
+On the pit server's Grafana, a second dashboard beside the sampled one plots the recording in
+progress. Each panel is one entry: the last five minutes by default, refreshed every five
+seconds, drawn as a band from minimum to maximum with the mean. Zooming in with the time picker
+narrows the window until every sample shows; zooming out reaches back to the start of the open
+file. When nothing is recording, each panel says so.
+
+The sampled dashboard stays. It shows the server itself (heap, capture rate, the pull gate and
+the NT4 round trip), which no recording holds, and the latest value once a second. The recorded
+panels show what a scrape cannot: every value the capture wrote, so a 30 ms voltage dip between
+two scrapes appears as a bucket's minimum.
+
+### What the code does today
+
+- Until 2026-10-21 a request for a capture still recording ended in Internal error, after
+  decoding every requested entry. It now returns the prefix the writer had published, without an
+  ETag.
+- Every request for an open capture decodes each requested entry from the start of the file and
+  then filters the window. Every appended value makes a new published prefix, so a cache keyed by
+  the prefix would almost never hit: decoded values and the UTC mapping have to grow with the
+  recording instead.
+- A capture has measured UTC only when the robot publishes a wall-clock topic over NetworkTables.
+  AdvantageKit's `SystemStats/EpochTimeMicros` is one. DataLogManager's `systemTime` is written
+  to the roboRIO's own log, not to NetworkTables. The capture writes no wall-clock entry of its
+  own.
+- A panel can find the open file in the catalog's `open_captures`, but its path changes at a
+  rollover (every 1 GiB by default, as `capture-<n>.wpilog`) and when a robot reboot starts a new
+  session.
+- The open file's index holds about 82 bytes of heap for each recorded value and is pinned until
+  the file closes; it cannot be unloaded when memory runs short.
+- The synthetic soak test never reads the open capture, keeps no recent values (production keeps
+  600 s), and its heap bound is only "below the maximum".
+
+These synthetic measurements were taken on the maintainer's computer with a 768 MiB test heap:
+
+- The soak test, with its usual 100 topics at 50 Hz, imports and readers, plus twelve panels
+  refreshing every five seconds over the last five minutes at 1,000 points, met all its bounds
+  for ten minutes. All 3,000,000 values were recorded, the listener loop's worst delay was about
+  90 ms, and a refresh took about 20 to 40 ms, 115 ms at worst. Sampled heap reached 803 of
+  805 MB, and garbage collection took about 35 s of the ten minutes.
+- With twelve topics at 50 Hz written straight to an open capture, the same refresh took 26 ms
+  after 2.5 minutes of recording and 109 ms after two hours, and allocated 33 MB and 424 MB: the
+  work grows with the session, not with the window.
+- At the soak's 5,000 values per second, 82 bytes per value is about 1.5 GB of heap per hour.
+  The capture writes about 15 bytes per value, so a file reaches its 1 GiB rollover with about
+  6 GB of index, more than the launcher's default 4 GB heap.
+
+### The change
+
+1. `/data/entries` takes `capture=current` in place of `path`. The server answers from the
+   capture recording at the time of each request and names the file it read in the response's
+   inputs. When nothing is recording it refuses with the reason, naming the last session.
+2. `start_utc` and `end_utc` from [stage 2](#stages) come forward, with the rules under
+   [Grafana's time range chooses the window](#grafanas-time-range-chooses-the-window): live
+   panels need Grafana's range.
+3. Windows are selected through the shared read cursor, for an open capture's published prefix
+   and for a loaded log alike: found by search, with only the records inside decoded, so a
+   refresh costs what its window holds. The sample count comes from the index, and the sampling
+   score is taken over the window, as data quality is everywhere else.
+4. The UTC mapping is kept for each loaded log and, for an open capture, extended as wall-clock
+   readings arrive.
+5. The soak test's gate, below, must pass before the live dashboard ships.
+6. The Compose example gains a pinned Infinity, a provisioned data source whose base URL is the
+   server, and the live dashboard. The CI metrics check installs the plugin and confirms that the
+   data source and the dashboard provision; the live answers themselves are checked by the Java
+   tests and the gate.
+
+History by robot and time, REV signals, the source picker and panels across sessions stay in
+stages 2 and 3.
+
+### Questions for the maintainer
+
+1. **Name the recording, not its file.** For: a panel that keeps working across rollovers and
+   reboots. With `capture=current`, a panel follows the capture when the file rolls over (about
+   every four hours at the soak's rate) or a reboot starts a new session. With a path looked up
+   from the catalog, it keeps plotting the old file until the dashboard is reloaded. Proposed:
+   `capture=current`.
+2. **Which clock places a live sample.** For: the time axis and the "last five minutes" window.
+   Grafana chooses the window by its own clock, on the pit server. A robot's wall clock is set
+   from the Driver Station laptop; if that laptop runs two minutes ahead of the pit server, a
+   panel on the robot's clock lags two minutes behind real time, and a robot that publishes no
+   wall-clock topic gets no live panel at all. The alternative: the capture records a wall-clock
+   entry of its own, measured from the pit server's clock through NetworkTables' time
+   synchronization and labeled `pit_clock` in `utc_basis`, which is the clock the catalog
+   already uses for a capture's calendar times. Live windows then line up with Grafana's clock on
+   the same machine, for every robot. This relaxes hardening item 6's rule that the server's
+   clock never supplies UTC, for captures only and as a recorded measurement, and history in
+   stage 2 then has two clocks for a capture that the panel must name. Proposed: the pit clock
+   for live panels.
+3. **What a window does at a rollover or a reboot.** For: whether "the last five minutes" may
+   span two files. Proposed: the open file only. For up to five minutes after a rollover the
+   panel's left side is empty, with the reason in the metadata, and a reboot's new session starts
+   a fresh panel. The alternative reads the previous file of the same session too, which is the
+   first answer across files that stage 2 designs in general.
+4. **The open index's memory, first.** For: a recording comes first. At 82 bytes per value, a
+   long session at a high value rate runs the server out of heap before its first rollover,
+   whether or not Grafana is in use. Proposed: compact the open index into primitive arrays of
+   timestamps and offsets, estimated at 20 to 25 bytes per value, as its own change before stage
+   1. The alternatives are a smaller default rollover size, which bounds the index without
+   shrinking it, or a documented limit on the recorded value rate.
+5. **The gate's bounds.** For: deciding when the live dashboard ships. The gate as written passed
+   today's code after ten minutes, because the cost that grows with a session is still small
+   then. Proposed: run the dashboard's load after the capture already holds two hours at the
+   soak's rate, and require a listener delay of at most one second, as now; a twelve-panel
+   refresh within 250 ms and 50 MB of allocation at two hours as at two minutes; and heap after a
+   full collection that grows by no more than the compacted index's cost per value.
+6. **A second dashboard, or the robot panels moved.** For: what the pit wall shows. Proposed: add
+   the recorded dashboard beside the sampled one. The alternative moves the five robot-value
+   panels off Prometheus once the gate passes.
+
+### Tests that must fail first
+
+- `capture=current` on an open capture returns its prefix's rows, worked out by hand, and is
+  refused with the reason when nothing records; after a rollover it names the new file.
+- The window through the cursor returns the same rows as filtering the whole entry, on every
+  fixture and on a capture's prefix; a planted off-by-one at a window's end fails it.
+- A ten-second window on a two-hour open capture decodes only the records inside it, counted
+  rather than timed.
+- The UTC mapping extended reading by reading equals one built fresh from the same prefix, and
+  an ambiguous clock is refused in both.
+- The gate, opt-in like the soak test, fails on today's code at two hours.
 
 ## Tests
 
