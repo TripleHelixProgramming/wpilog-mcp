@@ -114,22 +114,48 @@ class GatewayLifecycleTest {
     var local = java.net.NetworkInterface.networkInterfaces().flatMap(java.net.NetworkInterface::inetAddresses)
         .filter(a -> a instanceof java.net.Inet4Address && !a.isLoopbackAddress() && !a.isLinkLocalAddress()).findFirst();
     org.junit.jupiter.api.Assumptions.assumeTrue(local.isPresent(), "No nonloopback interface");
-    String host = local.orElseThrow().getHostAddress(); int port;
-    try (var reserve = new ServerSocket()) { reserve.bind(new InetSocketAddress(host, 0)); port = reserve.getLocalPort(); }
-    temp = temp.toRealPath(); var manager = LogManager.getInstance(); var allowed = manager.getAllowedDirectories(); manager.addAllowedDirectory(temp);
-    var config = new CaptureConfig(List.of(RobotAddress.uri("127.0.0.1", 9, "absent")), temp.resolve("store"), .01,
-        CapturePolicy.ALL, 0, 1 << 20, PullConfig.DISABLED, port);
-    var http = new HttpTransport(new ToolRegistry(), 0, host, null, null);
-    try (var capture = new CaptureService(config, manager, host)) {
-      http.setGatewayStatus(capture.live()::gateway); http.start(); capture.start().get(5, TimeUnit.SECONDS);
-      HarnessHttp.await("gateway listening", 5, () -> capture.live().gateway().state() == GatewayStatus.State.LISTENING);
-      assertEquals(port, health(host, http.getPort()).getAsJsonObject("gateway").get("port").getAsInt());
-      var socket = HttpClient.newHttpClient().newWebSocketBuilder().subprotocols(Nt4Client.V40)
-          .buildAsync(RobotAddress.uri(host, port, "nonloopback"), new java.net.http.WebSocket.Listener() {}).get(5, TimeUnit.SECONDS);
-      try (var refused = new java.net.Socket()) {
-        assertThrows(java.io.IOException.class, () -> refused.connect(new InetSocketAddress("127.0.0.1", port), 1000));
-      } finally { socket.abort(); }
-    } finally { http.stop(); manager.release(temp); manager.clearAllowedDirectories(); allowed.forEach(manager::addAllowedDirectory); }
+    String host = local.orElseThrow().getHostAddress();
+    var loopback = loopbackHeldForAPortFreeOn(host); int port = loopback.getLocalPort();
+    try (loopback) {
+      temp = temp.toRealPath(); var manager = LogManager.getInstance(); var allowed = manager.getAllowedDirectories(); manager.addAllowedDirectory(temp);
+      var config = new CaptureConfig(List.of(RobotAddress.uri("127.0.0.1", 9, "absent")), temp.resolve("store"), .01,
+          CapturePolicy.ALL, 0, 1 << 20, PullConfig.DISABLED, port);
+      var http = new HttpTransport(new ToolRegistry(), 0, host, null, null);
+      try (var capture = new CaptureService(config, manager, host)) {
+        http.setGatewayStatus(capture.live()::gateway); http.start(); capture.start().get(5, TimeUnit.SECONDS);
+        HarnessHttp.await("gateway listening", 5, () -> capture.live().gateway().state() == GatewayStatus.State.LISTENING);
+        assertEquals(port, health(host, http.getPort()).getAsJsonObject("gateway").get("port").getAsInt());
+        var socket = HttpClient.newHttpClient().newWebSocketBuilder().subprotocols(Nt4Client.V40)
+            .buildAsync(RobotAddress.uri(host, port, "nonloopback"), new java.net.http.WebSocket.Listener() {}).get(5, TimeUnit.SECONDS);
+        try (var refused = new java.net.Socket()) {
+          loopback.close();
+          assertThrows(java.io.IOException.class, () -> refused.connect(new InetSocketAddress("127.0.0.1", port), 1000));
+        } finally { socket.abort(); }
+      } finally { http.stop(); manager.release(temp); manager.clearAllowedDirectories(); allowed.forEach(manager::addAllowedDirectory); }
+    }
+  }
+
+  /**
+   * A port free on {@code host}, with 127.0.0.1 at the same port held by a socket that is bound but
+   * never listens. Ports are per address, so another test process could listen on that loopback
+   * port and answer the probe that expects nothing there. The test holds it while the gateway
+   * starts and releases it just before the probe: held during the probe, it would answer for the
+   * address on macOS and hide a gateway that listens on every address, the fault the probe catches.
+   */
+  private static java.net.Socket loopbackHeldForAPortFreeOn(String host) throws java.io.IOException {
+    for (int attempt = 0; attempt < 20; attempt++) {
+      try (var reserve = new ServerSocket()) {
+        reserve.bind(new InetSocketAddress(host, 0));
+        var hold = new java.net.Socket();
+        try {
+          hold.bind(new InetSocketAddress("127.0.0.1", reserve.getLocalPort()));
+          return hold;
+        } catch (java.io.IOException taken) {
+          hold.close();
+        }
+      }
+    }
+    throw new java.io.IOException("No port was free on both " + host + " and 127.0.0.1");
   }
 
   @Test void failedGatewayCloseReportsItsCauseWithoutClaimingADeadlineExpired() throws Exception {

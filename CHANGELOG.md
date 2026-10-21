@@ -584,6 +584,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checked, so two links to a renamed visualization-plan heading and a line-number anchor into
   the standalone guide broke unnoticed; they now point at their headings. The visualization plan
   names an uncommitted review note instead of linking it.
+- The gateway bind-address test now holds the loopback endpoint at its port while the gateway
+  starts and releases it just before probing that nothing listens there. Previously another
+  test process could listen on that loopback port and answer the probe, failing the test
+  intermittently; a test-planted listener reproduces that failure on the old test.
 
 - Server-library regressions cover quota accounting, migration, source revocation, interrupted
   checkpoints and shared HTTP/MCP pressure. The extension's real-server client test now pins
