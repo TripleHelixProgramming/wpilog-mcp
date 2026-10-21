@@ -34,11 +34,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.capture.CaptureIndex;
+import org.triplehelix.wpilogmcp.capture.CapturePolicy;
+import org.triplehelix.wpilogmcp.capture.CaptureWriter;
 import org.triplehelix.wpilogmcp.data.ArrowSpecReader;
 import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.FileSnapshot;
 import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
+import org.triplehelix.wpilogmcp.nt4.ValueFrame;
+import org.triplehelix.wpilogmcp.nt4.client.ManualScheduler;
+import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
 import org.triplehelix.wpilogmcp.sync.SyncMethod;
 import org.triplehelix.wpilogmcp.tools.EntryData;
 import org.triplehelix.wpilogmcp.tools.WpilogTools;
@@ -614,5 +621,43 @@ class DataEndpointTest {
     var none = get(params("names", key));
     assertEquals(404, none.statusCode(), new String(none.body(), StandardCharsets.UTF_8));
     assertTrue(json(none).get("error").getAsString().contains("No REV log"));
+  }
+
+  /**
+   * A capture still recording is read as the prefix its writer had published, which has no file
+   * snapshot: appending does not change what the request read. The endpoint compared snapshots
+   * unconditionally and answered such a request with Internal error, after decoding every entry.
+   */
+  @Test
+  @DisplayName("a capture still recording is served as its published prefix, with no validator")
+  void aRecordingCaptureIsServedAsItsPublishedPrefix(@TempDir Path directory) throws Exception {
+    var manager = LogManager.getInstance();
+    var root = directory.toRealPath();
+    manager.addAllowedDirectory(root);
+    var path = root.resolve("capture.wpilog");
+    var now = new java.util.concurrent.atomic.AtomicReference<Double>(3_000_000.0);
+    var index = new CaptureIndex((address, start) -> path, manager, 10_000_000, now::get);
+    var topic = new Announce("/x", 1, "int", null, new JsonObject());
+    try (var writer = new CaptureWriter(java.time.Clock.systemUTC(), new ManualScheduler(), CapturePolicy.ALL, index)) {
+      writer.connected(RobotAddress.uri("127.0.0.1", 5810, "data-endpoint-test"), "networktables.first.wpi.edu");
+      writer.timeSync(1_000_000, 0);
+      writer.announce(topic);
+      writer.value(topic, new ValueFrame(1, 1_000_000, 2, 7L), 0);
+      writer.value(topic, new ValueFrame(1, 1_020_000, 2, 8L), 0);
+      var csv = get(Map.of("path", path.toString(), "names", "NT:/x", "format", "csv"));
+      var body = new String(csv.body(), StandardCharsets.UTF_8);
+      assertEquals(200, csv.statusCode(), body);
+      assertTrue(csv.headers().firstValue("ETag").isEmpty(), "A growing recording has no validator to repeat");
+      var rows = body.lines().filter(line -> !line.startsWith("#") && !line.isBlank()).skip(1)
+          .map(line -> line.split(",")).toList();
+      assertEquals(2, rows.size(), body);
+      assertEquals(1.0, Double.parseDouble(rows.get(0)[0]), 1e-9);
+      assertEquals(7.0, Double.parseDouble(rows.get(0)[1]));
+      assertEquals(1.02, Double.parseDouble(rows.get(1)[0]), 1e-9);
+      assertEquals(8.0, Double.parseDouble(rows.get(1)[1]));
+      var arrow = get(Map.of("path", path.toString(), "names", "NT:/x", "max_points", "1"));
+      assertEquals(200, arrow.statusCode(), new String(arrow.body(), StandardCharsets.UTF_8));
+      assertEquals("true", ArrowSpecReader.read(arrow.body()).metadata().get("bucketed"));
+    }
   }
 }

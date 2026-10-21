@@ -355,7 +355,9 @@ final class DataEndpoint {
       // A cached reply is still a read of this exact owner/scope/content. Recheck after
       // preparing values so replacement or revoked admission cannot publish stale data.
       checkSource(request, sources);
-      if (!before.sameAs(FileSnapshot.of(use.path()))) throw new Refusal(409, "The log changed during this data request", "Reopen the selected source");
+      // A capture still recording is read as its writer's published prefix, which has no
+      // snapshot: appending does not change what this request read.
+      if (before != null && !before.sameAs(FileSnapshot.of(use.path()))) throw new Refusal(409, "The log changed during this data request", "Reopen the selected source");
       var etag = etag(before, exchange.getRequestURI().getRawQuery(), revValidators);
       var ifNoneMatch = exchange.getRequestHeaders().getFirst("If-None-Match");
       if (etag != null && ifNoneMatch != null && matches(ifNoneMatch, etag)) {

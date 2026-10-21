@@ -285,6 +285,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The unreleased data endpoint now serves a capture that is still recording, as the prefix its
+  writer had published, without an ETag. It compared file snapshots unconditionally, and a
+  growing recording has none, so every such request ended in Internal error after decoding
+  each requested entry in full.
+
 - The unreleased disk-space budget now measures a filesystem through a registered store folder
   that still exists. It measured through the folder of the first store registered on the disk,
   so deleting that folder made every later copy there, such as an import, an upload or a robot
