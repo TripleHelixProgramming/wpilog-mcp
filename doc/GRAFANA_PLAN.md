@@ -4,7 +4,8 @@ Status: proposed on 2026-10-21 at the maintainer's request, and its [decisions](
 answered the same day. Nothing in it is implemented. Two answers differ from the proposal: a
 dashboard starts from a robot and a time range, and live panels on the open capture come first.
 The designs those answers need are agreed before they are built. The first stage's design is
-[proposed below](#stage-1-design-the-open-capture), with six questions for the maintainer.
+[proposed below](#stage-1-design-the-open-capture); the maintainer answered its six questions
+on 2026-10-21.
 
 A server install already puts the robot's latest values on a wall. Every HTTP server serves
 `/metrics`, and the Compose example runs Prometheus and Grafana beside it
@@ -206,8 +207,8 @@ The maintainer put the open capture first.
 
 ## Stage 1 design: the open capture
 
-Proposed on 2026-10-21 for the maintainer's review. Nothing in it is built, and the
-[questions](#questions-for-the-maintainer) below decide parts of it.
+Proposed on 2026-10-21 for the maintainer's review. Nothing in it is built. The maintainer
+answered the [questions](#questions-for-the-maintainer) below the same day.
 
 ### What a person sees
 
@@ -271,7 +272,10 @@ These synthetic measurements were taken on the maintainer's computer with a 768 
    score is taken over the window, as data quality is everywhere else. Once the column plan's
    recording phase is in, the open file's columns serve these windows.
 4. The UTC mapping is kept for each loaded log and, for an open capture, extended as wall-clock
-   readings arrive.
+   readings arrive. A live window is placed by the robot's wall-clock topic when the robot
+   publishes one, and otherwise by a wall-clock entry the capture records from the pit server's
+   clock through NetworkTables' time synchronization; `utc_basis` names the clock that placed
+   it.
 5. The soak test's gate, below, must pass before the live dashboard ships.
 6. The Compose example gains a pinned Infinity, a provisioned data source whose base URL is the
    server, and the live dashboard. The CI metrics check installs the plugin and confirms that the
@@ -287,7 +291,7 @@ stages 2 and 3.
    reboots. With `capture=current`, a panel follows the capture when the file rolls over (about
    every four hours at the soak's rate) or a reboot starts a new session. With a path looked up
    from the catalog, it keeps plotting the old file until the dashboard is reloaded. Proposed:
-   `capture=current`.
+   `capture=current`. Answered on 2026-10-21: `capture=current`.
 2. **Which clock places a live sample.** For: the time axis and the "last five minutes" window.
    Grafana chooses the window by its own clock, on the pit server. A robot's wall clock is set
    from the Driver Station laptop; if that laptop runs two minutes ahead of the pit server, a
@@ -299,12 +303,15 @@ stages 2 and 3.
    the same machine, for every robot. This relaxes hardening item 6's rule that the server's
    clock never supplies UTC, for captures only and as a recorded measurement, and history in
    stage 2 then has two clocks for a capture that the panel must name. Proposed: the pit clock
-   for live panels.
+   for live panels. Answered on 2026-10-21, and confirmed in words because it relaxes hardening
+   item 6's rule: the robot's clock when it publishes one, and the pit server's otherwise, each
+   labeled. The pit server's clock supplies UTC only for a capture whose robot publishes none.
 3. **What a window does at a rollover or a reboot.** For: whether "the last five minutes" may
    span two files. Proposed: the open file only. For up to five minutes after a rollover the
    panel's left side is empty, with the reason in the metadata, and a reboot's new session starts
    a fresh panel. The alternative reads the previous file of the same session too, which is the
-   first answer across files that stage 2 designs in general.
+   first answer across files that stage 2 designs in general. Answered on 2026-10-21: the open
+   file only.
 4. **The open index's memory, first.** For: a recording comes first. At 82 bytes per value, a
    long session at a high value rate runs the server out of heap before its first rollover,
    whether or not Grafana is in use. Proposed: compact the open index into primitive arrays of
@@ -319,10 +326,15 @@ stages 2 and 3.
    then. Proposed: run the dashboard's load after the capture already holds two hours at the
    soak's rate, and require a listener delay of at most one second, as now; a twelve-panel
    refresh within 250 ms and 50 MB of allocation at two hours as at two minutes; and heap after a
-   full collection that grows by no more than the compacted index's cost per value.
+   full collection that grows by no more than the compacted index's cost per value. Answered on
+   2026-10-21: two hours of prefill at the soak's rate, then twelve panels every five seconds for
+   ten minutes; the listener waits at most one second; each refresh finishes within 250 ms and
+   allocates under 50 MB, at two hours as at two minutes; and the heap left after a full
+   collection grows by less than 64 MB over the run.
 6. **A second dashboard, or the robot panels moved.** For: what the pit wall shows. Proposed: add
    the recorded dashboard beside the sampled one. The alternative moves the five robot-value
-   panels off Prometheus once the gate passes.
+   panels off Prometheus once the gate passes. Answered on 2026-10-21: a second dashboard beside
+   the sampled one.
 
 ### Tests that must fail first
 

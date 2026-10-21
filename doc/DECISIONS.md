@@ -121,3 +121,8 @@ architectural decisions.
 | 2026-10-21 | standing | The recording writes the open file's columns before Grafana's open-capture stage is built | [Record](COLUMN_CACHE_PLAN.md#decisions) |
 | 2026-10-21 | standing | The default rollover size stays 1 GiB until then; no smaller stopgap | [Record](COLUMN_CACHE_PLAN.md#decisions) |
 | 2026-10-21 | standing | Column companions are timed read-only on three local team logs, with the exact results kept local | [Record](COLUMN_CACHE_PLAN.md#decisions) |
+| 2026-10-21 | standing | Live Grafana panels name the recording in progress with `capture=current`, not a file path | [Record](GRAFANA_PLAN.md#questions-for-the-maintainer) |
+| 2026-10-21 | standing | A live window reads only a capture's open file; after a rollover its earlier part is empty, with the reason | [Record](GRAFANA_PLAN.md#questions-for-the-maintainer) |
+| 2026-10-21 | standing | The open-capture gate: two hours of prefill; listener wait at most 1 s; each twelve-panel refresh within 250 ms and under 50 MB; heap after a full collection grows under 64 MB | [Record](GRAFANA_PLAN.md#questions-for-the-maintainer) |
+| 2026-10-21 | standing | Recorded live panels go on a second dashboard beside the sampled one | [Record](GRAFANA_PLAN.md#questions-for-the-maintainer) |
+| 2026-10-21 | standing | A live window is placed by the robot's wall clock when the robot publishes one, and otherwise by the pit server's, measured through NetworkTables' time synchronization and labeled; this relaxes hardening item 6 for captures alone | [Record](GRAFANA_PLAN.md#questions-for-the-maintainer) |

@@ -691,7 +691,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with synthetic measurements and six questions for the maintainer. Previously the plan noted
   that a live panel's cost on a recording in progress was not measured. The measurements show a
   refresh's work growing with the session, and the open file's index holding about 82 bytes of
-  heap per recorded value until the file closes.
+  heap per recorded value until the file closes. The maintainer answered the six questions:
+  panels name the recording with `capture=current`; a live window reads only the open file and is
+  placed by the robot's wall clock when the robot publishes one, and by the pit server's
+  otherwise; the gate runs on two hours of prefill with a 250 ms and 50 MB bound per refresh; and
+  the recorded panels get a dashboard of their own.
 
 - The hardening, source and mirror, pit server and ideas plans now state what has been built.
   Previously the hardening plan still called the multi-session tool unbuilt after
