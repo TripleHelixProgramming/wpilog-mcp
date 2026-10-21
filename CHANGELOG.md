@@ -643,6 +643,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- `doc/GRAFANA_PLAN.md` proposes plotting stored sessions at full resolution in the Grafana
+  that shows the live metrics: Grafana's Infinity data source reads the data endpoint's CSV
+  with measured UTC, Grafana's time range chooses the window, and dashboards open from the
+  store's catalog. It records rounded local measurements, the costs that grow with a log
+  rather than with the view, and five decisions for the maintainer. Previously the pit plan
+  deferred history in Grafana to an unspecified `json` format until a need showed.
+  `doc/COLUMNAR_STORE_PLAN.md` now rereads each reason for its rejection under a
+  server-install-only scope; the rejection stands until the maintainer decides.
+
 - The unreleased multi-session analysis proposal now defines per-session evidence,
   equally weighted summaries, explicit pooling, confounders and bounded-work decisions;
   previously no contract prevented a future implementation from silently pooling or

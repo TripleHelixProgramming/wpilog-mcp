@@ -71,7 +71,8 @@ record; test results and historical defect reports are not new architectural dec
 | 2026-10-17 | superseded | Mirrors exclude finalized pit captures; finalized files are now eligible regardless of recorder | [Record](VISUALIZATION_PLAN.md#consolidated-data-path-owner-decision-2026-10-17) |
 | 2026-10-17 | standing | Gateway access assumes the private team network | [Record](VISUALIZATION_PLAN.md#consolidated-data-path-owner-decision-2026-10-17) |
 | 2026-10-17 | standing | Measured clock facts travel with the session | [Record](VISUALIZATION_PLAN.md#clock-facts-travel-with-the-session-approved-2026-10-17) |
-| 2026-10-19 | rejected | An embedded DuckDB/Parquet analytics cache and a new Grafana query door without a measured need | [Record](COLUMNAR_STORE_PLAN.md#why-it-was-rejected) |
+| 2026-10-19 | rejected | An embedded DuckDB/Parquet analytics cache and a new Grafana query door without a measured need; a server-only revisit is open since 2026-10-21 | [Record](COLUMNAR_STORE_PLAN.md#why-it-was-rejected) |
+| 2026-10-21 | standing | Plan Grafana plots of historic data from the log store; any columnar store would be for server installs only, never students' laptops | [Record](GRAFANA_PLAN.md#recorded-history-in-grafana) |
 | 2026-10-20 (indexed) | standing | A recording comes first | [Record](ARCHITECTURE.md#a-recording-comes-first) |
 | 2026-10-20 (indexed) | standing | Single-thread owners take short turns, measured from outside | [Record](ARCHITECTURE.md#single-thread-owners-take-short-turns-measured-from-outside) |
 | 2026-10-20 (indexed) | standing | Cost follows the change | [Record](ARCHITECTURE.md#cost-follows-the-change) |

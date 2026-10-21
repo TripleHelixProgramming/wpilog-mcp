@@ -17,6 +17,9 @@ server, one rule for bucketing samples, costs measured against a season's store,
 for questions across many sessions (sections 2.2 and 3.5 below), and the design rules written
 down. Nothing in it is implemented.
 
+[Recorded history in Grafana](GRAFANA_PLAN.md) proposes plotting stored sessions in the
+Grafana that shows the live metrics, on server installs (section 9.5 below).
+
 ---
 
 ## 1. Performance & Scalability
@@ -38,6 +41,8 @@ Priority: Low. Complexity: High.
 Align several logs from the same event (the practice runs, say) on a common time base, to compare autonomous attempts, track mechanism tuning, or find intermittent issues.
 
 Today `compare_matches` compares one signal's statistics across two logs, each on its own clock, and `compare_sessions` compares one statistic per session across up to 64 finished sessions of a store, each on its own clock too. Neither aligns files on a common time base; the only alignment between files is REV log to wpilog sync.
+
+Measured wall-clock time is the common time base for plots: the [Grafana plan](GRAFANA_PLAN.md#across-sessions) states the rules for placing many sessions on one axis and the two ways proposed to serve such panels.
 
 ### NetworkTables Receipt Time
 
@@ -689,6 +694,16 @@ later. `McpClient` and `DataClient` also have no client-side byte ceiling. Defin
 responses and streams, cancel a request when it crosses them, and report the refusal without
 leaving the editor waiting. Tests should dispose during startup and feed oversized responses
 in small chunks.
+
+### 9.5 Recorded History in Grafana
+
+Plot stored sessions at full resolution in the Grafana that already shows the live metrics,
+on a server install. [GRAFANA_PLAN.md](GRAFANA_PLAN.md) is the proposal: Grafana's Infinity
+data source reads the data endpoint's CSV with measured UTC, Grafana's time range chooses the
+window, and dashboards open from the store's catalog. Panels across many sessions come later,
+served either by summaries the server keeps or by a columnar store on server installs only,
+which the [columnar plan](COLUMNAR_STORE_PLAN.md#revisited-for-server-installs-2026-10-21)
+reconsiders. The plan's decisions wait on the maintainer.
 
 ---
 

@@ -5,6 +5,10 @@ depends on it. The reasons come first; the proposal follows unchanged under
 [The proposal as submitted](#the-proposal-as-submitted), as the record of what was
 considered and why it was turned down.
 
+On 2026-10-21 the maintainer asked to revisit a columnar store for server installs only,
+not students' laptops. [Revisited for server installs](#revisited-for-server-installs-2026-10-21)
+records that review. The rejection stands until the maintainer decides on it.
+
 ## Why it was rejected
 
 1. **It names no problem and sets no threshold.** The proposal says DuckDB and
@@ -119,6 +123,116 @@ These rules from the proposal hold for any derived data the server adds:
   a floating-point projection is labeled as one.
 - Callers choose named queries and pass typed arguments; they never send SQL, paths
   or table names.
+
+## Revisited for server installs (2026-10-21)
+
+The maintainer asked to look again at a columnar store limited to server installs: machines
+that run the standalone server as a service with a store, such as the pit server or a
+separate analysis machine. The VS Code extension's bundled server and students' laptops are
+out of scope. This section rereads each reason above under that scope. It decides nothing;
+the [decisions](#decisions-for-the-revisit) at its end are the maintainer's.
+
+Since the list above was written, the wall-clock time it named as Grafana's prerequisite has
+been implemented, unreleased, as `utc=true` on the data endpoint. Its Grafana item has become
+[its own plan](GRAFANA_PLAN.md), which reads the endpoint's CSV and needs no new format.
+
+### What it would be for
+
+The [Grafana plan](GRAFANA_PLAN.md) plots one file per panel from the data endpoint and
+needs no store of its own for that: a 1,000-point overview from a loaded log takes tens of
+milliseconds. The open case is a panel across sessions, one entry from many files on one
+wall-clock axis, such as a robot's battery across an event or a season. No route answers it.
+On today's readers, one event's fifteen match logs took about 30 s on their first load, about
+16 s after a restart with persisted scan indexes, and about 0.1 s while loaded. These figures
+are rounded; they were measured locally on team logs and the exact results stay out of the
+repository. A columnar store would answer such panels without opening the logs.
+
+### The reasons, reread
+
+1. **No problem, no threshold.** The problem now has a name, panels across sessions, and the
+   measurement above. The threshold is still missing; the third decision below asks for one.
+2. **Grafana does not need it.** Still true for one file at a time. Not true across sessions,
+   where no route exists.
+3. **The cost comes first and the value last.** A server-only store can be smaller than the
+   proposal: a derived view for Grafana alone. MCP tools, the read API and the Explorer keep
+   reading WPILOG, so there are no adapters into analysis and no second implementation of the
+   read contract to hold equal. Value arrives with the first converted session. What remains is
+   showing that a converted file holds what its log holds.
+4. **A native engine in the process that records.** Unchanged, and now a standing rule:
+   [no native code runs in the process that records](ARCHITECTURE.md#no-native-code-runs-in-the-process-that-records).
+   The engine must run in another process, best on another machine. A separate analysis
+   machine fed by the mirror keeps both its memory and its disk away from capture. On the pit
+   machine itself, the converter and the engine run as separate processes with their own
+   memory limits, and write outside the store's filesystem or within capture's
+   [disk reserve](ARCHITECTURE.md#capture-has-a-disk-reserve). The server's only added work is
+   serving reads through its existing bounded workers.
+5. **Each publication snapshots the whole scope.** Replaced by
+   [derived data keyed by its inputs and its recipe](ARCHITECTURE.md#derived-data-is-keyed-by-its-inputs-and-its-recipe):
+   one columnar file per finished WPILOG, named by the file's SHA-256, which its manifest
+   already records, the converter's version and the clock mapping's recipe. Robot and session
+   facts come from the catalog when a dashboard queries, not from scope-wide generations. A new
+   session converts one file.
+6. **It would multiply the download.** Gone under this scope. The engine ships with the
+   Compose example on the server, never in the server's JAR or the extension.
+7. **Cross-session queries without cross-session statistics.** Plots are views, but a number
+   pooled across sessions on a dashboard would skip `compare_sessions`' per-session
+   evidence and pooling rules. Provisioned dashboards plot each session's own series, and the
+   Grafana plan's [rules for choosing files](GRAFANA_PLAN.md#across-sessions) and keeping
+   overlapping recordings apart apply unchanged.
+
+### A shape that fits
+
+A converter runs as its own process, in a container beside Grafana. It finds finished
+sessions in the catalog and reads each file's numeric entries through the data endpoint's
+Arrow stream with `utc=true`. For each WPILOG it writes one Parquet file: entry, field, log
+time and UTC in integer microseconds, the value, the sampling class and the unit. Integers
+stay 64-bit integers, non-finite values and negative zero survive, and a value converted to
+floating point is labeled as one. Rows without measured UTC are kept with an empty UTC and
+counted. The entries converted are chosen by configured prefixes, as `metrics.include` chooses
+topics.
+
+Grafana queries the Parquet files through an engine in its own process or a service beside
+it. Grafana's DuckDB data source, published by MotherDuck, runs DuckDB inside Grafana's
+plugin process; it is unsigned, below version 1.0, and needs a glibc-based Grafana image.
+Grafana Labs maintains a ClickHouse data source, but ClickHouse is a service with its own
+memory and disk to operate. A time-series database fed by the same converter is a third
+choice, with the most to operate. The server still accepts no SQL: dashboard SQL runs in
+Grafana's engine, and Grafana's container mounts only the derived directory, read-only,
+because that SQL can read anything its engine can reach.
+
+Live data stays with Prometheus and the file-first path. The converter never writes the
+store, and neither the tools nor the Explorer read the columnar files.
+
+The converter's output for every fixture is compared value by value, timestamps included,
+with the independent WPILOG reader. Time buckets computed in dashboard SQL are a presentation
+with their own rule, not the server's bucket rule; panels whose numbers people quote say so
+and link to the tools.
+
+### Against the lighter option
+
+The Grafana plan also proposes summaries kept by the server: for each file, minimum,
+maximum, mean and count over short fixed intervals, keyed like the scan index, with no new
+engine. They serve overview panels across sessions, and zooming in goes back to the file. A
+columnar store adds queries of any shape over every sample of every session, at the cost of
+an engine, a converter and their storage on a server. If the panels teams want are
+overviews, the summaries are enough.
+
+### Decisions for the revisit
+
+1. **A columnar store, or the summaries first.** The summaries answer an event-wide overview
+   without a new engine; a columnar store also answers queries of any shape over every
+   sample. Recommended: build the file-first Grafana path, then measure both on a
+   season-sized synthetic store.
+2. **Where it runs.** On a separate analysis machine fed by the mirror, or on the pit
+   machine in its own processes with memory and disk limits. The first keeps capture's memory
+   and disk untouched.
+3. **The target.** For example, one entry across one event's matches in under five seconds
+   after a restart, and across a season in under thirty. Without a number, the rejection's
+   first reason still holds.
+4. **The engine.** Grafana's DuckDB data source (no service to run, but unsigned and below
+   1.0), ClickHouse (a service), or a time-series database.
+
+The rules under [Worth keeping](#worth-keeping) apply to any option chosen.
 
 ---
 

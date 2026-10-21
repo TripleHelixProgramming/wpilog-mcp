@@ -21,6 +21,7 @@ no feature has been enabled or disabled by moving these documents.
 | [Explorer integration](EXPLORER_REMOTE_SESSIONS.md) | Viewer plans and decisions concerning remote/live data |
 | [Ideas](IDEAS.md) | Related proposals and the harness record |
 | [Dashboard examples](metrics/compose.yaml) | Prometheus/Grafana configuration and its starter dashboard |
+| [Recorded history in Grafana](../GRAFANA_PLAN.md) | Proposed plots of stored sessions beside the live dashboard, not implemented |
 
 The ordinary guides remain in [doc/](../OPERATIONS.md). A passing simulation or CI run
 must not be described as successful testing on a roboRIO, a team network or a real coprocessor.

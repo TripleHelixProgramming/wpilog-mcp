@@ -1376,6 +1376,8 @@ state; empty boxes deliberately show no robot data. For a topic in other units, 
 query's conversion. CPU/disk panels work when the robot publishes them; future context
 providers will supply their own topics. The heap panel is the **server's** JVM. Use the
 capture and analysis tools for full-resolution history, not the dashboard's sampled curve.
+Plotting stored history in this Grafana is proposed, not implemented; see
+[GRAFANA_PLAN.md](../GRAFANA_PLAN.md).
 
 The configuration follows the official [Prometheus container setup](https://prometheus.io/docs/prometheus/latest/installation/)
 and [Grafana provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/).

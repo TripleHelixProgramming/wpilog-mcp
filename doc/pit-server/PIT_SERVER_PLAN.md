@@ -630,7 +630,7 @@ What it does not do. **It is a view, not the record** (decision 13). A scrape se
 
 **It has no authentication**, as decision 7 says: the endpoint is on the same port as the MCP transport, and behind the same proxy if a team adds one.
 
-A later step, when a dashboard wants the record and not its samples, is the data endpoint the explorer plan specifies ([EXPLORER_PLAN.md](../EXPLORER_PLAN.md) §6), which any server on the HTTP transport serves. It gives an entry's values over a range, every sample or reduced to a requested number of points by the minimum, maximum, and mean per bucket, as an Arrow stream or CSV. A `json` format for Grafana's data source plugins is the addition, when someone needs full-resolution history in Grafana rather than in the explorer or a tool. Prometheus first.
+A later step, when a dashboard wants the record and not its samples, is the data endpoint the explorer plan specifies ([EXPLORER_PLAN.md](../EXPLORER_PLAN.md) §6), which any server on the HTTP transport serves. It gives an entry's values over a range, every sample or reduced to a requested number of points by the minimum, maximum, and mean per bucket, as an Arrow stream or CSV. On 2026-10-21 the maintainer asked for that history in Grafana, plotted from the log store. [GRAFANA_PLAN.md](../GRAFANA_PLAN.md) proposes reading the endpoint's CSV through Grafana's Infinity data source, in place of the `json` format this section once named, and lists the choices still open. Prometheus remains the live view.
 
 ### 13. Network exposure
 
@@ -667,7 +667,7 @@ Each leaves the project working and tested on its own.
 12. **JVM provider** (§8.3) (first half done: explicit `context.jvm` port/period, JDK-only polling, receipt timestamps and uptime pairing, state/cost snapshots, bounded worker ownership/backoff and in-process connector tests). Flight Recorder streaming waits for the deployed JRE module facts (Part III).
 13. **Session manifests and import matching** (§10, §11) (done: file hashes, sizes, provenance, verification and recorded alignment; robot/session manifests drive listings; pulled WPILOG/REV files join a uniquely correlated session within 250 ms of zero, with identity and calendar gates. Ordinary WPILOG imports now require the same proof when a nominated session has a capture or data-matched anchor; without an anchor, calendar grouping is explicit and has no measured offset. Imported REV companions also require the 250 ms gate. Existing placements remain unchanged. The round 24 audit and round 25 choices in Part III record the remaining source-selection and format-migration gaps).
 14. **Incremental rescan** (§6, secondary path) (done: copied compact indexes, declaration/metadata continuation, retryable partial tails, identity and byte-anchor checks, fresh decode caches and mapping retirement; across-growth calls still fail with an explained retry, and successful disk-backed calls name their admitted file size. Differential fixtures and the conformance sweep check the secondary path).
-15. **JFR file import** (§8.3) and the Grafana query endpoint (§12), each when a need shows.
+15. **JFR file import** (§8.3), when a need shows. Recorded history in Grafana (§12) follows the stages of [its own plan](../GRAFANA_PLAN.md#stages).
 
 ### 16. Testing
 
@@ -890,7 +890,7 @@ Milestone 1 decisions:
 - Whether to ask WPILib to have DataLogManager log the serial number, team number, and comments at startup, as AdvantageKit does, so no team has to add the line.
 - Whether `nt_value` with a topic label or a metric name derived from each topic serves Grafana better. The label keeps names exact and the cardinality is the same; derived names read better in a query editor. The proposal is the label, with a sanitized `name` label beside it if that turns out to matter.
 - Whether the mirror's scope should also follow use: a session any tool on the pit server read for this laptop's client would be mirrored without a pin. It is the most transparent rule and needs the pit server to attribute calls to clients, which the HTTP sessions allow; proposed for after the explicit scope has been lived with.
-- Whether the Grafana query endpoint (§12) is worth building before the data browser (IDEAS 9.2) covers the same need inside VS Code.
+- Whether the Grafana query endpoint (§12) is worth building before the data browser (IDEAS 9.2) covers the same need inside VS Code. Answered 2026-10-21: the maintainer asked for Grafana plots of historic data from the log store, now planned in [GRAFANA_PLAN.md](../GRAFANA_PLAN.md).
 
 #### Milestone 4: laptop uploads and import completion
 
