@@ -316,7 +316,7 @@ Saving writes the store definition at its expected revision, then advances the w
 
 Enforce this with a per-document **native save barrier** in the extension controller. Capture the revision being saved; journal and queue local gestures and incoming revision/native edit events while native Save is pending. Do not hold a store lock or block agent service edits while waiting. If checkpoint CAS fails, reject native Save so VS Code does not mark the document clean. After successful native-save completion, reconcile and emit gestures queued during that save as one new undo group, keeping their final journal state until that whole group reaches the server. Emit the group as a new edit event so they remain dirty instead of being included in VS Code's just-saved edit-stack position. The Stage 1 real-editor spike must verify event ordering across the extension-host/workbench boundary, including GUI and agent changes during save; a service-side revision check alone does not establish native dirty-state correctness.
 
-Save view… and Save template… always include Create store… when there is no suitable writable destination. Let the user pick a folder and use the existing first-mutation path: `POST /store/import` with `paths:[]`, `move:false`, and an allowed destination creates an empty store through `LogStore`. See [first-write creation](../src/main/java/org/triplehelix/wpilogmcp/store/LogStore.java#L430) and the [standalone route reference](STANDALONE.md#L735). A selected directory must be configured or explicitly leased through existing directory registration; do not silently grant arbitrary paths or establish permanent ingestion policy. MCP returns `NO_WRITABLE_STORE` with this setup hint instead of choosing a directory. Creating metadata storage does not enable continuous experimental enrollment.
+Save view… and Save template… always include Create store… when there is no suitable writable destination. Let the user pick a folder and use the existing first-mutation path: `POST /store/import` with `paths:[]`, `move:false`, and an allowed destination creates an empty store through `LogStore`. See [first-write creation](../src/main/java/org/triplehelix/wpilogmcp/store/LogStore.java#L430) and the [standalone route reference](STANDALONE.md#the-import-endpoint). A selected directory must be configured or explicitly leased through existing directory registration; do not silently grant arbitrary paths or establish permanent ingestion policy. MCP returns `NO_WRITABLE_STORE` with this setup hint instead of choosing a directory. Creating metadata storage does not enable continuous experimental enrollment.
 
 Preserve current access boundaries:
 
@@ -1038,7 +1038,7 @@ at 1 MiB. Measure frontier/page bytes and allocations separately from full inspe
 Include large unselected metadata and nested selected schema dependencies; an oversized selected
 declaration must still refuse explicitly. Full inspection above its 4 MiB cap remains an
 explained refusal, not an empty signal list. Implement and review the
-[bounded inventory design](#bounded-recording-inventories-proposed-before-panel-wiring)
+[bounded inventory design](#bounded-recording-inventories)
 before claiming the complete panel workflow supports these sources.
 
 **Declaration burst with 32 leases (review 11; not yet run).** Start one synthetic recording
@@ -1350,7 +1350,7 @@ All 27 refinement plants are caught and restored; the metadata-page fixture was 
 after its first plant survived because even the incorrect gap would not fit that page.
 Evidence and remaining validation limits are in
 `/private/tmp/wpilog-visualization-stage3-review/validation.md`. The subsequent independent
-[server integration review](VISUALIZATION_STAGE3_REVIEW_2.md) reran its engine proof against the
+server integration review (`VISUALIZATION_STAGE3_REVIEW_2.md`, a local note) reran its engine proof against the
 revised page format: 41 checks and 980 values bit-exact, in 22 pages. This is reviewer evidence,
 not an additional implementer run.
 

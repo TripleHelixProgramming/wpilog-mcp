@@ -579,6 +579,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The test task now declares the documents, workflows, installers and build files that the
   claim and documentation tests read as its inputs. Previously a repeated test command after an
   edit to only those files was answered "up to date" and reported success without running them.
+- Every relative link in the committed guides is now checked for its file and, into a Markdown
+  document, its heading. Previously only the operations manuals and the decision index were
+  checked, so two links to a renamed visualization-plan heading and a line-number anchor into
+  the standalone guide broke unnoticed; they now point at their headings. The visualization plan
+  names an uncommitted review note instead of linking it.
 
 - Server-library regressions cover quota accounting, migration, source revocation, interrupted
   checkpoints and shared HTTP/MCP pressure. The extension's real-server client test now pins

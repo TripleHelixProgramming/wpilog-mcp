@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
@@ -16,6 +17,49 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /** Shared-server capabilities are documented without promoting an experimental separate product. */
 class DocumentationLayoutTest {
+  /**
+   * Every relative link in a committed guide reaches a file, and a link into a Markdown document
+   * reaches one of its headings. Only the operations manuals and the decision index were checked
+   * before, so two links to a renamed heading and a line-number anchor into a rendered guide broke
+   * unnoticed. Review notes are records kept as written, and local ones are not committed, so
+   * neither is read as a guide, and a guide names a local note without linking it.
+   */
+  @Test void everyRelativeLinkInTheGuidesReachesAFileAndHeading() throws Exception {
+    var documents = new ArrayList<>(List.of(Path.of("README.md"), Path.of("CHANGELOG.md"),
+        Path.of("vscode-extension/README.md")));
+    try (var walk = Files.walk(Path.of("doc"))) {
+      walk.filter(path -> path.getFileName().toString().endsWith(".md"))
+          .filter(path -> !path.getFileName().toString().contains("REVIEW")
+              && !path.getFileName().toString().endsWith(".local.md"))
+          .sorted().forEach(documents::add);
+    }
+    var links = Pattern.compile("\\[[^\\]]*\\]\\(([^\\s)]+)\\)");
+    var broken = new ArrayList<String>();
+    int checked = 0;
+    for (var document : documents) {
+      String prose = Files.readString(document)
+          .replaceAll("(?ms)^ *```[^\\r\\n]*\\R.*?^ *```[^\\r\\n]*(?:\\R|$)", "");
+      var matcher = links.matcher(prose);
+      while (matcher.find()) {
+        String link = matcher.group(1);
+        if (link.matches("[a-zA-Z][a-zA-Z0-9+.-]*:.*")) continue;
+        checked++;
+        String name = document.toString().replace('\\', '/') + " -> " + link;
+        String[] parts = link.split("#", 2);
+        Path target = parts[0].isEmpty() ? document
+            : document.toAbsolutePath().getParent().resolve(parts[0]).normalize();
+        if (!Files.exists(target)) {
+          broken.add(name + " (no such file)");
+        } else if (parts.length == 2 && target.getFileName().toString().endsWith(".md")
+            && !DecisionIndexTest.headings(Files.readString(target)).contains(parts[1])) {
+          broken.add(name + " (no such heading)");
+        }
+      }
+    }
+    assertTrue(checked > 200, "The link check must read the guides' links; it read " + checked);
+    assertEquals(List.of(), broken, "Broken links");
+  }
+
   @Test void visualizationVersionLinesMatchRemoteAdmission() throws Exception {
     String tool = "";
     int checked = 0;

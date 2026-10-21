@@ -634,7 +634,7 @@ full metadata. The gate now covers 5,000 and 10,000 topics per member across two
 
 Review 11 accepts queried metadata, committed unchanged as `7a8b656`. Full overview inspection
 is still capped at 4 MiB and can refuse large inventories even when queried follows fit. The
-[bounded inventory design](VISUALIZATION_PLAN.md#bounded-recording-inventories-proposed-before-panel-wiring)
+[bounded inventory design](VISUALIZATION_PLAN.md#bounded-recording-inventories)
 proposes compact pages from a detached fixed snapshot, separate fresh selected-entry details,
 shared HTTP/MCP ownership and bounded lifetime/allocation. Review 12 accepts it with explicit
 server/session quotas, the MCP list-result contract, session-bound unguessable handles, fresh
