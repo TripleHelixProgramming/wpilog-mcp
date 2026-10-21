@@ -566,6 +566,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The capture writer's publication timing test now grants its own folder and restores the log
+  manager's grants afterwards. Previously it relied on an empty grant list, which admits every
+  path, so it failed whenever a test that uses the shared fixture folder ran before it in the
+  same JVM; adding test classes moved it behind one.
+
 - Scratch under `build/` now lasts until the next run of the same suite: a passing replay deletes
   its run folder, a failed one keeps it for diagnosis, and each test task empties the folders its
   suites write before it starts. Previously the pull, pair and native replays never deleted a run,

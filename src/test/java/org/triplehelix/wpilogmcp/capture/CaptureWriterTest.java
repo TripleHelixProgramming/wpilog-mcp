@@ -47,6 +47,9 @@ class CaptureWriterTest {
       }
     };
     var manager = org.triplehelix.wpilogmcp.log.LogManager.getInstance();
+    // An empty grant list admits every path, but a test that ran earlier in this JVM may have
+    // granted its own folder, and the capture here would then be refused.
+    var allowed = manager.getAllowedDirectories(); manager.addAllowedDirectory(directory);
     var index = new CaptureIndex(placement, manager, 10_000, () -> null, measurements::add);
     var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, index);
     try {
@@ -56,7 +59,10 @@ class CaptureWriterTest {
       assertEquals(1, measurements.size()); assertEquals(9.0, measurements.get(0).receiveToPublicationMs());
       assertEquals(WALL.instant().toString(), measurements.get(0).recordingStartedAt());
       assertFalse(measurements.get(0).writerIdentity().isBlank());
-    } finally { writer.close(); manager.release(directory); }
+    } finally {
+      writer.close(); manager.release(directory);
+      manager.clearAllowedDirectories(); allowed.forEach(manager::addAllowedDirectory);
+    }
   }
 
   @Test void specificationBytesAndOffsetsIncludeNoNativeWriter() throws Exception {
