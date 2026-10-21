@@ -698,12 +698,12 @@ in small chunks.
 ### 9.5 Recorded History in Grafana
 
 Plot stored sessions at full resolution in the Grafana that already shows the live metrics,
-on a server install. [GRAFANA_PLAN.md](GRAFANA_PLAN.md) is the proposal: Grafana's Infinity
-data source reads the data endpoint's CSV with measured UTC, Grafana's time range chooses the
-window, and dashboards open from the store's catalog. Panels across many sessions come later,
-served either by summaries the server keeps or by a columnar store on server installs only,
-which the [columnar plan](COLUMNAR_STORE_PLAN.md#revisited-for-server-installs-2026-10-21)
-reconsiders. The plan's decisions wait on the maintainer.
+on a server install. [GRAFANA_PLAN.md](GRAFANA_PLAN.md) is the plan, its decisions answered on
+2026-10-21: Grafana's Infinity data source reads the data endpoint's CSV with measured UTC,
+Grafana's time range chooses the window, and a dashboard starts from a robot and a time range.
+Live panels on the open capture come first. Panels across many sessions follow a measurement
+of summaries the server keeps against a columnar store on server installs only, which the
+[columnar plan](COLUMNAR_STORE_PLAN.md#revisited-for-server-installs-2026-10-21) reconsiders.
 
 ---
 

@@ -630,7 +630,7 @@ What it does not do. **It is a view, not the record** (decision 13). A scrape se
 
 **It has no authentication**, as decision 7 says: the endpoint is on the same port as the MCP transport, and behind the same proxy if a team adds one.
 
-A later step, when a dashboard wants the record and not its samples, is the data endpoint the explorer plan specifies ([EXPLORER_PLAN.md](../EXPLORER_PLAN.md) §6), which any server on the HTTP transport serves. It gives an entry's values over a range, every sample or reduced to a requested number of points by the minimum, maximum, and mean per bucket, as an Arrow stream or CSV. On 2026-10-21 the maintainer asked for that history in Grafana, plotted from the log store. [GRAFANA_PLAN.md](../GRAFANA_PLAN.md) proposes reading the endpoint's CSV through Grafana's Infinity data source, in place of the `json` format this section once named, and lists the choices still open. Prometheus remains the live view.
+A later step, when a dashboard wants the record and not its samples, is the data endpoint the explorer plan specifies ([EXPLORER_PLAN.md](../EXPLORER_PLAN.md) §6), which any server on the HTTP transport serves. It gives an entry's values over a range, every sample or reduced to a requested number of points by the minimum, maximum, and mean per bucket, as an Arrow stream or CSV. On 2026-10-21 the maintainer asked for that history in Grafana, plotted from the log store, and decided that Grafana reads the endpoint's CSV through its Infinity data source, in place of the `json` format this section once named; [GRAFANA_PLAN.md](../GRAFANA_PLAN.md) records the plan and its decisions. Prometheus remains the live view until the plan's open-capture stage passes its soak test.
 
 ### 13. Network exposure
 

@@ -129,8 +129,9 @@ These rules from the proposal hold for any derived data the server adds:
 The maintainer asked to look again at a columnar store limited to server installs: machines
 that run the standalone server as a service with a store, such as the pit server or a
 separate analysis machine. The VS Code extension's bundled server and students' laptops are
-out of scope. This section rereads each reason above under that scope. It decides nothing;
-the [decisions](#decisions-for-the-revisit) at its end are the maintainer's.
+out of scope. This section rereads each reason above under that scope. The maintainer
+answered the [decisions](#decisions-for-the-revisit) at its end on 2026-10-21: both options are
+measured first, and the rejection stands until then.
 
 Since the list above was written, the wall-clock time it named as Grafana's prerequisite has
 been implemented, unreleased, as `utc=true` on the data endpoint. Its Grafana item has become
@@ -150,7 +151,7 @@ repository. A columnar store would answer such panels without opening the logs.
 ### The reasons, reread
 
 1. **No problem, no threshold.** The problem now has a name, panels across sessions, and the
-   measurement above. The threshold is still missing; the third decision below asks for one.
+   measurement above. The threshold is now set; it is the third decision below.
 2. **Grafana does not need it.** Still true for one file at a time. Not true across sessions,
    where no route exists.
 3. **The cost comes first and the value last.** A server-only store can be smaller than the
@@ -221,16 +222,15 @@ overviews, the summaries are enough.
 
 1. **A columnar store, or the summaries first.** The summaries answer an event-wide overview
    without a new engine; a columnar store also answers queries of any shape over every
-   sample. Recommended: build the file-first Grafana path, then measure both on a
-   season-sized synthetic store.
+   sample. Decided: measure both on a season-sized synthetic store before choosing.
 2. **Where it runs.** On a separate analysis machine fed by the mirror, or on the pit
    machine in its own processes with memory and disk limits. The first keeps capture's memory
-   and disk untouched.
-3. **The target.** For example, one entry across one event's matches in under five seconds
-   after a restart, and across a season in under thirty. Without a number, the rejection's
-   first reason still holds.
+   and disk untouched. Decided: after the measurement.
+3. **The target.** Decided: one entry across one event's matches in under 2 s after a
+   restart, and across a season in under 10 s.
 4. **The engine.** Grafana's DuckDB data source (no service to run, but unsigned and below
-   1.0), ClickHouse (a service), or a time-series database.
+   1.0), ClickHouse (a service), or a time-series database. Decided: measure through DuckDB,
+   and choose after seeing the numbers.
 
 The rules under [Worth keeping](#worth-keeping) apply to any option chosen.
 

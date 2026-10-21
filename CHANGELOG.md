@@ -655,14 +655,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- `doc/GRAFANA_PLAN.md` proposes plotting stored sessions at full resolution in the Grafana
-  that shows the live metrics: Grafana's Infinity data source reads the data endpoint's CSV
-  with measured UTC, Grafana's time range chooses the window, and dashboards open from the
-  store's catalog. It records rounded local measurements, the costs that grow with a log
-  rather than with the view, and five decisions for the maintainer. Previously the pit plan
-  deferred history in Grafana to an unspecified `json` format until a need showed.
+- `doc/GRAFANA_PLAN.md` plans plotting stored sessions at full resolution in the Grafana that
+  shows the live metrics, with the maintainer's decisions: Grafana's Infinity data source reads
+  the data endpoint's CSV with measured UTC, Grafana's time range chooses the window, a
+  dashboard starts from a robot and a time range with a source picker for overlapping
+  recordings, and live panels on the open capture come first. It records rounded local
+  measurements and the costs that grow with a log rather than with the view. Previously the
+  pit plan deferred history in Grafana to an unspecified `json` format until a need showed.
   `doc/COLUMNAR_STORE_PLAN.md` now rereads each reason for its rejection under a
-  server-install-only scope; the rejection stands until the maintainer decides.
+  server-install-only scope; summaries and a DuckDB-queried columnar store are measured against
+  2 s for an event and 10 s for a season before either is chosen, and the rejection stands
+  until then.
+- The hardening plan and the decision index record that the persistent scan index stays, and
+  the approved design for a cheaper proof: a finished file whose size, modification time, file
+  identity and creation time are unchanged reuses its index without a whole-file hash; it is not
+  yet built. Previously its
+  setting was open after the real-log timing, which found index opens slower than plain scans
+  for large logs because each hashes the whole file.
 
 - The unreleased multi-session analysis proposal now defines per-session evidence,
   equally weighted summaries, explicit pooling, confounders and bounded-work decisions;

@@ -1,8 +1,9 @@
 # Recorded History in Grafana
 
-Status: proposed on 2026-10-21 at the maintainer's request. Nothing in it is implemented. The
-choices that wait on the maintainer are listed under
-[Decisions for the maintainer](#decisions-for-the-maintainer).
+Status: proposed on 2026-10-21 at the maintainer's request, and its [decisions](#decisions)
+answered the same day. Nothing in it is implemented. Two answers differ from the proposal: a
+dashboard starts from a robot and a time range, and live panels on the open capture come first.
+The designs those answers need are agreed before they are built.
 
 A server install already puts the robot's latest values on a wall. Every HTTP server serves
 `/metrics`, and the Compose example runs Prometheus and Grafana beside it
@@ -67,18 +68,19 @@ with `start_time` or `end_time`. A panel passes Grafana's range as `${__from:dat
   and gets finer buckets, until the window holds no more samples than `max_points`. Then the
   samples themselves come back, one per row, in the same columns.
 
-### A dashboard starts from the store
+### A dashboard starts from a robot and a time range
 
-A table panel reads the catalog through Infinity's JSON parser: robot, event, match,
-provenance, file and calendar times. A row's link opens the session dashboard on that file,
-with Grafana's range set from the row's start and end and a margin on either side.
+Someone chooses a robot and a time range, and the files come from the store's catalog by the
+robot's identity and the session facts, under the rules in [Across sessions](#across-sessions).
+Where a pit capture and the roboRIO's own log cover the same minutes, a source picker on the
+dashboard chooses one, defaulting to the roboRIO's log where one exists and to the capture
+otherwise; nothing merges them. This replaces the proposal's start from one session in the
+store. How the server answers a range that spans files, the picker's form, and whether a
+catalog table helps find a range are designed and agreed before they are built.
 
-The catalog's calendar times only decide where the dashboard opens. Each comes from the clock
-its record names, the pit server's clock for a capture, which can differ from the robot's
-measured clock by seconds. The panels plot measured UTC.
-
-Each panel plots one file. A panel across sessions, such as one robot's battery over an event,
-needs a query over many files; [Across sessions](#across-sessions) covers it.
+The catalog's calendar times only choose files. Each comes from the clock its record names,
+the pit server's clock for a capture, which can differ from the robot's measured clock by
+seconds. The panels plot measured UTC.
 
 Entry names go in text boxes, chosen exactly by the people who set up the dashboard, as on the
 live dashboard. The server proposes nothing: a word in a name is not evidence of what an entry
@@ -87,8 +89,8 @@ measures.
 ### Provisioning
 
 The Compose example gains a pinned Infinity release and a provisioned data source whose base
-URL is the server, so a dashboard moves to another server by changing one URL. A "Recorded
-session" dashboard sits beside the live one: the session table, then battery, loop time and
+URL is the server, so a dashboard moves to another server by changing one URL. A recorded-history
+dashboard sits beside the live one: the robot and source choices, then battery, loop time and
 CAN utilization panels, each a band from minimum to maximum with the mean.
 
 - The endpoint reads only files inside configured directories and stores. Grafana's requests
@@ -159,8 +161,8 @@ Whatever answers it follows these rules:
 - Files are chosen by the robot's identity and the session facts in the catalog, never by
   matching names or times alone.
 - Two files that cover the same minutes for one robot, such as a pit capture and the roboRIO's
-  own log of one match, are kept apart and labeled by provenance. A dashboard chooses one
-  explicitly; nothing merges them.
+  own log of one match, are kept apart and labeled by provenance. The dashboard's source picker
+  chooses one, by default the roboRIO's log; nothing merges them.
 - Each file's samples use that file's measured clock. A file without one is listed, not
   placed.
 - Finished sessions only, as the multi-session decisions already require for statistics.
@@ -168,7 +170,7 @@ Whatever answers it follows these rules:
   [`compare_sessions`](TOOLS.md#compare_sessions), with its per-session evidence and pooling
   rules, not to a dashboard query.
 
-Two ways to answer it are open:
+Two ways to answer it are measured before either is chosen:
 
 - Summaries kept by the server. Each finished file gets a derived summary keyed by its
   content and the summary's recipe, as the scan index is: for each numeric entry, minimum,
@@ -179,16 +181,24 @@ Two ways to answer it are open:
   [revisit](COLUMNAR_STORE_PLAN.md#revisited-for-server-installs-2026-10-21) reconsiders under
   that scope.
 
-The choice should follow a measurement on a season-sized store against a stated target.
+Both are measured on a season-sized synthetic store, the columnar store through DuckDB, against
+the maintainer's target: one entry across an event's matches in under 2 s after a restart, and
+across a season in under 10 s. Where a columnar store would run is decided after the
+measurement.
 
 ## Stages
 
-1. **File-first history.** The UTC window, window selection through the shared cursor, the
-   mapping built once, the REV path, the Infinity data source and the recorded-session
-   dashboard, with the tests below. No new server dependency.
-2. **The open capture.** Live panels on a recording in progress, after the soak test with a
-   dashboard's load meets its bounds. Until then the live dashboard stays on Prometheus.
-3. **Across sessions.** Summaries or a columnar store, chosen by the measurement above.
+The maintainer put the open capture first.
+
+1. **The open capture.** Live panels on a recording in progress: the shared read cursor reads
+   the capture's published prefix, and the UTC mapping is built once per published prefix. The
+   soak test with a dashboard's load must meet its bounds before live panels go in; until then
+   the live dashboard stays on Prometheus.
+2. **History by robot and time.** The UTC window, window selection through the shared cursor,
+   the mapping built once per loaded log, the REV path, the Infinity data source, the source
+   picker and the recorded-history dashboard, with the tests below. No new server dependency.
+3. **Across sessions.** Summaries and a columnar store measured against the target, then the
+   chosen one built.
 
 ## Tests
 
@@ -200,31 +210,33 @@ The choice should follow a measurement on a season-sized store against a stated 
   must fail it.
 - A ten-second window on a long synthetic entry decodes only the records inside it, checked by
   counting decoded records rather than by timing.
-- The metrics-stack check in CI adds Infinity, provisions the recorded-session dashboard and
+- The metrics-stack check in CI adds Infinity, provisions the recorded-history dashboard and
   queries it through Grafana's API against a fixture log with a known clock. Times and bucket
   values are compared with answers worked out independently of the server.
 
-## Decisions for the maintainer
+## Decisions
 
-1. **Read the CSV instead of adding a `json` format.** The pit plan named a `json` format as
-   what Grafana's plugins would read. Infinity reads the CSV the endpoint already writes,
-   skipping its `#` metadata lines. A JSON copy of the same rows would be another format to
-   test, and Infinity would take no more from it. If accepted, the pit plan's §12 names CSV and
-   Infinity instead.
-2. **Let Grafana's time range choose the window.** This is what makes zooming work. A
+The maintainer answered these on 2026-10-21.
+
+1. **Read the CSV instead of adding a `json` format.** Accepted. The pit plan named a `json`
+   format as what Grafana's plugins would read. Infinity reads the CSV the endpoint already
+   writes, skipping its `#` metadata lines. A JSON copy of the same rows would be another format
+   to test, and Infinity would take no more from it. The pit plan's §12 now names the CSV and
+   Infinity.
+2. **Let Grafana's time range choose the window.** Accepted. This is what makes zooming work. A
    twenty-minute log at 1,000 points is about 1.2 s per point, so a half-second voltage dip
    shows only as one point's minimum. With the window, zooming to ten seconds gives 10 ms per
-   point, finer than the robot's 20 ms loop, so every sample shows. Without it, Grafana is an
-   overview only and the Explorer stays the place to zoom.
-3. **Open a dashboard from a session in the store, one file per panel.** Starting from the
-   store reuses its catalog: pick the match, see its two and a half minutes. Starting from a
-   robot and a time instead needs the rules under [Across sessions](#across-sessions) first,
-   because the server would have to choose between a pit capture and the roboRIO's own log of
-   the same match.
-4. **Plot the open capture in Grafana, or leave live views to Prometheus.** A live panel today
-   would decode the whole session on every refresh, in the recording process. Stage 2 removes
-   that cost and proves it under the soak test. Until then the live dashboard samples once a
-   second, as it does now.
-5. **Across sessions: summaries or a columnar store, and the target that decides.** For
-   example, one entry across one event's matches, on the shop server, in under five seconds
-   after a restart. The target is the maintainer's to set.
+   point, finer than the robot's 20 ms loop, so every sample shows.
+3. **Start a dashboard from a robot and a time range.** Chosen in place of the proposal, which
+   started from one session in the store. The server chooses the files, so the rules under
+   [Across sessions](#across-sessions) apply from the first stored-history stage: where a pit
+   capture and the roboRIO's own log of a match overlap, a source picker chooses one, by default
+   the roboRIO's log.
+4. **Plot the open capture first.** Chosen in place of the proposal, which left live views to
+   Prometheus until stored history was done. A live panel today would decode the whole session
+   on every refresh, in the recording process; the open-capture stage removes that cost and must
+   pass the soak test with a dashboard's load before live panels go in.
+5. **Across sessions: measure both, against a target.** Summaries and a columnar store are
+   measured on a season-sized synthetic store, the columnar store through DuckDB. The target is
+   one entry across an event's matches in under 2 s after a restart, and across a season in
+   under 10 s. Where a columnar store would run is decided after the measurement.
