@@ -1,8 +1,10 @@
 # Architecture hardening plan
 
 Status: items 1 to 6 are accepted after the third run's phase A full build on 2026-10-20 (4,896
-passed, none failed, 87 skipped); item 7 is being built in that run's phase B
-([Third run](#third-run)). The rest of this paragraph is the record before the third run.
+passed, none failed, 87 skipped). Item 7 is built as `compare_sessions` in that run's phase B
+and accepted after a third full build on 2026-10-21, which the maintainer authorized when phase
+B's own full build failed (4,930 passed, none failed, 87 skipped; [Third run](#third-run)). The
+rest of this paragraph is the record before the third run.
 The first run paused at the maintainer's request after Phase 0 and item 1's import work.
 Item 1's bounded logging decision now has an implementation and targeted verification.
 Item 2's shared budget, capture floor and initial copy paths passed targeted verification.
@@ -65,7 +67,7 @@ implementation stops at a decision that has not been made.
 | [6](#6-no-wall-clock-time-on-the-data-routes) | The data routes carry only the log's clock. | An opt-in UTC timestamp from the log's own wall-clock readings, with its basis. | 4 — UTC, ambiguity handling and exact inverse targeted checks complete; 37 of 38 plant attempts caught, all restored; accepted by the third run's phase A full build |
 | [4](#4-three-routes-serve-reduced-samples) | Three routes serve reduced samples, with shared arithmetic but different bucket membership, admission, formats and unwritten roles. | A differential test, one membership rule, and a written role for each route. | 4 — integer correction, angle presentation and five-route matrix targeted checks complete; all 23 second-run plants caught and restored; accepted by the third run's phase A full build |
 | [5](#5-costs-grow-with-the-whole-store) | Discovery, scanning and replica catalogs cost in proportion to everything the server can see. | Measure; then persist scan indexes by content, discover from manifests, and warn before the catalog cap. | 5 — synthetic measurement, discovery, capacity warning and guard targeted checks/plants complete; scan index targeted checks and 31 plants complete; publication causes targeted complete with 42 caught/restored plants; accepted by the third run's phase A full build, the scan index's setting awaiting the maintainer |
-| [7](#7-questions-across-many-sessions-have-no-contract) | Questions across many sessions have no contract. | Write the contract, then measure, then build. | 5 — detailed design and synthetic measurement complete; design approved with amendments after the second run; the new tool is not yet built |
+| [7](#7-questions-across-many-sessions-have-no-contract) | Questions across many sessions have no contract. | Write the contract, then measure, then build. | 5 — detailed design and synthetic measurement complete; design approved with amendments after the second run; built as `compare_sessions` in the third run's phase B; accepted by a third full build, authorized after phase B's own failed |
 
 The order is 1, 2, 8, 3, 6, 4, 5, 7. Phases 1 through 3 have the dispositions above.
 Phase 4 has implemented item 6's settled forward mapping and subsequent exact-inverse
@@ -901,7 +903,7 @@ checklist requires; and `CHANGELOG.md`.
 
 ### Item 7 implementation disposition — 2026-10-20
 
-The [proposed contract](TOOLS.md#proposed-multi-session-analysis-contract) now states source
+The proposed contract, now the [`compare_sessions` section](TOOLS.md#compare_sessions), states source
 selection, per-session evidence, equally weighted metric contributors, opt-in pooling,
 confounders and missing facts, true totals and explicit work bounds. It is marked as planned,
 not an available operation. The maintainer chose a new tool on 2026-10-20, leaving
@@ -935,7 +937,9 @@ selection restrictions require approval. No tool, schema, registration or worker
 After the run, the maintainer approved the design with the amendments recorded in
 [Decisions for the maintainer](#decisions-for-the-maintainer): no new work owner, a 1 GiB size
 cap, a default anchor for a session with one WPILOG file, the 5th percentile and the existing
-statistic names, and source selection as other tools choose it. The tool is not yet built.
+statistic names, and source selection as other tools choose it. The third run's phase B built
+it as `compare_sessions` ([Third run](#third-run)). That phase's full build failed; a third,
+which the maintainer authorized, passed, and item 7 is accepted.
 
 The second-run synthetic pass again checked all 172,500 selected samples and the independently
 derived aggregate values above. Mean shared admission was 24.595 ms per session, selected
@@ -1207,6 +1211,43 @@ and no server; the results stay in local, ignored evidence. The estimate for a m
 call at its 1 GiB cap stayed below the work order's 15-second threshold, so phase B went ahead.
 Whether the index stays on, is off by default or gets a larger size limit is the maintainer's
 decision.
+
+Phase B built item 7 on 2026-10-21 as `compare_sessions`, to the approved design
+and its amendments, with synthetic stores written at test time:
+
+| Check | Passed | Failed | Skipped | Seconds |
+|---|---:|---:|---:|---:|
+| Behavior tests, failing first before the tool existed | 0 | 19 | 0 | 6.312 |
+| Behavior tests with the tool | 19 | 0 | 0 | 15.982 |
+| With the data-quality suites | 57 | 0 | 0 | 7.955 |
+| Caps, admission, reply cap and responsiveness | 11 | 0 | 0 | 7.620 |
+| Both tool classes after strengthening their assertions | 32 | 0 | 0 | 8.336 |
+| Claims, guidance, catalog, sweep, corpus and documentation | 97 | 0 | 1 | 18.876 |
+| `env -u LANG -u LC_ALL ./gradlew build` | 4,927 | 3 | 87 | 188.095 |
+| The three failures, once each in isolation | 1 | 2 | 0 | 4.115 |
+| The two corrected test classes | 49 | 0 | 0 | 10.611 |
+| `env -u LANG -u LC_ALL ./gradlew build`, the third, authorized by the maintainer | 4,930 | 0 | 87 | 167.114 |
+
+The tool compares one statistic of each metric across up to 64 finished sessions of one store or
+mirror, each session counted once, with sample-weighted pooling only on request. A third call is
+refused at once while two run. Every cap refuses the whole call with its true count, and a
+reply over 1 MiB, measured as sent, is refused rather than cut. While two comparisons were held
+inside their reads, a capture was admitted into the compared store, `/health` answered over a
+real HTTP transport, and a third call was refused as busy. Forty behavioral plants were caught
+and restored exactly; five first attempts failed through an exception rather than an assertion,
+and their second attempts, after the tests checked a missing refusal and stopped a cleanup wait
+from hiding the capture check, failed on the intended assertions.
+
+The full build failed three tests. Two are phase B's own and fail in isolation too: a test of the
+reply limit counted its literal as 64 characters, where it holds 65 UTF-16 characters (64 code
+points), and the registry's tool count still expected 82. Both are corrected, and the corrected
+classes pass. The third, a gateway test that expects nothing to answer on loopback at a port
+reserved on another address, passed in isolation; it predates this run and is reported, not
+changed. The verification policy did not require `npm test`, `followBrokerTest` or the native
+harness: no extension, reader, capture, broker, NT4 or harness code changed. Phase B's full build
+was the second and last authorized. The maintainer authorized a third, which passed with the
+corrections: 4,930 passed, none failed, 87 skipped, the gateway test included. Item 7 is
+accepted.
 
 ## Out of scope
 
