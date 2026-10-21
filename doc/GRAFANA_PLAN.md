@@ -178,7 +178,9 @@ Two ways to answer it are measured before either is chosen:
   content and the summary's recipe, as the scan index is: for each numeric entry, minimum,
   maximum, mean and count over short fixed intervals, with UTC. Wide windows read the
   summaries; a window narrow enough to need samples reads the file. No new engine or
-  dependency.
+  dependency. The [column companions plan](COLUMN_CACHE_PLAN.md) proposes these summaries
+  together with full-resolution numeric columns, read by every reader, with prototype
+  measurements.
 - A columnar store on server installs only, which the columnar plan's
   [revisit](COLUMNAR_STORE_PLAN.md#revisited-for-server-installs-2026-10-21) reconsiders under
   that scope.
@@ -266,7 +268,8 @@ These synthetic measurements were taken on the maintainer's computer with a 768 
 3. Windows are selected through the shared read cursor, for an open capture's published prefix
    and for a loaded log alike: found by search, with only the records inside decoded, so a
    refresh costs what its window holds. The sample count comes from the index, and the sampling
-   score is taken over the window, as data quality is everywhere else.
+   score is taken over the window, as data quality is everywhere else. Once the column plan's
+   recording phase is in, the open file's columns serve these windows.
 4. The UTC mapping is kept for each loaded log and, for an open capture, extended as wall-clock
    readings arrive.
 5. The soak test's gate, below, must pass before the live dashboard ships.
@@ -307,7 +310,10 @@ stages 2 and 3.
    whether or not Grafana is in use. Proposed: compact the open index into primitive arrays of
    timestamps and offsets, estimated at 20 to 25 bytes per value, as its own change before stage
    1. The alternatives are a smaller default rollover size, which bounds the index without
-   shrinking it, or a documented limit on the recorded value rate.
+   shrinking it, or a documented limit on the recorded value rate. Answered on 2026-10-21: the
+   [column companions plan](COLUMN_CACHE_PLAN.md#decisions)'s recording phase, which keeps the
+   open file's columns outside the heap, comes before this stage, with no smaller default
+   rollover size in the meantime.
 5. **The gate's bounds.** For: deciding when the live dashboard ships. The gate as written passed
    today's code after ten minutes, because the cost that grows with a session is still small
    then. Proposed: run the dashboard's load after the capture already holds two hours at the

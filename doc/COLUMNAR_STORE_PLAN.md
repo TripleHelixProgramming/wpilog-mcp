@@ -218,6 +218,12 @@ columnar store adds queries of any shape over every sample of every session, at 
 an engine, a converter and their storage on a server. If the panels teams want are
 overviews, the summaries are enough.
 
+A third candidate lies between the two: [column companions](COLUMN_CACHE_PLAN.md), proposed
+on 2026-10-21 at the maintainer's request. Beside each log, the disk cache keeps its numeric
+entries as full-resolution columns with the same summaries, read by memory-mapping, with no
+engine. A prototype answered one entry across a synthetic season's 128 logs in about 13 ms;
+it would be measured against the same targets.
+
 ### Decisions for the revisit
 
 1. **A columnar store, or the summaries first.** The summaries answer an event-wide overview

@@ -13,9 +13,10 @@ supersession record. Unresolved choices are not standing decisions and remain in
 owning plan.
 
 The rows cover the numbered pit and Explorer decisions, each source/mirror agreement, the
-routing decisions they replace, the columnar rejection and the hardening rules. The pit
-plan's round-by-round implementation and verification narrative remains in its decision
-record; test results and historical defect reports are not new architectural decisions.
+routing decisions they replace, the columnar rejection, the hardening rules and the column
+companions' decisions. The pit plan's round-by-round implementation and verification narrative
+remains in its decision record; test results and historical defect reports are not new
+architectural decisions.
 
 | Date | Status | Decision | Record |
 |---|---|---|---|
@@ -114,3 +115,9 @@ record; test results and historical defect reports are not new architectural dec
 | 2026-10-20 | standing | A multi-session call reads at most 1 GiB of logs; median and percentiles keep at most 65,536 values per session and metric | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
 | 2026-10-20 | standing | A session's anchor defaults to its only WPILOG file; a session with several requires a choice | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
 | 2026-10-20 | standing | Multi-session analysis chooses its source by scope_id as other tools do and keeps its designed duplicate, failure, pooling, confounder, unit and reply rules | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
+| 2026-10-21 | standing | Column companions: the first phase covers numeric entries and the numeric fields of structs | [Record](COLUMN_CACHE_PLAN.md#decisions) |
+| 2026-10-21 | standing | Column companions are built in the background; until one is ready, today's read path answers | [Record](COLUMN_CACHE_PLAN.md#decisions) |
+| 2026-10-21 | standing | Column companions share the disk cache's size limit | [Record](COLUMN_CACHE_PLAN.md#decisions) |
+| 2026-10-21 | standing | The recording writes the open file's columns before Grafana's open-capture stage is built | [Record](COLUMN_CACHE_PLAN.md#decisions) |
+| 2026-10-21 | standing | The default rollover size stays 1 GiB until then; no smaller stopgap | [Record](COLUMN_CACHE_PLAN.md#decisions) |
+| 2026-10-21 | standing | Column companions are timed read-only on three local team logs, with the exact results kept local | [Record](COLUMN_CACHE_PLAN.md#decisions) |
