@@ -285,6 +285,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The unreleased disk-space budget now measures a filesystem through a registered store folder
+  that still exists. It measured through the folder of the first store registered on the disk,
+  so deleting that folder made every later copy there, such as an import, an upload or a robot
+  pull, refuse as `DISK_SPACE_UNKNOWN`, and health report the disk's free space as unknown,
+  until the server restarted. A live capture kept recording: an unknown reading never pauses it.
+
 - The unreleased NT4 gateway now accepts AdvantageScope. AdvantageScope 26 requests `GET /` on
   the NT4 port and opens its WebSocket only after a 2xx answer; the gateway answered 404, so
   AdvantageScope polled every 350 ms and never connected. After an NT4.1 handshake it also opens

@@ -112,6 +112,22 @@ class DiskSpaceBudgetsTest {
     }
   }
 
+  @Test void aDeletedStoreFolderLeavesItsFilesystemMeasurable() throws Exception {
+    // The real source: on Linux and macOS a FileStore measures through the folder it was resolved
+    // from, so deleting the first store's folder used to make the whole disk unknown.
+    try (var owner = new DiskSpaceBudgets()) {
+      var gone = owner.store(Files.createDirectory(directory.resolve("gone")));
+      var kept = owner.store(Files.createDirectory(directory.resolve("kept")));
+      gone.configureCapture(new DiskSpaceBudgets.Policy(0, 0, 0));
+      kept.configureCapture(new DiskSpaceBudgets.Policy(0, 0, 0));
+      Files.delete(directory.resolve("gone"));
+      assertEquals(DiskSpaceBudgets.State.AVAILABLE, kept.refresh().state());
+      try (var copy = kept.reserveCopy(1)) {
+        assertEquals(1, kept.snapshot().reservedBytes());
+      }
+    }
+  }
+
   @Test void staleFreeSpaceCannotSurviveAnotherWritersRelease() throws Exception {
     var reads = new AtomicInteger();
     var entered = new CountDownLatch(1);

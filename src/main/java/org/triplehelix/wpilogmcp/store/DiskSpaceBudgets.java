@@ -93,13 +93,14 @@ public final class DiskSpaceBudgets implements AutoCloseable {
 
   private StoreBudget destination(Path root, Path existingDirectory) throws IOException {
     // Resolve actual placement, including a nested mount, before entering accounting.
-    var filesystem = Files.getFileStore(existingDirectory.toRealPath());
+    var folder = existingDirectory.toRealPath();
+    var filesystem = Files.getFileStore(folder);
     synchronized (filesystems) {
       if (closed.get()) throw new IOException("Disk-space owner is closed");
       var policy = policies.computeIfAbsent(root,
           ignored -> new StorePolicy(Policy.DEFAULT.reserveBytes(), false));
       var budget = filesystems.computeIfAbsent(filesystem,
-          ignored -> new Budget(filesystem, "filesystem_" + ++nextFilesystem));
+          ignored -> new Budget(filesystem, folder, "filesystem_" + ++nextFilesystem));
       if (budget.stores.putIfAbsent(root, policy) == null) budget.changed();
       return new StoreBudget(budget, root);
     }
@@ -199,13 +200,51 @@ public final class DiskSpaceBudgets implements AutoCloseable {
   }
 
   private record Measurement(Long freeBytes, long atNanos) {}
+
+  /**
+   * A FileStore measures through the folder it was resolved from, and that folder can go while
+   * its filesystem stays. Then each store registered on the filesystem is resolved again, newest
+   * first, and the first that still exists measures from then on. Before, deleting the first
+   * store folder registered on a disk made every later copy there refuse as DISK_SPACE_UNKNOWN
+   * until the server restarted. A failure while the folder still exists is the filesystem's own,
+   * and is not read again through another folder.
+   */
   private Measurement measure(Budget budget) {
-    Long bytes;
-    try {
-      long measured = space.usableBytes(budget.filesystem);
-      bytes = measured < 0 ? null : measured;
-    } catch (IOException | SecurityException failure) { bytes = null; }
+    FileStore through;
+    Path folder;
+    List<Path> roots;
+    synchronized (filesystems) {
+      through = budget.measuredThrough;
+      folder = budget.measuredFolder;
+      roots = List.copyOf(budget.stores.keySet());
+    }
+    var bytes = usableBytes(through);
+    if (bytes == null && !Files.exists(folder)) {
+      for (int i = roots.size() - 1; bytes == null && i >= 0; i--) {
+        var root = roots.get(i);
+        try {
+          var resolved = Files.getFileStore(root);
+          if (!resolved.equals(budget.filesystem)) continue;
+          bytes = usableBytes(resolved);
+          if (bytes != null) synchronized (filesystems) {
+            budget.measuredThrough = resolved;
+            budget.measuredFolder = root;
+          }
+        } catch (IOException | SecurityException gone) {
+          // That store's folder is gone too; try an older one.
+        }
+      }
+    }
     return new Measurement(bytes, clock.getAsLong());
+  }
+
+  private Long usableBytes(FileStore filesystem) {
+    try {
+      long measured = space.usableBytes(filesystem);
+      return measured < 0 ? null : measured;
+    } catch (IOException | SecurityException failure) {
+      return null;
+    }
   }
 
   private Snapshot refresh(Budget budget) throws IOException {
@@ -245,13 +284,18 @@ public final class DiskSpaceBudgets implements AutoCloseable {
 
   private static final class Budget {
     final FileStore filesystem;
+    /** The filesystem as resolved through measuredFolder; both guarded by filesystems. */
+    FileStore measuredThrough;
+    Path measuredFolder;
     final String id;
     final Map<Path, StorePolicy> stores = new LinkedHashMap<>();
     long generation, reserved, sampledAt;
     Long free;
     volatile Snapshot published;
-    Budget(FileStore filesystem, String id) {
+    Budget(FileStore filesystem, Path folder, String id) {
       this.filesystem = filesystem;
+      this.measuredThrough = filesystem;
+      this.measuredFolder = folder;
       this.id = id;
       publish();
     }
