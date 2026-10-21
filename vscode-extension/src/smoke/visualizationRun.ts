@@ -3,14 +3,14 @@ import { downloadAndUnzipVSCode } from "@vscode/test-electron";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { runFolder } from "./runFolders";
 
 async function main(): Promise<void> {
   const extension = path.resolve(__dirname, "..", "..");
   const version = process.env.VSCODE_VERSION ?? "1.101.0";
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Choose an explicit VS Code version for the lifecycle gate");
   const base = path.resolve(extension, "..", "build", "visualization-stage1", version);
-  fs.mkdirSync(base, { recursive: true });
-  const root = fs.mkdtempSync(path.join(base, "run-"));
+  const root = runFolder(base, "run-");
   const fixtureExtension = path.join(root, "extension"), profile = path.join(root, "user-data");
   for (const dir of [fixtureExtension, path.join(profile, "User"), path.join(root, "workspace")]) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(root, "fixture-only"), "Stage 1 synthetic lifecycle fixture\n");

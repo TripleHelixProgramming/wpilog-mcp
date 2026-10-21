@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createServer } from "node:net";
 import { checkComplete, prepareFixture } from "./evidence";
+import { runFolder } from "./runFolders";
 
 async function unusedPort(): Promise<number> {
   const socket = createServer();
@@ -28,8 +29,7 @@ async function main(): Promise<void> {
   const label = process.env.WPILOG_SMOKE_LABEL ?? "baseline";
   if (!/^[a-z0-9-]+$/.test(label)) throw new Error("Invalid smoke report label");
   const report = path.join(root, "build", "extension-smoke", version, label);
-  fs.mkdirSync(report, { recursive: true });
-  const scratch = fs.mkdtempSync(path.join(report, "run-"));
+  const scratch = runFolder(report, "run-");
   const fixture = prepareFixture(sourceFixture, scratch);
   const testHome = path.join(scratch, "home"), install = path.join(testHome, ".wpilog-mcp");
   const workspace = path.join(scratch, "workspace"), userData = path.join(scratch, "user-data");

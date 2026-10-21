@@ -94,6 +94,19 @@ final class ConformanceSample {
     return selection;
   }
 
+  /**
+   * Deletes the selection reports named after {@code root}. A test that samples a temporary folder
+   * calls this, since no later run replaces a report named after a folder that is gone: ordinary
+   * runs used to leave one for each suite they sampled, every time.
+   */
+  static void deleteReports(Path root) throws IOException {
+    var folder = Path.of("build/reports/conformance-sample");
+    if (!Files.isDirectory(folder)) return;
+    try (var reports = Files.newDirectoryStream(folder, "*-" + root.getFileName() + ".json")) {
+      for (var report : reports) Files.deleteIfExists(report);
+    }
+  }
+
   private static List<Input> inputs(Path root) throws IOException {
     List<Path> paths;
     try (var walk = Files.walk(root)) { paths = walk.filter(Files::isRegularFile).toList(); }

@@ -561,6 +561,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Scratch under `build/` now lasts until the next run of the same suite: a passing replay deletes
+  its run folder, a failed one keeps it for diagnosis, and each test task empties the folders its
+  suites write before it starts. Previously the pull, pair and native replays never deleted a run,
+  the gateway replay left its fake roboRIO beside each run, fixture folders piled up with every
+  ordinary test run because worker numbers keep rising for the life of the Gradle daemon, the
+  native editor runners kept every run, and reports named after temporary folders were never
+  replaced; one checkout's `build/` passed 500 GiB. A claim check now fails when a test, a native
+  editor runner or the build script names a folder under `build/` that nothing empties.
+
 - The unreleased synchronization-cache checks now require a dated compatibility decision
   when reviewed parsing, decoding, clock or synchronization inputs change; previously the
   cache-format rule depended only on manual review. Source changes, missing explanations

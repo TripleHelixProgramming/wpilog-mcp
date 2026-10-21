@@ -4,12 +4,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createInterface } from "node:readline";
 import { createServer } from "node:net";
+import { runFolder } from "./runFolders";
 async function main() {
   const extension = path.resolve(__dirname, "../.."), repo = path.dirname(extension), version = process.env.VSCODE_VERSION!;
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Explicit VSCODE_VERSION required");
   const base = process.env.WPILOG_CONNECTION_OUTPUT!;
   if (!base || !base.startsWith("/private/tmp/")) throw new Error("Isolated /private/tmp output required");
-  fs.mkdirSync(base, { recursive: true }); const root = fs.mkdtempSync(path.join(base, "native-"));
+  const root = runFolder(base, "native-", { keepEarlier: true });
   console.log("M3 native fixture: " + root);
   const children: ChildProcessWithoutNullStreams[] = [];
   const env: NodeJS.ProcessEnv = { ...process.env, WPILOG_CONNECTION_FIXTURE: root };

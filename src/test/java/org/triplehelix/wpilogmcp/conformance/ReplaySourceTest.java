@@ -61,10 +61,16 @@ class ReplaySourceTest {
       if (previous == null) System.clearProperty("conformance.logdir"); else System.setProperty("conformance.logdir", previous);
     }
     var report = Path.of("build/reports/replay").resolve("gateway-" + directory.getFileName() + ".jsonl");
-    var first = com.google.gson.JsonParser.parseString(Files.readAllLines(report).get(0)).getAsJsonObject();
-    assertTrue(first.get("rejected_invalid_utf8").getAsBoolean());
-    assertEquals(1, first.get("invalid_utf8_records").getAsLong());
-    assertEquals(1, first.get("records").getAsLong()); assertFalse(first.has("captured_records"));
+    try {
+      var first = com.google.gson.JsonParser.parseString(Files.readAllLines(report).get(0)).getAsJsonObject();
+      assertTrue(first.get("rejected_invalid_utf8").getAsBoolean());
+      assertEquals(1, first.get("invalid_utf8_records").getAsLong());
+      assertEquals(1, first.get("records").getAsLong()); assertFalse(first.has("captured_records"));
+    } finally {
+      // Named after this temporary folder, so no later run would replace them.
+      Files.deleteIfExists(report);
+      ConformanceSample.deleteReports(directory);
+    }
   }
 
   @Test void deviceSeedUsesTheLoggedSerialAfterEmptyStartupValues() throws Exception {

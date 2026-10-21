@@ -186,6 +186,20 @@ def testCacheDir = project.hasProperty('testCacheDir')
     ? file(project.property('testCacheDir')) : file("$buildDir/test-disk-cache")
 def keepTestCache = project.hasProperty('testCacheDir')
 
+// Scratch a run leaves under build/ lasts until the next run of the same suite. A passing replay
+// deletes its own run folder and a failed one keeps it for diagnosis; each task empties the
+// folders listed here before its tests start, as it does its disk cache. Before, nothing emptied
+// them: every replay left a run folder, and fixture folders piled up because a test worker's
+// number keeps rising for the life of the Gradle daemon, until one checkout's build folder held
+// over 500 GiB. BuildScratchTest fails when a test names a folder under build/ that these lists,
+// a disk cache or its list of kept folders do not account for.
+def fixtureScratch = ['test-fixtures']
+def realLogScratch = ['replay-work', 'replay-pull', 'replay-pairs', 'real-log-conformance-export']
+def harnessScratch = ['replay-native', 'shop-harness']
+tasks.withType(Test).configureEach {
+    doFirst { delete fixtureScratch.collect { "$buildDir/$it" } }
+}
+
 // Make test task depend on native extraction and set the library path
 tasks.named('test') {
     dependsOn extractTestNatives
@@ -198,6 +212,7 @@ tasks.named('test') {
     inputs.files(
             fileTree('doc'), fileTree('examples'), fileTree('.github'), fileTree('gradle'),
             fileTree('harness') { exclude '**/build/**', '**/.gradle/**', '**/node_modules/**' },
+            fileTree('vscode-extension/src/smoke'),
             'README.md', 'CHANGELOG.md', 'CLAUDE.md', 'build.gradle', 'install.sh', 'install.ps1',
             'vscode-extension/README.md', 'vscode-extension/package.json', 'vscode-extension/package-lock.json')
         .withPropertyName('claimSources')
@@ -222,6 +237,9 @@ tasks.named('test') {
         // The server's default heap (the launcher's WPILOG_MAX_HEAP), not the 512 MB test default
         maxHeapSize = project.findProperty('conformanceHeap') ?: '4g'
         maxParallelForks = 1
+        // Only a real-log run empties these, so a targeted run while you look into a real-log
+        // failure keeps the failed run's folder.
+        doFirst { delete realLogScratch.collect { "$buildDir/$it" } }
     }
     // The simulated logs and their MANIFEST.md, for the claims test: -PsimLogDir=/path/to/sim-logs
     if (project.hasProperty('simLogDir')) {
@@ -339,6 +357,7 @@ tasks.register('shopHarness', Test) {
     }
     environment 'WPILOG_DISK_CACHE_DIR', file('build/harness-test-disk-cache').absolutePath
     doFirst { delete file('build/harness-test-disk-cache') }
+    doFirst { delete harnessScratch.collect { "$buildDir/$it" } }
     outputs.upToDateWhen { false }
 }
 

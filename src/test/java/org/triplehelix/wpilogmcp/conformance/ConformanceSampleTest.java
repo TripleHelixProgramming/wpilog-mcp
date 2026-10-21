@@ -16,6 +16,8 @@ import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 class ConformanceSampleTest {
   @TempDir Path directory;
 
+  @org.junit.jupiter.api.AfterEach void deleteReports() throws Exception { ConformanceSample.deleteReports(directory); }
+
   @Test void defaultSampleIncludesTheLargestAndTheIncompleteTail() throws Exception {
     var files = corpus();
     withOptions(null, null, () -> {

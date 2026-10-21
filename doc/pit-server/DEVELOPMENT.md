@@ -492,10 +492,12 @@ accounting.
 
 Every REV file beside the source goes onto the fake roboRIO, including those normal filename
 nomination leaves out; the same bus must retain its synchronization outcome and its measured offset
-plus the replay shift. Failed inputs keep their scratch captures for diagnosis. For rollover, the
-source-wide REV comparison uses a test-only view of all captured parts, without creating a file
-above the reader's size limit. Each part's HTTP synchronization result is checked separately and
-reported: its shorter input window can legitimately produce another alignment.
+plus the replay shift. Failed inputs keep their scratch captures for diagnosis until the suite runs
+again, and passing inputs delete theirs
+([Scratch under `build/`](../DEVELOPMENT.md#scratch-under-build)). For rollover, the source-wide REV
+comparison uses a test-only view of all captured parts, without creating a file above the reader's
+size limit. Each part's HTTP synchronization result is checked separately and reported: its
+shorter input window can legitimately produce another alignment.
 
 REV comparisons retain each measured result and release the decoded bus before comparing the next
 one. `retained_revlogs_peak` reports the observed count in the source/capture sync caches; the

@@ -5,6 +5,7 @@
 package org.triplehelix.wpilogmcp.conformance;
 
 import com.google.gson.Gson;
+import java.io.BufferedWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -21,28 +22,34 @@ class RealReplayPullTest {
         "Gateway pull replay skipped; set -PconformanceLogDir=/path/to/logs");
     var root = Path.of(property).toRealPath();
     var report = Files.createDirectories(Path.of("build/reports/replay")).resolve("gateway-pull-" + root.getFileName() + ".jsonl");
-    var scratch = Files.createDirectories(Path.of("build/replay-pull"));
     try (var out = Files.newBufferedWriter(report)) {
       var selected = ConformanceSample.configured(root, "gateway-pull");
-      for (var path : selected.paths()) for (long shift : selected.shifts(path)) {
-        long started = System.nanoTime(); Map<String, Object> result;
-        try (var source = new ReplaySource(path)) {
-          var run = Files.createTempDirectory(scratch, "run-");
-          if (source.calendar().isPresent()) {
-            var parts = ReplayPullTest.gateway(source, run, shift);
-            result = new LinkedHashMap<>((Map<String, Object>) parts.get("fidelity")); result.put("pull", parts.get("pull"));
-          } else {
-            result = ReplayAudit.gateway(source, run, shift, Clock.systemUTC());
-            result.put("pull_skipped", "No recorded calendar clock or dated DataLogManager filename");
-          }
-        } catch (Exception | AssertionError failure) {
-          out.write(new Gson().toJson(Map.of("path", path.toString(), "shift_us", shift, "failure", failure.getClass().getSimpleName())));
-          out.newLine(); out.flush(); throw new AssertionError(path.toString());
-        }
-        result.put("wall_time_sec", (System.nanoTime() - started) / 1e9);
-        out.write(new Gson().toJson(result)); out.newLine(); out.flush();
-        RealNtcoreReplayTest.checkResult(path, shift, result);
-      }
+      for (var path : selected.paths()) for (long shift : selected.shifts(path)) replay(path, shift, Path.of("build/replay-pull"), out);
     }
+  }
+
+  /**
+   * One log at one shift, in a new run folder in {@code scratch}: writes the report line, checks
+   * the result, and deletes the folder once the check passes. A failure keeps it for diagnosis.
+   */
+  static void replay(Path path, long shift, Path scratch, BufferedWriter out) throws Exception {
+    long started = System.nanoTime(); Map<String, Object> result;
+    var run = ReplayScratch.create(scratch, "run-");
+    try (var source = new ReplaySource(path)) {
+      if (source.calendar().isPresent()) {
+        var parts = ReplayPullTest.gateway(source, run, shift);
+        result = new LinkedHashMap<>((Map<String, Object>) parts.get("fidelity")); result.put("pull", parts.get("pull"));
+      } else {
+        result = ReplayAudit.gateway(source, run, shift, Clock.systemUTC());
+        result.put("pull_skipped", "No recorded calendar clock or dated DataLogManager filename");
+      }
+    } catch (Exception | AssertionError failure) {
+      out.write(new Gson().toJson(Map.of("path", path.toString(), "shift_us", shift, "failure", failure.getClass().getSimpleName())));
+      out.newLine(); out.flush(); throw new AssertionError(path.toString());
+    }
+    result.put("wall_time_sec", (System.nanoTime() - started) / 1e9);
+    out.write(new Gson().toJson(result)); out.newLine(); out.flush();
+    RealNtcoreReplayTest.checkResult(path, shift, result);
+    ReplayScratch.delete(run);
   }
 }

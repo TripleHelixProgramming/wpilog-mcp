@@ -72,7 +72,8 @@ Rebuilding the bundled JAR alone does not replace an installed server at the sam
 Checks should cost what they prove:
 
 - Measure wall time before and after a speed change on the same machine. Record the command,
-  selection, counts, failures and timing under `build/reports/`.
+  selection, counts, failures and timing under `build/reports/`, as text: copies of logs or of a
+  run's scratch do not belong there ([Scratch under `build/`](#scratch-under-build)).
 - Do not rerun a passing check for reassurance. A failure which does not reproduce gets one retry;
   report both results.
 - Keep the Gradle daemon warm, build once, and use `--tests` while working. Never run
@@ -96,9 +97,10 @@ larger fork. Coverage instrumentation is absent from ordinary and targeted runs.
 Each task has its own disk cache. Concurrent forks share its atomic cache claims, while tests that
 inspect cache contents use `@TempDir` caches. Generated corpus files live under
 `build/test-fixtures/worker-<worker>`, whose root is cleared before its first use in each JVM, and
-are written once per JVM. Every separately created store/export fixture root is cleared before
-creation too: reused worker numbers must not inherit another build's manifests. Windows mappings in
-another fork cannot be overwritten.
+are written once per JVM. Worker numbers keep rising for the life of the Gradle daemon, so each test
+task also empties `build/test-fixtures` before it starts. Every separately created store/export
+fixture root is cleared before creation too: reused worker numbers must not inherit another build's
+manifests. Windows mappings in another fork cannot be overwritten.
 
 The conformance sweep loads a baseline once per fixture and uses decoded immutable views for the
 entry-order permutations, keeping raw sample counts apart from successfully decoded values.
@@ -385,6 +387,12 @@ for HotSpot with compressed references and eight-byte object alignment).
 ### The disk cache in tests
 
 Every test task, the stress tests included, uses its own disk cache folder, `build/test-disk-cache`, and empties it before the run. So a run starts with nothing cached, synchronizes every REV log itself, and never reads or writes your own cache. `-PtestCacheDir=/path/to/folder` uses that folder instead and keeps what is in it: a second run then starts from the results the first one saved. Pointed at a copy of a cache that an older version wrote, a run shows how this version treats that version's results. Use a copy, because the tests write to the folder.
+
+### Scratch under `build/`
+
+What a run writes under `build/` for its own use lasts until the next run of the same suite. A replay that passes deletes its run folder, and one that fails keeps it for diagnosis. Before its tests start, each task empties the folders its suites write, as it empties its disk cache: every test task empties `build/test-fixtures`; `test` with `-PconformanceLogDir` empties the real-log replay folders (`build/replay-work`, `build/replay-pull` and `build/replay-pairs`) and `build/real-log-conformance-export`; `shopHarness` empties `build/replay-native` and `build/shop-harness`. A targeted `test` without `-PconformanceLogDir` leaves a failed real-log run's folder alone while you look into it. The native editor runners keep only their latest run in each of their folders under `build/`; an output folder you name for them keeps every run. Copy what you want to keep out of these folders before the suite runs again.
+
+A claim check fails when a test, a native editor runner or the build script names a folder under `build/` that no task empties, that is not a disk cache, and that the check does not list as kept on purpose with its reason. A new suite's scratch therefore goes into one of the lists in `build.gradle`. Reports under `build/reports/` are written by name, so the suite's next run replaces them; a test that names a report after a temporary folder deletes it.
 
 ### Extension tests
 

@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createServer } from "node:net";
 import { downloadAndUnzipVSCode } from "@vscode/test-electron";
+import { runFolder } from "./runFolders";
 async function freePort(): Promise<number> {
   const server = createServer(); await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
   const port = (server.address() as { port: number }).port; await new Promise<void>(r => server.close(() => r())); return port;
@@ -14,8 +15,9 @@ async function main(): Promise<void> {
   const overviewOnly = process.env.WPILOG_OVERVIEW_FIXTURE === "true";
   const version = process.env.VSCODE_VERSION ?? "1.101.0";
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Use an explicit editor version");
-  const base = process.env.WPILOG_RECORDED_OUTPUT ?? path.join(repository, panelsOnly ? "build/visualization-stage3-panels" : overviewOnly ? "build/visualization-stage3-overview" : "build/visualization-stage2b", version); fs.mkdirSync(base, { recursive: true });
-  const root = fs.mkdtempSync(path.join(base, "run-")); console.log("Recorded fixture: " + root);
+  const output = process.env.WPILOG_RECORDED_OUTPUT;
+  const base = output ?? path.join(repository, panelsOnly ? "build/visualization-stage3-panels" : overviewOnly ? "build/visualization-stage3-overview" : "build/visualization-stage2b", version);
+  const root = runFolder(base, "run-", { keepEarlier: output !== undefined }); console.log("Recorded fixture: " + root);
   for (const folder of ["logs", "home", "workspace", "extension", "profile/User"]) fs.mkdirSync(path.join(root, folder), { recursive: true });
   fs.writeFileSync(path.join(root, "fixture-only"), "Synthetic recorded preview\n");
   for (const name of ["a", "b"]) fs.copyFileSync(path.join(repository, "build/extension-smoke/fixture/smoke.wpilog"), path.join(root, "logs", name + ".wpilog"));

@@ -35,8 +35,13 @@ public class LiveReplayTest {
     String folder = System.getProperty("conformance.logdir");
     org.junit.jupiter.api.Assumptions.assumeTrue(folder != null, "Live replay skipped; set -PconformanceLogDir=/path/to/logs");
     var failures = new ArrayList<String>();
-    for (var path : ConformanceSample.configured(Path.of(folder).toRealPath(), "live").paths()) {
-      try { check(path, Files.createTempDirectory(directory, "live-"), false); }
+    var root = Path.of(folder).toRealPath();
+    var paths = ConformanceSample.configured(root, "live").paths();
+    for (int i = 0; i < paths.size(); i++) {
+      var path = paths.get(i);
+      // The work folder names the report: by directory and place in the sample, so the next run
+      // replaces it. A temporary name left one more report for every log on every run.
+      try { check(path, Files.createDirectory(directory.resolve("live-" + root.getFileName() + "-" + i)), false); }
       catch (IndependentLog.NotALog | ReplaySource.InvalidUtf8 invalid) {
         // The ordinary replay suite separately checks these input refusals with both readers.
         System.out.println("Live replay input refused: " + path);

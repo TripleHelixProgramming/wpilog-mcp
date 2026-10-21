@@ -131,6 +131,7 @@ What the suite holds, and what a change must keep passing (`doc/DEVELOPMENT.md` 
 - **Windows**: CI runs everything on Windows too. Build an expected path with the same path API the code uses, never from a hand-written string; compare paths as the file system does; and don't assume a checked-out file has LF line endings.
 - **Logs**: no robot log belongs in the repository, and neither does a value taken from another team's log, even one number in a test, unless the log's license allows it and its notice comes with it.
 - **The disk cache**: every test task uses its own cache under `build/`, emptied first, never the user's; `-PtestCacheDir` names a folder to keep between runs instead.
+- **Scratch under `build/`**: what a test writes there for itself lasts until the next run of its suite. A passing run deletes it, a failed run keeps it for diagnosis, and the task empties the suite's folders before it starts; a claim check fails on a folder under `build/` that nothing empties. `doc/DEVELOPMENT.md` has the lists.
 
 ## Version Management
 
