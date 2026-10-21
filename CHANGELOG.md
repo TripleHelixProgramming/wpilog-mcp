@@ -670,6 +670,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The hardening, source and mirror, pit server and ideas plans now state what has been built.
+  Previously the hardening plan still called the multi-session tool unbuilt after
+  `compare_sessions` landed and named a Grafana `json` format that the Grafana decisions
+  dropped, the source and mirror plan placed M5–M7 in the working tree after their commit, the
+  ideas page said nothing in the hardening plan was implemented and that M3 onward was pending,
+  and the pit plan's round 24 audit called the store migration unbuilt after M4 added it.
+
 - `doc/GRAFANA_PLAN.md` plans plotting stored sessions at full resolution in the Grafana that
   shows the live metrics, with the maintainer's decisions: Grafana's Infinity data source reads
   the data endpoint's CSV with measured UTC, Grafana's time range chooses the window, a

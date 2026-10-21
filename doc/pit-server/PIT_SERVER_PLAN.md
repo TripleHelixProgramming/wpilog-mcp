@@ -1643,7 +1643,13 @@ Three larger pieces remained outside round 24; round 25 closes the first:
 - **Format upgrades:** the plan's explicit migration command is still unbuilt, and its
   blanket startup refusal needs reconciling with the door's deliberate per-store error
   reporting. The legacy unassigned-directory relocation in `LogStore.migrateUnassigned`
-  is a format-1 layout repair on import, not an older-format migration.
+  is a format-1 layout repair on import, not an older-format migration. Since then, M4
+  (`ee0004b`, 2026-10-19) added the explicit migration from format 1 to format 2 as
+  loopback-only controls: `POST /store/replicas/migrate` for a master store and
+  `POST /store/mirror/migrate` for a mirror. Nothing migrates on read or at startup
+  ([Explicit replica-format migration](../STANDALONE.md#explicit-replica-format-migration)),
+  and reading a store in a newer format refuses that store with a message to upgrade the
+  server.
 
 Existing targeted checks cover the implemented boundaries: `PullStoreTest` (candidate clocks,
 serials, strong/unique/near-zero evidence, placement and open-capture receipts), selected
@@ -1681,8 +1687,8 @@ imports check in `LiveToolsTest`. No matching algorithm or manifest format chang
 - **Evidence and remaining work:** generated tests distinguish two boots with overlapping
   calendar evidence, retain calendar-only imports, reject ambiguous/invalid anchors and REV
   offsets outside the gate, and preserve receipts through sync. Store/mirror conformance uses
-  generated companions on the same boot clock. The source-selection and format-upgrade gaps
-  in the round 24 audit remain open.
+  generated companions on the same boot clock. The round 24 audit's source-selection gap
+  remains open; its format-upgrade note records the explicit migration M4 added since.
 - **CI test ordering:** Linux run `38013297496` observed `following` where the PhotonVision
   missing-fields test expected `stand_down`, after only 0.047 seconds. The sink queues its
   snapshot before its status notice; the caller can consume the snapshot and clear old

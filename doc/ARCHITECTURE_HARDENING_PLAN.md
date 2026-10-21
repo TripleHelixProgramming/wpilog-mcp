@@ -544,8 +544,9 @@ change. Three things follow:
    them is a `### Changed` entry that moves samples at bucket edges. The proposal changes all
    three before 0.10.0 is released, and the differential test's exceptions become empty.
 3. **A written role for each route** (proposed: keep decision 7). `/data/entries` stays the door
-   for viewers, agents' scripts and dashboards, and new presentation formats, such as the Grafana
-   `json` format and item 6's UTC timestamps, are added there. `/read/v1` is the exact, typed
+   for viewers, agents' scripts and dashboards, and new presentation formats, such as item 6's UTC
+   timestamps, are added there; Grafana reads its CSV through the Infinity data source, so no
+   `json` format is added ([decisions](GRAFANA_PLAN.md#decisions)). `/read/v1` is the exact, typed
    protocol for the Java library and other applications: snapshots, sessions, follows and typed
    values. The visualization routes stay the preview's own protocol. If the maintainer instead
    makes `/read/v1` the one door, decision 7 is superseded in writing, and `/read/v1` must first
@@ -776,12 +777,13 @@ the data routes uses it.
    made up from a file name, a modification time or the server's clock.
 4. Arrow gains a nullable UTC column beside `timestamp`, and CSV an ISO 8601 column beside
    `timestamp_sec`; the existing columns stay. Where JSON carries the value (`/read/v1`'s
-   NDJSON, or the later `json` format), epoch microseconds are decimal strings, as the read
-   API's other integer timestamps are.
+   NDJSON), epoch microseconds are decimal strings, as the read API's other integer timestamps
+   are.
 
-This is the prerequisite for the Grafana `json` format that the
-[pit server plan](pit-server/PIT_SERVER_PLAN.md#12-metrics-prometheus-and-grafana) leaves for
-later.
+This is the prerequisite for plotting recorded history in Grafana, which reads the CSV through
+its Infinity data source in place of the `json` format the
+[pit server plan](pit-server/PIT_SERVER_PLAN.md#12-metrics-prometheus-and-grafana) once named
+([decisions](GRAFANA_PLAN.md#decisions)).
 
 ### Tests that must fail first
 
@@ -1071,7 +1073,7 @@ for review.
 | Remote pending-publication status | Settled 2026-10-20 during the second-run source audit: add bounded `POST /replicas/v1/status` with required `store_id` and optional `session_id`; a selected pending session gets an explained, retryable `PUBLICATION_PENDING` refusal with its recorded cause. Keep immutable `/file` identity rules unchanged | Item 5b |
 | Capture startup with pending publications | Settled 2026-10-20 during the second-run source audit: continue CaptureService startup after publication-only failures once intact local receipts are verified; corrupt or unsafe recovery remains fatal | Item 5b |
 | Registering a folder that holds no store | Settled 2026-10-20 after the second run: the publication step that runs when a store is registered neither takes nor creates `store.lock` in a folder with no store. The symlinked-lock test fails, rather than skips, when its link cannot be made because a file is already there | Item 5b |
-| Multi-session contract and its tool | Settled 2026-10-20: a new tool built to the contract; `compare_matches` stays the two-file comparison. The second-run design was approved after that run, with the amendments in the next five rows; the tool is not yet built | Item 7 |
+| Multi-session contract and its tool | Settled 2026-10-20: a new tool built to the contract; `compare_matches` stays the two-file comparison. The second-run design was approved after that run, with the amendments in the next five rows; the third run's phase B built it as `compare_sessions` | Item 7 |
 | Multi-session sources | Settled 2026-10-20 after the second run: finished sessions in stores and mirrors only. A plain folder is refused, with the remedy to import it or use `compare_matches` for two files; a session still recording is skipped as not finished. Comparing live recordings is a later, separate feature | Item 7 |
 | Multi-session metrics | Settled 2026-10-20 after the second run: each metric is one statistic of one number, either a named entry or the battery voltage, total current, full loop time or user loop time role, optionally one struct field or fixed array index. The statistics are `mean`, `std_dev`, `min`, `max`, `median`, `p5` and `p95`, named as `get_statistics` names them; angles get only a circular mean and spread. The summary across sessions applies the same set to the per-session values, each session counting once | Item 7 |
 | Multi-session work and limits | Settled 2026-10-20 after the second run: no new work service, whole-call time limit or cancellation. Work is capped before it starts, at most two comparisons run at once, and a third is refused. A call reads at most 1 GiB of log files, with the record-visit cap doubled to 8,388,608 to match; median and percentiles keep at most 65,536 values per session and metric, and the other statistics are exempt. The other limits stay as designed: 64 sessions, 8 metrics, 16 windows per session, 256 files and one complete reply of at most 1 MiB. Server-wide [time limits and cancellation](IDEAS.md#time-limits-and-cancellation-for-long-tool-calls) are a follow-up | Item 7 |
@@ -1174,8 +1176,8 @@ Across the second run, 200 plant attempts were exactly restored: 196 caught, thr
 behavioral misses followed by stronger catches, and one setup-only failure. These are
 mutation attempts, not unique test counts. Item 7 ended the run as a detailed design and
 synthetic measurement only; the maintainer approved the design afterwards, with amendments,
-and the tool is not yet built. The run is not accepted while the failed full-build gate
-remains.
+and the third run built the tool. The run was not accepted while its failed full-build gate
+remained; after the two fixes, the third run's phase A accepted items 1 to 6.
 
 ### Third run
 

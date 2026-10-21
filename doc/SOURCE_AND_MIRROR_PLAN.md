@@ -1,10 +1,10 @@
 # Explorer sources and mirror implementation plan
 
 Status: M1–M3 are committed as `643cdfd`, and M4 identity/preservation foundations as `ee0004b`
-on 2026-10-19. M5–M7 are implemented in the working tree for independent review: immutable
-publication, paged peer reconciliation, replica-aware reads, discovery and multiple-mirror
-configuration. Nothing in these checkpoints has been pushed. Native Linux/Windows provider,
-filesystem durability and the M9 scale gates remain unproved; M8 display handoff remains pending.
+on 2026-10-19; M5–M7 are committed as `32f129f` on 2026-10-21: immutable publication, paged peer
+reconciliation, replica-aware reads, discovery and multiple-mirror configuration. Nothing in
+these checkpoints has been pushed. Native Linux/Windows provider, filesystem durability and the
+M9 scale gates remain unproved; M8 display handoff remains pending.
 
 Explorer will connect directly to the server that owns the selected source. A laptop
 can browse, analyze, follow and visualize remote recordings without a local MCP server

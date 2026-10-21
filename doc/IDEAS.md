@@ -6,19 +6,21 @@ The agreed next Explorer/source work is specified in
 [Explorer sources and mirror implementation plan](SOURCE_AND_MIRROR_PLAN.md): independent
 local/remote sources with no default, server-owned visualization libraries, and mirrors
 that retain collected files, pause at capacity and accept provisional peer content through
-their engine. M1 source contracts and M2 server-library persistence are implemented locally;
-M3 source-aware Explorer routing and the later mirror checkpoints remain pending. The plan
-records migration, acceptance gates and the validation limits for each checkpoint.
+their engine. M1 to M7 are committed locally, from source contracts and server libraries to
+mirror identity, peer reconciliation and discovery; M8, agent display and explicit copying of
+views and templates, and M9, integrated acceptance, remain. The plan records migration,
+acceptance gates and the validation limits for each checkpoint.
 
 The [architecture hardening plan](ARCHITECTURE_HARDENING_PLAN.md) proposes changes to the
 current design that the review of the rejected [columnar analytics cache](COLUMNAR_STORE_PLAN.md)
 exposed: recordings that no import can stop, a disk reserve for capture, a restart for a hung
 server, one rule for bucketing samples, costs measured against a season's store, a contract
 for questions across many sessions (sections 2.2 and 3.5 below), and the design rules written
-down. Nothing in it is implemented.
+down. Its three runs built all seven items, the cross-session contract as `compare_sessions`.
 
-[Recorded history in Grafana](GRAFANA_PLAN.md) proposes plotting stored sessions in the
-Grafana that shows the live metrics, on server installs (section 9.5 below).
+[Recorded history in Grafana](GRAFANA_PLAN.md) plans plotting stored sessions in the Grafana
+that shows the live metrics, on server installs, after live panels on the open capture
+(section 9.5 below). Its decisions are recorded; nothing in it is built yet.
 
 ---
 
