@@ -576,6 +576,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The store-lock symbolic-link admission test now probes link support once in an empty
   directory and fails when its own link cannot be made. Previously any I/O error turned it into
   a skip, including a lock file that already existed.
+- The test task now declares the documents, workflows, installers and build files that the
+  claim and documentation tests read as its inputs. Previously a repeated test command after an
+  edit to only those files was answered "up to date" and reported success without running them.
 
 - Server-library regressions cover quota accounting, migration, source revocation, interrupted
   checkpoints and shared HTTP/MCP pressure. The extension's real-server client test now pins

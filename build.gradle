@@ -192,6 +192,16 @@ tasks.named('test') {
     systemProperty 'wpilib.natives.path', "$buildDir/testnatives"
     environment 'WPILOG_DISK_CACHE_DIR', testCacheDir.absolutePath
     doFirst { if (!keepTestCache) delete testCacheDir }
+    // The claim and documentation tests read these files while they run, so they are inputs: an
+    // edit to any of them puts this task out of date. Undeclared, a repeated test command after a
+    // documentation-only edit was answered "up to date" and reported success without running.
+    inputs.files(
+            fileTree('doc'), fileTree('examples'), fileTree('.github'), fileTree('gradle'),
+            fileTree('harness') { exclude '**/build/**', '**/.gradle/**', '**/node_modules/**' },
+            'README.md', 'CHANGELOG.md', 'CLAUDE.md', 'build.gradle', 'install.sh', 'install.ps1',
+            'vscode-extension/README.md', 'vscode-extension/package.json', 'vscode-extension/package-lock.json')
+        .withPropertyName('claimSources')
+        .withPathSensitivity(PathSensitivity.RELATIVE)
     // ToolConformanceTest: -PconformanceUpdate rewrites the known-failures list from current results
     if (project.hasProperty('conformanceUpdate')) {
         systemProperty 'conformance.update', 'true'
