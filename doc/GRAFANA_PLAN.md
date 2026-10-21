@@ -179,7 +179,7 @@ Two ways to answer it are measured before either is chosen:
   content and the summary's recipe, as the scan index is: for each numeric entry, minimum,
   maximum, mean and count over short fixed intervals, with UTC. Wide windows read the
   summaries; a window narrow enough to need samples reads the file. No new engine or
-  dependency. The [column companions plan](COLUMN_CACHE_PLAN.md) keeps full-resolution
+  dependency. The [column file plan](COLUMN_CACHE_PLAN.md) keeps full-resolution
   columns beside each log instead, read by every reader, and leaves summaries for later; its
   first build overviews twelve two-hour panels in 59 ms by reading every sample.
 - A columnar store on server installs only, which the columnar plan's
@@ -318,7 +318,7 @@ stages 2 and 3.
    timestamps and offsets, estimated at 20 to 25 bytes per value, as its own change before stage
    1. The alternatives are a smaller default rollover size, which bounds the index without
    shrinking it, or a documented limit on the recorded value rate. Answered on 2026-10-21: the
-   [column companions plan](COLUMN_CACHE_PLAN.md#decisions)'s recording phase, which keeps the
+   [column file plan](COLUMN_CACHE_PLAN.md#decisions)'s recording phase, which keeps the
    open file's columns outside the heap, comes before this stage, with no smaller default
    rollover size in the meantime.
 5. **The gate's bounds.** For: deciding when the live dashboard ships. The gate as written passed

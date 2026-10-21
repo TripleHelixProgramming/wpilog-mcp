@@ -14,7 +14,7 @@ owning plan.
 
 The rows cover the numbered pit and Explorer decisions, each source/mirror agreement, the
 routing decisions they replace, the columnar rejection, the hardening rules and the column
-companions' decisions. The pit plan's round-by-round implementation and verification narrative
+file plan's decisions. The pit plan's round-by-round implementation and verification narrative
 remains in its decision record; test results and historical defect reports are not new
 architectural decisions.
 
@@ -115,16 +115,17 @@ architectural decisions.
 | 2026-10-20 | standing | A multi-session call reads at most 1 GiB of logs; median and percentiles keep at most 65,536 values per session and metric | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
 | 2026-10-20 | standing | A session's anchor defaults to its only WPILOG file; a session with several requires a choice | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
 | 2026-10-20 | standing | Multi-session analysis chooses its source by scope_id as other tools do and keeps its designed duplicate, failure, pooling, confounder, unit and reply rules | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
-| 2026-10-21 | standing | Column companions: the first phase covers numeric entries and the numeric fields of structs | [Record](COLUMN_CACHE_PLAN.md#decisions) |
-| 2026-10-21 | standing | Column companions are built in the background; until one is ready, today's read path answers | [Record](COLUMN_CACHE_PLAN.md#decisions) |
-| 2026-10-21 | standing | Column companions share the disk cache's size limit | [Record](COLUMN_CACHE_PLAN.md#decisions) |
+| 2026-10-21 | standing | Column files: the first phase covers numeric entries and the numeric fields of structs | [Record](COLUMN_CACHE_PLAN.md#decisions) |
+| 2026-10-21 | standing | Column files are built in the background; until one is ready, today's read path answers | [Record](COLUMN_CACHE_PLAN.md#decisions) |
+| 2026-10-21 | standing | Column files share the disk cache's size limit | [Record](COLUMN_CACHE_PLAN.md#decisions) |
 | 2026-10-21 | standing | The recording writes the open file's columns before Grafana's open-capture stage is built | [Record](COLUMN_CACHE_PLAN.md#decisions) |
 | 2026-10-21 | standing | The default rollover size stays 1 GiB until then; no smaller stopgap | [Record](COLUMN_CACHE_PLAN.md#decisions) |
-| 2026-10-21 | standing | Column companions are timed read-only on three local team logs, with the exact results kept local | [Record](COLUMN_CACHE_PLAN.md#decisions) |
+| 2026-10-21 | standing | Column files are timed read-only on three local team logs, with the exact results kept local | [Record](COLUMN_CACHE_PLAN.md#decisions) |
 | 2026-10-21 | standing | Live Grafana panels name the recording in progress with `capture=current`, not a file path | [Record](GRAFANA_PLAN.md#questions-for-the-maintainer) |
 | 2026-10-21 | standing | A live window reads only a capture's open file; after a rollover its earlier part is empty, with the reason | [Record](GRAFANA_PLAN.md#questions-for-the-maintainer) |
 | 2026-10-21 | standing | The open-capture gate: two hours of prefill; listener wait at most 1 s; each twelve-panel refresh within 250 ms and under 50 MB; heap after a full collection grows under 64 MB | [Record](GRAFANA_PLAN.md#questions-for-the-maintainer) |
 | 2026-10-21 | standing | Recorded live panels go on a second dashboard beside the sampled one | [Record](GRAFANA_PLAN.md#questions-for-the-maintainer) |
 | 2026-10-21 | standing | A live window is placed by the robot's wall clock when the robot publishes one, and otherwise by the pit server's, measured through NetworkTables' time synchronization and labeled; this relaxes hardening item 6 for captures alone | [Record](GRAFANA_PLAN.md#questions-for-the-maintainer) |
-| 2026-10-21 | standing | Column companions keep no summaries for now: an overview reads every sample, so its means are the data endpoint's | [Record](COLUMN_CACHE_PLAN.md#decisions-from-the-first-build) |
+| 2026-10-21 | standing | Column files keep no summaries for now: an overview reads every sample, so its means are the data endpoint's | [Record](COLUMN_CACHE_PLAN.md#decisions-from-the-first-build) |
 | 2026-10-21 | standing | For finished files, a struct array of more than 64 elements a record and an entry of more than about 16.8 million samples are left to the log | [Record](COLUMN_CACHE_PLAN.md#decisions-from-the-first-build) |
+| 2026-10-21 | standing | A log's derived columns are called column files, not companions, which already names the REV log paired with a WPILOG | [Record](COLUMN_CACHE_PLAN.md#decisions-from-the-first-build) |

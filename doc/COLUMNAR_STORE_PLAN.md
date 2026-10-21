@@ -218,7 +218,7 @@ columnar store adds queries of any shape over every sample of every session, at 
 an engine, a converter and their storage on a server. If the panels teams want are
 overviews, the summaries are enough.
 
-A third candidate lies between the two: [column companions](COLUMN_CACHE_PLAN.md), proposed
+A third candidate lies between the two: [column files](COLUMN_CACHE_PLAN.md), proposed
 on 2026-10-21 at the maintainer's request. Beside each log, the disk cache keeps its numeric
 entries and struct fields as full-resolution columns, read by memory-mapping, with no engine and,
 for now, no summaries. A prototype answered one entry across a synthetic season's 128 logs in

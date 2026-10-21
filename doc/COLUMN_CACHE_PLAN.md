@@ -1,4 +1,4 @@
-# Column Companions for Fast Reads
+# Column Files for Fast Reads
 
 Status: proposed on 2026-10-21 at the maintainer's request, and its [decisions](#decisions)
 answered the same day. A throwaway prototype, outside the product code, measured the design on
@@ -31,15 +31,15 @@ layout the server owns, in the disk cache it already keeps.
 
 ## The design
 
-### What a companion holds
+### What a column file holds
 
-One companion for each WPILOG file:
+One column file for each WPILOG file:
 
 - For each numeric entry (doubles, floats, integers and booleans), two columns: timestamps in
   integer microseconds, and values as 64-bit integers for integer entries and 64-bit floating
   point otherwise. Nothing passes through a floating-point projection unless the entry is
   floating point. Samples are in time order; equal timestamps keep their order in the file, and
-  an entry logged out of order is sorted when the companion is built.
+  an entry logged out of order is sorted when the column file is built.
 - No summaries, for now. An overview reads every sample of its window with the data
   endpoint's own arithmetic, so its answers are the endpoint's to the last bit. A later format
   version can add summaries if reads across a season need them.
@@ -54,30 +54,30 @@ Strings and raw values keep today's path, and elements of plain numeric arrays c
 
 ### Where it lives and how it is trusted
 
-Companions live in the disk cache beside the scan indexes and REV synchronizations, under the
+Column files live in the disk cache beside the scan indexes and REV synchronizations, under the
 same size limit and cleanup, and follow the same rules:
 
-- A companion is keyed by the source file's content and by everything that shapes it: the
+- A column file is keyed by the source file's content and by everything that shapes it: the
   decoder and format versions, the schemas and the clock revision. A change to how values are
   decoded raises the recipe version, as the scan index's does.
-- Every companion carries a checksum and its format version. A corrupt or crafted one is
+- Every column file carries a checksum and its format version. A corrupt or crafted one is
   rejected and built again; reading one never crashes the server or exhausts its heap.
-- A companion gives the same answers as reading the WPILOG. Differential tests compare every
+- A column file gives the same answers as reading the WPILOG. Differential tests compare every
   sample on every fixture and, opt-in, on real logs; a planted change to a value must fail them.
-- A missing or rejected companion falls back only to the same admitted file, never to another
+- A missing or rejected column file falls back only to the same admitted file, never to another
   copy that happens to match, and a read never switches between the two midway.
 
 ### When it is built
 
 In the background. After an import, a pull or a capture closes, and for any finished file that
-is read before it has one, a bounded worker of low priority builds the companion. Until it is
+is read before it has one, a bounded worker of low priority builds the column file. Until it is
 ready, today's path answers. The worker never runs on the store's worker or the recording's
 threads, and it pauses while the capture's disk reserve or the heap runs short: a recording
 comes first.
 
 ### How it is read
 
-The companion is memory-mapped, so its columns live in the operating system's file cache, not
+The column file is memory-mapped, so its columns live in the operating system's file cache, not
 in the Java heap, and no sample becomes an object. A window is found by binary search on the
 timestamps. An overview reads every sample in its window, at about 3 ns a sample. Raw samples
 in a window are copied straight into the reply.
@@ -88,7 +88,7 @@ the reported sample counts, sampling and decode problems stay what they are toda
 
 ### While recording
 
-The capture appends the open file's columns as it writes the WPILOG, to a companion that is
+The capture appends the open file's columns as it writes the WPILOG, to a column file that is
 never forced to disk and is built again from the WPILOG after a crash. Only the current block
 of each entry stays in the heap, so the open index no longer grows the heap with the session.
 A reader takes the columns up to the published prefix, as it takes the WPILOG's records today.
@@ -96,20 +96,20 @@ A reader takes the columns up to the published prefix, as it takes the WPILOG's 
 ### What does not change
 
 The WPILOG stays the record, and nothing is written into it. The scan index stays, and the
-companion is built from the log it indexes. No native code runs in the process that records,
+column file is built from the log it indexes. No native code runs in the process that records,
 and callers still choose named queries with typed arguments; they never send SQL, paths into
 the cache or table names.
 
 ## Measurements
 
-A throwaway prototype in a scratch copy of the code built companions from the server's own
+A throwaway prototype in a scratch copy of the code built column files from the server's own
 reader for a synthetic season: 128 ten-minute match logs, each with 16 numeric entries at 50 Hz
 (61 million values, 920 MB of WPILOG), and one two-hour log with 12 entries. Every timestamp and
 value of two entries on two of the logs matched today's decoded values. The measurements were
 taken on the maintainer's computer with the server's default 4 GB heap, with the files already
 in the operating system's cache.
 
-| Question | Today's path | Companions |
+| Question | Today's path | Column files |
 |---|---|---|
 | One entry from each of an event's 16 logs, 1,000 points each, after a restart | 213 ms (730 ms on first load) | 2 ms |
 | The same across the season's 128 logs | 1.45 s (3.8 s on first load) | 13 ms |
@@ -120,13 +120,13 @@ in the operating system's cache.
 
 An open capture pays a cost of the twelve-panel kind on every refresh, since its decoded values
 are never kept: the Grafana plan measured 109 ms and 424 MB for twelve integer entries after
-two hours of recording. Building the companions took 97 ns per value from loaded logs, and they
-took 16.1 bytes per value on disk, against the WPILOG's 15.0.
+two hours of recording. Building the column files took 97 ns per value from loaded logs, and
+they took 16.1 bytes per value on disk, against the WPILOG's 15.0.
 
 These logs carry 16 entries; real logs carry hundreds. Today's path pays for the whole file
 when it loads, and the real-log timing in the
 [Grafana plan](GRAFANA_PLAN.md#across-sessions) found one event's fifteen matches taking about
-16 s after a restart. A companion pays only for the entry asked for. The prototype had no
+16 s after a restart. A column file pays only for the entry asked for. The prototype had no
 checksum, no integer summaries, no UTC column and no out-of-order entries, and a cold disk adds
 the time to read each entry's columns, about half a megabyte per ten-minute log.
 
@@ -134,11 +134,11 @@ The same prototype was then timed, read-only, on three local team logs of about 
 and 2 GiB, the three the scan index was timed on; the exact figures stay in ignored local
 evidence, and the logs' hashes, sizes and modification times were unchanged afterwards. Each
 log has 200 to 270 numeric entries among 340 to 460, holding 0.7 to 1.7 million values, and
-every one of those values matched today's decode. Their companions took 11 to 27 MB, 16 bytes
+every one of those values matched today's decode. Their column files took 11 to 27 MB, 16 bytes
 per value: about 1% to 30% of the log, since most of a log's bytes are structs, arrays and
 strings, which the prototype left out. After a restart, today's path took 0.1 to 0.9 s to
 answer an overview of an entry, most of it spent proving and loading the log's scan index; a
-companion answered in under a millisecond, opening included. Building one took 0.2 to 0.3 s.
+column file answered in under a millisecond, opening included. Building one took 0.2 to 0.3 s.
 
 ## The first build
 
@@ -198,31 +198,33 @@ The maintainer answered these on 2026-10-21, each as proposed.
    the 2 GiB team log's array entry is, and so would be a two-hour recording of four module
    states at 250 Hz. The recording phase writes columns as it records, so long recordings do not
    depend on these limits.
+3. **The name.** "Companion" already names the REV log paired with a WPILOG, as in the read
+   API's `companion_path`, so these are column files in the code and the documents.
 
 ## Costs and risks
 
 - **Disk.** About 16 bytes for each numeric value, roughly the size of the log itself, before
   any compression; storing timestamps as differences would bring it near 10 bytes. The disk
-  cache's limit, 8,192 MB by default, then holds companions for about eight times the
+  cache's limit, 8,192 MB by default, then holds column files for about eight times the
   prototype's season, and a server install can raise it. Struct fields add more: with them,
   one team log's file took a third more than the log itself.
 - **Build.** One pass for each file, in the background: 0.1 to 0.15 microseconds for each value
   held, and 0.3 to 1.2 s for each of the three team logs, struct fields included.
-- **A second read path.** Every reader that moves to companions must give today's answers,
+- **A second read path.** Every reader that moves to column files must give today's answers,
   including angles, bucket edges, decode problems and entries logged out of order. The
   differential tests carry that weight.
-- **Windows.** A mapped companion cannot be deleted while it is mapped, as a mapped WPILOG
+- **Windows.** A mapped column file cannot be deleted while it is mapped, as a mapped WPILOG
   cannot; cleanup has to wait for its readers, as it already does for logs.
 
 ## Phases
 
-1. **Finished files.** Build companions in the background for numeric entries and the
+1. **Finished files.** Build column files in the background for numeric entries and the
    numeric fields of structs, and read them in the data endpoint and the statistics tools,
    behind the differential tests. The format, writer and reader are built; placing the files
    in the disk cache, the background worker and the readers come next.
 2. **The recording.** The capture writes the open file's columns as it records, replacing the
    per-value index. This comes before the Grafana plan's stage 1, whose gate runs on it.
-3. **Across sessions.** The Grafana plan's stage 3 reads companions across files, and the
+3. **Across sessions.** The Grafana plan's stage 3 reads column files across sessions, and the
    columnar store's revisit measures this against its targets: one entry across an event in
    under 2 s after a restart, and across a season in under 10 s. If reading every sample misses
    them, a later format version adds summaries.
@@ -236,14 +238,14 @@ The maintainer answered these on 2026-10-21.
    proposal, which left struct fields for a later phase. Numeric entries cover battery, loop
    time, CAN and most motor signals, and AdvantageKit's poses and module states are structs, so
    both reach the readers at once.
-2. **Companions are built in the background.** Chosen in place of the proposal, which built them
-   in the scan's pass. Loading a log costs what it does today, and the first answer from a file
-   without a companion comes from today's path.
-3. **Companions share the disk cache's limit.** As proposed: the scan indexes, REV results and
-   companions share one limit, which a server install can raise.
+2. **Column files are built in the background.** Chosen in place of the proposal, which built
+   them in the scan's pass. Loading a log costs what it does today, and the first answer from a
+   file without a column file comes from today's path.
+3. **Column files share the disk cache's limit.** As proposed: the scan indexes, REV results and
+   column files share one limit, which a server install can raise.
 4. **The recording phase comes before Grafana's stage 1.** As proposed: the open file's columns
    replace the per-value index before live panels are built. The proposed stopgap, a smaller
    default rollover size until then, was declined: the default stays 1 GiB.
-5. **Time companions on three local team logs.** As proposed, read-only, with the exact results
-   kept in ignored local evidence, as the scan index's timing was under the hardening plan's
-   real-log rule. The rounded results are under [Measurements](#measurements).
+5. **Time column files on three local team logs.** As proposed, read-only, with the exact
+   results kept in ignored local evidence, as the scan index's timing was under the hardening
+   plan's real-log rule. The rounded results are under [Measurements](#measurements).
