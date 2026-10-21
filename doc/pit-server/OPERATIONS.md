@@ -84,8 +84,14 @@ server starts at once and the client retries until the robot answers.
 
 ### 1.4 Verify, in order
 
-1. `curl http://127.0.0.1:2363/health` answers with the version and the `gateway` state:
+1. `curl http://127.0.0.1:2363/health` answers with the version, `capture`, and the `gateway` state:
    `listening` on its port, or `waiting` with a `cause` (usually another program on the port).
+   `capture.captures[].state` distinguishes `waiting_admission`, `recording` and `stopped`;
+   a stopped row carries a `reason` while process `status` stays `ok`. `low_disk` resumes
+   automatically above the configured floor plus margin. For `startup_failed`,
+   `admission_failed` or `write_failed`, read the private server log for details.
+   `last_write_age_ms` is null before a completed write; a high age alone is not proof of
+   missing samples because some topics publish only changes.
 2. Before the robot connects, an empty store gives `list_sessions` status `not_applicable`,
    reason "No capture or imported session has been recorded", and `sessions: []`. There is
    no session row to hold `providers[]` yet. Check the offline providers with:

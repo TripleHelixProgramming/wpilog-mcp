@@ -15,13 +15,11 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.triplehelix.wpilogmcp.config.CaptureConfig;
-import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.nt4.client.ClientScheduler;
 import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
 import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
 import org.triplehelix.wpilogmcp.nt4.server.Nt4Gateway;
-import org.triplehelix.wpilogmcp.store.LogStore;
 import org.triplehelix.wpilogmcp.store.StoreCatalog;
 
 class CaptureAdmissionShutdownTest {
@@ -40,12 +38,7 @@ class CaptureAdmissionShutdownTest {
       capture = new CaptureService(config, manager, Clock.systemUTC(), ClientScheduler.daemon(), WpilogOutput::new, Duration.ofMillis(200));
       capture.start().get(5, TimeUnit.SECONDS);
       var store = manager.stores().store(config.store());
-      var source = ImportFixture.write(directory.resolve("import.wpilog"), 3);
-      var importing = store.importPaths(new LogStore.Request(List.of(source), false, null), progress -> {
-        if (progress.phase().equals("inspecting")) {
-          entered.countDown(); try { release.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-        }
-      });
+      var held = org.triplehelix.wpilogmcp.store.StoreQueueTestBarrier.hold(store, entered, release);
       assertTrue(entered.await(5, TimeUnit.SECONDS));
       robot.announce("/pending", "int", new JsonObject()).join();
       var service = capture;
@@ -54,7 +47,7 @@ class CaptureAdmissionShutdownTest {
       long start = System.nanoTime(); capture.close();
       assertTrue((System.nanoTime() - start) / 1e6 < 2000, "Shutdown must use its bounded wait");
       assertTrue(messages.toString(java.nio.charset.StandardCharsets.UTF_8).contains("Capture stopped during admission"));
-      release.countDown(); importing.get(10, TimeUnit.SECONDS);
+      release.countDown(); held.get(10, TimeUnit.SECONDS);
       await(() -> {
         try { return StoreCatalog.read(config.store(), security).sessions().stream()
             .anyMatch(s -> s.session().endReason() != null && s.session().endReason().contains("Capture stopped during admission")); }

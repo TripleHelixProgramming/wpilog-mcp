@@ -94,10 +94,10 @@ public final class ImportCommand {
         outside.add(path);
       }
     }
-    var running = daemon.runningDaemon(options.server());
+    var running = daemon.importEndpoint(options.server(), config.effectivePort(), System.getenv("WPILOG_HTTP_BIND"));
     if (running.isPresent()) {
-      var base = URI.create("http://127.0.0.1:" + running.get().port());
-      out.println("Import through daemon on port " + running.get().port());
+      var base = running.get();
+      out.println("Import through daemon on port " + base.getPort());
       // Even an empty request creates the store under the daemon's lock before an inbox drop.
       int code = remote(base, selected, new LogStore.Request(inside, options.move(), options.robot()), out);
       if (!outside.isEmpty()) {

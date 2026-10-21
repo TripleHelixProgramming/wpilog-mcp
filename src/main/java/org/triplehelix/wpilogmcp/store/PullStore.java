@@ -54,9 +54,10 @@ public final class PullStore implements FileTransfer.Local {
     if (old.value() != null) old.value().close();
     return next;
   }
+  private final CopyLeaseGroup copyLeases = new CopyLeaseGroup();
   private <T> T mutate(LogStore.CaptureOperation<T> operation) throws IOException {
     discardPrepared();
-    try { return store.capture(operation); }
+    try { return copyLeases.await(store.captureAsync(operation)); }
     finally { discardPrepared(); } // Release readers outside the queue, including overlapping verification.
   }
   private final LogStore store;
@@ -110,6 +111,12 @@ public final class PullStore implements FileTransfer.Local {
     }
     var result = io.check(robotRoot.resolve("pulled").resolve(UUID.randomUUID().toString()).resolve(name));
     Files.createDirectories(result.getParent()); return io.check(result);
+  }
+  @Override public FileTransfer.Reservation reserve(String remote, long bytes) throws IOException {
+    var directory = store.capture(io -> {
+      var target = io.check(robotRoot.resolve("pulled")); Files.createDirectories(target); return target;
+    });
+    return copyLeases.own(store.reserveDiskCopy(directory, bytes));
   }
   @Override public String create(String remote) throws IOException {
     return store.capture(io -> { var path = staging(io, remote); Files.createFile(path); return relative(path); });
@@ -216,13 +223,13 @@ public final class PullStore implements FileTransfer.Local {
     try (var reservation = LogFileAccess.reserveMove(List.of(move.from()))) {
       var released = manager.release(move.from());
       if (!released.released()) throw new IOException(released.reason());
-      return store.capture(io -> {
+      return copyLeases.await(store.captureAsync(io -> {
         if (!move.from().equals(path(io, name))
             || !move.snapshot().sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(move.from()))) {
           throw new IOException("Pulled file changed before relocation; retry");
         }
         return moveReserved(io, move.from(), move.target(), retain);
-      });
+      }));
     }
   }
   @Override public void save(PullManifest progress) throws IOException {
@@ -344,7 +351,7 @@ public final class PullStore implements FileTransfer.Local {
       if (!released.released()) throw new IOException(released.reason());
       // Test mutations need the same mapping-free window as placement on Windows.
       beforePlacement.accept(source);
-      return store.capture(io -> {
+      return copyLeases.await(store.captureAsync(io -> {
         if (!source.equals(path(io, entry.localName())) || !input.snapshot().sameAs(org.triplehelix.wpilogmcp.log.FileSnapshot.of(source))) {
           throw new IOException("Pulled file changed after verification; retry before placement");
         }
@@ -394,7 +401,7 @@ public final class PullStore implements FileTransfer.Local {
         if (conflict != null) conflicts.add(new IdentityConflict(StoreFiles.relative(sessionPath.getParent(), target), serial, identity.serialNumber()));
         io.write(sessionPath, copy(session, files, conflicts));
         return relative(target);
-      });
+      }));
     }
   }
 

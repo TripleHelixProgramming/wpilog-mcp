@@ -121,6 +121,14 @@ public class HttpTransport {
       new DataEndpoint(org.triplehelix.wpilogmcp.log.LogManager.getInstance());
   private final org.triplehelix.wpilogmcp.store.StoreRegistry stores =
       org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores();
+  private java.util.function.Supplier<java.util.List<org.triplehelix.wpilogmcp.store.DiskSpaceBudgets.Snapshot>>
+      diskSpaceSnapshots = stores::diskSnapshots;
+  /** Public views consume measured facts; they must never query a filesystem on an HTTP worker. */
+  void diskSpaceSnapshots(java.util.function.Supplier<java.util.List<
+      org.triplehelix.wpilogmcp.store.DiskSpaceBudgets.Snapshot>> snapshots) {
+    if (server != null) throw new IllegalStateException("Disk-space publication must be configured before start");
+    diskSpaceSnapshots = java.util.Objects.requireNonNull(snapshots);
+  }
   private volatile java.util.Set<java.nio.file.Path> storeDirectories;
   private volatile org.triplehelix.wpilogmcp.store.LocalIngestion localIngestion;
   /** Selected config identity is supplied by Main; anonymous transports never persist policy. */
@@ -144,7 +152,8 @@ public class HttpTransport {
             org.triplehelix.wpilogmcp.log.LogManager.getInstance().readAccess(),
             org.triplehelix.wpilogmcp.read.catalog.StoreReadCatalog.DEFAULT_SESSION_INDEX_BYTES);
       });
-  private volatile MetricsEndpoint metricsEndpoint = new MetricsEndpoint(null, null);
+  private volatile MetricsEndpoint metricsEndpoint = new MetricsEndpoint(null, null,
+      () -> MetricsEndpoint.Components.NONE, () -> diskSpaceSnapshots.get());
   private final FollowEndpoint followEndpoint = new FollowEndpoint(readEndpoint, reference ->
       new org.triplehelix.wpilogmcp.read.server.CatalogRecordingSource(
           org.triplehelix.wpilogmcp.log.LogManager.getInstance(), readEndpoint::catalog, reference));
@@ -154,10 +163,13 @@ public class HttpTransport {
     gatewayStatus = java.util.Objects.requireNonNull(status);
   }
   public void configureMetrics(org.triplehelix.wpilogmcp.config.MetricsConfig config,
-      org.triplehelix.wpilogmcp.capture.LiveCapture capture) { metricsEndpoint = new MetricsEndpoint(config, capture); }
+      org.triplehelix.wpilogmcp.capture.LiveCapture capture) {
+    metricsEndpoint = new MetricsEndpoint(config, capture, () -> MetricsEndpoint.Components.NONE,
+        () -> diskSpaceSnapshots.get());
+  }
   public void configureMetrics(org.triplehelix.wpilogmcp.config.MetricsConfig config,
       org.triplehelix.wpilogmcp.capture.LiveCapture capture, java.util.function.Supplier<MetricsEndpoint.Components> components) {
-    metricsEndpoint = new MetricsEndpoint(config, capture, components);
+    metricsEndpoint = new MetricsEndpoint(config, capture, components, () -> diskSpaceSnapshots.get());
   }
   private final StoreImportEndpoint importEndpoint = new StoreImportEndpoint(stores, storeDoor);
   /** One guard for the mirror's and the live source's controls, which each refuse the other's folder. */
@@ -466,7 +478,7 @@ public class HttpTransport {
     liveSourceEndpoint.close();
     followEndpoint.close();
     readEndpoint.close();
-    if (localIngestion != null) { localIngestion.close(); stores.clearLocalIngestion(localIngestion); }
+    if (localIngestion != null) { localIngestion.stop(); stores.clearLocalIngestion(localIngestion); }
     // 1. End the SSE streams. Their loops sleep between pings; the interrupt ends the loop,
     //    which closes the exchange. They would otherwise stay open until the client went away.
     if (sseExecutor != null) {
@@ -512,7 +524,9 @@ public class HttpTransport {
     if (replicaControls != null) replicaControls.close();
     sessionManager.clear();
     stores.stopWatching();
-    stores.awaitImports();
+    // Staging belongs to the shared registry, not to this transport. Its payload I/O must
+    // neither delay this close nor be cancelled for another transport still using the store.
+    stores.awaitMutations();
     if (leasesOpened) leases.transportClosed();
   }
 
@@ -1099,6 +1113,25 @@ public class HttpTransport {
     health.addProperty("pid", ProcessHandle.current().pid());
     toolRegistry.serverIdentity().describe().entrySet().forEach(e -> health.add(e.getKey(), e.getValue()));
     health.add("gateway", gatewayStatus.get().json());
+    var filesystems = new JsonArray();
+    for (var snapshot : diskSpaceSnapshots.get()) {
+      var filesystem = new JsonObject();
+      filesystem.addProperty("filesystem_id", snapshot.filesystemId());
+      filesystem.addProperty("state", snapshot.state().name().toLowerCase(java.util.Locale.ROOT));
+      filesystem.addProperty("free_bytes", snapshot.freeBytes());
+      filesystem.addProperty("reserved_bytes", snapshot.reservedBytes());
+      filesystem.addProperty("capture_reserve_bytes", snapshot.captureReserveBytes());
+      filesystems.add(filesystem);
+    }
+    health.add("store_filesystems", filesystems);
+    var capture = new JsonObject();
+    var captures = new JsonArray();
+    var currentCapture = liveCapture.get();
+    var progress = currentCapture == null ? null : currentCapture.captureProgress();
+    if (progress != null) captures.add(progress.json());
+    capture.addProperty("configured_count", captures.size());
+    capture.add("captures", captures);
+    health.add("capture", capture);
     var bytes = gson.toJson(health).getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", "application/json");
     exchange.sendResponseHeaders(200, bytes.length);

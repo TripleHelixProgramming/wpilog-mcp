@@ -5,6 +5,7 @@
 package org.triplehelix.wpilogmcp.conformance;
 
 import com.google.gson.JsonObject;
+import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -245,7 +246,7 @@ final class DifferentialChecks {
         }
       }
       // read_entry at a resolution: each bucket's count, extremes, mean, first, and last from
-      // the raw records, by the same division of the entry's own span
+      // the raw integer-microsecond records, over the entry's own span
       statisticsCompared += compareBuckets(registry, log, s, findings);
       // The quality block must describe the same samples: all of them, less the non-finite
       var quality = stats.getAsJsonObject("data_quality");
@@ -325,8 +326,10 @@ final class DifferentialChecks {
 
   /**
    * Calls read_entry with max_points on the whole entry and recomputes every bucket from the
-   * independent reader's times and values: the window is the entry's own span divided into
-   * equal buckets, the last one closed. Returns how many bucket fields were compared.
+   * independent reader's raw microseconds and values. Integer rational arithmetic is deliberate:
+   * a double quotient at a boundary can round below the correct bin, as 33,160,000 us does in
+   * the 6,000,000–200,000,000 us fixture window with 50 bins. No production reducer is used.
+   * The last bin includes the endpoint. Returns how many bucket fields were compared.
    */
   static int compareBuckets(ToolRegistry registry, Path log, IndependentLog.Series s,
       List<String> findings) throws Exception {
@@ -336,8 +339,12 @@ final class DifferentialChecks {
       findings.add("read_entry(" + s.name + ", max_points) is " + status(read) + ": " + read);
       return 0;
     }
-    double start = s.times[0];
-    double end = s.times[s.n - 1];
+    var order = new Integer[s.n];
+    for (int i = 0; i < s.n; i++) order[i] = i;
+    Arrays.sort(order, Comparator.comparingLong(i -> s.micros[i]));
+    var start = BigInteger.valueOf(s.micros[order[0]]);
+    var span = BigInteger.valueOf(s.micros[order[s.n - 1]]).subtract(start);
+    var bucketCount = BigInteger.valueOf(BUCKETS);
     boolean bucketed = read.get("bucketed").getAsBoolean();
     if (bucketed != (s.n > BUCKETS)) {
       findings.add(s.name + ": bucketed is " + bucketed + " for " + s.n + " samples and max_points "
@@ -345,14 +352,16 @@ final class DifferentialChecks {
       return 0;
     }
     if (!bucketed) return 0;
-    double bucketSec = (end - start) / BUCKETS;
+    double bucketSec = span.doubleValue() / 1e6 / BUCKETS;
     if (!close(read.get("bucket_sec").getAsDouble(), bucketSec)) {
       findings.add(s.name + " bucket_sec: " + read.get("bucket_sec") + ", independently " + bucketSec);
     }
     // Expected buckets, by index
     var expected = new java.util.TreeMap<Integer, double[]>(); // count, min, max, sum, finite, first, last
-    for (int i = 0; i < s.n; i++) {
-      int index = bucketSec > 0 ? (int) Math.min(BUCKETS - 1, Math.floor((s.times[i] - start) / bucketSec)) : 0;
+    for (int i : order) {
+      int index = span.signum() == 0 ? 0 : Math.min(BUCKETS - 1,
+          BigInteger.valueOf(s.micros[i]).subtract(start).multiply(bucketCount)
+              .divide(span).intValueExact());
       var b = expected.computeIfAbsent(index, k -> new double[] {0, Double.POSITIVE_INFINITY,
           Double.NEGATIVE_INFINITY, 0, 0, Double.NaN, Double.NaN});
       double v = s.values[i];
@@ -378,7 +387,10 @@ final class DifferentialChecks {
       var got = samples.get(k).getAsJsonObject();
       var b = expected.get(indices.get(k));
       var problems = new ArrayList<String>();
-      if (!close(got.get("timestamp_sec").getAsDouble(), start + indices.get(k) * bucketSec)) {
+      // The smallest integer time in bin k is start + ceil(k * span / bucketCount).
+      long boundary = start.add(span.multiply(BigInteger.valueOf(indices.get(k)))
+          .add(bucketCount.subtract(BigInteger.ONE)).divide(bucketCount)).longValueExact();
+      if (!close(got.get("timestamp_sec").getAsDouble(), boundary / 1e6)) {
         problems.add("start " + got.get("timestamp_sec"));
       }
       if (got.get("count").getAsInt() != (int) b[0]) problems.add("count " + got.get("count") + " vs " + (int) b[0]);

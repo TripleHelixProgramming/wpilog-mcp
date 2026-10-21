@@ -47,6 +47,9 @@ servers:
 | `capture.exclude` | List of topic prefixes to omit, default `[]` |
 | `capture.thin` | Map of topic prefixes to positive periods in seconds, default `{}`; longest prefix wins, exclusion takes precedence |
 | `capture.max_file_bytes` | File bound including declarations and finishes, default `1073741824` bytes (1 GiB); integer from `256` through `1099511627776` (1 TiB). Rollover stays in the same session |
+| `capture.disk_reserve_bytes` | Reserve protected against admitted copying writers; default `2147483648` (2 GiB). Stores on one filesystem share the largest reserve. |
+| `capture.disk_floor_bytes` | Close capture cleanly at or below this measured usable space; default `268435456` (256 MiB). NT4 stays connected. |
+| `capture.disk_resume_margin_bytes` | Resume only above the floor plus this margin; default `536870912` (512 MiB). |
 | `capture.hot_window_sec` | Values retained in memory, default `600` seconds; expiry follows completion of the 250 ms asynchronous flush tick, at most four remaps per second. `0` reads flushed values from the capture file |
 | `capture.gateway` | Optional read-only NT4 gateway; omitted means disabled; `{}` enables its default port |
 | `capture.gateway.port` | Integer `0`–`65535`, default `5810` within the gateway block; `0` disables it. Binds to the same address as HTTP, on this separate port |
@@ -66,6 +69,27 @@ The whole capture block can be inherited from `defaults`; a server's block repla
 unknown capture key or an invalid value names the key in the startup error. Capture requires
 `transport: http` and `idle_exit_minutes: 0` (the default). A robot that is off is normal: HTTP
 starts at once and the client retries indefinitely. A server without `capture` behaves as before.
+
+The disk settings are exact nonnegative integer byte counts through `9223372036854775807`;
+the floor plus margin must also fit that bound. Strings, fractions and overflow are refused.
+They belong to server configuration, not the runtime live-source configuration route.
+
+Every registered store starts with a standing 2 GiB reserve, including stores without a
+connected capture. Its first explicit capture policy replaces that default. Multiple policies
+for one store retain their largest reserve, and the filesystem uses the largest reserve across
+its stores. Stopping or pausing capture does not release it. Lowering an established maximum
+requires restarting the server. Reservations stay charged until copying I/O actually unwinds,
+even if the caller has timed out. This is conservative process accounting, not an OS quota:
+bytes already written may still be reserved, and other processes can consume space.
+
+The currently admitted paths are import staging, uploads, replica transfers and known-length
+pull staging. Legacy
+queued system-log copies, cross-filesystem pull placement and peer-sync copies are not yet
+admitted (moving them outside the store worker, with space reserved first, is decided but not
+implemented), and unknown-length command output remains pending; do not
+treat the reserve as protection against those paths.
+Usable-space queries run outside the listener and store queue. A failed query publishes an
+unknown reading; it neither invents zero nor establishes that a paused capture may resume.
 
 #### Pulled system logs (opt-in)
 
@@ -449,6 +473,17 @@ is recorded in the entry metadata. Every five minutes, one INFO topic-cost summa
 topic count, cumulative recorded records and bytes, dropped and thinned counts, and up to five
 topics with the largest cumulative recorded-byte costs. Per-topic records, bytes, dropped and
 thinned counts and last-minute rates remain in DEBUG logging and `list_sessions`.
+
+**Low disk space.** At or below `capture.disk_floor_bytes`, capture closes cleanly. The
+session's `end_reason` says `Capture paused for low disk space`, with `free_bytes` and
+`floor_bytes`. NT4 stays connected. Values received during the pause are not recorded or
+replayed later; announcements, properties and the latest struct schemas are retained.
+Once measured usable space is strictly above the floor plus `capture.disk_resume_margin_bytes`,
+a new session and file open without waiting for a new robot clock. The old session's
+`ended_at` and reason, followed by the new `started_at`, delimit the gap. The new file
+redeclares active entries and context and marks retained schema seeds with
+`capture_schema_seed: true`; it does not invent old measured values at new timestamps.
+Unknown space leaves the current recording or paused state unchanged.
 
 **Write failures.** A write failure closes the session with `end_reason` in its manifest and the
 reason in the server log, keeps the NT4 connection, and suppresses recording until a new robot
@@ -911,7 +946,14 @@ in immutable catalog parts under `.replicas/catalog/`: at most 256 rows and 1 Mi
 atomically selects the index by hash. Existing inline format-2 catalogs remain readable and are
 externalized on publication. Oversized stores are refused without truncation or data loss.
 
-Imports preflight the catalog before copying payloads or committing receipts. Capture remains
+The replica summary includes `catalog_capacity`: `records`, `records_limit`, `exclusions`,
+`exclusions_limit` and `near_limit`. The two limits are 4,096; the warning becomes true at
+3,277 of either count, before count-based admission fails. These counts do not measure encoded
+metadata size or payload space. Missing capacity facts mean unavailable, not zero.
+
+Imports preflight the catalog before placing staged payloads or committing receipts. A catalog
+capacity refusal removes the import's owned, uncommitted stage bytes; it does not remove the
+source or an already committed file. Capture remains
 independent of catalog capacity: a completed recording stays in its session receipt with a
 `.replica-publication.json` recovery marker if publication fails. `list_sessions` reports
 `replica_publication_failure` for the current capture, and the server logs the failure. Explicit
@@ -919,6 +961,10 @@ status/recovery retries those markers with a 32768-path inspection limit; public
 remain reported and never block admission of the next recording, including after restart.
 The marker retains both receipt hashes while replacing a receipt, so a failed replacement cannot
 erase an earlier completed capture's pending publication.
+The marker does not preserve a durable aggregate failure cause, so mirror status does not yet
+explain every pending capture publication after restart. A count warning is not evidence that
+the mirror's catalog includes every completed capture. That refusal/status design remains
+pending; existing immutable inventory pages keep their original admission.
 
 Master stores use the separate [local migration job route](../STANDALONE.md#explicit-replica-format-migration);
 mirrors use the capacity-checked controls below. Local controls require direct loopback access
@@ -1183,7 +1229,9 @@ are not advertised; read again for a newer snapshot.
 
 Every HTTP server serves `GET /metrics`, including a server without capture. It emits
 [Prometheus text format 0.0.4](https://prometheus.io/docs/instrumenting/exposition_formats/)
-with no extra server dependency. `/health` stays its short JSON answer. The Origin check
+with no extra server dependency. `/health` stays a short JSON answer, with a bounded
+[public capture summary](../STANDALONE.md#http-transport) that omits source identities and raw
+errors; detailed metrics and private server diagnostics have separate roles. The Origin check
 applies to metrics, too. The route has no authentication: anyone who can reach the HTTP
 port can read it, so use the same private network or proxy as the MCP endpoint.
 
@@ -1220,6 +1268,15 @@ NaN and infinities retain their Prometheus spellings. Each emitted topic gets on
 | `wpilog_nt_address_info` | 1 with the last connected `address`; absent before any connection. |
 | `wpilog_capture_open` | 0/1 recording session state. |
 | `wpilog_capture_topics` | Session entry count, including finished entries. |
+| `wpilog_store_queue_over_budget_turns_total` | Process count of mutation actions observed above the one-second budget, summed across open stores. Each action counts once; observation never interrupts it. |
+| `wpilog_store_queue_longest_turn_seconds` | Longest externally observed mutation action across open stores, including an action still running. |
+| `wpilog_store_filesystem_space_known` | 1 when the last usable-space query succeeded, otherwise 0; opaque `filesystem_id` label, with no path or filesystem name. |
+| `wpilog_store_filesystem_free_bytes` | Last measured usable bytes; absent when unknown. Other processes may change space between samples. |
+| `wpilog_store_filesystem_reserved_bytes` | Copying writers' outstanding reservations, retained until I/O unwinds. |
+| `wpilog_store_filesystem_capture_reserve_bytes` | Standing reserve protected for capture on that filesystem. |
+| `wpilog_replica_catalog_records`, `wpilog_replica_catalog_records_limit` | Last validated catalog record count and its 4,096 limit, by opaque `store_id`. |
+| `wpilog_replica_catalog_exclusions`, `wpilog_replica_catalog_exclusions_limit` | Last validated catalog exclusion count and its 4,096 limit, by opaque `store_id`. |
+| `wpilog_replica_catalog_near_limit` | 1 when either count reaches 3,277 (at least 80 percent of its limit), otherwise 0, by opaque `store_id`. |
 | `wpilog_capture_records_total`, `wpilog_capture_bytes_total` | The live tools' recorder counts across rollover files: NT4 value records and bytes including record headers, excluding context/control records and copied schema seeds. The `session_started_at` label identifies the counter lifetime; snapshots refresh after the 250 ms asynchronous flush completes. |
 | `wpilog_nt_time_offset_seconds`, `wpilog_nt_round_trip_seconds` | Selected clock estimate (robot minus local monotonic time) and its round trip; absent without sync. |
 | `wpilog_gateway_clients` | Connected downstream gateway clients; 0 when the gateway is disabled. Independent of the robot-side connection. |
@@ -1231,6 +1288,15 @@ NaN and infinities retain their Prometheus spellings. Each emitted topic gets on
 | `wpilog_provider_dropped_before_sync_total` | Process-lifetime stats samples dropped before an NT4 time estimate, by `provider`; their timestamps are never guessed. Tails use their bounded buffer while waiting. |
 | `wpilog_jvm_memory_used_bytes`, `wpilog_jvm_memory_committed_bytes`, `wpilog_jvm_memory_max_bytes` | Platform MBean memory by `area` (`heap`, `nonheap`); an undefined maximum is omitted. |
 | `wpilog_jvm_gc_collections_total`, `wpilog_jvm_gc_duration_seconds_total` | Collection count and total collection seconds by `collector`; unsupported MBean values are omitted. |
+
+Store turn metrics currently exclude a blocked completion-report callback after the mutation
+action. That callback can still hold the owner; a blocked observer sink can delay observations.
+The unresolved logging policy is recorded in
+[the hardening plan](../ARCHITECTURE_HARDENING_PLAN.md#implementation-disposition--2026-10-20).
+
+Catalog gauges use the initial validated header and subsequent publications in store-owner
+order. Delayed notifications cannot overwrite a newer count. Unavailable or invalid initial
+facts have no sample; the scrape neither joins store work nor rereads the filesystem.
 
 Topic count and record/byte counters have the same `session_started_at` label. Components are
 independent published snapshots, as in the live tools; a scrape never waits for the NT4 loop,
@@ -1269,6 +1335,10 @@ and [Grafana provisioning](https://grafana.com/docs/grafana/latest/administratio
 
 Use the [service installation steps](../STANDALONE.md#running-as-a-service)
 with the capture configuration instead of the example local-file configuration.
+
+Three failed bounded HTTP attempts, ten seconds apart, invoke the named server's restart
+handler. A reported stopped capture remains process-healthy and does not trigger that handler.
+The exact retry and restart behavior still needs validation on a real Linux systemd host.
 
 On a private robot network without NTP, check the pit computer's calendar clock before
 recording. Session directory dates, manifest calendar times and the puller's overlap filter

@@ -133,9 +133,13 @@ class StoreInboxTest {
 
   @Test void anUploadAboveTwoGiBReachesStreamingLengthValidation() throws Exception {
     String hash = "0".repeat(64);
-    var error = assertThrows(java.io.IOException.class, () -> store.receiveUpload("long.wpilog", 1L << 31,
-        hash, new java.io.ByteArrayInputStream(new byte[0])));
-    assertEquals("Upload ended before its declared Content-Length", error.getMessage());
+    try (var space = new DiskSpaceBudgets(filesystem -> 8L << 30);
+        var selected = new LogStore(root, manager.testGetSecurityValidator(), manager,
+            StoreCatalog::read, new LogStore.Mover(), space.store(root))) {
+      var error = assertThrows(java.io.IOException.class, () -> selected.receiveUpload("long.wpilog", 1L << 31,
+          hash, new java.io.ByteArrayInputStream(new byte[0])));
+      assertEquals("Upload ended before its declared Content-Length", error.getMessage());
+    }
     try (var files = Files.walk(root.resolve("inbox"))) { assertEquals(0, files.filter(Files::isRegularFile).count()); }
   }
 
@@ -315,19 +319,51 @@ class StoreInboxTest {
     finally { executor.shutdownNow(); }
   }
 
-  @Test void fileLockCoversInspectionVerificationAndReceiptsAndIsReleasedOnCompletion() throws Exception {
+  @Test void publishingOneGroupDoesNotInvalidateTheRemainingInboxBatch() throws Exception {
+    var batch = Files.createDirectories(root.resolve("inbox").resolve("multiple-groups"));
+    Files.writeString(batch.resolve("batch.json"), "{\"stated_robot\":\"practice\"}");
+    var first = ImportFixture.write(batch.resolve("first.wpilog"), 31);
+    var second = ImportFixture.write(batch.resolve("second.wpilog"), 32);
+    byte[] firstBytes = Files.readAllBytes(first);
+    byte[] secondBytes = Files.readAllBytes(second);
+    store.inbox().poll(0);
+    store.inbox().poll(LOOK);
+    store.awaitImports();
+
+    var files = StoreCatalog.readManaged(root, manager.testGetSecurityValidator()).files();
+    assertEquals(2, files.size(), "Every unchanged source in the published inbox batch must be imported");
+    assertFalse(Files.exists(first));
+    assertFalse(Files.exists(second));
+    assertEquals(2, receipts().size());
+    assertTrue(files.stream().anyMatch(file -> {
+      try { return java.util.Arrays.equals(firstBytes, Files.readAllBytes(file.path())); }
+      catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+    }));
+    assertTrue(files.stream().anyMatch(file -> {
+      try { return java.util.Arrays.equals(secondBytes, Files.readAllBytes(file.path())); }
+      catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+    }));
+  }
+
+  @Test void payloadPreparationReleasesTheFileLockWhileReceiptPublicationKeepsIt() throws Exception {
     var input = ImportFixture.write(temp.resolve("lock-duration.wpilog"), 10);
     var phases = new java.util.ArrayList<String>();
     var held = new java.util.ArrayList<Boolean>();
     store.importPrepared(new LogStore.Request(List.of(input), false, "practice"), p -> {
       phases.add(p.phase());
       held.add(lockHeld());
-    }, r -> r, result -> {
+    }, request -> {
+      phases.add("admission");
+      held.add(lockHeld());
+      return request;
+    }, result -> {
       phases.add("receipt");
       held.add(lockHeld());
     }).get(10, TimeUnit.SECONDS);
     assertTrue(phases.containsAll(List.of("starting", "inspecting", "verifying", "complete", "receipt")), phases.toString());
-    assertTrue(held.stream().allMatch(Boolean::booleanValue), held.toString());
+    for (int index = 0; index < phases.size(); index++)
+      assertEquals(Set.of("admission", "receipt").contains(phases.get(index)), held.get(index),
+          "Only bounded admission and receipt publication hold store.lock: " + phases.get(index));
     assertFalse(lockHeld(), "Future completion releases the lock for another process");
   }
 

@@ -223,6 +223,11 @@ paths, hide catalog members or change a standalone library caller's configured r
 
 ## HTTP version 1
 
+`/read/v1` is the exact typed-read protocol for clients that need retained snapshots, session
+unions, follows and typed values. `/data/entries` remains the bulk presentation route for
+viewers, scripts and dashboards; the visualization routes serve the preview's admitted sources
+and panels. These roles retain Explorer decision 7 and do not merge admission or formats.
+
 Every HTTP server exposes `/read/v1` under the same Origin and path admission as its existing
 read routes. The transport is unauthenticated: keep it on loopback or a private trusted network.
 Native snapshot opens do not start REV discovery, correlation or disk-cache writes; legacy MCP
@@ -347,10 +352,13 @@ commit the result only after that same check.
 
 ## Compatibility and validation
 
-The shared cursor owns selection and decoding; the legacy materializer preserves existing MCP
-and `/data/entries` values, ordering, warnings, statistics, pagination and encodings. No analysis
-moves into Arrow. The new API's exact coordinates, scoped diagnostics and explicit lifecycle are
-additive; they do not silently alter a legacy tool's contract.
+The shared cursor owns selection and decoding; the legacy materializer preserves MCP and
+`/data/entries` encodings, diagnostics and pagination. WPILOG samples now retain original
+microsecond order, and both numeric reducers use exact integer bucket membership. This corrects
+boundary placement and first/last values when adjacent timestamps round to one double.
+Sparse exact-sample bypasses, chart filtering and angle preparation, and occupied chart-part
+windows keep their existing behavior, so complete route results are not interchangeable.
+No analysis moves into Arrow; admission and resource lifetimes remain separate.
 
 The [frozen-build comparison](DEVELOPMENT.md#comparing-frozen-server-builds) runs unchanged calls
 against the original and candidate JARs and compares MCP results and complete Arrow/CSV/image
@@ -517,8 +525,11 @@ display-latency claims.
 ## Scope of this interface
 
 Projection, numeric reduction, multi-entry queries, proven session unions, selective REV decoding
-and local append-following and native HTTP recording follows are implemented. Exact and legacy time windows share the membership
-and binary-boundary primitives; legacy tools retain their established double-second policies.
+and local append-following and native HTTP recording follows are implemented. Exact and legacy
+readers share integer-microsecond bucket membership and original-microsecond order for WPILOG
+samples. Window selection retains each route's existing contract; explicit second bucket bounds
+use the data endpoint's nearest-microsecond conversion. Derived REV clocks keep their aligned
+seconds representation.
 The interface does not infer signals, join entries by guessed timestamps, recalculate REV alignment
 or perform MCP analyses. Publishing the reader as a Maven artifact or adding a release asset is a
 separate release decision; building the local JAR does neither.

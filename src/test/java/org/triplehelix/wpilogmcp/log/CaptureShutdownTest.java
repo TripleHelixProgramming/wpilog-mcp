@@ -19,7 +19,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.triplehelix.wpilogmcp.capture.*;
 import org.triplehelix.wpilogmcp.config.CaptureConfig;
-import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 import org.triplehelix.wpilogmcp.nt4.client.*;
 import org.triplehelix.wpilogmcp.nt4.server.Nt4Gateway;
@@ -31,11 +30,6 @@ class CaptureShutdownTest {
   @Test void shutdownWaitsForTheCloseManifestOutsideTheNt4Loop() throws Exception {
     var manager = new LogManager(); manager.addAllowedDirectory(directory);
     var security = new SecurityValidator(); security.addAllowedDirectory(directory);
-    var importFile = directory.resolve("import.wpilog");
-    try (var fixture = new WpilogWriter(importFile, "synthetic shutdown fixture")) {
-      int id = fixture.start("/value", "int64", "", 0);
-      fixture.append(id, 1_000_000, WpilogWriter.encodeInt64(1));
-    }
     var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
     var threads = Executors.newSingleThreadExecutor();
     var loop = new ManualScheduler(); var fileClosed = new AtomicInteger(); var values = new AtomicInteger();
@@ -56,12 +50,7 @@ class CaptureShutdownTest {
         for (int i = 1; i <= 30; i++) gateway.value("/x", 10_000_000 + i, 2, (long) i).join();
         loop.until(() -> values.get() == 31);
         int alreadyClosed = fileClosed.get();
-        var importing = store.importPaths(new LogStore.Request(List.of(importFile), false, null), progress -> {
-          if (!progress.phase().equals("starting")) return;
-          entered.countDown();
-          try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
-          catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
-        });
+        var held = StoreQueueTestBarrier.hold(store, entered, release);
         assertTrue(entered.await(10, TimeUnit.SECONDS));
         loop.advance(250_000);
         var closing = threads.submit(service::close);
@@ -69,10 +58,10 @@ class CaptureShutdownTest {
         // Writer shutdown closes the file before the separately queued client disconnect.
         // Keep the manual loop running so the remaining wait is only store completion.
         loop.until(() -> !service.live().connected());
-        assertFalse(service.live().connected(), "NT4 disconnect must finish while the import still holds the store queue");
+        assertFalse(service.live().connected(), "NT4 disconnect must finish while another turn still holds the store queue");
         try { assertThrows(TimeoutException.class, () -> closing.get(200, TimeUnit.MILLISECONDS)); }
         finally { release.countDown(); }
-        closing.get(10, TimeUnit.SECONDS); importing.get(10, TimeUnit.SECONDS);
+        closing.get(10, TimeUnit.SECONDS); held.get(10, TimeUnit.SECONDS);
         var catalog = StoreCatalog.read(root, security);
         assertTrue(catalog.openCaptures().isEmpty());
         var captured = catalog.files().stream().filter(f -> f.file().provenance().kind().equals("captured")).toList();

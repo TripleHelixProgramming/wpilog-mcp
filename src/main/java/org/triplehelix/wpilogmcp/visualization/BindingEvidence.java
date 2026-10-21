@@ -59,7 +59,7 @@ final class BindingEvidence implements LogData {
         if (!batch.problems().isEmpty()) throw new ReadException(batch.problems().get(0).code(),
             "Recording binding evidence is unreadable: " + batch.problems().get(0).message());
         for (var sample : batch.samples()) if (predicate.test(sample.value())) {
-          var witness = new TimestampedValue(sample.timestampUs() / 1_000_000.0, sample.value());
+          var witness = TimestampedValue.atMicros(sample.timestampUs(), sample.value());
           if (!latest) return Optional.of(witness);
           if (result == null || sample.timestampUs() >= latestUs) { result = witness; latestUs = sample.timestampUs(); }
         }

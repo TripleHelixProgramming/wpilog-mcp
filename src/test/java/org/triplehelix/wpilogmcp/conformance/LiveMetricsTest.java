@@ -20,7 +20,6 @@ import org.junit.jupiter.api.io.TempDir;
 import org.triplehelix.wpilogmcp.capture.CapturePolicy;
 import org.triplehelix.wpilogmcp.fixtures.PrometheusText;
 import org.triplehelix.wpilogmcp.fixtures.WpiStructs;
-import org.triplehelix.wpilogmcp.store.LogStore;
 
 class LiveMetricsTest {
   @TempDir Path directory;
@@ -86,9 +85,8 @@ class LiveMetricsTest {
       rig.announce("/x", "int"); rig.value("/x", 10_000_000, 2, 7L); rig.flush();
       rig.manager.stores().awaitImports();
       var queued = new CountDownLatch(1); var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
-      var job = rig.manager.stores().store(rig.root).importPaths(new LogStore.Request(List.of(), false, null), progress -> {
-        if (progress.phase().equals("starting")) { queued.countDown(); await(release); }
-      });
+      var job = org.triplehelix.wpilogmcp.store.StoreQueueTestBarrier.hold(
+          rig.manager.stores().store(rig.root), queued, release);
       rig.loop.execute(() -> { entered.countDown(); await(release); });
       var blockedLoop = java.util.concurrent.CompletableFuture.runAsync(rig.loop::drain);
       try {

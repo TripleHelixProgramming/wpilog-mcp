@@ -557,15 +557,11 @@ public final class LocalIngestion implements AutoCloseable {
   private void receipts(LogStore store, Map<Path, Observed> captured, LogStore.Result result, long revision) {
     try {
       var io = new StoreFiles(store.root(), security);
-      var inventory = StoreCatalog.readInventory(store.root(), security, (p, why) -> {});
-      acceptInventory(inventory);
-      var byPath = new java.util.HashMap<Path, StoreCatalog.StoredFile>();
-      inventory.files().forEach(file -> byPath.put(file.path(), file));
       for (var outcome : result.files()) {
         var old = captured.get(outcome.originalPath());
         if (old == null) continue;
-        var stored = outcome.path() == null ? null : byPath.get(outcome.path());
-        String hash = stored == null ? null : stored.file().sha256();
+        String hash = outcome.path() == null || !successful(outcome.status()) ? null
+            : StoreCatalog.finalizedHash(store.root(), outcome.path(), security);
         String destination = outcome.path() == null ? null : outcome.path().toString();
         String state = outcome.status();
         var receipt = new Receipt(owner, old.source().path(), outcome.originalPath().toString(),
@@ -656,10 +652,13 @@ public final class LocalIngestion implements AutoCloseable {
         .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8))); }
     catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
   }
-  @Override public void close() {
+  /** Stop admission without withdrawing grants from a staging worker which still owns them. */
+  public void stop() { stopAdmission(); }
+
+  private CompletableFuture<?> stopAdmission() {
     CompletableFuture<?> drained;
     synchronized (admissionLock) {
-      if (!closed.compareAndSet(false, true)) return;
+      if (!closed.compareAndSet(false, true)) return lastJob;
       drained = lastJob;
     }
     var worker = scheduler;
@@ -670,6 +669,11 @@ public final class LocalIngestion implements AutoCloseable {
       if (observer != null) try { observer.close(); }
       catch (Exception e) { error = message(e); }
     });
+    return drained;
+  }
+
+  @Override public void close() {
+    var drained = stopAdmission();
     try { drained.get(30, TimeUnit.SECONDS); }
     catch (InterruptedException e) { Thread.currentThread().interrupt(); error = "Interrupted waiting for local ingestion shutdown"; }
     catch (java.util.concurrent.TimeoutException e) { error = "Local ingestion shutdown exceeded 30 seconds; admitted work retains its grants until it finishes"; }

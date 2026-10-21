@@ -147,7 +147,7 @@ final class RecordingAnalysis {
         // Stable long-time ordering preserves member-id then physical-ordinal ties. The shared
         // tool still owns field projection, angle unwrapping, percentiles and data quality.
         history.sort(Comparator.comparingLong(Sample::timestampUs));
-        var values = history.stream().map(s -> new TimestampedValue(s.timestampUs() / 1e6, s.value())).toList();
+        var values = history.stream().map(s -> TimestampedValue.atMicros(s.timestampUs(), s.value())).toList();
         var log = new History(prefix.recordingId(), representative.entries().get(entry), representative.schemas(), values, summary, problems);
         budget.check(); result = VisualizationBindings.statistics(log, arguments); result.addProperty("basis", "admitted_recording_prefix");
       } else {

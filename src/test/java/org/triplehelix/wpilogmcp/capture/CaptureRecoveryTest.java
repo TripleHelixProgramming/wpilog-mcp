@@ -216,19 +216,13 @@ class CaptureRecoveryTest {
     var root = directory.resolve("store"); var file = plant(root, true, false);
     var manager = LogManager.getInstance(); var entered = new java.util.concurrent.CountDownLatch(1);
     var release = new java.util.concurrent.CountDownLatch(1); var threads = java.util.concurrent.Executors.newSingleThreadExecutor();
-    var fixture = directory.resolve("import.wpilog"); Files.copy(file, fixture);
-    var importing = manager.stores().store(root).importPaths(new LogStore.Request(List.of(fixture), false, null), progress -> {
-      if (!progress.phase().equals("starting")) return;
-      entered.countDown();
-      try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
-      catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
-    });
+    var held = StoreQueueTestBarrier.hold(manager.stores().store(root), entered, release);
     try {
       assertTrue(entered.await(10, TimeUnit.SECONDS));
       var starting = threads.submit(() -> { startup(root); return null; });
       assertThrows(java.util.concurrent.TimeoutException.class, () -> starting.get(100, TimeUnit.MILLISECONDS));
       assertNotNull(manifest(file).openCapture());
-      release.countDown(); importing.get(10, TimeUnit.SECONDS); starting.get(10, TimeUnit.SECONDS);
+      release.countDown(); held.get(10, TimeUnit.SECONDS); starting.get(10, TimeUnit.SECONDS);
       assertNull(manifest(file).openCapture());
     } finally { release.countDown(); threads.shutdownNow(); }
   }
@@ -237,40 +231,38 @@ class CaptureRecoveryTest {
     var root = directory.resolve("store"); var file = plant(root, true, false);
     var manager = LogManager.getInstance(); var entered = new java.util.concurrent.CountDownLatch(1);
     var release = new java.util.concurrent.CountDownLatch(1);
-    var clientStarted = new java.util.concurrent.CountDownLatch(1);
-    var delegate = org.triplehelix.wpilogmcp.nt4.client.ClientScheduler.daemon();
-    var loop = new org.triplehelix.wpilogmcp.nt4.client.ClientScheduler() {
-      public long nowUs() { return delegate.nowUs(); }
-      public void execute(Runnable task) { clientStarted.countDown(); delegate.execute(task); }
-      public void schedule(Runnable task, long delayUs) { delegate.schedule(task, delayUs); }
-      public void close() { delegate.close(); }
-    };
+    var loop = org.triplehelix.wpilogmcp.nt4.client.ClientScheduler.daemon();
     var threads = java.util.concurrent.Executors.newSingleThreadExecutor();
     var service = new java.util.concurrent.atomic.AtomicReference<CaptureService>();
+    var recovered = new java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CompletableFuture<Void>>();
     var http = new org.triplehelix.wpilogmcp.mcp.HttpTransport(new org.triplehelix.wpilogmcp.mcp.ToolRegistry(), 0);
-    var fixture = directory.resolve("queued.wpilog"); Files.copy(file, fixture);
-    var importing = manager.stores().store(root).importPaths(new LogStore.Request(List.of(fixture), false, null), progress -> {
-      if (!progress.phase().equals("starting")) return;
-      entered.countDown();
-      try { assertTrue(release.await(30, TimeUnit.SECONDS)); }
-      catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
-    });
-    try {
+    var held = StoreQueueTestBarrier.hold(manager.stores().store(root), entered, release);
+    try (var robot = new org.triplehelix.wpilogmcp.nt4.server.Nt4Gateway(
+        new java.net.InetSocketAddress("127.0.0.1", 0), () -> 1_000_000)) {
+      robot.start().get(10, TimeUnit.SECONDS);
       assertTrue(entered.await(10, TimeUnit.SECONDS));
+      var settings = new CaptureConfig(List.of(RobotAddress.uri("127.0.0.1", robot.port(), "recovery")),
+          root, .01, CapturePolicy.ALL, 0);
       // Main constructs capture before opening HTTP, then starts capture after HTTP is listening.
       var starting = threads.submit(() -> {
-        service.set(new CaptureService(config(root), manager, WALL, loop));
-        http.start(); service.get().start(); return http.getPort();
+        service.set(new CaptureService(settings, manager, WALL, loop));
+        http.start(); recovered.set(service.get().start()); return http.getPort();
       });
       int port = starting.get(2, TimeUnit.SECONDS);
       var response = java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(
           java.net.URI.create("http://127.0.0.1:" + port + "/health")).timeout(java.time.Duration.ofSeconds(2)).build(),
           java.net.http.HttpResponse.BodyHandlers.ofString());
       assertEquals(200, response.statusCode());
-      assertEquals(1, clientStarted.getCount(), "NT4 must wait until recovery has scanned and hashed the old file");
+      assertFalse(recovered.get().isDone(), "Recovery must remain queued behind the held owner turn");
+      // Disk facts legitimately publish on the listener before NT4 starts. Observe the actual
+      // synthetic connection instead of treating every listener task as a network connection.
+      long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+      while (robot.clientCount() == 0 && System.nanoTime() < deadline) Thread.sleep(2);
+      assertEquals(0, robot.clientCount(), "NT4 must wait until recovery has scanned and hashed the old file");
       assertNotNull(manifest(file).openCapture());
-      release.countDown(); importing.get(10, TimeUnit.SECONDS);
-      assertTrue(clientStarted.await(10, TimeUnit.SECONDS));
+      release.countDown(); held.get(10, TimeUnit.SECONDS); recovered.get().get(10, TimeUnit.SECONDS);
+      org.triplehelix.wpilogmcp.harness.HarnessHttp.await("NT4 connection after recovery", 10,
+          () -> robot.clientCount() == 1);
       assertNull(manifest(file).openCapture());
     } finally {
       release.countDown(); threads.shutdown(); assertTrue(threads.awaitTermination(10, TimeUnit.SECONDS));

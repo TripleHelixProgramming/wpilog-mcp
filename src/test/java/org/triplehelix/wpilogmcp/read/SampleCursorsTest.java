@@ -206,12 +206,14 @@ class SampleCursorsTest {
     }
   }
 
-  @Test void legacyMaterializationKeepsWholeEntryDiagnosticsAndDoubleTimestampTies() {
+  @Test void legacyMaterializationKeepsWholeEntryDiagnosticsAndExactMicrosecondOrder() {
     var source = new Series(9_007_199_254_740_993L, 9_007_199_254_740_992L, 9_007_199_254_740_994L);
     source.failed = 2;
     var result = LegacyMaterializer.read("/x", source);
-    assertEquals(List.of(0, 2), result.values().stream().map(v -> v.value()).toList(),
-        "Distinct integer times that round to the same legacy double keep their file order");
+    assertEquals(List.of(2, 0), result.values().stream().map(v -> v.value()).toList(),
+        "Distinct integer times sort by their original microseconds even when legacy doubles tie");
+    assertEquals(List.of(9_007_199_254_740_992L, 9_007_199_254_740_993L),
+        result.values().stream().map(v -> v.timestampUs()).toList());
     assertEquals(result.values().get(0).timestamp(), result.values().get(1).timestamp());
     assertEquals(1, result.problem().failedRecords());
     assertEquals(3, result.problem().totalRecords());

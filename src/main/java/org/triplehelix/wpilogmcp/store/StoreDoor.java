@@ -42,7 +42,19 @@ public final class StoreDoor {
   private volatile Discovery discovered;
   private final java.util.concurrent.atomic.AtomicLong discoveryWalks = new java.util.concurrent.atomic.AtomicLong();
 
-  public StoreDoor(Supplier<Set<Path>> configured) { this.configured = configured; }
+  private final java.util.function.Consumer<Path> directoryListings;
+  private final DirectoryListings listings;
+  public StoreDoor(Supplier<Set<Path>> configured) { this(configured, ignored -> {}, java.time.Clock.systemUTC()); }
+  /** Injectable listing observations and time let tests distinguish cache reuse from fewer requests. */
+  public StoreDoor(Supplier<Set<Path>> configured, java.util.function.Consumer<Path> listings, java.time.Clock clock) {
+    this(configured, listings, clock, Files::newDirectoryStream);
+  }
+  /** Iteration I/O failures must remain unavailable neighbors, not abort the complete inventory. */
+  StoreDoor(Supplier<Set<Path>> configured, java.util.function.Consumer<Path> listings,
+      java.time.Clock clock, DirectoryListings.Opener opener) {
+    this.configured = configured; directoryListings = listings;
+    this.listings = new DirectoryListings(clock, listings, opener);
+  }
 
   /** Remembered peers are for the local command picker, never part of the public door. */
   public List<String> peers(Selected selected) throws IOException {
@@ -62,7 +74,7 @@ public final class StoreDoor {
     if (seen == null || !seen.configured().equals(directories) || System.nanoTime() - seen.at() > 5_000_000_000L) {
       var roots = new ArrayList<Path>(); var failures = new ArrayList<Unreadable>();
       for (var directory : directories) {
-        try { discoveryWalks.incrementAndGet(); roots.addAll(StoreCatalog.discover(directory)); }
+        try { discoveryWalks.incrementAndGet(); roots.addAll(listings.discover(directory)); }
         catch (IOException failure) { failures.add(new Unreadable(directory.toString(), failure.getMessage())); }
       }
       // Retain failed roots with the cached discovery: losing a neighbor must neither hide
@@ -98,7 +110,7 @@ public final class StoreDoor {
     return new Selected(root, new Description(header.id(), header.formatVersion(), Version.VERSION, header.mirror()), security);
   }
 
-  /** Full root walks started by this door; bounded rechecks must not restart discovery. */
+  /** Root discovery traversals, including listing-cache rechecks; not a count of directory I/O. */
   public long discoveryWalks() { return discoveryWalks.get(); }
 
   /** A local first-store mutation invalidates the discovery cache immediately. */

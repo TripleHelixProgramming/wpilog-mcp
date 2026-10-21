@@ -683,7 +683,12 @@ Engineering choices fixed in M1:
   checks. The 2026-10-19 macOS probe (five warm-ups, twenty calls, one 100-sample WPILOG, 100 unrelated
   folders) reduced scoped means from 32.229 to 7.952 ms with 2,000 text files and from 207.337 to
   55.954 ms with 20,000. This is a local warm-cache measurement, not a throughput,
-  season-scale or heap claim. Future discovery caching needs explicit invalidation tests.
+  season-scale or heap claim. The later architecture-hardening work reuses rechecked directory
+  listings with a two-second recent-timestamp guard and one-minute maximum age. New store
+  headers in known directories appear immediately; delayed metadata on a new subtree's parent
+  can defer its discovery until that refresh. Selected-file ancestry still rechecks ownership.
+  Counting-probe and invalidation tests cover this narrower listing-I/O improvement; metadata
+  checks remain proportional to known directories.
 - Existing directory leases are shared across clients and owned by sessions. This checkpoint adds
   no private-directory or authentication model. Both visualization API versions remain local-only.
 - Schema 2 currently supports recorded, anchored session and unmanaged content. Logical immutable

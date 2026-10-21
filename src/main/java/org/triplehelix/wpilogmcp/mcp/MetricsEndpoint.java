@@ -18,6 +18,8 @@ import org.triplehelix.wpilogmcp.config.MetricsConfig;
 import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.read.FieldPath;
+import org.triplehelix.wpilogmcp.store.DiskSpaceBudgets;
+import org.triplehelix.wpilogmcp.store.StoreRegistry;
 
 /** Prometheus 0.0.4 from published facts: no recorder, queue, filesystem, or scrape history.
  * Each scrape is a sampled view; only capture records every publication between scrapes. */
@@ -44,14 +46,24 @@ public final class MetricsEndpoint {
   private final MetricsConfig config;
   private final LiveCapture live;
   private final Supplier<Components> components;
+  private final Supplier<List<DiskSpaceBudgets.Snapshot>> diskSpace;
   public MetricsEndpoint(MetricsConfig config, LiveCapture live) { this(config, live, () -> Components.NONE); }
   public MetricsEndpoint(MetricsConfig config, LiveCapture live, Supplier<Components> components) {
+    this(config, live, components,
+        () -> org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores().diskSnapshots());
+  }
+  MetricsEndpoint(MetricsConfig config, LiveCapture live, Supplier<Components> components,
+      Supplier<List<DiskSpaceBudgets.Snapshot>> diskSpace) {
     this.config = config == null ? MetricsConfig.DEFAULT : config; this.live = live; this.components = components;
+    this.diskSpace = diskSpace;
   }
   void handle(HttpExchange exchange) throws IOException {
     if (!exchange.getRequestURI().getPath().equals("/metrics")) { exchange.sendResponseHeaders(404, -1); exchange.close(); return; }
     if (!exchange.getRequestMethod().equals("GET")) { exchange.sendResponseHeaders(405, -1); exchange.close(); return; }
-    var bytes = render(config, live == null ? null : live.metrics(), components.get(), Jvm.sample()).getBytes(StandardCharsets.UTF_8);
+    var bytes = render(config, live == null ? null : live.metrics(), components.get(), Jvm.sample(),
+        org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores().queueMetrics(),
+        diskSpace.get(),
+        org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores().catalogCapacities()).getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
     exchange.getResponseHeaders().set("Cache-Control", "no-store");
     exchange.sendResponseHeaders(200, bytes.length);
@@ -59,7 +71,50 @@ public final class MetricsEndpoint {
   }
 
   public static String render(MetricsConfig config, LiveCapture.Metrics live, Components components, Jvm jvm) {
+    return render(config, live, components, jvm, new StoreRegistry.QueueMetrics(0, 0));
+  }
+
+  /** Queue owners publish observations independently of their work; a scrape never joins a turn. */
+  static String render(MetricsConfig config, LiveCapture.Metrics live, Components components, Jvm jvm,
+      StoreRegistry.QueueMetrics queues) {
+    return render(config, live, components, jvm, queues, List.of());
+  }
+
+  /** A failed space reading is unknown, never a fabricated zero-byte gauge. */
+  static String render(MetricsConfig config, LiveCapture.Metrics live, Components components, Jvm jvm,
+      StoreRegistry.QueueMetrics queues, List<DiskSpaceBudgets.Snapshot> filesystems) {
+    return render(config, live, components, jvm, queues, filesystems, List.of());
+  }
+
+  /** Catalog counts are publication facts; encoded metadata limits are not measured heap usage. */
+  static String render(MetricsConfig config, LiveCapture.Metrics live, Components components, Jvm jvm,
+      StoreRegistry.QueueMetrics queues, List<DiskSpaceBudgets.Snapshot> filesystems,
+      List<StoreRegistry.CatalogCapacity> catalogs) {
     var out = new Exposition();
+    for (var published : catalogs) {
+      var labels = Map.of("store_id", published.storeId()); var capacity = published.catalogCapacity();
+      out.gauge("wpilog_replica_catalog_records", "Replica records in the last published catalog.", labels, capacity.records());
+      out.gauge("wpilog_replica_catalog_records_limit", "Maximum records in one replica catalog.", labels, capacity.recordsLimit());
+      out.gauge("wpilog_replica_catalog_exclusions", "Exclusions in the last published replica catalog.", labels, capacity.exclusions());
+      out.gauge("wpilog_replica_catalog_exclusions_limit", "Maximum exclusions in one replica catalog.", labels, capacity.exclusionsLimit());
+      out.gauge("wpilog_replica_catalog_near_limit", "Whether either catalog count is at least 80 percent of its limit.", labels, capacity.nearLimit() ? 1 : 0);
+    }
+    out.counter("wpilog_store_queue_over_budget_turns_total",
+        "Store turns exceeding the one-second budget, counted once per turn.", Map.of(), queues.overBudgetTurns());
+    out.gauge("wpilog_store_queue_longest_turn_seconds",
+        "Longest store turn observed outside its owner thread in this process.", Map.of(), queues.longestTurnUs() / 1_000_000.0);
+    for (var filesystem : filesystems) {
+      var labels = Map.of("filesystem_id", filesystem.filesystemId());
+      out.gauge("wpilog_store_filesystem_space_known",
+          "Whether the last filesystem space reading succeeded.", labels,
+          filesystem.state() == DiskSpaceBudgets.State.AVAILABLE ? 1 : 0);
+      if (filesystem.freeBytes() != null) out.gauge("wpilog_store_filesystem_free_bytes",
+          "Last measured usable filesystem bytes; other processes can change this reading.", labels, filesystem.freeBytes());
+      out.gauge("wpilog_store_filesystem_reserved_bytes",
+          "Bytes reserved by copying writers until their I/O completes.", labels, filesystem.reservedBytes());
+      out.gauge("wpilog_store_filesystem_capture_reserve_bytes",
+          "Standing filesystem reserve protected for capture.", labels, filesystem.captureReserveBytes());
+    }
     out.gauge("wpilog_nt_connected", "Whether the NT4 connection is up.", Map.of(), live != null && live.connected() ? 1 : 0);
     if (live != null) {
       if (!live.address().isEmpty()) out.gauge("wpilog_nt_address_info", "Last connected robot address.", Map.of("address", live.address()), 1);

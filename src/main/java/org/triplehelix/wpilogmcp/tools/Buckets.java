@@ -44,13 +44,34 @@ public final class Buckets {
       double first, double last) {}
 
   /** The buckets of a window: their duration, and the ones that hold samples. */
-  public record Result(double bucketSec, List<Bucket> buckets) {}
+  public static final class Result {
+    private final double bucketSec;
+    private final List<Bucket> buckets;
+    private final transient long[] startsUs;
+    public Result(double bucketSec, List<Bucket> buckets) {
+      this(bucketSec, buckets, buckets.stream().mapToLong(b -> Math.round(b.start() * 1e6)).toArray());
+    }
+    private Result(double bucketSec, List<Bucket> buckets, long[] startsUs) {
+      this.bucketSec = bucketSec; this.buckets = List.copyOf(buckets); this.startsUs = startsUs;
+    }
+    public double bucketSec() { return bucketSec; }
+    public List<Bucket> buckets() { return buckets; }
+    /** Arrow retains the exact bucket coordinate even when its seconds label rounds. */
+    public long startUs(int index) { return startsUs[index]; }
+    @Override public boolean equals(Object other) {
+      return other instanceof Result that && Double.compare(bucketSec, that.bucketSec) == 0 && buckets.equals(that.buckets);
+    }
+    @Override public int hashCode() { return 31 * Double.hashCode(bucketSec) + buckets.hashCode(); }
+    @Override public String toString() { return "Result[bucketSec=" + bucketSec + ", buckets=" + buckets + "]"; }
+  }
 
   /**
    * Buckets a numeric series that is already in time order and already within the window.
    *
    * <p>The window runs from {@code startTime} to {@code endTime}; a null bound is the first or
-   * last sample's time, so a request with no window buckets the series over its own span. A
+   * last sample's exact logged microsecond, so a request with no window buckets the series over
+   * its own span. Explicit second bounds use the data endpoint's existing nearest-microsecond
+   * conversion. Derived clocks keep that same conversion; their timestamps are not relabeled as logged. A
    * window of no duration (one instant, or a single sample with no bounds) is one bucket. The
    * last bucket includes the window's end, so a sample at {@code endTime} is counted.
    *
@@ -63,31 +84,36 @@ public final class Buckets {
       int maxPoints) {
     if (maxPoints < 1) throw new IllegalArgumentException("max_points must be at least 1");
     if (values.isEmpty()) return new Result(0, List.of());
-    double start = startTime != null ? startTime : values.get(0).timestamp();
-    double end = endTime != null ? endTime : values.get(values.size() - 1).timestamp();
+    if (startTime != null && endTime != null && endTime < startTime)
+      throw new IllegalArgumentException("the window ends before it starts");
+    long start = startTime != null ? Math.round(startTime * 1e6) : values.get(0).timestampUs();
+    long end = endTime != null ? Math.round(endTime * 1e6) : values.get(values.size() - 1).timestampUs();
     if (end < start) throw new IllegalArgumentException("the window ends before it starts");
-    double span = end - start;
-    double bucketSec = span > 0 ? span / maxPoints : 0;
+    double spanUs = java.math.BigInteger.valueOf(end).subtract(java.math.BigInteger.valueOf(start)).doubleValue();
+    double bucketSec = spanUs / 1e6 / maxPoints;
 
     var buckets = new ArrayList<Bucket>();
+    var starts = new ArrayList<Long>();
     int index = -1;
     var accumulator = new org.triplehelix.wpilogmcp.read.NumericBucket();
     for (var tv : values) {
-      double t = tv.timestamp();
-      double v = ((Number) tv.value()).doubleValue();
-      int i = bucketSec > 0 ? (int) Math.min(maxPoints - 1, Math.floor((t - start) / bucketSec)) : 0;
-      if (i < 0) i = 0; // a sample before the window's start, if a caller passes one, counts first
-      if (i != index) {
-        if (index >= 0) {
-          buckets.add(bucket(start + index * bucketSec, accumulator));
-        }
-        index = i;
+      int next = org.triplehelix.wpilogmcp.read.BucketCoordinates.index(start, end, maxPoints, tv.timestampUs());
+      if (next != index) {
+        if (index >= 0) addBucket(buckets, starts, start, end, maxPoints, index, accumulator);
+        index = next;
         accumulator = new org.triplehelix.wpilogmcp.read.NumericBucket();
       }
-      accumulator.add(v);
+      accumulator.add(((Number) tv.value()).doubleValue());
     }
-    buckets.add(bucket(start + index * bucketSec, accumulator));
-    return new Result(bucketSec, buckets);
+    addBucket(buckets, starts, start, end, maxPoints, index, accumulator);
+    return new Result(bucketSec, buckets, starts.stream().mapToLong(Long::longValue).toArray());
+  }
+
+  private static void addBucket(List<Bucket> buckets, List<Long> starts, long start, long end,
+      int points, int index, org.triplehelix.wpilogmcp.read.NumericBucket value) {
+    long coordinate = org.triplehelix.wpilogmcp.read.BucketCoordinates.boundary(start, end, points, index);
+    starts.add(coordinate);
+    buckets.add(bucket(coordinate / 1e6, value));
   }
 
   private static Bucket bucket(double start, org.triplehelix.wpilogmcp.read.NumericBucket value) {

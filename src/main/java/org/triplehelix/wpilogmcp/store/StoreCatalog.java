@@ -106,14 +106,32 @@ public final class StoreCatalog {
     return Files.exists(directory.resolve("store.json"));
   }
 
+  /** Header-only observers need the same identity check without walking every session. */
+  static void validateHeader(Path root, Header header) throws IOException {
+    if (!StoreManifest.readable(header.formatVersion())) {
+      throw new IOException("Store format version " + header.formatVersion() + " at " + root
+          + (header.formatVersion() > StoreManifest.REPLICA_FORMAT_VERSION
+              ? " is newer than this server supports; upgrade the server."
+              : " requires an explicit migration; it will not be changed automatically."));
+    }
+    if (header.id() == null || header.createdAt() == null || header.moves() == null) {
+      throw new IOException("Incomplete store manifest: " + root.resolve("store.json"));
+    }
+  }
+
   /** Find nested stores too, but never walk a store's own session tree looking for another. */
   public static List<Path> discover(Path directory) throws IOException {
+    return discover(directory, ignored -> {});
+  }
+  /** Probe counts directory streams actually opened by discovery, not request totals. */
+  public static List<Path> discover(Path directory, java.util.function.Consumer<Path> listings) throws IOException {
     if (!Files.isDirectory(directory)) return List.of();
     var roots = new ArrayList<Path>();
     Files.walkFileTree(directory.toRealPath(), new java.nio.file.SimpleFileVisitor<>() {
       @Override
       public java.nio.file.FileVisitResult preVisitDirectory(Path dir,
           java.nio.file.attribute.BasicFileAttributes attrs) {
+        listings.accept(dir);
         if (!isStore(dir)) return java.nio.file.FileVisitResult.CONTINUE;
         roots.add(dir);
         return java.nio.file.FileVisitResult.SKIP_SUBTREE;
@@ -196,15 +214,7 @@ public final class StoreCatalog {
     io.observe(observer);
     var headerPath = root.resolve("store.json");
     var header = io.read(headerPath, Header.class);
-    if (!StoreManifest.readable(header.formatVersion())) {
-      throw new IOException("Store format version " + header.formatVersion() + " at " + root
-          + (header.formatVersion() > StoreManifest.REPLICA_FORMAT_VERSION
-              ? " is newer than this server supports; upgrade the server."
-              : " requires an explicit migration; it will not be changed automatically."));
-    }
-    if (header.id() == null || header.createdAt() == null || header.moves() == null) {
-      throw new IOException("Incomplete store manifest: " + headerPath);
-    }
+    validateHeader(root, header);
     var managed = new HashSet<Path>();
     managed.add(headerPath);
     for (String name : List.of("format-1-store.json", "upgrade.json")) {
@@ -398,6 +408,24 @@ public final class StoreCatalog {
   /** Resolve one catalog member without walking the catalog for every transfer block. */
   public record Payload(Path path, long size) {}
   public static Payload payload(Path directory, String relative, SecurityValidator security) throws IOException {
+    return payload(directory, relative, security, file -> {});
+  }
+
+  /** Receipts reuse single-member admission, so unrelated sessions never enter an import turn. */
+  static String finalizedHash(Path root, Path path, SecurityValidator security) throws IOException {
+    var parts = root.relativize(path);
+    if (!(parts.getNameCount() >= 6 && parts.getName(0).toString().equals("robots")
+        && parts.getName(2).toString().equals("sessions"))
+        && !(parts.getNameCount() >= 3 && parts.getName(0).toString().equals("unassigned")))
+      throw new IOException("Receipt requires a store log path: " + path);
+    var result = new String[1];
+    payload(root, StoreFiles.relative(root, path), security, file -> result[0] = file.sha256());
+    if (result[0] == null) throw new IOException("Receipt requires a finalized manifested log: " + path);
+    return result[0];
+  }
+
+  private static Payload payload(Path directory, String relative, SecurityValidator security,
+      java.util.function.Consumer<LogFile> finalized) throws IOException {
     var root = directory.toRealPath(); var io = new StoreFiles(root, security);
     var path = io.resolve(root, relative);
     var header = io.read(root.resolve("store.json"), Header.class);
@@ -447,7 +475,9 @@ public final class StoreCatalog {
     }
     if (file != null) {
       if (header.mirror() && header.replicas() != null) throw new IOException("File is not a published mirror generation");
-      validate(file, path); return new Payload(path, file.sizeBytes());
+      validate(file, path);
+      finalized.accept(file);
+      return new Payload(path, file.sizeBytes());
     }
     if (session != null && session.openCapture() != null
         && io.resolve(parent, session.openCapture().path()).equals(path)

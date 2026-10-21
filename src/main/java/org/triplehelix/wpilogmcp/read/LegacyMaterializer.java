@@ -11,7 +11,7 @@ import java.util.List;
 import org.triplehelix.wpilogmcp.log.DecodeProblem;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 
-/** Existing tools keep whole-entry diagnostics and their historical double timestamp ordering. */
+/** Existing tools keep whole-entry diagnostics and the source's exact microsecond ordering. */
 public final class LegacyMaterializer {
   private LegacyMaterializer() {}
   /** A null problem means every indexed record decoded. */
@@ -23,7 +23,7 @@ public final class LegacyMaterializer {
       int failed;
       String firstFailure;
       @Override public void sample(long time, long offset, int ordinal, Object value) {
-        values.add(new TimestampedValue(time / 1_000_000.0, value));
+        values.add(TimestampedValue.atMicros(time, value));
       }
       @Override public void problem(ReadProblem problem) {
         failed++;
@@ -31,8 +31,7 @@ public final class LegacyMaterializer {
       }
     }
     var collector = new Collector();
-    // Legacy ordering sorts double seconds stably after decoding in file order. Adjacent large
-    // microsecond timestamps can round to the same double, so sorting longs here would differ.
+    // Decode in file order, then sort by retained original coordinates; equal instants remain stable.
     try {
       SampleCursors.consume(series, name, collector);
     } catch (IOException failure) {

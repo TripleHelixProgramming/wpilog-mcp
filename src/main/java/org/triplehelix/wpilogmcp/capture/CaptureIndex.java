@@ -51,6 +51,10 @@ public final class CaptureIndex implements CaptureWriter.Observer {
       CaptureWriter.Session previous, org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) {
     return placement.createAsync(address, start, previous, identity);
   }
+  @Override public java.util.concurrent.CompletableFuture<Path> createAsync(String address, Instant start,
+      CaptureWriter.Session previous, org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity, long timeoutUs) {
+    return placement.createAsync(address, start, previous, identity, timeoutUs);
+  }
   @Override public java.util.concurrent.CompletableFuture<Void> abandoned(Path path, Instant endedAt, String reason) {
     return placement.abandoned(path, endedAt, reason);
   }

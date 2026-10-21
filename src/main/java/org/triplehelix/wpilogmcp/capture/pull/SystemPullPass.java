@@ -30,7 +30,7 @@ public final class SystemPullPass implements AutoCloseable {
   private final LongSupplier clock;
   private final BooleanSupplier gate;
   private final java.util.concurrent.ScheduledThreadPoolExecutor deadline;
-  private FileTransfer files;
+  private volatile FileTransfer files;
   private String transferSession;
   private final java.util.Map<RemoteFiles.File, Optional<String>> hashes = new java.util.HashMap<>();
   private int phase;
@@ -48,6 +48,19 @@ public final class SystemPullPass implements AutoCloseable {
     deadline.setRemoveOnCancelPolicy(true);
   }
   public FileTransfer.Result step() throws IOException {
+    Throwable stepFailure = null;
+    try { return stepOpen(); }
+    catch (IOException | RuntimeException | Error failure) { stepFailure = failure; throw failure; }
+    finally {
+      // Close may have raced construction: the step owns any transfer it publishes afterward.
+      var transfer = files;
+      if (closed && transfer != null) try { transfer.close(); }
+      catch (IOException | RuntimeException | Error failure) {
+        if (stepFailure != null) stepFailure.addSuppressed(failure); else throw failure;
+      }
+    }
+  }
+  private FileTransfer.Result stepOpen() throws IOException {
     if (closed || !gate.getAsBoolean()) {
       pause(); return result(FileTransfer.Status.PAUSED, 0, null);
     }
@@ -56,6 +69,7 @@ public final class SystemPullPass implements AutoCloseable {
       if (!local.beginPass()) return result(FileTransfer.Status.IDLE, 0, "Waiting for an open capture session");
       if (system == null) return result(FileTransfer.Status.REFUSED, 0, "SSH system-log transport unavailable");
       if (files == null || !local.sessionId().equals(transferSession)) {
+        if (files != null) files.close();
         transferSession = local.sessionId();
         var held = local.manifest();
         // A new session needs its own receipts even for an unchanged NI file. Verify the
@@ -182,6 +196,9 @@ public final class SystemPullPass implements AutoCloseable {
   }
   @Override public void close() {
     closed = true; deadline.shutdownNow(); pause();
+    var transfer = files;
+    if (transfer != null) try { transfer.close(); }
+    catch (IOException e) { org.slf4j.LoggerFactory.getLogger(SystemPullPass.class).warn("System-file checkpoint failed during close", e); }
     if (staging != null) local.discardLater(staging);
   }
 }

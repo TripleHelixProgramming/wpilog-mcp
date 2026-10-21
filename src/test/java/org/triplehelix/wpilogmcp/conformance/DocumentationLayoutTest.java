@@ -66,7 +66,7 @@ class DocumentationLayoutTest {
   @Test void experimentalGuidesAreTogetherAndStateTheirTestingLimit() throws Exception {
     var root = Path.of("doc/pit-server");
     for (String file : List.of("README.md", "OPERATIONS.md", "STANDALONE.md", "TOOLS.md",
-        "ARCHITECTURE.md", "DEVELOPMENT.md", "EXTENSION.md", "PIT_SERVER_PLAN.md", "IDEAS.md", "EXPLORER_PLAN.md")) {
+        "ARCHITECTURE.md", "DEVELOPMENT.md", "EXTENSION.md", "PIT_SERVER_PLAN.md", "IDEAS.md", "EXPLORER_REMOTE_SESSIONS.md")) {
       var path = root.resolve(file);
       assertTrue(Files.isRegularFile(path), "Missing relocated guide: " + path);
       assertTrue(Files.readString(path).contains("has limited controlled-shop evidence"), path.toString());

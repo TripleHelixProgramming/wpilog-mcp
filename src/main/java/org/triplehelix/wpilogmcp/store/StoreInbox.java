@@ -104,17 +104,19 @@ public final class StoreInbox {
       }
       var batch = group.getKey();
       observe(store.importPrepared(new LogStore.Request(ready, true, batch.robot()), p -> {}, request -> {
-        var latest = files();
-        boolean changed = ready.stream().anyMatch(path -> !current.get(path).equals(latest.get(path)));
+        // A prepared group rechecks only its remaining members. Earlier groups have already
+        // moved, and walking the inbox here would put unrelated payload discovery on the owner.
+        var latest = observations(request.paths(), batch);
+        boolean changed = request.paths().stream().anyMatch(path -> !current.get(path).equals(latest.get(path)));
         if (changed) {
-          for (var path : ready) {
+          for (var path : request.paths()) {
             if (!latest.containsKey(path)) seen.remove(path);
             else seen.put(path, new Seen(latest.get(path), System.nanoTime(), "waiting", null));
           }
           return new LogStore.Request(List.of(), true, batch.robot());
         }
         var stable = new ArrayList<Path>();
-        for (var path : ready) {
+        for (var path : request.paths()) {
           String refusal = batch.refusal();
           if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
             refusal = "Inbox accepts regular files, not symbolic links or special files";
@@ -125,6 +127,21 @@ public final class StoreInbox {
         return new LogStore.Request(stable, true, batch.robot());
       }, result -> result.files().forEach(this::finish)), ready);
     }
+  }
+
+  private Map<Path, Observed> observations(List<Path> paths, Batch previous) throws IOException {
+    var io = new StoreFiles(store.root(), security);
+    var current = previous.directory() == null ? previous : batch(previous.directory(), io);
+    var result = new LinkedHashMap<Path, Observed>();
+    for (var path : paths) {
+      try {
+        io.check(path.getParent());
+        var attributes = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (attributes.isRegularFile()) io.check(path);
+        result.put(path, new Observed(Stamp.of(attributes), current));
+      } catch (NoSuchFileException missing) { /* A disappeared member restarts batch stability. */ }
+    }
+    return result;
   }
 
   /** The offline command consumes its published batch with the same receipts as the daemon. */

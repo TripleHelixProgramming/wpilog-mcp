@@ -106,6 +106,11 @@ public final class CaptureStore implements CaptureWriter.Observer {
   }
   @Override public CompletableFuture<Path> createAsync(String address, Instant start, CaptureWriter.Session previous,
       org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) {
+    return createAsync(address, start, previous, identity, CaptureWriter.ADMISSION_LIMITS.timeoutUs());
+  }
+  @Override public CompletableFuture<Path> createAsync(String address, Instant start, CaptureWriter.Session previous,
+      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity, long timeoutUs) {
+    long deadlineNanos = System.nanoTime() + java.util.concurrent.TimeUnit.MICROSECONDS.toNanos(timeoutUs);
     if (previous == null) {
       times.clear(); loggedSerials.clear(); conflicts.clear();
       event = null; matchType = null; matchNumber = null; teamNumber = null; typeOrdinal = 0; number = 0;
@@ -152,7 +157,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
       io.write(directory.resolve("session.json"), new Session(UUID.randomUUID().toString(), start.toString(),
           start.toString(), "pit_clock", null, null, null, null, List.of()));
       return directory.resolve("capture.wpilog");
-    }));
+    }, deadlineNanos));
     // A refused new admission is retryable; an earlier unfinished close remains a barrier.
     completion = result.handle((ignored, error) -> (Void) null).thenCompose(ignored -> preceding);
     return result;

@@ -360,7 +360,7 @@ final class DataEndpoint {
   private static List<TimestampedValue> asNumbers(List<TimestampedValue> values) {
     var out = new ArrayList<TimestampedValue>(values.size());
     for (var tv : values) {
-      out.add(new TimestampedValue(tv.timestamp(), tv.value() instanceof Boolean b ? (b ? 1.0 : 0.0)
+      out.add(tv.withValue(tv.value() instanceof Boolean b ? (b ? 1.0 : 0.0)
           : tv.value() instanceof Number n ? n.doubleValue() : Double.NaN));
     }
     return out;
@@ -545,8 +545,9 @@ final class DataEndpoint {
       var tag = Map.of("entry", p.series().name());
       if (bucketed) {
         if (p.buckets() != null) {
-          for (var b : p.buckets().buckets()) {
-            columns.get(0).append(micros(b.start()));
+          for (int i = 0; i < p.buckets().buckets().size(); i++) {
+            var b = p.buckets().buckets().get(i);
+            columns.get(0).append(p.buckets().startUs(i));
             columns.get(1).append((long) b.count());
             columns.get(2).append(b.min());
             columns.get(3).append(b.max());
@@ -559,7 +560,7 @@ final class DataEndpoint {
           // Few enough samples: each is its own bucket of one, exact
           for (var tv : p.values()) {
             double v = ((Number) tv.value()).doubleValue();
-            columns.get(0).append(micros(tv.timestamp()));
+            columns.get(0).append(tv.timestampUs());
             columns.get(1).append(1L);
             Double finite = Double.isFinite(v) ? v : null;
             columns.get(2).append(finite);
@@ -572,7 +573,7 @@ final class DataEndpoint {
         }
       } else {
         for (var tv : p.values()) {
-          columns.get(0).append(micros(tv.timestamp()));
+          columns.get(0).append(tv.timestampUs());
           columns.get(1).append(tv.value());
           if (columns.get(0).length() >= BATCH_ROWS) writer.writeBatch(columns, tag);
         }

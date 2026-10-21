@@ -21,6 +21,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
+import org.triplehelix.wpilogmcp.store.DiskSpaceBudgets;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Unannounce;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Properties;
@@ -68,6 +69,11 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     default CompletableFuture<Path> createAsync(String address, Instant start, Session previous, DeviceIdentity identity) {
       try { return CompletableFuture.completedFuture(create(address, start, previous, identity)); }
       catch (IOException e) { return CompletableFuture.failedFuture(e); }
+    }
+    /** Store lock retries must share this writer's budget, including short test admission limits. */
+    default CompletableFuture<Path> createAsync(String address, Instant start, Session previous,
+        DeviceIdentity identity, long timeoutUs) {
+      return createAsync(address, start, previous, identity);
     }
     /** A late admission has no writer: retain its explicit failure instead of an empty healthy session. */
     default CompletableFuture<Void> abandoned(Path path, Instant endedAt, String reason) {
@@ -173,6 +179,14 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   private DeviceIdentity identity;
   private boolean connected, synchronizedClock, resume, failed;
   private boolean haveClock;
+  private boolean diskPaused, diskDraining, diskDrainQueued, reopenAfterDisk;
+  private volatile DiskSpaceBudgets.Snapshot diskSpace;
+  private DiskSpaceBudgets.Policy diskPolicy;
+  private String diskPauseReason;
+  private long diskDroppedValues;
+  private record SchemaSeed(ValueFrame frame, long receivedUs) {}
+  private final Map<Integer, SchemaSeed> diskSchemas = new LinkedHashMap<>();
+  private final Map<Integer, SchemaSeed> pendingDiskSeeds = new LinkedHashMap<>();
   private long serverUs, receiptUs, nextReportUs;
   private long rejected;
   /** Encoded event bytes plus a fixed allowance per event bound the startup backlog. */
@@ -184,6 +198,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
   public static final AdmissionLimits ADMISSION_LIMITS = new AdmissionLimits(16L << 20, 65_536, 30_000_000, 256, 2_000);
   private final AdmissionLimits admissionLimits;
+  private final CaptureProgress progress;
   private record Deferred(Runnable action, long bytes, long receivedUs, Instant wall) {}
   private final java.util.ArrayDeque<Deferred> deferred = new java.util.ArrayDeque<>();
   private long deferredBytes, admissionGeneration;
@@ -209,6 +224,9 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   private volatile CompletableFuture<Void> admissionCompletion = CompletableFuture.completedFuture(null);
   public void onActivity(Runnable callback) { activity = callback; }
   public String admissionFailure() { return admissionFailure; }
+  CaptureProgress.Probe progress(long loopStallUs, long storeTurnUs) { return progress.probe(loopStallUs, storeTurnUs); }
+  /** Startup recovery can fail off the listener; only this atomic public status is changed. */
+  void startupFailed() { progress.stopped(CaptureProgress.Reason.STARTUP_FAILED); }
   public boolean ready() { return output != null && opening == null && deferred.isEmpty() && !draining; }
   public CompletableFuture<Void> admissionCompletion() { return admissionCompletion; }
   private long nowUs() { return replaying == null ? loop.nowUs() : replaying.receivedUs(); }
@@ -216,7 +234,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
 
   private boolean defer(Runnable action, java.util.function.LongSupplier bytes) {
     if (replaying != null || opening == null && deferred.isEmpty() && !draining) return false;
-    if (opening != null && opening.cancelled != null && !waitingForRetirement) return false;
+    if (opening != null && opening.cancelled != null && !waitingForRetirement && !diskPaused) return false;
     long cost = 256 + bytes.getAsLong();
     if (deferred.size() >= admissionLimits.events() || cost > admissionLimits.bytes() - deferredBytes) {
       failAdmission("Capture admission buffer exceeded " + admissionLimits.events() + " events or "
@@ -224,11 +242,97 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       return true;
     }
     deferred.addLast(new Deferred(action, cost, loop.nowUs(), wallClock.instant())); deferredBytes += cost;
+    if (diskPaused && !diskDrainQueued && !diskDraining) {
+      diskDrainQueued = true; loop.execute(this::drainForDiskPause);
+    }
     return true;
+  }
+
+  /**
+   * Published filesystem facts arrive on the listener. Reading free space belongs to a separate
+   * daemon; UNKNOWN changes neither recording nor pause state and never invents an empty disk.
+   */
+  public void diskSpace(DiskSpaceBudgets.Snapshot snapshot, DiskSpaceBudgets.Policy policy) {
+    diskSpace = java.util.Objects.requireNonNull(snapshot);
+    diskPolicy = java.util.Objects.requireNonNull(policy);
+    if (shutdown || failed) return;
+    switch (policy.decide(snapshot, diskPaused)) {
+      case PAUSE -> pauseForDisk(snapshot, policy);
+      case RESUME -> resumeAfterDisk();
+      case KEEP_STATE, UNKNOWN -> { }
+    }
+  }
+
+  public boolean diskPaused() { return diskPaused; }
+  public String diskPauseReason() { return diskPaused ? diskPauseReason : null; }
+  public long diskDroppedValues() { return diskDroppedValues; }
+  public DiskSpaceBudgets.Snapshot diskSpace() { return diskSpace; }
+
+  private void pauseForDisk(DiskSpaceBudgets.Snapshot snapshot, DiskSpaceBudgets.Policy policy) {
+    diskPaused = true; resume = false;
+    diskPauseReason = "Capture paused for low disk space: free_bytes=" + snapshot.freeBytes()
+        + ", floor_bytes=" + policy.floorBytes();
+    var pending = opening;
+    if (pending != null && pending.cancelled == null) pending.cancelled = diskPauseReason;
+    waitingForRetirement = false;
+    if (output != null) {
+      session.endReason = diskPauseReason;
+      // Keep declarations and schema seeds. The next file is a new session, not an append across
+      // an unrecorded interval; old ended_at/end_reason and new started_at delimit the gap.
+      io(() -> { closeFile(); observer.closed(session); });
+    }
+    if (!failed) progress.stopped(CaptureProgress.Reason.LOW_DISK);
+    drainForDiskPause();
+    activity.run();
+  }
+
+  /** Controls stay ordered while values are discarded; a held placement cannot grow the backlog. */
+  private void drainForDiskPause() {
+    diskDrainQueued = false;
+    if (!diskPaused || shutdown || failed || diskDraining) return;
+    diskDraining = true;
+    long started = System.nanoTime(); int count = 0;
+    while (!deferred.isEmpty() && diskPaused && !shutdown && !failed
+        && count < admissionLimits.drainEvents()
+        && (count == 0 || System.nanoTime() - started < admissionLimits.drainUs() * 1000)) {
+      var event = deferred.removeFirst(); deferredBytes -= event.bytes(); replaying = event;
+      try { event.action().run(); } finally { replaying = null; }
+      count++;
+    }
+    diskDraining = false;
+    if (!deferred.isEmpty()) {
+      if (!diskDrainQueued) { diskDrainQueued = true; loop.execute(this::drainForDiskPause); }
+    } else if (opening == null && diskSpace != null
+        && diskPolicy.decide(diskSpace, true) == DiskSpaceBudgets.CaptureDecision.RESUME) {
+      resumeAfterDisk();
+    }
+  }
+
+  private void resumeAfterDisk() {
+    if (!diskPaused || opening != null || !deferred.isEmpty() || diskDraining || failed || shutdown) return;
+    diskPaused = false; resume = false; reopenAfterDisk = true;
+    pendingDiskSeeds.clear(); pendingDiskSeeds.putAll(diskSchemas);
+    topics.clear();
+    progress.stopped(!connected ? CaptureProgress.Reason.DISCONNECTED
+        : synchronizedClock ? CaptureProgress.Reason.WAITING_FOR_TOPIC : CaptureProgress.Reason.WAITING_FOR_CLOCK);
+    if (connected && synchronizedClock) {
+      for (var topic : List.copyOf(announced.values())) announce(topic);
+    }
+    activity.run();
+  }
+
+  private void rememberDiskSchema(Announce announce, ValueFrame frame, long receivedUs) {
+    if (!NtType.fromNt4(announce.type()).wpilog().equals("structschema")
+        || NtType.fromNt4(announce.type()).code() != frame.typeCode()) return;
+    var previous = diskSchemas.get(announce.id());
+    if (previous == null || receivedUs >= previous.receivedUs()) {
+      diskSchemas.put(announce.id(), new SchemaSeed(frame, receivedUs));
+    }
   }
 
   private void failAdmission(String reason) {
     admissionFailure = reason; failed = true;
+    progress.stopped(CaptureProgress.Reason.ADMISSION_FAILED);
     var pending = opening;
     if (pending != null && pending.cancelled == null) pending.cancelled = reason;
     waitingForRetirement = false;
@@ -242,6 +346,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
 
   private boolean admit(Announce first) throws IOException {
+    progress.waiting();
     if (opening != null) {
       // A new clock may arrive before an expired request can retire its manifest. Retain the
       // new episode, but never let two admissions mutate the placement observer's state.
@@ -260,10 +365,15 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     if (previous == null) session = null;
     var device = identity != null && identity.address().equals(address) ? identity : previous == null ? null : previous.identity;
     var request = new Opening(++admissionGeneration, address, start, previous, device);
-    var future = observer.createAsync(address, start, previous, device);
+    var future = observer.createAsync(address, start, previous, device,
+        Math.max(1, admissionLimits.timeoutUs() - (loop.nowUs() - nowUs())));
     if (future.isDone()) {
-      try { admitted(request, future.join()); }
-      catch (java.util.concurrent.CompletionException e) { throw admissionError(e); }
+      Path path;
+      try { path = future.join(); }
+      catch (java.util.concurrent.CompletionException e) {
+        progress.stopped(CaptureProgress.Reason.ADMISSION_FAILED); throw admissionError(e);
+      }
+      admitted(request, path);
       return true;
     }
     opening = request; admissionCompletion = request.done;
@@ -301,6 +411,16 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     else { session = request.previous; session.relocate(path); }
     session.identity = request.identity; session.providers = providers; session.kernelClock = kernelClock;
     openFile(request.previous != null); nextReportUs = nowUs() + REPORT_PERIOD_US;
+    if (reopenAfterDisk) {
+      for (var before : List.copyOf(contexts.values())) {
+        room(WpilogOutput.startSize(before.name(), before.type(), before.metadata(), serverUs), 0);
+        int id = output.start(before.name(), before.type(), before.metadata(), serverUs);
+        progress.written();
+        var entry = new EntryInfo(id, before.name(), before.type(), before.metadata());
+        contexts.put(entry.name(), entry); observer.entry(session, entry);
+      }
+      session.sizeBytes = output.size(); reopenAfterDisk = false;
+    }
     if (deferred.isEmpty()) activity.run();
   }
   private void abandon(Opening request, Path path, Throwable error) {
@@ -318,6 +438,10 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
         try { loop.execute(() -> {
           if (opening != request) return;
           opening = null;
+          if (diskPaused && retiredError == null && !shutdown && !failed) {
+            drainForDiskPause();
+            return;
+          }
           if (retiredError != null) failAdmission("Earlier capture admission could not retire: " + retiredError.getMessage());
           else if (waitingForRetirement && !shutdown && !failed) {
             waitingForRetirement = false; drainDeferred(request);
@@ -359,6 +483,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     shutdown = true;
     if (opening != null || !deferred.isEmpty()) failAdmission("Capture stopped during admission; " + deferred.size() + " pending events were not recorded");
     close();
+    progress.stopped(CaptureProgress.Reason.SHUTDOWN);
   }
 
   public CaptureWriter(Clock wallClock, ClientScheduler loop, CapturePolicy policy, Observer observer) {
@@ -377,6 +502,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     if (maxFileBytes < 256 || maxFileBytes > org.triplehelix.wpilogmcp.log.MappedLogBytes.MAX_FILE_BYTES) throw new IllegalArgumentException("Invalid capture.max_file_bytes");
     admissionLimits = limits;
     this.wallClock = wallClock; this.loop = loop; this.policy = policy; this.observer = observer;
+    progress = new CaptureProgress(loop::nowUs);
     this.maxFileBytes = maxFileBytes; this.outputs = outputs;
   }
 
@@ -398,6 +524,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   @Override public void connected(URI uri, String protocol) {
     if (defer(() -> connected(uri, protocol), () -> uri.toString().length() * 2L + protocol.length() * 2L)) return;
     address = uri.getHost(); connected = true; synchronizedClock = false; resume = false;
+    if (output == null && !failed && !diskPaused) progress.stopped(CaptureProgress.Reason.WAITING_FOR_CLOCK);
   }
 
   @Override public void timeSync(long timestampUs, long receivedAtUs) {
@@ -407,11 +534,12 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
         && Math.abs((double) timestampUs - serverUs - elapsed) <= RECONNECT_TOLERANCE_US;
     boolean restartHere = failed && synchronizedClock && !continuing;
     if (!synchronizedClock || restartHere) {
-      resume = session != null && continuing;
-      if (!continuing) { failed = false; admissionFailure = null; }
+      resume = !diskPaused && !reopenAfterDisk && session != null && continuing;
+      if (!continuing) { failed = false; admissionFailure = null; diskSchemas.clear(); pendingDiskSeeds.clear(); }
       synchronizedClock = true;
     }
     serverUs = timestampUs; receiptUs = receivedAtUs; haveClock = true;
+    if (output == null && opening == null && !failed && !diskPaused) progress.stopped(CaptureProgress.Reason.WAITING_FOR_TOPIC);
     if (restartHere) for (var topic : List.copyOf(announced.values())) announce(topic);
     if (output != null) io(() -> observer.timeSync(session, timestampUs));
   }
@@ -421,7 +549,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     if (shutdown) return;
     if (!connected || !synchronizedClock) throw new IllegalStateException("Capture announce before time sync");
     announced.put(announce.id(), announce);
-    if (failed) return;
+    if (failed || diskPaused) return;
     io(() -> {
       if (output == null) {
         if (!admit(announce)) return;
@@ -429,16 +557,33 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       if (policy.excluded(announce.name()) || topics.containsKey(announce.id())) return;
       long periodUs = policy.periodUs(announce.name());
       String metadata = metadata(announce, periodUs);
+      var diskSeed = pendingDiskSeeds.remove(announce.id());
+      if (diskSeed != null) {
+        var seeded = com.google.gson.JsonParser.parseString(metadata).getAsJsonObject();
+        seeded.addProperty("capture_schema_seed", true); metadata = seeded.toString();
+      }
       String name = org.triplehelix.wpilogmcp.nt4.ContextTopic.metadata(announce.name(), announce.properties()).isPresent()
           ? announce.name() : "NT:" + announce.name();
       String type = NtType.fromNt4(announce.type()).wpilog();
-      room(WpilogOutput.startSize(name, type, metadata, serverUs), 1);
+      int seedBytes = diskSeed == null ? 0 : ((byte[]) diskSeed.frame().value()).length;
+      room(WpilogOutput.startSize(name, type, metadata, serverUs)
+          + (diskSeed == null ? 0 : WpilogOutput.recordSize(Integer.MAX_VALUE, serverUs, seedBytes)), 1);
       int id = output.start(name, type, metadata, serverUs);
+      progress.written();
       session.sizeBytes = output.size();
       var entry = new EntryInfo(id, name, type, metadata);
-      topics.put(announce.id(), new Topic(entry, periodUs));
+      var topic = new Topic(entry, periodUs);
+      topics.put(announce.id(), topic);
       session.costs.computeIfAbsent(announce.name(), ignored -> new TopicCost());
       observer.entry(session, entry);
+      if (diskSeed != null) {
+        var seed = new ValueFrame(announce.id(), serverUs, diskSeed.frame().typeCode(), diskSeed.frame().value());
+        var written = output.append(entry.id(), serverUs, (byte[]) seed.value());
+        progress.written();
+        topic.schema = seed; session.sizeBytes = output.size();
+        session.minUs = Math.min(session.minUs, serverUs); session.maxUs = Math.max(session.maxUs, serverUs);
+        observer.value(session, entry, seed, written);
+      }
     });
   }
 
@@ -465,6 +610,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       io(() -> {
         room(WpilogOutput.metadataSize(metadata, serverUs), 0);
         output.setMetadata(topic.entry.id(), metadata, serverUs);
+        progress.written();
         topic.entry = new EntryInfo(topic.entry.id(), topic.entry.name(), topic.entry.type(), metadata);
         observer.metadata(session, topic.entry);
         session.sizeBytes = output.size();
@@ -474,6 +620,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
 
   private void openFile(boolean append) throws IOException {
     output = outputs.open(session.path(), session.nextEntry, append);
+    if (!append) progress.written();
+    progress.recording();
     forceThread = Executors.newSingleThreadExecutor(r -> {
       var thread = new Thread(r, "capture-flush"); thread.setDaemon(true); return thread;
     });
@@ -508,11 +656,13 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   /** One context sample is a complete entry lifecycle; repeated names still share the live series. */
   private void context(String name, JsonObject value, JsonObject metadata) throws IOException {
     int id = output.start(name, "json", metadata.toString(), serverUs);
+    progress.written();
     var entry = new EntryInfo(id, name, "json", metadata.toString()); observer.entry(session, entry);
     var frame = new ValueFrame(id, serverUs, 4, value.toString());
     var written = output.append(id, serverUs, WpilogOutput.payload(4, value.toString()));
+    progress.written();
     session.minUs = Math.min(session.minUs, serverUs); session.maxUs = Math.max(session.maxUs, serverUs);
-    observer.value(session, entry, frame, written); output.finish(id, serverUs); session.sizeBytes = output.size();
+    observer.value(session, entry, frame, written); output.finish(id, serverUs); progress.written(); session.sizeBytes = output.size();
     contextSink.value(name, "json", value.toString(), serverUs, metadata);
   }
 
@@ -531,13 +681,16 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       var entry = contexts.get(name);
       if (entry == null) {
         entry = new EntryInfo(output.start(name, type, meta, timestampUs), name, type, meta);
+        progress.written();
         contexts.put(name, entry); observer.entry(session, entry);
       } else if (!entry.metadata().equals(meta)) {
         output.setMetadata(entry.id(), meta, timestampUs);
+        progress.written();
         entry = new EntryInfo(entry.id(), name, type, meta); contexts.put(name, entry); observer.metadata(session, entry);
       }
       var frame = new ValueFrame(entry.id(), timestampUs, nt.code(), value);
       var written = output.append(entry.id(), timestampUs, payload);
+      progress.written();
       session.minUs = Math.min(session.minUs, timestampUs); session.maxUs = Math.max(session.maxUs, timestampUs);
       session.sizeBytes = output.size(); observer.value(session, entry, frame, written); bytes[0] = written.size();
       contextSink.value(name, nt.nt4(), value, timestampUs, metadata);
@@ -594,17 +747,20 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       var before = topic.entry;
       String metadata = rolloverMetadata(topic);
       int id = output.start(before.name(), before.type(), metadata, serverUs);
+      progress.written();
       topic.entry = new EntryInfo(id, before.name(), before.type(), metadata);
       observer.entry(session, topic.entry);
       if (topic.schema != null) {
         var seed = new ValueFrame(topic.schema.topicId(), serverUs, topic.schema.typeCode(), topic.schema.value());
         var written = output.append(id, seed.timestampUs(), (byte[]) seed.value());
+        progress.written();
         session.minUs = Math.min(session.minUs, seed.timestampUs()); session.maxUs = Math.max(session.maxUs, seed.timestampUs());
         observer.value(session, topic.entry, seed, written);
       }
     }
     for (var before : List.copyOf(contexts.values())) {
       int id = output.start(before.name(), before.type(), before.metadata(), serverUs);
+      progress.written();
       var entry = new EntryInfo(id, before.name(), before.type(), before.metadata());
       contexts.put(entry.name(), entry); observer.entry(session, entry);
     }
@@ -620,14 +776,21 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
 
   @Override public void unannounce(Unannounce announce) {
     if (defer(() -> unannounce(announce), () -> announce.name().length() * 2L)) return;
-    announced.remove(announce.id());
+    announced.remove(announce.id()); diskSchemas.remove(announce.id()); pendingDiskSeeds.remove(announce.id());
     var topic = topics.remove(announce.id());
     if (topic != null && output != null) io(() -> {
-      output.finish(topic.entry.id(), serverUs); session.sizeBytes = output.size();
+      output.finish(topic.entry.id(), serverUs); progress.written(); session.sizeBytes = output.size();
     });
   }
 
   @Override public void value(Announce announce, ValueFrame frame, long receivedAtUs) {
+    if (diskPaused) {
+      // A retained schema must follow queued declarations and removals. Ordinary paused values
+      // still drop immediately, so a held admission cannot accumulate a numeric-value backlog.
+      if (NtType.fromNt4(announce.type()).wpilog().equals("structschema")
+          && defer(() -> value(announce, frame, receivedAtUs), () -> frame.encode().length + topicBytes(announce))) return;
+      rememberDiskSchema(announce, frame, receivedAtUs); diskDroppedValues++; return;
+    }
     if (defer(() -> value(announce, frame, receivedAtUs), () -> frame.encode().length + topicBytes(announce))) return;
     var topic = topics.get(announce.id());
     if (topic == null || output == null || failed) return;
@@ -640,8 +803,11 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       byte[] payload = WpilogOutput.payload(frame.typeCode(), frame.value());
       room(WpilogOutput.recordSize(topic.entry.id(), frame.timestampUs(), payload.length), 0);
       var written = output.append(topic.entry.id(), frame.timestampUs(), payload);
+      progress.written();
       topic.lastUs = frame.timestampUs(); session.sizeBytes = output.size();
-      if (topic.entry.type().equals("structschema")) topic.schema = frame;
+      if (topic.entry.type().equals("structschema")) {
+        topic.schema = frame; rememberDiskSchema(announce, frame, receivedAtUs);
+      }
       session.minUs = Math.min(session.minUs, frame.timestampUs());
       session.maxUs = Math.max(session.maxUs, frame.timestampUs());
       cost.add(receivedAtUs, written.size());
@@ -709,7 +875,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
 
   @Override public void disconnected() {
     if (defer(this::disconnected, () -> 0)) return;
-    connected = false; announced.clear(); close();
+    connected = false; announced.clear(); diskSchemas.clear(); pendingDiskSeeds.clear(); close();
+    if (!failed && !shutdown) progress.stopped(diskPaused ? CaptureProgress.Reason.LOW_DISK : CaptureProgress.Reason.DISCONNECTED);
   }
 
   private void closeFile() throws IOException {
@@ -721,8 +888,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     catch (IOException e) { failure = e; }
     finally { forceThread.shutdown(); }
     try {
-      for (var topic : topics.values()) closing.finish(topic.entry.id(), serverUs);
-      for (var entry : contexts.values()) closing.finish(entry.id(), serverUs);
+      for (var topic : topics.values()) { closing.finish(topic.entry.id(), serverUs); progress.written(); }
+      for (var entry : contexts.values()) { closing.finish(entry.id(), serverUs); progress.written(); }
     }
     catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
     try { closing.close(); }
@@ -745,6 +912,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     if (!shutdown && defer(this::close, () -> 0)) return;
     if (output == null) return;
     io(() -> { closeFile(); topics.clear(); contexts.clear(); observer.closed(session); });
+    if (!failed) progress.stopped(CaptureProgress.Reason.CLOSED);
   }
 
   @FunctionalInterface private interface IO { void run() throws IOException; }
@@ -757,6 +925,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       operation.run();
     }
     catch (IOException e) {
+      progress.writeFailed();
       failed = true;
       if (session != null) session.endReason = "Capture write failed: " + e.getMessage();
       LoggerFactory.getLogger(CaptureWriter.class).error("Capture recording stopped until a new robot clock: {}", e.getMessage());

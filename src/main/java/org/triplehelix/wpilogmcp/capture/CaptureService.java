@@ -19,6 +19,7 @@ public final class CaptureService implements AutoCloseable {
   private final Duration closeTimeout;
   private final Nt4Client client;
   private final CaptureWriter writer;
+  private final CaptureDiskMonitor diskMonitor;
   private final ClientScheduler loop;
   private final LiveCapture live;
   private final org.triplehelix.wpilogmcp.nt4.client.LoopWatchdog watchdog;
@@ -43,6 +44,12 @@ public final class CaptureService implements AutoCloseable {
   public CaptureService(CaptureConfig config, LogManager manager, String bindAddress) throws IOException {
     this(config, manager, Clock.systemUTC(), ClientScheduler.daemon(), WpilogOutput::new, CLOSE_TIMEOUT,
         null, bindAddress);
+  }
+  /** Registry ownership stays with the server; this service retains only its configured policy. */
+  public CaptureService(CaptureConfig config, LogManager manager, String bindAddress,
+      org.triplehelix.wpilogmcp.store.DiskSpaceBudgets.StoreBudget budget) throws IOException {
+    this(config, manager, Clock.systemUTC(), ClientScheduler.daemon(), WpilogOutput::new, CLOSE_TIMEOUT,
+        null, bindAddress, config.gatewayPort() == 0 ? null : ClientScheduler.daemon("nt4-gateway-bind"), budget);
   }
   public int gatewayClients() { return gateway == null ? 0 : gateway.clientCount(); }
 
@@ -80,6 +87,13 @@ public final class CaptureService implements AutoCloseable {
       CaptureWriter.OutputFactory outputs, Duration closeTimeout,
       org.triplehelix.wpilogmcp.capture.pull.PullCoordinator.Factory pulls, String bindAddress,
       ClientScheduler binds) throws IOException {
+    this(config, manager, clock, loop, outputs, closeTimeout, pulls, bindAddress, binds, null);
+  }
+
+  CaptureService(CaptureConfig config, LogManager manager, Clock clock, ClientScheduler loop,
+      CaptureWriter.OutputFactory outputs, Duration closeTimeout,
+      org.triplehelix.wpilogmcp.capture.pull.PullCoordinator.Factory pulls, String bindAddress,
+      ClientScheduler binds, org.triplehelix.wpilogmcp.store.DiskSpaceBudgets.StoreBudget budget) throws IOException {
     this.closeTimeout = closeTimeout; this.loop = loop;
     watchdog = new org.triplehelix.wpilogmcp.nt4.client.LoopWatchdog(loop);
     store = manager.stores().store(config.store());
@@ -96,6 +110,7 @@ public final class CaptureService implements AutoCloseable {
     placement = store.captures(clock);
     placement.onStatus(live::status);
     writer = new CaptureWriter(clock, loop, config.policy(), new CaptureIndex(placement, manager, config.hotWindowUs(), live::robotNowUs, live::publicationTiming), config.maxFileBytes(), outputs);
+    live.attachCaptureProgress(() -> writer.progress(watchdog.takeLongestStallUs(), store.takeLongestTurnUs()));
     if (gateway != null) writer.onContext(gateway::context);
     textPublisher = gateway == null ? null : new org.triplehelix.wpilogmcp.capture.context.SystemTextPublisher(manager, writer, live, loop, gateway);
     textObservation = textPublisher == null ? () -> {} : store.observeSystemText(textPublisher);
@@ -112,6 +127,7 @@ public final class CaptureService implements AutoCloseable {
     client = new Nt4Client(config.addresses(), Nt4Client.captureSubscription(config.periodSeconds()), listener(writer, gate, live, gateway, providers, config.providers().photonvision().isEmpty()),
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(), loop);
     live.attach(client);
+    diskMonitor = new CaptureDiskMonitor(loop, writer, budget == null ? store.diskBudget() : budget, config.diskPolicy());
   }
 
   /** Called after HTTP is listening: scanning and hashing old captures must not delay health. */
@@ -120,13 +136,19 @@ public final class CaptureService implements AutoCloseable {
     if (stopping.get()) return java.util.concurrent.CompletableFuture.completedFuture(null);
     // The gateway is a view. Its independent bind retry must never hold up the record or puller.
     if (gateway != null) gateway.start();
+    // The initial publication enters the same ordered listener before client.start() does.
+    // Joining it here would couple store recovery to a listener that the caller may not yet run.
+    if (diskMonitor != null) diskMonitor.start();
     starting = placement.recoverAsync().thenCompose(ignored -> store.refreshStatus()).thenRun(() -> {
       if (!stopping.get()) { watchdog.start(); if (providers != null) providers.start(); client.start(); if (pull != null) pull.start(); }
       // Captures closed before this start, and those recovery just closed, get their clock records.
       if (!stopping.get()) store.keepClocks();
     }).whenComplete((ignored, error) -> {
-      if (error != null) org.slf4j.LoggerFactory.getLogger(CaptureService.class)
-          .error("Capture startup failed (store recovery); NT4 capture has not started", error);
+      if (error != null) {
+        writer.startupFailed();
+        org.slf4j.LoggerFactory.getLogger(CaptureService.class)
+            .error("Capture startup failed (store recovery); NT4 capture has not started", error);
+      }
     });
     return starting;
   }
@@ -134,6 +156,7 @@ public final class CaptureService implements AutoCloseable {
   @Override public void close() {
     if (!stopping.compareAndSet(false, true)) return;
     watchdog.close();
+    if (diskMonitor != null) diskMonitor.stopSampling();
     live.stop();
     if (textPublisher != null) textPublisher.close();
     var providersClosed = providers == null ? java.util.concurrent.CompletableFuture.completedFuture(null) : providers.closeAsync();

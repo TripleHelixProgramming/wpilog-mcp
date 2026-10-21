@@ -5,7 +5,6 @@
 package org.triplehelix.wpilogmcp.read;
 
 import java.io.IOException;
-import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,23 +52,11 @@ final class ReducedCursor implements SampleCursor {
     return new SampleBatch(output, input.problems(), input.recordsVisited(), input.payloadBytes(), complete && deferred == null);
   }
   private int bucketIndex(ReadQuery.Window w, long time) {
-    if (w.endUs() == w.startUs()) return 0;
-    try {
-      long numerator = Math.multiplyExact(Math.subtractExact(time, w.startUs()), points);
-      long span = Math.subtractExact(w.endUs(), w.startUs());
-      return (int) Math.min(points - 1, numerator / span);
-    } catch (ArithmeticException overflow) {
-      return BigInteger.valueOf(time).subtract(BigInteger.valueOf(w.startUs())).multiply(BigInteger.valueOf(points))
-          .divide(BigInteger.valueOf(w.endUs()).subtract(BigInteger.valueOf(w.startUs())))
-          .min(BigInteger.valueOf(points - 1)).intValueExact();
-    }
+    return BucketCoordinates.index(w.startUs(), w.endUs(), points, time);
   }
   private long boundary(int i) {
     var w = windows.get(window);
-    // Integer boundaries round up, matching floor((timestamp-start)*points/span) membership.
-    var span = BigInteger.valueOf(w.endUs()).subtract(BigInteger.valueOf(w.startUs()));
-    return BigInteger.valueOf(w.startUs()).add(span.multiply(BigInteger.valueOf(i))
-        .add(BigInteger.valueOf(points - 1)).divide(BigInteger.valueOf(points))).longValueExact();
+    return BucketCoordinates.boundary(w.startUs(), w.endUs(), points, i);
   }
   private Sample finish() {
     var value = new LinkedHashMap<String, Object>();

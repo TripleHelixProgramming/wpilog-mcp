@@ -181,8 +181,8 @@ The installer's file also has a `stresstest` server, which only the project's st
 | `tba_key` | The Blue Alliance API key | `TBA_API_KEY` from the environment |
 | `transport` | `stdio` or `http` | `stdio` |
 | `port` | HTTP port, 1–65535; `run` also accepts `0` for an OS-assigned port | `2363` |
-| `diskcachedir` | Directory for the persistent disk cache | `WPILOG_DISK_CACHE_DIR` from the environment, else the system's default (below) |
-| `diskcachesize` | Maximum disk cache size, in MB | `8192` |
+| `diskcachedir` | Directory for persistent REV synchronization results and shared cache cleanup | `WPILOG_DISK_CACHE_DIR` from the environment, else the system's default (below) |
+| `diskcachesize` | Maximum shared disk cache size, in MB; still enforced by startup cleanup | `8192` |
 | `diskcachedisable` | Turn off the persistent disk cache | `false` |
 | `exportdir` | Directory for CSV exports | `wpilog-export` in the system's temporary directory |
 | `scandepth` | How many directory levels to search for `.wpilog` and `.revlog` files | `5` |
@@ -255,12 +255,13 @@ Only the explicit `--managed` flag makes both `GET /health` and `list_sessions` 
 with a newer JAR. `stop` refuses it and prints the `sudo systemctl stop wpilog-mcp-<name>.service`
 command. Use `--config` when the service's configuration is not in your normal search path.
 
-`wpilog-mcp service-unit <name> [--config <file>]` prints three files separated by
-`# file: <name>` comments: `wpilog-mcp-<name>.service`, its `-health.service` probe and
-`-health.timer`. It validates an HTTP configuration with no idle exit, prints to stdout, and
+`wpilog-mcp service-unit <name> [--config <file>]` prints four files separated by
+`# file: <name>` comments: `wpilog-mcp-<name>.service`, its `-health.service` probe,
+`-health.timer` and `-restart.service`. It validates an HTTP configuration with no idle exit, prints to stdout, and
 never writes under `/etc`. Names use ASCII letters, digits, underscores and hyphens.
 
-On a Linux host with systemd, Java 17 or newer available as `java`, and `/usr/bin/curl`:
+On a Linux host with systemd, Java 17 or newer available as `java`, and `/usr/bin/curl`
+supporting `--retry-all-errors`:
 
 1. Create the account and install the downloaded JAR outside a user's home:
 
@@ -300,12 +301,12 @@ On a Linux host with systemd, Java 17 or newer available as `java`, and `/usr/bi
 
    ```bash
    /opt/wpilog-mcp/bin/wpilog-mcp service-unit http --config /etc/wpilog-mcp/servers.yaml > pit-units.txt
-   # Copy the three sections from pit-units.txt to their named files, with sudo.
+   # Copy the four sections from pit-units.txt to their named files, with sudo.
    sudo systemd-analyze verify /etc/systemd/system/wpilog-mcp-http*.service /etc/systemd/system/wpilog-mcp-http-health.timer
    sudo systemctl daemon-reload
    sudo systemctl enable --now wpilog-mcp-http.service wpilog-mcp-http-health.timer
    curl --fail http://127.0.0.1:2363/health
-   sudo journalctl -u wpilog-mcp-http.service -u wpilog-mcp-http-health.service -f
+   sudo journalctl -u wpilog-mcp-http.service -u wpilog-mcp-http-health.service -u wpilog-mcp-http-restart.service -f
    ```
 
 The unit's `StateDirectory=wpilog-mcp` creates and owns `/var/lib/wpilog-mcp`. Its hardening
@@ -318,9 +319,14 @@ signal handler. `Restart=always`
 with a five-second delay and no start-rate limit retries failures indefinitely; an explicit
 `systemctl stop` stays stopped. Use `systemctl restart` after installing an update.
 
-The unprivileged health timer probes every 30 seconds with a five-second HTTP deadline and
-records failures in the journal. It reports; it does not restart a process merely because a
-probe failed. Stopping the main service stops its timer too; start both again when resuming.
+The unprivileged health timer starts a probe every 30 seconds. The probe makes up to three
+HTTP attempts, each bounded by five seconds, with ten seconds between failed attempts; its
+40-second unit deadline includes the attempts and retry delays. Only an exhausted probe
+activates `wpilog-mcp-<name>-restart.service`. That narrow root handler runs
+`systemctl --no-block try-restart` for this named server, so an explicitly stopped service
+stays stopped. The probe itself keeps the `wpilog-mcp` account. Stopping the main service stops
+its timer too; start both again when resuming. A stopped or low-disk capture still answers
+process health with `status: ok`, so recorder state alone does not trigger a restart.
 The probe uses the configured port on `127.0.0.1`; if you bind only to a particular network
 address with `WPILOG_HTTP_BIND`, update the probe URL to that address as well. The service keeps
 the existing [HTTP network policy](#http-transport).
@@ -443,11 +449,32 @@ evidence.
 
 **Unassigned files.** Unassigned payloads live under `unassigned/<hash prefix>/robot/`, apart from `import.json`; older entries remain readable and migrate on the next import. A file with a control filename is placed in a hash subdirectory, keeping its original name and bytes.
 
-**With the daemon running.** The command posts sources inside the configured directories to the daemon's import endpoint and prints the job's progress and its complete result. Sources outside them, such as a USB stick, are copied (or moved, with `--move`) into the store's inbox for the daemon to import; the command says where it put them, and their results land in `inbox/imported.log`. A failed HTTP request is reported, and no second importer is started.
+**With a server answering.** The command probes the named configuration's port and checks the
+configuration name returned by `/health`. A systemd-managed server owns imports the same way as
+a launcher daemon; no PID record is required, and the command does not adopt or restart it.
+Sources inside configured directories are posted to that server's import endpoint, and the
+command prints the job's progress and complete result. Outside sources, such as a USB stick,
+are copied (or moved with `--move`) into the store's inbox for that server to import; their
+results land in `inbox/imported.log`. A different server name, an unrecognized response, a
+timeout or a failed HTTP import is reported, and no second importer is started.
+
+Run the command with the same `WPILOG_HTTP_BIND` environment as the server. Explicit loopback
+addresses, including `::1`, are supported; wildcard binds use loopback for path imports.
+A specific non-loopback bind is refused: server-path imports require a direct loopback
+connection, and a failed loopback probe cannot establish that a server bound elsewhere is
+stopped. Use the byte-upload endpoint or configure a loopback or wildcard bind.
 
 With `--robot`, the command writes `batch.json` beside the batch files (`{"stated_robot":"practice"}`), and the daemon uses that stated robot when a log has no logged identity. A robot name uses letters, digits, dots, hyphens and underscores, and must be a portable filename (no Windows device names, no trailing dot).
 
-**Without a daemon.** The command imports in its own process, staging outside files through the inbox as needed, with `--robot` applied to that import. It holds a `FileChannel` lock on `store.lock` for the whole import, as the daemon does; if another process holds the lock, the import fails promptly with a retry message. Do not delete `store.lock`: the persistent file is what lets every process lock the same object. A lock file that is a symbolic link, even a dangling one, is refused before an HTTP import or assignment is accepted, and lock opens never follow links.
+**Without an answering server.** Only a refused connection on the configured loopback endpoint
+permits an offline import. The command imports in its own process, staging outside files through
+the inbox as needed, with `--robot` applied to that import. Hashing, inspection, correlation and
+copy verification run outside `store.lock`; short publication turns recheck the source and
+manifest before placement. Proven file pairs retain one atomic group publication. If another
+process holds the lock, imports fail promptly with a retry message; capture admission retries
+within its existing deadline. Do not delete `store.lock`: the persistent file lets every process
+lock the same object. Symbolic lock paths, including dangling ones, are refused, and lock opens
+never follow links.
 
 **Exit codes.** 0 for a completed import or an accepted inbox transfer, 1 for a failure or a refused direct file, and 2 for a command-line error. An accepted inbox transfer may still be refused later; check its receipt.
 
@@ -620,6 +647,29 @@ wpilog-mcp start http
 ```
 
 The server starts in the background, and the command returns once it answers. Clients connect to `http://127.0.0.1:2363/mcp`: the port is the server's `port`, and `WPILOG_HTTP_PATH` changes the path. The server writes its log to `~/.wpilog-mcp/logs/http.log` and its process ID to the first line of `~/.wpilog-mcp/run/http.pid`. `GET /health` answers as soon as the server is up, with the server's version, configuration `name`, process ID, `managed` ownership, `server_instance_id`, and `working_state`. `name` is null for HTTP started with the unnamed legacy flags; stdio has no health route.
+
+`store_filesystems` adds one row per registered filesystem with an opaque `filesystem_id`,
+`state` (`available` or `unknown`), nullable `free_bytes`, `reserved_bytes` and
+`capture_reserve_bytes`. These are published samples; health does no filesystem I/O and
+exposes no store paths. `status` remains `ok` when space is low or unknown.
+The capture keys `disk_reserve_bytes`, `disk_floor_bytes` and `disk_resume_margin_bytes`
+default to 2 GiB, 256 MiB and 512 MiB. See
+[capture configuration](pit-server/STANDALONE.md#pit-server) for exact bounds, reserve ownership
+and the pending legacy copy integrations.
+
+`capture` contains `configured_count` and a `captures` array, currently zero or one row. Each
+row reports `state` (`waiting_admission`, `recording` or `stopped`), a finite `reason` when
+stopped, nullable `last_write_age_ms`, `longest_listener_loop_stall_us`, and
+`longest_store_queue_turn_us`. Before the first completed write, the age is null. Reasons
+distinguish not started, waiting for a clock or topic, disconnection, admission failure, write
+failure, startup failure, low disk, close and shutdown. No path, robot identity, recorder
+identifier or raw error message is included. The two maxima cover observations since the
+preceding health probe, shared by all callers; a racing completion is not lost and an ongoing
+stall remains visible across probes. The store maximum measures the mutation action and
+currently excludes a blocked completion-report callback; see
+[the remaining reporting limit](ARCHITECTURE_HARDENING_PLAN.md#implementation-disposition--2026-10-20).
+Health reads published state without joining the listener, store queue or filesystem.
+`status` remains `ok` while HTTP answers, including a stopped recorder.
 
 ### Recorded visualization preview
 
@@ -1211,6 +1261,11 @@ GET /data/entries?path=<log>&names=<entry>[,<entry>...][&start_time=<s>][&end_ti
 
 `path` is the log, as `list_available_logs` lists it. `names` is a comma-separated list of one or more of: an entry; an entry with a field path appended (`/Drive/Pose.translation.x`, as `get_statistics` takes it); or a REV log signal's key as `list_revlog_signals` gives it (`REV/SparkMax_3/AppliedOutput`). `start_time` and `end_time` are seconds, as every tool takes them. `max_points` buckets by the same rule as `read_entry`'s `max_points` (see [TOOLS.md](TOOLS.md#read_entry)): at most that many buckets of equal duration over the window, each with its count, minimum, maximum, mean, first, and last.
 
+WPILOG bucket membership and first/last order use original integer microseconds; equal original
+timestamps retain file order. Explicit second bounds round to the nearest microsecond, and the
+last bucket includes the window end. Arrow retains original long timestamps and exact bucket
+starts. CSV seconds labels can round adjacent large timestamps to the same displayed number.
+
 A REV signal streams on the wpilog's clock, as `get_revlog_data` reads it. Its entry metadata carries `rev` with the device, the signal, the bus, `sync_method`, `timestamps_aligned`, `offset_seconds`, and `sync_confidence`, so a reader knows the offset's basis. A REV log that could not be synchronized is refused with the reason; one still synchronizing answers `503` with `Retry-After`.
 
 - `format=arrow` (the default) is the Apache Arrow IPC streaming format, `application/vnd.apache.arrow.stream`.
@@ -1234,8 +1289,10 @@ curl 'http://127.0.0.1:2363/data/entries?path=/Users/me/riologs/akit_26-03-21_16
 
 ### The native read API
 
-`/read/v1` gives custom applications the shared reader directly: a manifest catalog, retained
-WPILOG snapshots and bounded sample queries in Arrow or typed NDJSON. Queries use exact integer
+`/read/v1` is the exact typed-read protocol for custom applications: a manifest catalog, retained
+WPILOG snapshots and bounded sample queries in Arrow or typed NDJSON. Viewers, scripts and
+dashboards use the bulk presentation route `/data/entries`; the native protocol serves clients
+that need explicit snapshot, session or follow lifetimes and typed values. Queries use exact integer
 microseconds and preserve native values; snapshots expose schema provenance and file boundaries.
 Queries can project struct fields, reduce numeric values to min/max buckets, request several
 entries or combine session files with recorded clock proof; REV queries decode the named signal.
@@ -1265,8 +1322,9 @@ A standalone library excludes open captures it cannot freeze and names the recor
 as the remedy. Session indexes share a bounded catalog allowance as described in the API guide.
 A terminal status proves stream completion. These additive routes follow the same Origin and path
 admission as other read routes, and store files must be manifested. They make no store changes.
-The existing `/data/entries` format and MCP tools keep their behavior. [READ_API.md](READ_API.md)
-documents the routes, limits, Java local/remote library, recorded REV access and Python example.
+The `/data/entries` and MCP admission and wire formats remain separate; WPILOG reductions now
+share the documented integer-microsecond bucket rule. [READ_API.md](READ_API.md) documents the
+routes, limits, Java local/remote library, recorded REV access and Python example.
 
 ### The Import Endpoint
 
@@ -1443,6 +1501,11 @@ readable. Configure a mirror, observe `migration_required`, then use its local
 `POST /store/mirror/migrate` control with the exact store UUID. A successful upgrade reports
 `ready`; the next synchronization pass contacts the configured master and eligible peers.
 Generation recovery and explicit local cleanup are available; see the mirror reference for revision-bound requests.
+The replica summary's `catalog_capacity` reports record and exclusion counts, their limits,
+and `near_limit`, which becomes true at 3,277 of either 4,096-count limit. A missing catalog
+capacity means no valid catalog facts are available, not an empty catalog. Encoded metadata
+limits and payload capacity are separate. See the [mirror reference](pit-server/STANDALONE.md#the-mirror)
+for pending-publication limitations and the count gauges.
 
 For a master, `POST /store/replicas/migrate` accepts `{ "store_id": "<UUID>" }` and returns 202
 with `job_id`. Poll `GET /store/replicas/jobs/<job_id>` for `running`, `complete` or `error`.

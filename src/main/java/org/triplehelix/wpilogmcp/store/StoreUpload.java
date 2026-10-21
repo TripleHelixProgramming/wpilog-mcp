@@ -27,10 +27,12 @@ public final class StoreUpload implements AutoCloseable {
   private final Path root, directory, marker, path;
   private final FileChannel channel;
   private final FileLock lock;
+  private final DiskSpaceBudgets.Reservation reservation;
+  private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
   private StoreUpload(Path root, StoreFiles io, Path directory, Path marker, Path path,
-      FileChannel channel, FileLock lock) {
+      FileChannel channel, FileLock lock, DiskSpaceBudgets.Reservation reservation) {
     this.root = root; this.io = io; this.directory = directory; this.marker = marker; this.path = path;
-    this.channel = channel; this.lock = lock;
+    this.channel = channel; this.lock = lock; this.reservation = reservation;
   }
   public Path path() { return path; }
   Path root() { return root; }
@@ -40,45 +42,57 @@ public final class StoreUpload implements AutoCloseable {
     if (hash == null || !hash.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("X-WPILOG-SHA256 must be a lowercase SHA-256 hash");
   }
   static StoreUpload receive(Path root, SecurityValidator security, String name, long length,
-      String hash, InputStream input) throws IOException {
+      String hash, InputStream input, CopySpace space) throws IOException {
     validate(name, length, hash);
     var io = new StoreFiles(root, security);
     if (io.read(root.resolve("store.json"), StoreManifest.Header.class).mirror()) {
       throw new IOException("A mirror is owned by its synchronization; uploads are refused");
     }
     var inbox = io.check(root.resolve("inbox")); Files.createDirectories(inbox);
-    String id = ".transfer-" + UUID.randomUUID();
-    var directory = io.check(inbox.resolve(id)); var marker = io.check(inbox.resolve(id + ".lock"));
-    var channel = FileChannel.open(marker, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
-    FileLock lock;
-    try { lock = channel.lock(); } catch (IOException | RuntimeException e) { channel.close(); Files.deleteIfExists(marker); throw e; }
-    var upload = new StoreUpload(root, io, directory, marker, directory.resolve(name), channel, lock);
+    // The header gives the allocation before the body. Refusal must precede even its first read.
+    var reservation = space.reserve(inbox, length);
     try {
-      Files.createDirectory(directory);
-      var digest = MessageDigest.getInstance("SHA-256");
-      long count = 0;
-      try (var output = Files.newOutputStream(io.check(upload.path), StandardOpenOption.CREATE_NEW)) {
-        byte[] buffer = new byte[64 * 1024];
-        for (int read; (read = input.read(buffer)) != -1;) {
-          count += read;
-          if (count > length) throw new IOException("Upload exceeds its declared Content-Length");
-          output.write(buffer, 0, read); digest.update(buffer, 0, read);
-        }
+      String id = ".transfer-" + UUID.randomUUID();
+      var directory = io.check(inbox.resolve(id)); var marker = io.check(inbox.resolve(id + ".lock"));
+      var channel = FileChannel.open(marker, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+      FileLock lock;
+      try { lock = channel.lock(); }
+      catch (IOException | RuntimeException e) {
+        channel.close(); Files.deleteIfExists(marker); throw e;
       }
-      if (count != length) throw new IOException("Upload ended before its declared Content-Length");
-      if (!HexFormat.of().formatHex(digest.digest()).equals(hash)) throw new IllegalArgumentException("Upload SHA-256 differs from the source");
-      return upload;
-    } catch (java.security.NoSuchAlgorithmException e) {
-      upload.close(); throw new IllegalStateException("The JDK must provide SHA-256", e);
-    } catch (IOException | RuntimeException e) {
-      try { upload.close(); } catch (IOException cleanup) { e.addSuppressed(cleanup); }
-      throw e;
+      var upload = new StoreUpload(root, io, directory, marker, directory.resolve(name), channel, lock, reservation);
+      try {
+        Files.createDirectory(directory);
+        var digest = MessageDigest.getInstance("SHA-256");
+        long count = 0;
+        try (var output = Files.newOutputStream(io.check(upload.path), StandardOpenOption.CREATE_NEW)) {
+          byte[] buffer = new byte[64 * 1024];
+          for (int read; (read = input.read(buffer)) != -1;) {
+            count += read;
+            if (count > length) throw new IOException("Upload exceeds its declared Content-Length");
+            output.write(buffer, 0, read); digest.update(buffer, 0, read);
+          }
+        }
+        if (count != length) throw new IOException("Upload ended before its declared Content-Length");
+        if (!HexFormat.of().formatHex(digest.digest()).equals(hash)) throw new IllegalArgumentException("Upload SHA-256 differs from the source");
+        return upload;
+      } catch (java.security.NoSuchAlgorithmException e) {
+        upload.close(); throw new IllegalStateException("The JDK must provide SHA-256", e);
+      } catch (IOException | RuntimeException | Error e) {
+        try { upload.close(); } catch (IOException cleanup) { e.addSuppressed(cleanup); }
+        throw e;
+      }
+    } catch (IOException | RuntimeException | Error failure) {
+      reservation.close(); throw failure;
     }
   }
   @Override public void close() throws IOException {
-    // Keep the ownership lock until our bytes are gone, then close it before Windows deletes it.
-    try { Files.deleteIfExists(io.check(path)); Files.deleteIfExists(io.check(directory)); }
-    finally { try { lock.close(); } finally { channel.close(); } }
-    Files.deleteIfExists(io.check(marker));
+    if (!closed.compareAndSet(false, true)) return;
+    try {
+      // Keep the ownership lock until our bytes are gone, then close it before Windows deletes it.
+      try { Files.deleteIfExists(io.check(path)); Files.deleteIfExists(io.check(directory)); }
+      finally { try { lock.close(); } finally { channel.close(); } }
+      Files.deleteIfExists(io.check(marker));
+    } finally { reservation.close(); }
   }
 }

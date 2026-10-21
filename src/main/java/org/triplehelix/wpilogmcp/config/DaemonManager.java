@@ -9,6 +9,8 @@ import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
+import java.net.Inet6Address;
 import java.net.URI;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.FileAlreadyExistsException;
@@ -294,6 +296,41 @@ public class DaemonManager {
   /** Find the owner for an import without starting or restarting a daemon. */
   public Optional<RunningDaemon> runningDaemon(String name) {
     return locked(name, () -> findRunning(name));
+  }
+
+  /**
+   * Find the import owner without adopting a supervised process or consulting a stale PID file.
+   * The configured port and reported name identify the owner. An answering stranger is not
+   * permission to create a second writer, and path imports require a direct loopback connection.
+   */
+  public Optional<URI> importEndpoint(String name, int port, String bindAddress) throws IOException {
+    String bind = bindAddress == null || bindAddress.isBlank() ? "127.0.0.1" : bindAddress;
+    var address = InetAddress.getByName(bind);
+    if (!address.isAnyLocalAddress() && !address.isLoopbackAddress()) {
+      throw new IOException("WPILOG_HTTP_BIND='" + bind + "' is a specific non-loopback address. "
+          + "Server-path imports require a direct loopback connection; refusing an offline "
+          + "import because a loopback probe cannot establish that this server is stopped. "
+          + "Use the server's byte-upload endpoint, or configure a loopback or wildcard bind.");
+    }
+    var hosts = address.isAnyLocalAddress()
+        ? address instanceof Inet6Address ? List.of("::1", "127.0.0.1") : List.of("127.0.0.1")
+        : List.of(address.getHostAddress());
+    for (String host : hosts) {
+      var endpoint = URI.create("http://" + (host.contains(":") ? "[" + host + "]" : host) + ":" + port);
+      var answer = probe(endpoint);
+      if (answer.holder() == Holder.NOBODY) continue;
+      if (answer.holder() == Holder.STRANGER) {
+        throw new IOException("Configured server '" + name + "' on " + endpoint
+            + " did not answer as wpilog-mcp; refusing an offline importer beside an answering service");
+      }
+      if (!name.equals(answer.name())) {
+        throw new IOException("Configured server '" + name + "' on " + endpoint + " answers as "
+            + (answer.name() == null ? "an unnamed server" : "'" + answer.name() + "'")
+            + "; refusing to import into another server or start an offline importer");
+      }
+      return Optional.of(endpoint);
+    }
+    return Optional.empty();
   }
 
   /** An action on the named server's PID file that may fail to read or write it. */
@@ -1059,9 +1096,13 @@ public class DaemonManager {
    * wpilog-mcp server answering as one.
    */
   PortProbe probe(int port) {
+    return probe(URI.create("http://127.0.0.1:" + port));
+  }
+
+  private PortProbe probe(URI endpoint) {
     try {
       // The dedicated /health endpoint returns at once; a GET of /mcp would open a stream
-      var url = URI.create("http://127.0.0.1:" + port + "/health").toURL();
+      var url = endpoint.resolve("/health").toURL();
       var conn = (HttpURLConnection) url.openConnection();
       conn.setRequestMethod("GET");
       conn.setConnectTimeout(2000);
@@ -1091,7 +1132,7 @@ public class DaemonManager {
       return PortProbe.NOBODY;
     } catch (IOException | RuntimeException e) {
       // Accepted the connection but did not answer as this server: a timeout, no HTTP, no JSON
-      logger.debug("Port {} answered the health check as a stranger: {}", port, e.toString());
+      logger.debug("Endpoint {} answered the health check as a stranger: {}", endpoint, e.toString());
       return PortProbe.STRANGER;
     }
   }

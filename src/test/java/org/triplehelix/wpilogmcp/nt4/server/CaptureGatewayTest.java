@@ -100,14 +100,8 @@ class CaptureGatewayTest {
             assertEquals(11_000_000 + n, value.timestampUs()); assertEquals(n * 7, value.value());
           }
           var entered = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
-          var job = manager.stores().store(config.store()).importPaths(
-              new org.triplehelix.wpilogmcp.store.LogStore.Request(List.of(), false, null), progress -> {
-                if (progress.phase().equals("starting")) {
-                  entered.countDown();
-                  try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
-                  catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
-                }
-              });
+          var job = org.triplehelix.wpilogmcp.store.StoreQueueTestBarrier.hold(
+              manager.stores().store(config.store()), entered, release);
           try {
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             robot.value("/signal", 11_000_004, 2, 28L).join();

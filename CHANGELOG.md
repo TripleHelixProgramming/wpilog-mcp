@@ -33,6 +33,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The unreleased replica status and metrics now warn when records or exclusions reach
+  80 percent of their separate count limits; previously operators had no count warning
+  before catalog publication reached the cap. Metrics use validated facts in store-owner
+  order and omit unavailable facts; pending capture-publication causes remain a separate gap.
+
+- The unreleased capture service now publishes bounded recorder state and write/stall ages
+  in `/health`; previously a stopped recorder was indistinguishable from an active one there.
+  A stopped recorder keeps process health `ok`. Synthetic and targeted checks passed;
+  real-robot validation remains outstanding.
+- The unreleased store now shares physical disk reservations across stores on the same
+  filesystem for import staging, uploads, replica transfers and known-length pull staging,
+  retaining reservations until
+  I/O unwinds; previously these writers could consume capture's reserve before failing.
+  Legacy queued-copy and peer-sync integration remains pending.
+- The unreleased health and metrics routes now expose published usable, reserved and capture
+  reserve bytes with opaque filesystem labels; previously server disk space was not measured.
+
 - Mirrors exchange paged finalized offers and immutable byte ranges through a bounded server
   protocol. Peer copies remain provisional; only the selected master can confirm or correct
   them. Closed clock companions, provenance and separate metadata bases survive transfer.
@@ -122,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-entry native reads admit separate tables together, in NDJSON or multipart Arrow, and manifested sessions can be read on a requested anchor clock with recorded alignment and source coordinates. Previously readers had to coordinate separate queries and combine files themselves; unproven clocks and overlaps are never silently merged.
 - A caller-polled local follower resumes appended WPILOG prefixes, including partial records and backward timestamps, while retaining older cursors. Previously local native reads could only refuse a growing file and start over.
 - Native REV queries decode only named signals and the model evidence needed for device identity; complete descriptions still share their decode with later queries. Previously reading one signal expanded every device signal and could exceed the decoded-storage budget unnecessarily.
-- A standalone Java reader and additive `/read/v1` HTTP API expose bounded snapshots, native samples and schema provenance to third-party clients. Previously custom applications needed server internals or the explorer's extraction format; existing MCP and `/data/entries` responses stay unchanged.
+- A standalone Java reader and additive `/read/v1` HTTP API expose bounded snapshots, native samples and schema provenance to third-party clients. Previously custom applications needed server internals or the explorer's extraction format; MCP and `/data/entries` retain their formats and admission, with the integer bucket correction described below.
 - Read-only store catalogs now expose recorded files, shared system receipts, provenance and mirror facts through the public reader, and REV access applies recorded offset and drift with an explicit raw-clock fallback. Previously those manifest and alignment owners were reachable only through server workflows.
 
 - MCP and Arrow/CSV now share read admission and record traversal with the local API, including writer-owned live prefixes. Previously the cached, live and selective paths traversed records separately; compatibility materialization retains existing diagnostics, values, ordering, reload notices and lifetimes.
@@ -199,6 +216,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The unreleased source-scope discovery now reuses rechecked directory listings;
+  previously every scoped request reopened each loose-tree directory listing. New store
+  headers in known directories remain visible at the next request; delayed parent metadata
+  is bounded by a one-minute listing refresh. Metadata traversal still scales with known
+  directories.
+
+- The unreleased reduction update now uses exact logged microseconds for `read_entry`,
+  `render_chart` and `/data/entries` bucket membership and first/last order; previously
+  double-second division could put a boundary sample in the earlier bucket, and distinct
+  large timestamps could retain reversed file order after rounding to one double. Chart
+  preparation and sparse exact-sample behavior remain unchanged.
+
+- The unreleased capture writer now closes cleanly at its disk floor and starts a new file
+  after usable space recovers, retaining the NT4 connection and recording the gap in session
+  manifests; previously a full disk was discovered by a write failure and recording waited
+  for a new robot clock. Exact reserve, floor and resume-margin byte settings default to
+  2 GiB, 256 MiB and 512 MiB.
+
 - Continuous folder imports and Set Up Data Store are now experimental and disabled by default behind the named-server `experimental_data_store` flag. Previously the extension exposed setup and loaded saved policies without that gate. With it off, the offer and commands are hidden, and the server loads no ingestion policy or directory grants and starts no synchronization; existing policies and store files are preserved for a later opt-in. Manual imports and organizing remain available.
 
 - Power crossings and battery summaries name an unrecovered window boundary `open_at_scope_end`; the former `open_at_log_end` could be true before the log ended. The old `open_at_log_end` and battery-health `open_at_end` names stay as same-value aliases.
@@ -215,6 +250,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The mirror no longer copies the pit's captures; a laptop records live data from the pit's gateway itself. In 0.10.0-dev1 through dev4 the mirror copied every file of a session, captures included, and refreshed an open capture every pass, 30 seconds apart by default. Captures those versions copied stay unrefreshed until their session ages out. A mirrored session now lists only the files the mirror holds, and the cap counts only those.
 
 ### Fixed
+
+- The unreleased WPILOG reader now rejects synchronization-cache format 12 when adopting exact
+  sample order; previously a cached REV alignment could survive a change to the ordering of its
+  WPILOG clock inputs. Format 13 recomputes those answers from original microseconds.
+
+- The unreleased printed systemd units now request a named-server restart after three bounded
+  HTTP failures ten seconds apart; previously an alive process that stopped answering was only
+  reported. An explicitly stopped service stays stopped. Printed-unit checks passed;
+  Linux-host retry exhaustion and restart validation remain outstanding.
+- The unreleased store importer now stages inspection, correlation and verified copies outside
+  the store queue and lock, then publishes rechecked groups in short turns. Capture turns take
+  priority, an independent watchdog counts actions exceeding one second, and shutdown
+  retains active staging resources until I/O finishes. Previously a long import could exhaust
+  capture admission and stop recording for the rest of a robot boot. A blocked logging callback
+  can still hold the owner after its action timer ends; the decided fix, a bounded log buffer, is
+  not yet implemented.
+- The unreleased capture admission now retries a held `store.lock` with bounded backoff until
+  its admission deadline; previously transient contention from another importer stopped it at
+  the first attempt.
+- The unreleased `import` command now probes the configured endpoint and checks the server name,
+  including managed servers without a PID record. Previously it could import in its own process
+  beside systemd. An answering stranger or a specific non-loopback bind now refuses with a
+  remedy instead of permitting an unsafe offline fallback.
 
 - Replica catalogs now publish bounded external parts behind a small atomic header. Previously
   ordinary metadata could fill the 4 MiB header at roughly 1,800 files, half-commit imports and
@@ -425,6 +483,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The unreleased synchronization-cache checks now require a dated compatibility decision
+  when reviewed parsing, decoding, clock or synchronization inputs change; previously the
+  cache-format rule depended only on manual review. Source changes, missing explanations
+  and false format bumps are checked separately.
+
+- The unreleased capture verification now includes an opt-in ten-minute synthetic
+  recording/import/HTTP soak with exact sample checks and stated listener, store-action, force
+  and sampled-heap bounds; previously the shorter live replay checks did not measure sustained
+  shared-process pressure. The full synthetic run recorded and checked all 3,000,000 values.
+- The unreleased build now refuses packaged native libraries in the application runtime
+  classpath and distribution, while keeping native test oracles separate; previously no build
+  check enforced this boundary for the recording process.
+- The unreleased decision index now has a claim check for dates, statuses and local heading
+  links; previously no index exposed superseded decisions or detected broken record links.
+
 - Server-library regressions cover quota accounting, migration, source revocation, interrupted
   checkpoints and shared HTTP/MCP pressure. The extension's real-server client test now pins
   and checks the current project version; filename sorting previously selected an older JAR
@@ -491,6 +564,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The unreleased multi-session analysis proposal now defines per-session evidence,
+  equally weighted summaries, explicit pooling, confounders and bounded-work decisions;
+  previously no contract prevented a future implementation from silently pooling or
+  omitting sessions. A new tool will implement it; no tool schema has changed yet.
+
+- The unreleased architecture guide now states six recording and resource principles with
+  the failures that motivated them, and `doc/DECISIONS.md` locates standing, superseded and
+  rejected choices; previously those rules were scattered through plans and reviews. The
+  disk-reserve principle explicitly records the remaining gaps in writer admission.
+- The unreleased experimental Explorer plan is now named
+  `doc/pit-server/EXPLORER_REMOTE_SESSIONS.md`; previously it shared `EXPLORER_PLAN.md`
+  with the main viewer plan, making bare citations ambiguous.
+
 - Record the agreed source and mirror design and its implementation checkpoints: direct remote Explorer access, explicit source selection, separate server visualization libraries, and mirror preservation with provisional peer exchange. Mark the conflicting older routing and retention policies as superseded design; runtime behavior is unchanged.
 
 - The ideas guide now records the remaining review hardening by subject: move history and durability, socket admission and receipt timing, client lifecycle and response bounds, Windows token permissions, CSV policy, CI pins and tool dependency ownership. These open decisions previously lived only in the review.
@@ -511,7 +597,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The JFR plan now distinguishes chunk clock anchors from flush delivery time and specifies the measurement needed before streaming; the shop checklist explicitly checks team-owned JMX launch flags, reachability and sampling state.
 - Guides describe the shared server, session leases, user-scope registration, safe legacy migration, capture/store/live layers and their concurrency and network rules. Previously the architecture overview and setup instructions still described private per-project servers. Detailed configuration, testing and remaining manual checks stay in their owning guides.
 - `doc/PIT_SERVER_PLAN.md` and `doc/EXPLORER_PLAN.md` record the implemented pit and viewer layers, their decisions and the work still proposed, linked from `doc/IDEAS.md`. These workflows previously had no team-facing overview or shared development specification.
-- `doc/COLUMNAR_STORE_PLAN.md` records the proposed DuckDB and Parquet analytics cache and why it was rejected: it named no measured problem, Grafana's path already runs through the data endpoint, and a native engine would share the process that records. The weaknesses that review found in the current design are proposed for change in `doc/ARCHITECTURE_HARDENING_PLAN.md`: an import can stop a recording, nothing measures free disk space, `/health` cannot see a stalled capture, two read paths bucket samples differently, several costs grow with the whole store, and the rules behind these choices were not written down. Previously the risk an import poses to a recording and the missing disk measurement were undocumented. Nothing in either plan is implemented.
+- `doc/COLUMNAR_STORE_PLAN.md` records the proposed DuckDB and Parquet analytics cache and why it was rejected: it named no measured problem, Grafana's path already runs through the data endpoint, and a native engine would share the process that records. The weaknesses that review found in the current design are addressed by `doc/ARCHITECTURE_HARDENING_PLAN.md`: an import can stop a recording, nothing measures free disk space, `/health` cannot see a stalled capture, two read paths bucket samples differently, several costs grow with the whole store, and the rules behind these choices were not written down. Previously the risk an import poses to a recording and the missing disk measurement were undocumented. Hardening item 1 and the safe copy/capture subset of item 2 have targeted checks and mutation tests. Item 8 adds the principles, native-artifact guard, decision index and plan rename; its targeted checks and behavioral plants pass. Item 3's full synthetic soak, public health/restart targeted checks and behavioral plants pass. Item 4 corrects integer-microsecond membership and order. Item 5 adds rechecked listing reuse, catalog count warnings and a synchronization-cache compatibility guard, with synthetic before/after measurements. Item 7 records the planned multi-session contract and synthetic measurements. The run stopped at choices about blocked logging, legacy copies, item 6's wall-clock mapping, route differences, the scan index, publication-failure reporting and the multi-session tool; the plan now records the maintainer's decision on each, none yet implemented. The hardening run's one full build failed on four outdated test expectations; the corrected tests pass in targeted runs, but no second full build has run. Its extension, follow-broker, native-sample harness and native-library checks passed. The columnar proposal remains rejected.
 
 ## [0.9.1] - 2026-10-04
 

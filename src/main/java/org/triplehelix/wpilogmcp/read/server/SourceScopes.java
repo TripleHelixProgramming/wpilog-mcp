@@ -57,21 +57,25 @@ public final class SourceScopes {
   private volatile Map<Path, Scope> remembered = Map.of();
 
   public SourceScopes(Supplier<Set<Path>> roots) {
+    this(roots, ignored -> {}, java.time.Clock.systemUTC());
+  }
+  /** The probe observes actual directory listings; bounded access rechecks never invoke it. */
+  public SourceScopes(Supplier<Set<Path>> roots, java.util.function.Consumer<Path> listings, java.time.Clock clock) {
     this.roots = roots;
     // Store discovery deliberately does not follow directory links. Resolve configured root
     // links here, exactly as directory scope identity and the security owner do.
     door = new StoreDoor(() -> roots.get().stream().map(SourceScopes::canonical)
-        .collect(java.util.stream.Collectors.toSet()));
+        .collect(java.util.stream.Collectors.toSet()), listings, clock);
   }
 
-  /** Full root walks, exposed to distinguish admission discovery from bounded access checks. */
+  /** Root discovery traversals; the injected listing probe measures actual directory reads. */
   public long discoveryWalks() { return door.discoveryWalks(); }
 
   public List<Scope> snapshot() throws IOException {
     var configured = roots.get().stream().map(SourceScopes::canonical).distinct().sorted().toList();
     if (configured.size() > MAX_SCOPES) throw new Failure("RESOURCE_LIMIT", "Too many configured source scopes", List.of());
-    // A newly created store changes the choice set immediately, including underneath a
-    // configured directory. StoreDoor's short discovery cache is unsuitable for selection.
+    // Recheck every known directory and store header at once; stable child listings may be
+    // reused. The whole-root five-second cache is still unsuitable for source selection.
     door.refresh();
     var inventory = door.inventory(); var prior = remembered;
     var scopes = new LinkedHashMap<Path, Scope>();

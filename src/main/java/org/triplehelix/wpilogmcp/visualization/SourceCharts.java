@@ -89,7 +89,7 @@ final class SourceCharts {
             }
           }
           samples.sort(Comparator.comparingLong(Sample::timestampUs));
-          var values = samples.stream().map(s -> new TimestampedValue(s.timestampUs() / 1e6, s.value())).toList();
+          var values = samples.stream().map(s -> TimestampedValue.atMicros(s.timestampUs(), s.value())).toList();
           histories.put(entry, new RecordingAnalysis.History(prefix.recordingId(), representative.entries().get(entry), representative.schemas(), values, summary, entryProblems));
         }
         budget.check();

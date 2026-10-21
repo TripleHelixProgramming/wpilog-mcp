@@ -63,7 +63,7 @@ class StoreMoveTest {
     // Model the JDK's old cross-volume move: copy, then delete before the caller verifies.
     @Override void move(Path from, Path to, CopyOption... options) throws IOException {
       if (!from.equals(source)) { super.move(from, to, options); return; }
-      copy(from, to);
+      copy(from, to, Files.size(from));
       delete(from);
     }
   }
@@ -71,8 +71,8 @@ class StoreMoveTest {
   @Test void corruptCrossVolumeCopyLeavesOriginalAndNoReceiptOrPayload() throws Exception {
     byte[] original = Files.readAllBytes(source);
     var result = move(new OtherVolume() {
-      @Override LogStore.CopyAttributes copy(Path from, Path to) throws IOException {
-        var attributes = super.copy(from, to);
+      @Override LogStore.CopyAttributes copy(Path from, Path to, long admittedBytes) throws IOException {
+        var attributes = super.copy(from, to, admittedBytes);
         byte[] bytes = Files.readAllBytes(to);
         bytes[bytes.length - 1] ^= 1;
         Files.write(to, bytes);
@@ -119,7 +119,7 @@ class StoreMoveTest {
         optionsUsed.addAll(List.of(options));
         calls.add("rename"); super.move(from, to, options);
       }
-      @Override LogStore.CopyAttributes copy(Path from, Path to) throws IOException {
+      @Override LogStore.CopyAttributes copy(Path from, Path to, long admittedBytes) throws IOException {
         throw new IOException("Same-volume rename must not copy");
       }
     });
@@ -138,8 +138,8 @@ class StoreMoveTest {
         calls.add("rename");
         throw new AtomicMoveNotSupportedException(from.toString(), to.toString(), "synthetic volume");
       }
-      @Override LogStore.CopyAttributes copy(Path from, Path to) throws IOException {
-        calls.add("copy"); return super.copy(from, to);
+      @Override LogStore.CopyAttributes copy(Path from, Path to, long admittedBytes) throws IOException {
+        calls.add("copy"); return super.copy(from, to, admittedBytes);
       }
       @Override void force(Path to) throws IOException {
         assertArrayEquals(original, Files.readAllBytes(source));
@@ -160,7 +160,6 @@ class StoreMoveTest {
   }
 
   @Test void aNewOriginalAppearingDuringVerificationIsNeverDeleted() throws Exception {
-    byte[] original = Files.readAllBytes(source);
     byte[] replacement = new byte[]{9, 8, 7, 6};
     var result = move(new OtherVolume() {
       @Override void force(Path to) throws IOException {
@@ -169,11 +168,12 @@ class StoreMoveTest {
         Files.write(source, replacement);
       }
     });
-    assertEquals("imported", result.status());
+    // The stronger staging rule refuses stale inspection facts before making a receipt.
+    assertEquals("refused", result.status());
     assertTrue(Files.exists(source), "A new file at the original path must survive cleanup");
     assertArrayEquals(replacement, Files.readAllBytes(source));
-    assertArrayEquals(original, Files.readAllBytes(result.path()));
-    assertTrue(result.reason().contains("original could not be removed"), result.reason());
+    assertNull(result.path(), "A refused Move discards its own staged copy");
+    assertTrue(StoreCatalog.read(root, security).files().isEmpty());
     assertTrue(result.reason().contains("changed"), result.reason());
   }
 

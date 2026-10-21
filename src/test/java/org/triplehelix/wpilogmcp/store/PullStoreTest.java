@@ -214,7 +214,8 @@ class PullStoreTest {
     while (System.nanoTime() < deadline) {
       var thread = worker.get();
       if (thread != null && thread.getState() == Thread.State.WAITING && java.util.Arrays.stream(thread.getStackTrace()).anyMatch(frame ->
-          frame.getClassName().equals(LogStore.class.getName()) && frame.getMethodName().equals("capture"))) return;
+          frame.getClassName().equals(LogStore.class.getName()) && frame.getMethodName().equals("capture")
+              || frame.getClassName().equals(CopyLeaseGroup.class.getName()) && frame.getMethodName().equals("await"))) return;
       Thread.sleep(1);
     }
     fail("Worker did not reach the deliberately blocked store queue");

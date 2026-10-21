@@ -71,7 +71,8 @@ class MetricsProjectionTest {
   @Test void everyLineHasIndependentKnownValuesWithBoundedArraysAndRecordedStructFields() {
     for (int t : new int[] {0, 2, 5}) for (int limit : new int[] {0, 3, 16}) {
       var view = PrometheusText.parse(MetricsEndpoint.render(new MetricsConfig(List.of(), limit), snapshot(topics(t)),
-          new MetricsEndpoint.Components(4, Map.of("synthetic", new MetricsEndpoint.ProviderCost(.002, 31))), jvm()));
+          new MetricsEndpoint.Components(4, Map.of("synthetic", new MetricsEndpoint.ProviderCost(.002, 31))), jvm(),
+          new org.triplehelix.wpilogmcp.store.StoreRegistry.QueueMetrics(3, 1_234_567)));
       var expected = new LinkedHashMap<Key, Double>();
       put(expected, SPECIAL, null, null, Math.sin(t)); put(expected, "/numeric/count", null, null, t);
       put(expected, "/numeric/flag", null, null, t % 2 == 0 ? 1 : 0); put(expected, "/numeric/float", null, null, (double) (t / 10f));
@@ -114,7 +115,9 @@ class MetricsProjectionTest {
       assertEquals(500, view.value("wpilog_jvm_memory_max_bytes", Map.of("area", "heap")));
       assertEquals(2, view.value("wpilog_jvm_gc_collections_total", Map.of("collector", "collector")));
       assertEquals(1.25, view.value("wpilog_jvm_gc_duration_seconds_total", Map.of("collector", "collector")));
-      assertEquals(expected.size() + topics.size() + 21, view.samples().size(), "Every emitted sample has an independent assertion");
+      assertEquals(3, view.value("wpilog_store_queue_over_budget_turns_total", Map.of()));
+      assertEquals(1.234567, view.value("wpilog_store_queue_longest_turn_seconds", Map.of()));
+      assertEquals(expected.size() + topics.size() + 23, view.samples().size(), "Every emitted sample has an independent assertion");
       view.types().forEach((name, type) -> assertEquals(name.endsWith("_total") ? "counter" : "gauge", type));
     }
   }

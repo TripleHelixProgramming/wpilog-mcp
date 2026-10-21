@@ -46,12 +46,19 @@ curl http://127.0.0.1:2363/health
 ```
 
 `start http` prints that the server is running (or already was); `/health` answers with the
-version, configuration `name`, process ID, `managed`, the `gateway` status field, and
+version, configuration `name`, process ID, `managed`, the `gateway` and `capture` status fields, and
 `server_instance_id`/`working_state`. A named server normally reports durable local owner
 identity. If its visualization state cannot be opened, it logs a warning and continues with
 ephemeral identity; `working_state_reason` explains the fallback. Unnamed servers also report
 ephemeral identity and a reason. This does not create a log store; the recorded visualization preview is opened explicitly. The server's log is at
 `~/.wpilog-mcp/logs/http.log`.
+
+If HTTP is healthy but recording has stopped, inspect `capture.captures[].state` and `reason`.
+`low_disk` resumes automatically when free space is above the configured floor plus margin;
+`startup_failed`, `admission_failed` and `write_failed` have details in the private server log.
+`last_write_age_ms` is null before a completed write. A high age alone does not prove missing
+data: a topic may publish only when it changes. Stopped capture keeps process health `ok` and
+does not by itself activate the systemd restart handler.
 
 Startup writes one `Configuring log directory:` line per configured root to that log.
 Containment checks during installation and reads do not add INFO messages of their own.
@@ -699,9 +706,20 @@ and placed by robot and session. The output lists each file as imported, present
 left at its source), unassigned (no robot or session known yet) or refused, with the reason.
 If Move cannot remove the original after committing a verified copy, the result still reports
 the import and explains why the original remains.
-When the local server is running, an import from its configured directories is submitted
-to it; other sources are copied into the store's `inbox/` for import. The Logs view also
+The command probes the configured port and reported server name, including a systemd-managed
+server without a PID record. An import from that server's configured directories is submitted
+to it; the printed job line identifies the server-owned request. Other sources are copied
+into the store's `inbox/` for import. An answering stranger, wrong name or failed request refuses
+instead of starting another writer. Use the server's `WPILOG_HTTP_BIND` environment; a specific
+non-loopback bind requires the byte-upload route or a loopback/wildcard bind, as the reference
+explains. The Logs view also
 offers **Import**. Reference: [Importing Logs](STANDALONE.md#importing-logs).
+
+An import stages its inspection and copy work away from capture's mutation owner. Capture
+admission takes the next turn before waiting import turns and retries a briefly held
+`store.lock` within its admission deadline. A source changed after staging is refused with
+its reason and left in place; retry after its writer has finished. An over-one-second store
+turn produces one log notice and increments `wpilog_store_queue_over_budget_turns_total`.
 
 A WPILOG import of a known robot joins a session that already has a capture or a data-matched
 log only on strong correlation within 250 ms. Without such an anchor it is grouped by calendar
@@ -729,6 +747,14 @@ the server; the HTTP route is `POST /store/assign`
 - **Backing up a store.** Stop the server and copy the whole store directory.
 - **Disk space.** The REV synchronization cache has its own `diskcachesize` cap; imported logs
   are kept until you choose to remove them. See [Config Fields](STANDALONE.md#config-fields).
+  `/health` reports `store_filesystems` with `free_bytes`, `reserved_bytes` and
+  `capture_reserve_bytes`; unknown free space is null. With default capture settings, at
+  256 MiB usable space or less recording closes cleanly while NT4 stays connected. Free space
+  by removing or moving files you intend to retire, then leave the server running: a new
+  recording starts once usable space exceeds 768 MiB. The old low-disk end reason and the
+  new session's start time show the unrecorded interval. Unknown space leaves the current
+  state unchanged. See [capture disk settings](pit-server/STANDALONE.md#pit-server), including
+  the copy paths whose reserve integration remains pending.
 - **Memory.** `WPILOG_MAX_HEAP` (default `4g`) sets the server's heap. Large logs may need
   `8g`; the extension's `maxHeap` setting supplies the heap when it starts the server.
 - **Secrets.** Keep the TBA key in YAML, the environment or the extension's secret storage,
@@ -816,6 +842,12 @@ source, and direct remote visualization continues to use the selected server.
    `keys` to `POST /store/mirror/reinclude`. It removes only those acquisition exclusions; it
    neither downloads files nor edits definitions. Poll the same operation status.
 
+The replica summary's catalog capacity shows record and exclusion counts, each with a
+4,096 limit. Its near-limit flag turns on at 3,277 of either count. This warns before
+count-based admission fails; encoded metadata limits and payload space are separate.
+Missing capacity facts mean unavailable, not zero. The warning does not authorize deleting
+held copies or prove that every completed capture has entered the mirror's catalog.
+
 For master migration, use the local job route described in
 [Explicit replica-format migration](STANDALONE.md#explicit-replica-format-migration). The checkpoint
 implements paged reconciliation; native platform and durability validation remain required before operational mirror upgrades.
@@ -839,3 +871,6 @@ one or more completed receipts could not enter the replica catalog. Preserve the
 `.replica-publication.json` markers. Check the reported capacity or I/O failure before retrying
 publication; restarting does not discard those receipts or prevent the next recording. The
 [mirror reference](pit-server/STANDALONE.md#the-mirror) lists the metadata limits and recovery bound.
+Mirror status does not yet preserve an aggregate reason for every pending capture publication
+across restart; inspect the capture's reported failure and server log instead of inferring the
+cause from the catalog count.

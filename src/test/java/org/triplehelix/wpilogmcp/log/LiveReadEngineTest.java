@@ -15,8 +15,8 @@ import org.junit.jupiter.api.io.TempDir;
 import org.triplehelix.wpilogmcp.capture.WpilogOutput;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 
-/** Shared cursor admission must preserve the live view's fixed prefix and legacy ordering,
- * including the distinction between an exact robot timestamp and a rounded double timestamp. */
+/** Shared cursor admission preserves the live view's fixed prefix and exact timestamp ordering,
+ * even when distinct robot timestamps share a rounded legacy double timestamp. */
 class LiveReadEngineTest {
   @TempDir Path temp;
 
@@ -107,7 +107,7 @@ class LiveReadEngineTest {
     } finally { live.finish(); live.close(); }
   }
 
-  @Test void legacyDoubleTimestampTiesRemainInFileOrderForHotAndColdReads() throws Exception {
+  @Test void legacyDoubleTimestampTiesUseExactMicrosecondOrderForHotAndColdReads() throws Exception {
     long low = 1L << 53;
     long high = low + 1;
     assertEquals(low / 1_000_000.0, high / 1_000_000.0,
@@ -121,7 +121,8 @@ class LiveReadEngineTest {
       append(out, live, entry, high, 1);
       append(out, live, entry, low, 2);
       try (var hot = live.retainView()) {
-        assertEquals(List.of(1L, 2L), values(hot));
+        assertEquals(List.of(2L, 1L), values(hot));
+        assertEquals(List.of(low, high), hot.values().get("/x").stream().map(TimestampedValue::timestampUs).toList());
         var records = hot.records("/x", true);
         assertFalse(records.monotonic());
         assertEquals(high, records.timestampUs(0));
@@ -130,7 +131,8 @@ class LiveReadEngineTest {
       live.advance(high); live.expire();
       assertEquals(0, live.hotRecordCount());
       try (var cold = live.retainView()) {
-        assertEquals(List.of(1L, 2L), values(cold));
+        assertEquals(List.of(2L, 1L), values(cold));
+        assertEquals(List.of(low, high), cold.values().get("/x").stream().map(TimestampedValue::timestampUs).toList());
         assertFalse(cold.records("/x", false).monotonic());
       }
     } finally { live.finish(); live.close(); }

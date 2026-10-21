@@ -198,19 +198,19 @@ class LiveToolsTest {
       rig.announce("/SystemStats/SerialNumber", "string"); rig.announce("/x", "int");
       rig.value("/x", 10_000_000, 2, 1L); rig.flush(); rig.manager.stores().awaitImports();
       var entered = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
-      var job = rig.manager.stores().store(rig.root).importPaths(new org.triplehelix.wpilogmcp.store.LogStore.Request(List.of(
+      var store = rig.manager.stores().store(rig.root);
+      var held = org.triplehelix.wpilogmcp.store.StoreQueueTestBarrier.hold(store, entered, release);
+      var job = store.importPaths(new org.triplehelix.wpilogmcp.store.LogStore.Request(List.of(
           org.triplehelix.wpilogmcp.fixtures.ImportFixture.write(directory.resolve("stick/import.wpilog"), 9, null, rig.calendar.get() * 1000 - 250_000)), false,
-          rig.root.relativize(rig.service.live().current().path()).getName(1).toString()), progress -> {
-        if (progress.phase().equals("starting")) { entered.countDown(); try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
-          catch (InterruptedException e) { throw new AssertionError(e); } }
-      });
+          rig.root.relativize(rig.service.live().current().path()).getName(1).toString()), progress -> {});
       try {
         assertTrue(entered.await(10, TimeUnit.SECONDS));
         rig.value("/x", 10_020_000, 2, 2L); rig.flush();
         assertEquals(2, rig.session().get("records").getAsLong());
         assertEquals(2, rig.call("get_latest_values", "{\"entries\":[\"/x\"]}").getAsJsonArray("values").get(0).getAsJsonObject().get("value").getAsLong());
-        assertFalse(job.isDone(), "Queries must finish while the store is still blocked");
-      } finally { release.countDown(); job.get(10, TimeUnit.SECONDS); }
+        assertFalse(held.isDone(), "Queries must finish while the actual store owner is still blocked");
+        assertFalse(job.isDone(), "The import still waits for its publication turn");
+      } finally { release.countDown(); held.get(10, TimeUnit.SECONDS); job.get(10, TimeUnit.SECONDS); }
       rig.manager.stores().awaitImports();
       // This sparse capture cannot prove the imported boot; the import owns a separate session.
       assertEquals(0, rig.session().getAsJsonArray("imports").size());

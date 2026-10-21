@@ -106,6 +106,17 @@ or newly ambiguous candidate requires another off-queue decision. Candidate mani
 individually at 4 MiB; revalidation still visits the managed candidate set. Queue wait and filesystem
 latency have no general wall-clock bound, so recording admission must not join those operations.
 
+Local and inbox imports use the same separation: their staging worker holds source read leases
+while it hashes, inspects, correlates and verifies copies. Publication rechecks those facts
+under `store.lock`. A changed source is refused. One mutation owner selects capture admission
+before waiting import turns; an import's payload inspection cannot occupy that owner.
+The one-second mutation-action budget is observed from a separate daemon and counted once per
+over-budget action, without interruption. It cannot preempt an operating-system operation.
+The current reporter can block in its log sink after the action timer ends, holding the owner
+without increasing that duration; its outside observer can also block while reporting.
+[The hardening plan](../ARCHITECTURE_HARDENING_PLAN.md#implementation-disposition--2026-10-20)
+records the pending policy for bounded reporting without delaying capture.
+
 #### Session matching
 
 Before loading candidates, manifest session ranges nominate overlapping sessions, using the same
@@ -269,6 +280,11 @@ An optional `capture` configuration starts this listener beside the HTTP server.
 not delay HTTP startup. Shutdown drains tool calls, closes the capture, then retires log readers.
 The capture store uses the existing store queue, path validation, move reservations, and manifests.
 Creation, including removal of a resumed file's old hash, runs asynchronously on the store queue.
+Capture admission uses that queue's priority lane. If another process holds `store.lock`,
+capture retries with 5–50 ms backoff outside the owner until its admission deadline; imports
+still refuse contention immediately. A retry checks the deadline before entering publication;
+if an admitted filesystem operation finishes late, the writer retires its result through the
+existing abandoned-admission path.
 The NT4 listener never joins admission. It retains events in arrival order while waiting, preserving
 original robot, receipt and wall-clock times. The backlog is bounded to 65,536 events and 16 MiB of
 accounted storage, including encoded/text payloads and per-event allowances, with a 30-second admission deadline. This is an
@@ -334,6 +350,15 @@ Scanning and hashing an abandoned capture cannot delay the daemon health endpoin
 skipped. The OS lock covers other processes, and the local claim avoids opening a second channel to
 a held lock. The lease is separate from the data: closing mapped readers must not release a writer's
 ownership. A dead process loses its lease.
+
+Public capture progress is published separately from the live source's detailed health:
+`CaptureProgress` contains only finite state/reason values, completed-write age and scalar
+stall maxima. It exposes neither source paths nor raw errors. The HTTP probe reads published
+facts without waiting for recovery, NT4 or the store owner. Listener and store interval
+observations preserve completion racing a probe and leave cumulative metrics intact; every
+health caller shares the interval boundary. A force-only close does not reset the last
+record-write age, and stopped capture leaves process health `ok`. Store maxima retain the
+reporting limitation above.
 
 Recovery scans a readable file before hashing it, preserves an incomplete-tail flag and previously
 closed files, and uses file modification time for `ended_at`, with `end_reason` set to

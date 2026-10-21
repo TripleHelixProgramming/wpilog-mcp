@@ -65,6 +65,42 @@ class LocalIngestionTest {
   }
   private StoreCatalog.Snapshot catalog() throws Exception { return StoreCatalog.read(destination, security); }
 
+  @Test void receiptPublicationDoesNotReadUnrelatedSessionManifestsOnTheOwner() throws Exception {
+    service.close();
+    registry.close();
+    var watched = new java.util.concurrent.atomic.AtomicReference<Path>();
+    var ownerReads = new AtomicInteger();
+    security = new SecurityValidator() {
+      @Override public void validate(Path path) throws IOException {
+        super.validate(path);
+        if (path.equals(watched.get()) && Thread.currentThread().getName().equals("store-owner"))
+          ownerReads.incrementAndGet();
+      }
+    };
+    security.addAllowedDirectory(temp);
+    registry = new StoreRegistry(security);
+    service = new LocalIngestion(registry, security, policyFile);
+    service.clock = now::get;
+    var unrelated = ImportFixture.write(temp.resolve("unrelated.wpilog"), 71,
+        "SYNTHETIC-OTHER", 1_767_225_600_000_000L);
+    registry.store(destination).importPaths(new LogStore.Request(List.of(unrelated), false, "other"), progress -> {})
+        .get(10, TimeUnit.SECONDS);
+    watched.set(catalog().files().get(0).manifestPath());
+    var original = ImportFixture.write(source.resolve("original.wpilog"), 72,
+        "SYNTHETIC-CURRENT", 1_767_312_000_000_000L);
+    String expectedHash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+        .digest(Files.readAllBytes(original)));
+    service.replace(policy("copy", false));
+    poll(0);
+    ownerReads.set(0);
+    poll(3);
+    assertEquals(0, ownerReads.get(), "A receipt turn must read only its outcome's owning manifest");
+    var receipt = service.files(0, 100).files().get(0);
+    assertEquals("imported", receipt.state());
+    assertEquals(expectedHash, receipt.sha256());
+    assertEquals(2, catalog().files().size());
+  }
+
   @Test void settledCopiesKeepOriginalsAndUseExistingDuplicateDetection() throws Exception {
     var original = ImportFixture.write(source.resolve("original.wpilog"), 1);
     var duplicate = Files.copy(original, source.resolve("duplicate.wpilog"));
@@ -373,6 +409,73 @@ class LocalIngestionTest {
     assertFalse(Files.exists(original), "discovery from the old policy cannot leave its Copy source waiting forever under Move");
     assertEquals(1, catalog().files().size());
     assertTrue(catalog().files().get(0).file().provenance().moved());
+  }
+
+  @Test void registryShutdownRetainsIngestionGrantsUntilBlockedStagingUnwinds() throws Exception {
+    var original = ImportFixture.write(source.resolve("blocked.wpilog"), 43);
+    service.close(); registry.close();
+    var entered = new CountDownLatch(1);
+    var release = new CountDownLatch(1);
+    var armed = new java.util.concurrent.atomic.AtomicBoolean();
+    security = new SecurityValidator() {
+      @Override public void validate(Path path) throws IOException {
+        super.validate(path);
+        if (!path.equals(original) || !Thread.currentThread().getName().equals("store-import-staging")
+            || !armed.compareAndSet(true, false)) return;
+        entered.countDown();
+        boolean interrupted = false;
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        try {
+          while (true) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) throw new IOException("Fixture staging was not released");
+            try {
+              if (!release.await(remaining, TimeUnit.NANOSECONDS))
+                throw new IOException("Fixture staging was not released");
+              break;
+            } catch (InterruptedException ignored) { interrupted = true; }
+          }
+        } finally { if (interrupted) Thread.currentThread().interrupt(); }
+      }
+    };
+    security.addAllowedDirectory(temp);
+    registry = new StoreRegistry(security);
+    service = new LocalIngestion(registry, security, policyFile);
+    service.clock = now::get;
+    registry.setLocalIngestion(service);
+    service.replace(policy("copy", false));
+    poll(0);
+    security.clearAllowedDirectories();
+    armed.set(true);
+    now.set(TimeUnit.SECONDS.toNanos(3));
+    service.poll(now.get());
+    var closer = java.util.concurrent.Executors.newSingleThreadExecutor(task -> {
+      var thread = new Thread(task, "ingestion-shutdown-fixture");
+      thread.setDaemon(true);
+      return thread;
+    });
+    java.util.concurrent.CompletableFuture<Void> stopped = null;
+    try {
+      assertTrue(entered.await(10, TimeUnit.SECONDS));
+      stopped = java.util.concurrent.CompletableFuture.runAsync(registry::close, closer);
+      try { stopped.get(1500, TimeUnit.MILLISECONDS); }
+      catch (java.util.concurrent.TimeoutException timeout) {
+        fail("Registry shutdown must not join ingestion's blocked staging operation");
+      }
+      assertFalse(service.currentWork().isDone(),
+          "An admitted ingestion's lifetime must include its blocked staging unwind");
+      assertTrue(security.getAllowedDirectories().contains(source),
+          "Ingestion retains its source grant while the admitted worker still owns it");
+    } finally {
+      release.countDown();
+      if (stopped != null) stopped.get(10, TimeUnit.SECONDS);
+      closer.shutdownNow();
+      try { service.currentWork().get(10, TimeUnit.SECONDS); }
+      catch (java.util.concurrent.ExecutionException stoppedImport) { /* Shutdown refuses placement. */ }
+    }
+    assertFalse(security.getAllowedDirectories().contains(source),
+        "The stopped ingestion releases its grant after actual worker completion");
+    assertTrue(Files.exists(original), "Shutdown never consumes an unplaced source");
   }
 
   @Test void destinationIdentityIsRecheckedAfterQueueing() throws Exception {

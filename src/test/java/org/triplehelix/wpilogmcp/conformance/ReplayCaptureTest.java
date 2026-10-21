@@ -71,10 +71,7 @@ class ReplayCaptureTest {
         var entered = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
         var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
         try {
-          var importing = capture.store.importPaths(new org.triplehelix.wpilogmcp.store.LogStore.Request(java.util.List.of(), false, null), progress -> {
-            if (progress.phase().equals("starting")) { entered.countDown(); try { release.await(5, TimeUnit.SECONDS); }
-              catch (InterruptedException e) { throw new AssertionError(e); } }
-          });
+          var held = org.triplehelix.wpilogmcp.store.StoreQueueTestBarrier.hold(capture.store, entered, release);
           assertTrue(entered.await(5, TimeUnit.SECONDS)); timer.schedule(release::countDown, 1, TimeUnit.SECONDS);
           long begin = System.nanoTime(); gateway.announce("/x", "int", new com.google.gson.JsonObject()).get();
           org.triplehelix.wpilogmcp.harness.HarnessHttp.await("ordered announcement callback", 5, () -> capture.announcements.get() == 1);
@@ -84,7 +81,7 @@ class ReplayCaptureTest {
             try { capture.ready(1); } catch (Exception e) { throw new java.util.concurrent.CompletionException(e); }
           });
           assertThrows(java.util.concurrent.TimeoutException.class, () -> ready.get(50, TimeUnit.MILLISECONDS), "Replay readiness must await the recording, not just its topic table");
-          release.countDown(); importing.get(5, TimeUnit.SECONDS); ready.get(5, TimeUnit.SECONDS);
+          release.countDown(); held.get(5, TimeUnit.SECONDS); ready.get(5, TimeUnit.SECONDS);
           assertTrue(capture.writer.ready()); assertEquals(1, capture.files.size());
         } finally { release.countDown(); timer.shutdownNow(); }
       }
@@ -103,15 +100,12 @@ class ReplayCaptureTest {
         var entered = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
         var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
         try {
-          var importing = capture.store.importPaths(new org.triplehelix.wpilogmcp.store.LogStore.Request(java.util.List.of(), false, null), progress -> {
-            if (progress.phase().equals("starting")) { entered.countDown(); try { release.await(5, TimeUnit.SECONDS); }
-              catch (InterruptedException e) { throw new AssertionError(e); } }
-          });
+          var held = org.triplehelix.wpilogmcp.store.StoreQueueTestBarrier.hold(capture.store, entered, release);
           assertTrue(entered.await(5, TimeUnit.SECONDS)); timer.schedule(release::countDown, 1, TimeUnit.SECONDS);
           gateway.announce("/x", "int", new com.google.gson.JsonObject()).get();
           if (loop instanceof ManualScheduler scheduler) scheduler.until(() -> capture.announcements.get() == 1);
           else org.triplehelix.wpilogmcp.harness.HarnessHttp.await("ordered announcement callback", 5, () -> capture.announcements.get() == 1);
-          capture.stop(); importing.get(5, TimeUnit.SECONDS);
+          capture.stop(); held.get(5, TimeUnit.SECONDS);
           var catalog = org.triplehelix.wpilogmcp.store.StoreCatalog.readManaged(capture.directory, capture.manager.testGetSecurityValidator());
           assertEquals(1, catalog.sessions().size()); assertTrue(catalog.files().isEmpty()); assertTrue(catalog.openCaptures().isEmpty());
           assertTrue(String.valueOf(catalog.sessions().get(0).session().endReason()).contains("Capture stopped during admission"));

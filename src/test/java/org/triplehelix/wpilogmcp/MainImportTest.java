@@ -64,6 +64,13 @@ class MainImportTest {
     return config;
   }
 
+  /** Offline discovery must never probe the maintainer's well-known server port. */
+  private Path offlineConfig(Path... dirs) throws Exception {
+    int port;
+    try (var socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
+    return config("default", port, dirs);
+  }
+
   private JsonObject result(Ran ran) {
     assertEquals(0, ran.code(), ran.output());
     return ran.output().lines().filter(line -> line.startsWith("result "))
@@ -81,7 +88,7 @@ class MainImportTest {
     temp = temp.toRealPath();
     var first = Files.createDirectory(temp.resolve("first"));
     var second = Files.createDirectory(temp.resolve("second"));
-    var config = config("default", 2363, first, second);
+    var config = offlineConfig(first, second);
     var one = ImportFixture.write(second.resolve("one.wpilog"), 1);
     var firstImport = run(config, "--robot", "practice", one.toString());
     assertTrue(firstImport.output().contains("No running daemon"), firstImport.output());
@@ -89,7 +96,7 @@ class MainImportTest {
     assertTrue(destination(result(firstImport)).startsWith(first));
     assertTrue(Files.exists(one), "Default import copies");
     assertTrue(Files.isDirectory(first.resolve("inbox")));
-    var reordered = config("default", 2363, second, first);
+    var reordered = offlineConfig(second, first);
     var two = ImportFixture.write(second.resolve("two.wpilog"), 2);
     var moved = run(reordered, "--move", "--robot", "practice", two.toString());
     assertTrue(destination(result(moved)).startsWith(first), "Prefer an existing store over the first plain directory");
@@ -109,7 +116,7 @@ class MainImportTest {
     var root = Files.createDirectory(temp.resolve("store"));
     var outside = ImportFixture.write(temp.resolve("usb").resolve("outside.wpilog"), 4);
     byte[] bytes = Files.readAllBytes(outside);
-    var imported = run(config("default", 2363, root), "--move", "--robot", "practice", outside.getParent().toString());
+    var imported = run(offlineConfig(root), "--move", "--robot", "practice", outside.getParent().toString());
     assertTrue(imported.output().contains("Moved to inbox:"), imported.output());
     assertArrayEquals(bytes, Files.readAllBytes(destination(result(imported))));
     assertFalse(Files.exists(outside));
@@ -122,7 +129,7 @@ class MainImportTest {
     temp = temp.toRealPath();
     var root = Files.createDirectory(temp.resolve("store"));
     var input = ImportFixture.write(root.resolve("one.wpilog"), 5);
-    var config = config("default", 2363, root);
+    var config = offlineConfig(root);
     try (var channel = FileChannel.open(root.resolve("store.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
          var lock = channel.lock()) {
       var refused = run(config, "--move", "--robot", "practice", input.toString());
@@ -207,7 +214,7 @@ class MainImportTest {
       originals.put(file, Files.readAllBytes(file));
     }
     Files.copy(originals.keySet().iterator().next(), usb.resolve("duplicate.wpilog"));
-    var configuration = config("default", 2363, root);
+    var configuration = offlineConfig(root);
     var first = result(run(configuration, usb.toString()));
     assertEquals(8, first.getAsJsonArray("files").asList().stream()
         .filter(f -> f.getAsJsonObject().get("status").getAsString().equals("imported")).count(), first.toString());

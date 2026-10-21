@@ -117,6 +117,7 @@ assertion that fresh values were published throughout that window.
   - [visualization_view_save](#visualization_view_save)
   - [visualization_view_discard](#visualization_view_discard)
   - [visualization_view_delete](#visualization_view_delete)
+- [Proposed multi-session analysis contract](#proposed-multi-session-analysis-contract)
 - [Data Types](#data-types)
   - [Primitive types](#primitive-types)
   - [Structs](#structs)
@@ -628,6 +629,12 @@ When it holds more, the window (`start_time` to `end_time`, or the samples' own 
 - `mean`: over the finite samples; `null` when none is finite
 - `first` and `last`: the first and last samples as logged
 
+WPILOG bucket membership uses original integer microseconds, and first/last use that order;
+equal original timestamps retain file order. Explicit seconds bounds round to the nearest
+microsecond. Bucket starts name the first integer microsecond admitted to the bucket, expressed
+as seconds; adjacent large starts can share a displayed value. Derived REV clocks retain their
+aligned seconds and use the same nearest-microsecond conversion for buckets.
+
 The extremes are kept because a spike one sample wide is what a person looks for, and a mean would hide it; `first` and `last` let a change-only entry's holds be drawn across a bucket. Buckets with no samples are left out: a gap in a change-only entry is a hold, not missing data.
 
 The result has `bucketed: true`, `bucket_count` (how many buckets have samples), and `total_in_range` (still the true sample count); `offset`/`limit` page the buckets (`limit` defaults to `max_points`). A non-numeric entry is read exactly, with `max_points` in `skipped` and the status `partial`. The data endpoint of the HTTP transport (see [STANDALONE.md](STANDALONE.md#the-data-endpoint)) buckets by the same rule.
@@ -711,8 +718,12 @@ only from the shared Driver Station resolver, with no guessed-name fallback.
 
 Time-series `points` are `[timestamp_sec, value]`; reduced series carry `buckets` (including
 start/end) and `bucket_rule`. With more than 1000 samples and no explicit page, a time series
-uses one equal-duration min/max bucket per plot pixel column, over the entire window.
-`max_points` chooses the bucket count explicitly. `drawn` gives each series' mode
+uses one equal-duration min/max bucket per plot pixel column over the occupied samples of each
+prepared scope window. `max_points` chooses the bucket count explicitly. WPILOG membership and
+first/last order use original integer microseconds; equal original timestamps retain file order.
+Chart preparation still filters nonfinite values and unwraps declared angles before reduction.
+Second labels can round adjacent large instants to the same displayed value. `drawn` gives each
+series' mode
 (`all samples`, `buckets`, or `page`) and count. Nested `limits.points` or `limits.buckets`
 report the true total after offset when truncated. Separate scope windows never join across
 an excluded interval.
@@ -3670,6 +3681,154 @@ and source files remain intact; close an attached editor first. Returns the dele
 - `expected_revision` (required, integer): Current revision to compare before mutation.
 
 **Returns:** `api_version`, `status`, `view` on success; `code` and `error` on refusal.
+
+---
+
+## Proposed multi-session analysis contract
+
+This is a contract for planned work, not an available tool or an extension to an
+existing schema. It will be implemented as a new tool; `compare_matches` stays the
+two-file comparison. The existing `compare_matches` still compares one numeric
+signal in two files, resolves scope separately on their clocks, and returns
+per-file statistics and second-minus-first differences without a significance
+test. It does not implement the session summary or confounder report below.
+
+### Selection and evidence
+
+The session is the unit of analysis. The caller explicitly identifies the source,
+the sessions, the entries or supported signal roles, and the scope applied within
+each session. A role uses the shared signal resolver; a plausible name, shape or
+same-content copy does not supply missing authority. Ambiguous source or signal
+selection is refused with choices and a usable hint. No server, store, file copy
+or session is silently substituted. This contract does not implicitly merge
+stores; any eventual cross-source mode requires its own explicit selection
+contract before implementation.
+
+Selection fixes the population being requested. Each admitted row identifies its
+qualified source, session, input members, and verified content identity or fixed
+snapshot/prefix basis. A rolled recording's members remain one session; several
+copies or repeated selections of one session do not become independent
+observations. The eventual schema must specify its duplicate-selection refusal
+or explicitly reported normalization. It must never count duplicates silently.
+
+Each session keeps its own clock. Named phases and relative windows resolve in
+that session's own timeline, with the requested scope and actual intervals
+reported. There is no inferred alignment of sessions, interpolation across a gap,
+or invented match boundary. Session member alignment and overlap use the shared
+read layer's recorded evidence and declared policy. A type, unit, schema or clock
+mismatch is explained; it is not repaired by assuming two equal names mean the
+same quantity. Input changes during a read follow the existing snapshot refusal
+contract, rather than combining old and new history in one value.
+
+### Session rows and summaries
+
+Every requested session has an accounted disposition: an analyzed row, or a
+`skipped` entry identifying the qualified session and reason. The result reports
+`requested_session_count`, `analyzed_session_count` and `skipped_session_count`;
+for a fully accounted selection, requested equals analyzed plus skipped.
+Pagination of displayed rows does not change these population counts.
+
+Each analyzed row includes:
+
+- Its `inputs`: source/session identity, member identity or prefix basis, selected
+  entries and fields, declaration/type evidence, and units or the explicit basis
+  for a caller-supplied unit.
+- Requested and applied scope, clock/time basis, finite sample counts for each
+  metric, excluded/unreadable counts where relevant, and the requested
+  per-session values. A value that cannot be computed is null with a reason,
+  never zero, NaN or an implicit successful value.
+- `data_quality` for the actual scoped inputs, with reasons. Logged events retain
+  their evidence; a statistical quality score does not invalidate an observed
+  event. Truncated or incomplete inputs are disclosed by the existing contract.
+- Robot, git SHA and event when recorded, and battery identity and firmware when
+  available, each with its evidence and completeness as described below.
+
+Across-session statistics summarize per-session values. For a mean, every
+contributing session gets equal weight: the mean of ten session means has
+`session_count: 10`, regardless of their individual sample counts or durations.
+Each summary metric identifies its contributing sessions and its own
+`session_count`, because a session may have a usable value for one metric and a
+null value for another. Excluded values have reasons; an overall analyzed count
+must not be used as that metric's statistical sample size. Distinct identifiers
+do not prove that sessions are statistically independent.
+
+Raw-sample pooling is opt-in. A separately labeled `pooled` result reports both
+`session_count` and `sample_count`, states the weighting and compatible units,
+and remains distinct from the equally weighted session summary. It cannot be
+introduced merely to reuse the current two-file implementation's sample arrays.
+No significance test, trend verdict or causal claim follows automatically from
+an aggregate; any future inferential statistic needs its own assumptions and
+acceptance tests.
+
+### Confounders and missing facts
+
+`confounders` reports recorded differences besides the metric: code version,
+robot and event, and battery identity and firmware where logged. Each reported
+value identifies the affected sessions and the entry or authoritative manifest
+that supplied it. A conflict between sources or a change within one session
+remains visible, with its recorded span where available; selecting the first
+value and presenting it as the session's constant identity is not acceptable.
+An unknown fact is null with its reason, and unknown sessions remain listed.
+Missing code metadata is not evidence that the code stayed the same. A filename,
+path, store label or server clock supplies none of these facts.
+
+Confounders describe observations, not proved causes. Unknown or conflicting
+metadata does not by itself erase an otherwise usable metric row; its uncertainty
+travels with the comparison. No comparison silently groups away the unknown
+sessions or treats absence of a battery/firmware identifier as equality.
+
+### Bounded work and refusals
+
+Before implementation, the chosen tool contract must state numeric admission
+bounds for requested sessions, member occurrences, metrics/entries and scope
+windows; retained snapshot/index/working memory; concurrent work and waiting
+work; elapsed work; and encoded request/response size. Those values are not
+settled by this document or by the 50-session synthetic workload. A bound on
+returned rows alone is not a bound on scans, decoding, sorting or queued work.
+Existing shared-read limits still apply and are not bypassed for a season request.
+
+The implementation must check what can be checked before expensive admission,
+charge retained work until it actually unwinds, and release snapshots and
+reservations on success, refusal, cancellation and failure. It must preserve
+capture and health responsiveness. Resource exhaustion must return an explained
+refusal with a way to narrow the request; it must not silently analyze only the
+first sessions that happened to fit and call that the requested population.
+
+Output pagination and work admission are different. Any displayed list cut by a
+limit reports its true `limits` total, returned count and limit. A summary says
+which complete set of contributing sessions it covers, independent of the page
+currently displayed. If the true selection total cannot be established within the
+admission bounds, refuse the operation; do not invent a total from a scanned
+prefix. The eventual schema must settle bounded pagination versus a bounded
+single response before implementation, including how all skipped-session reasons
+and contributor identities remain retrievable.
+
+The existing result statuses keep their meanings. An invalid or ambiguous request
+is `error` with a remedy. An unreadable or changed selected input is not relabeled
+`no_match`. A valid search that finds none of its requested data is `no_match`
+with `looked_for` and a hint, never empty success. A result with usable rows and
+sessions or requested metrics omitted is `partial`, with those omissions in
+`skipped`. The final schema must specify which failures reject the entire
+request and which can be reported per session; a partial result must account for
+all requested sessions and cannot imply the unread ones were analyzed.
+
+### Acceptance workload
+
+The synthetic measurement uses 50 sessions with unequal sample counts. Session
+`s`, starting at zero, contains `1000 + 100s` samples of `s + (i mod 5)`.
+Each session's mean is `s + 2`; the unweighted mean is 26.5 with a session count of
+50. The pooled control contains 172,500 samples with mean
+`5612500 / 172500`, approximately 32.53623188405797. Every per-session count,
+timestamp and value is checked independently. The unequal answers detect
+accidental pooling; they do not establish real-season performance.
+
+Once a tool is chosen, its regression tests must additionally show that a git SHA
+change appears in `confounders`, unknown/conflicting facts remain visible, an
+unreadable session appears in `skipped`, each metric counts only its contributors,
+and output limits cannot silently change the summary population. Bounded-work
+and cancellation tests require the final numeric limits and ownership design.
+Until the tool is built, this checkpoint writes the contract and records synthetic
+measurements only; no tool schema, registration or reasoning guidance is changed.
 
 ---
 

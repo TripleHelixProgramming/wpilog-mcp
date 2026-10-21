@@ -61,7 +61,9 @@ public class SyncCacheSerializer {
   // Version 11 accompanies import's same-boot correlation gate (0.10.0-dev1). Existing store
   // receipts remain authoritative; no already-placed association is rewritten.
   // Version 12 corrects the cached clock-drift explanation's ms/hour conversion.
-  public static final int CURRENT_FORMAT_VERSION = 12;
+  // Version 13 retains exact WPILOG microsecond order (0.10.0), which can change the
+  // wall-clock readings and numeric samples used to compute a cached REV synchronization.
+  public static final int CURRENT_FORMAT_VERSION = 13;
 
   /**
    * Whole-payload decoding retains encoded bytes and decoded objects at the same time. A 64 MiB

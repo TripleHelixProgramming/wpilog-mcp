@@ -94,6 +94,10 @@ public final class LiveCapture implements LogStore.Observer {
     return new Metrics(connected(), value == null ? "" : value.connectedAddress(), current,
         latest(), estimate, estimate == null ? null : (double) clock.nowUs() + estimate.offsetUs(), pull.get(), providers);
   }
+  private volatile Supplier<CaptureProgress.Probe> captureProgress = () -> null;
+  /** Internal supplier reads only writer/watchdog atomics, never a queue or filesystem. */
+  void attachCaptureProgress(Supplier<CaptureProgress.Probe> supplier) { captureProgress = supplier; }
+  public CaptureProgress.Probe captureProgress() { return captureProgress.get(); }
   public CaptureStore.Status current() { return current; }
   public void status(CaptureStore.Status status) {
     var previous = current;

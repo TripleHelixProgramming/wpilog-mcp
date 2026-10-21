@@ -14,12 +14,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.triplehelix.wpilogmcp.config.CaptureConfig;
-import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.nt4.client.ManualScheduler;
 import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
 import org.triplehelix.wpilogmcp.nt4.server.Nt4Gateway;
-import org.triplehelix.wpilogmcp.store.LogStore;
 
 /** A real JVM exit releases ownership and loses a queued final manifest, as a daemon kill does. */
 public final class CaptureRecoveryProcess {
@@ -49,18 +47,9 @@ public final class CaptureRecoveryProcess {
       service.start(); gateway.value("/x", 10_000_000, 2, 1L).join(); loop.until(() -> received.get() == 1);
       gateway.value("/x", 12_000_000, 2, 2L).join(); loop.until(() -> received.get() == 2);
       var store = manager.stores().store(path);
-      var fixture = path.getParent().resolve("queued-import.wpilog");
-      try (var output = new WpilogWriter(fixture, "synthetic blocked queue")) {
-        int id = output.start("/x", "int64", "", 0); output.append(id, 1, WpilogWriter.encodeInt64(1));
-      }
-      // Import is queued after the open manifest and holds the same queue as the close update.
-      store.importPaths(new LogStore.Request(List.of(fixture), false, null), progress -> {
-        if (!progress.phase().equals("starting")) return;
-        entered.countDown();
-        try { neverReleased.await(); }
-        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-      });
-      if (!entered.await(10, TimeUnit.SECONDS)) throw new AssertionError("Import never occupied the queue");
+      // Hold a real turn after the open manifest; the child exits before the close can publish.
+      org.triplehelix.wpilogmcp.store.StoreQueueTestBarrier.hold(store, entered, neverReleased);
+      if (!entered.await(10, TimeUnit.SECONDS)) throw new AssertionError("The barrier never occupied the store owner");
       if (!CaptureService.CLOSE_TIMEOUT.equals(Duration.ofSeconds(30))) throw new AssertionError("Expected a 30 second default shutdown bound");
       service.close(); loop.drain();
       // Do not drain the queue or run shutdown hooks: the daemon kill can lose that work too.

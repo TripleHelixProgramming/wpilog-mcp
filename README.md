@@ -176,6 +176,7 @@ Start with the guide for what you are doing. The reference pages are linked from
 | Document | What it covers |
 |----------|----------------|
 | [ARCHITECTURE.md](doc/ARCHITECTURE.md) | The goals and design principles, and how the server reads logs, manages memory, caches results, and handles concurrent clients |
+| [DECISIONS.md](doc/DECISIONS.md) | Dated standing, superseded and rejected decisions, with links to their records |
 | [DEVELOPMENT.md](doc/DEVELOPMENT.md) | Building, test policy, adding a tool, releasing, and contributing |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 

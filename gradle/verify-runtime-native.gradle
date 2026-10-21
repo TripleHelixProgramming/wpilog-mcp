@@ -1,0 +1,41 @@
+// A native library in the recorder's process shares capture's crash and allocation failure
+// boundary. Inspect both what the application runs and what the distribution ships; testNatives
+// belongs only to independent test oracles and is deliberately not an input.
+tasks.register('verifyRuntimeNativeLibraries') {
+    group = 'verification'
+    description = 'Refuse native libraries on the server runtime classpath or in its all JAR'
+    dependsOn tasks.named('classes'), tasks.named('shadowJar')
+    inputs.files(sourceSets.main.runtimeClasspath).withPropertyName('serverRuntimeClasspath')
+    inputs.file(tasks.named('shadowJar').flatMap { it.archiveFile }).withPropertyName('serverAllJar')
+    doLast {
+        def nativeName = { String name ->
+            name.toLowerCase(Locale.ROOT) ==~ /.*\.(so|dylib|jnilib|dll)/
+        }
+        def found = new TreeSet<String>()
+        def inspect = { File artifact ->
+            if (!artifact.exists()) throw new GradleException("Missing server runtime input: ${artifact}")
+            if (artifact.isDirectory()) {
+                artifact.eachFileRecurse(groovy.io.FileType.FILES) { entry ->
+                    if (nativeName(entry.name)) found.add(entry.toString())
+                }
+            } else if (nativeName(artifact.name)) {
+                found.add(artifact.toString())
+            } else if (artifact.name.toLowerCase(Locale.ROOT).endsWith('.jar') ||
+                    artifact.name.toLowerCase(Locale.ROOT).endsWith('.zip')) {
+                new java.util.zip.ZipFile(artifact).withCloseable { archive ->
+                    archive.entries().each { entry ->
+                        if (!entry.directory && nativeName(entry.name))
+                            found.add("${artifact}!/${entry.name}".toString())
+                    }
+                }
+            }
+        }
+        sourceSets.main.runtimeClasspath.files.each(inspect)
+        inspect(tasks.named('shadowJar').get().archiveFile.get().asFile)
+        if (!found.empty) throw new GradleException(
+            "Native libraries are forbidden in the process that records:\n" + found.join('\n'))
+        logger.lifecycle('Verified no packaged native libraries in server runtime classpath and all JAR')
+    }
+}
+
+tasks.named('check') { dependsOn tasks.named('verifyRuntimeNativeLibraries') }

@@ -61,13 +61,8 @@ class ProviderCaptureTest {
         rig.pump(() -> rig.service.live().latest().containsKey("/Daemon/roboRIO/uptime_sec"));
         rig.manager.stores().awaitImports();
         var entered = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
-        var blocked = rig.manager.stores().store(rig.root).importPaths(new org.triplehelix.wpilogmcp.store.LogStore.Request(List.of(), false, null), progress -> {
-          if (progress.phase().equals("starting")) {
-            entered.countDown();
-            try { assertTrue(release.await(10, java.util.concurrent.TimeUnit.SECONDS)); }
-            catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
-          }
-        });
+        var blocked = org.triplehelix.wpilogmcp.store.StoreQueueTestBarrier.hold(
+            rig.manager.stores().store(rig.root), entered, release);
         try {
           assertTrue(entered.await(10, java.util.concurrent.TimeUnit.SECONDS));
           phase.set(1); rig.robot.addAndGet(2_000_000); rig.loop.advance(2_000_000);

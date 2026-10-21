@@ -66,6 +66,12 @@ The editor shows the time range, entries, sample counts, and any truncation note
 
 The extension host calls the same tools as the assistant and fetches samples through the [data endpoint](../doc/STANDALONE.md#the-data-endpoint). The webview fetches only bundled extension resources for its static Perspective engine, viewer, datagrid and charts, including WebAssembly and a local-source worker. Log requests stay in the extension host; no remote scripts, fonts or data are admitted by its content security policy.
 
+WPILOG time-series buckets use the original integer-microsecond timestamps for membership and
+first/last order. Compared with earlier server versions, a sample exactly on a bucket boundary
+can move to the correct bucket, and adjacent large timestamps that display as the same seconds
+can change a bucket's first and last values. The displayed seconds can still round those
+instants to the same number.
+
 **WPILog Explorer: Open in Notebook**, in the editor title and context menu, writes an nbformat 4 notebook beside a writable local log, otherwise in the workspace. It contains three cells: Arrow requests into data frames (with a Polars alternative in a comment), plotting, and the path/entries/window with the server's inputs. Each selected entry has its own stream to preserve its type. VS Code opens its notebook editor; install Python, pyarrow, pandas and matplotlib in your chosen kernel. Nothing Python is bundled, and kernel selection and missing-kernel messages belong to VS Code.
 
 `render_chart` returns time-series, histogram, scatter or field PNGs and an `open_url` such as `vscode://TripleHelixProgramming.wpilog-analyzer/open?path=…&entries=…&start=…&end=…&kind=…`. Repeated `entries` select several series. The handler uses the Logs route to validate the path on the server, applies the entries/window/pane, and refuses bad numbers. A link grants no directory access and executes no code.

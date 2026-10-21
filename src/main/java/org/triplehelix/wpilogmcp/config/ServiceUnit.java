@@ -36,7 +36,7 @@ public final class ServiceUnit {
   static Map<String, String> render(String name, int port, Path config) throws IOException {
     validateName(name);
     var files = new LinkedHashMap<String, String>();
-    for (String template : new String[] {"server.service", "health.service", "health.timer"}) {
+    for (String template : new String[] {"server.service", "health.service", "health.timer", "restart.service"}) {
       try (var in = ServiceUnit.class.getResourceAsStream("/service/" + template)) {
         if (in == null) throw new IOException("Missing service template " + template);
         String filename = "wpilog-mcp-" + name + (template.equals("server.service") ? ".service" : "-" + template);

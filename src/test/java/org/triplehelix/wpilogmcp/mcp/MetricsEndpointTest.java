@@ -12,6 +12,21 @@ import java.net.http.HttpResponse;
 import org.junit.jupiter.api.Test;
 
 class MetricsEndpointTest {
+  @Test void storeQueueCostsAreVisibleWithoutAConfiguredCapture() throws Exception {
+    var server = new HttpTransport(new ToolRegistry(), 0); server.start();
+    try {
+      var uri = URI.create("http://127.0.0.1:" + server.getPort() + "/metrics");
+      var response = HttpClient.newHttpClient().send(HttpRequest.newBuilder(uri).build(),
+          HttpResponse.BodyHandlers.ofString());
+      assertEquals(200, response.statusCode());
+      assertAll(
+          () -> assertTrue(response.body().contains("# TYPE wpilog_store_queue_over_budget_turns_total counter\n"),
+              "A scrape must expose the count of store turns exceeding the one-second budget"),
+          () -> assertTrue(response.body().contains("# TYPE wpilog_store_queue_longest_turn_seconds gauge\n"),
+              "A scrape must expose the longest externally observed store turn"));
+    } finally { server.stop(); }
+  }
+
   @Test void everyHttpServerOffersMetricsWithoutCaptureAndKeepsTheOriginCheck() throws Exception {
     var server = new HttpTransport(new ToolRegistry(), 0); server.start();
     try {

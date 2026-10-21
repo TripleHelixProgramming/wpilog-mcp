@@ -136,7 +136,8 @@ The tests run on Windows in CI too. Build an expected path with the same path AP
 - `InstallCommandTest` checks POSIX program modes and repair without exposing private settings.
 - `DaemonManagerTest` uses fake health endpoints to prove managed servers are never adopted, stopped
   or replaced.
-- `ServiceUnitTest` checks the printed unit's hardening, escaping and write-free behavior.
+- `ServiceUnitTest` checks the printed unit's hardening, escaping and write-free behavior,
+  the probe's three bounded attempts and the named restart handler.
 
 The independent Linux `systemd` CI job is filtered to Main, configuration, installers, service
 templates and the check itself. The job:
@@ -153,6 +154,8 @@ refuses to install on a developer machine: it requires root and a disposable Git
 The local Python check `python3 -m unittest ci.test_changes ci.test_check_service` proves filter
 fallbacks and the verifier's refusal predicates without systemd. macOS and Windows do not run
 systemd locally; their ordinary Java tests still cover the foreground command and ownership.
+The retry exhaustion and `OnFailure=` restart still need a real Linux-host check; the
+existing CI probe step alone does not exercise them.
 
 ### What `./gradlew test` covers
 
@@ -219,6 +222,31 @@ Directory lease tests drive the real transport: session expiry/deletion/replacem
 
 **Version checks.** The extension's version must equal the project version, and no comment in the source may date a change to a release later than the current one. `ChangelogTest` requires one section per release and Unreleased first, so a duplicated published heading cannot hide pending changes.
 
+**Synchronization-cache recipe.** `SyncCacheVersionGuardTest` checks the reviewed source
+digests in `src/test/resources/conformance/sync-cache-inputs.json`, the cache format version,
+and a dated compatibility explanation. It includes the REV package and explicit shared
+parsing, decoding, sample, clock and synchronization dependencies. When one changes, review
+whether existing cached answers remain valid before updating the baseline. A `format_bump`
+decision must increase `SyncCacheSerializer.CURRENT_FORMAT_VERSION` relative to the recorded
+previous version; `cache_unaffected` keeps that version and explains why answers are unchanged.
+Changing the baseline alone is not evidence of compatibility. Review new shared dependencies
+and external libraries too; the explicit source list cannot discover their semantics.
+Hashes normalize CRLF. When changing the guard, plant a behavioral REV-source change and
+invalid compatibility decisions, verify their assertions, and restore exact source bytes.
+
+**Runtime-native guard.** `./gradlew build` reaches `verifyRuntimeNativeLibraries` through
+`check`. The guard inspects the main application runtime classpath, including resource directories and
+JAR/ZIP members, and the completed `-all` JAR for `.so`, `.dylib`, `.jnilib` and `.dll`
+files, case-insensitively. A hit fails the build and names the artifact/member. `testNatives`
+is not on the application's runtime classpath and remains available to independent test
+oracles. This guard checks shipped native-library artifacts; it does not claim all memory
+is on the heap or prove arbitrary Java code cannot call a platform API.
+
+`DecisionIndexTest` checks each dated decision row's status and every index link's target
+file and heading, including duplicate-heading suffixes. When changing these checks, plant
+an invalid native member and a broken index anchor, respectively, verify the matching
+refusal, and restore the exact original bytes.
+
 **Build file check.** The stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails. The CI workflow must run the license check, which neither `test` nor `shadowJar` includes.
 
 CI runs `./gradlew build license` on Linux and Windows (Linux adds `-Pcoverage`), and builds and tests the extension. `license` checks that every Java file carries the license header in `gradle/license-header.txt`; `./gradlew licenseFormat` adds a missing one. On a push to `main` or `development` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
@@ -284,6 +312,35 @@ They take their settings from a server named `stresstest`, looked for in:
 2. the first of these files that defines one: `.wpilog-mcp.yaml` or `.wpilog-mcp.json` in the project root, then `~/.wpilog-mcp/servers.yaml` or `servers.json` (the file the installers write defines one).
 
 With no such server, they use `~/riologs` and team 2363. A TBA key in those settings (or in `TBA_API_KEY`) is used, so the TBA tools then call the live API. The heap is `WPILOG_MAX_HEAP`, or `4g`. The disk cache is never the one in those settings, but the tests' own (below).
+
+### Architecture-hardening soak
+
+`architectureHardeningSoakTest` is an opt-in task with the `architecture-hardening-soak` tag,
+excluded from ordinary tests. It uses one test worker, a 768 MiB heap and its own
+`build/hardening-soak-disk-cache`. Run the full recording workload with:
+
+```bash
+./gradlew architectureHardeningSoakTest \
+  --tests '*ArchitectureHardeningSoakTest.captureKeepsEveryGeneratedValueDuringImportAndHttpReads' \
+  -PhardeningSoakSeconds=600 -PhardeningSoakLabel=full --console=plain
+```
+
+The pure-Java fixture and loopback NT4 stream generate 100 topics at 50 Hz for ten minutes:
+3,000,000 values, exactly 30,000 per topic. Each value is `topic_index * 1_000_000 + tick`,
+and every recorded timestamp and value is checked against that generator. Concurrent clients
+exercise real MCP and `/read/v1` HTTP routes while a 128-file import includes a controlled
+35-second inspection stall. The listener must remain below a one-second stall, observed
+store actions must stay within their one-second budget, and force durations and completion
+gaps must stay within two seconds. Admission and reads must succeed, forces must occur and
+sampled heap must stay below its configured maximum.
+
+Reports distinguish sampled heap from total process memory and exact peaks. Store timings
+retain the blocked logging callback limitation in
+[item 1](ARCHITECTURE_HARDENING_PLAN.md#implementation-disposition--2026-10-20).
+The task also has a separate 500-file import timing method; select the method above when only
+the soak is wanted. The shorter 120-second run is a pre-change baseline, not the ten-minute
+acceptance gate. All recordings are synthetic; this does not replace Linux, Windows, real
+robot, NT4 replay or native editor validation.
 
 ### Windowed mapping
 

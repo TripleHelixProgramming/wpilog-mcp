@@ -7,6 +7,8 @@ package org.triplehelix.wpilogmcp.config;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.net.URI;
+import java.math.BigDecimal;
+import org.triplehelix.wpilogmcp.store.DiskSpaceBudgets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -18,11 +20,19 @@ import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
 
 /** Capture is opt-in, and misspelled nested keys must never silently turn recording policy off. */
 public record CaptureConfig(List<URI> addresses, Path store, double periodSeconds,
-    CapturePolicy policy, long hotWindowUs, long maxFileBytes, PullConfig pull, int gatewayPort, ProviderConfig providers) {
-  public static final Set<String> KEYS = Set.of("robot", "store", "period_sec", "exclude", "thin", "hot_window_sec", "max_file_bytes", "pull", "gateway", "stats", "tail");
+    CapturePolicy policy, long hotWindowUs, long maxFileBytes, PullConfig pull, int gatewayPort, ProviderConfig providers, DiskSpaceBudgets.Policy diskPolicy) {
+  public static final Set<String> KEYS = Set.of("robot", "store", "period_sec", "exclude", "thin", "hot_window_sec", "max_file_bytes", "pull", "gateway", "stats", "tail", "disk_reserve_bytes", "disk_floor_bytes", "disk_resume_margin_bytes");
   public static final Set<String> GATEWAY_KEYS = Set.of("port");
   public static final Set<String> ROBOT_KEYS = Set.of("team", "usb", "host", "port");
-  public CaptureConfig { addresses = List.copyOf(addresses); }
+  public CaptureConfig {
+    addresses = List.copyOf(addresses); java.util.Objects.requireNonNull(diskPolicy);
+  }
+  /** Programmatic callers inherit the same capture protection as YAML, including waiting states. */
+  public CaptureConfig(List<URI> addresses, Path store, double periodSeconds, CapturePolicy policy,
+      long hotWindowUs, long maxFileBytes, PullConfig pull, int gatewayPort, ProviderConfig providers) {
+    this(addresses, store, periodSeconds, policy, hotWindowUs, maxFileBytes, pull, gatewayPort,
+        providers, DiskSpaceBudgets.Policy.DEFAULT);
+  }
   /** Existing programmatic capture fixtures explicitly have no SSH providers. YAML applies defaults. */
   public CaptureConfig(List<URI> addresses, Path store, double periodSeconds, CapturePolicy policy,
       long hotWindowUs, long maxFileBytes, PullConfig pull, int gatewayPort) {
@@ -104,8 +114,27 @@ public record CaptureConfig(List<URI> addresses, Path store, double periodSecond
           throw bad("capture.tail", "a robot host must use capture.pull.ssh credentials; one host has one SSH connection");
         }
       }
-      return new CaptureConfig(addresses, store, period, new CapturePolicy(exclude, thin), hot, max, pull, gatewayPort, providers);
+      var defaults = DiskSpaceBudgets.Policy.DEFAULT;
+      var disk = new DiskSpaceBudgets.Policy(
+          bytes(block, "disk_reserve_bytes", defaults.reserveBytes()),
+          bytes(block, "disk_floor_bytes", defaults.floorBytes()),
+          bytes(block, "disk_resume_margin_bytes", defaults.resumeMarginBytes()));
+      return new CaptureConfig(addresses, store, period, new CapturePolicy(exclude, thin), hot, max, pull, gatewayPort, providers, disk);
     } catch (IllegalArgumentException e) { throw new ConfigException("Invalid capture configuration: " + e.getMessage(), e); }
+  }
+  /** Byte counts must remain exact above the binary-double integer range. */
+  private static long bytes(JsonObject block, String key, long fallback) throws ConfigException {
+    if (!block.has(key)) return fallback;
+    var value = block.get(key);
+    if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber())
+      throw bad("capture." + key, "must be a nonnegative integer byte count");
+    try {
+      long result = new BigDecimal(value.getAsString()).longValueExact();
+      if (result < 0) throw new ArithmeticException("negative");
+      return result;
+    } catch (ArithmeticException | NumberFormatException e) {
+      throw bad("capture." + key, "must be a nonnegative integer byte count through " + Long.MAX_VALUE);
+    }
   }
   private static JsonObject object(JsonElement value, String key) throws ConfigException {
     if (value == null || !value.isJsonObject()) throw bad(key, "must be an object");

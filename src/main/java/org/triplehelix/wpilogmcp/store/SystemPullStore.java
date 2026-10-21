@@ -30,6 +30,7 @@ public final class SystemPullStore implements FileTransfer.Local {
   public record Text(String sessionId, Path capture, Path path, String source, String format, String remote,
       long from, long to, Path previous, long previousBytes) {}
   private final LogStore store;
+  private final CopyLeaseGroup copyLeases = new CopyLeaseGroup();
   private final SecurityValidator security;
   private final DeviceIdentity identity;
   private final Clock wall;
@@ -149,6 +150,10 @@ public final class SystemPullStore implements FileTransfer.Local {
       return value;
     });
   }
+  @Override public FileTransfer.Reservation reserve(String remote, long bytes) throws IOException {
+    var directory = store.capture(io -> { Files.createDirectories(io.check(staging)); return staging; });
+    return copyLeases.own(store.reserveDiskCopy(directory, bytes));
+  }
   @Override public String create(String remote) throws IOException {
     return store.capture(io -> {
       Files.createDirectories(io.check(staging)); var file = io.check(staging.resolve(UUID.randomUUID() + ".part"));
@@ -179,13 +184,13 @@ public final class SystemPullStore implements FileTransfer.Local {
     catch (java.security.NoSuchAlgorithmException e) { throw new AssertionError(e); }
   }
   @Override public void append(String name, long offset, byte[] bytes) throws IOException {
-    store.capture(io -> {
+    copyLeases.await(store.captureAsync(io -> {
       try (var out = FileChannel.open(staged(io, name), StandardOpenOption.WRITE)) {
         if (out.size() != offset) throw new IOException("System transfer prefix length changed");
         var buffer = ByteBuffer.wrap(bytes); while (buffer.hasRemaining()) out.write(buffer, offset + buffer.position());
       }
       return null;
-    });
+    }));
   }
   @Override public String rename(String name, String remote) { return name; } // Opaque staging names; provenance retains the remote name.
   @Override public String archive(String name) { return name; }
@@ -197,7 +202,7 @@ public final class SystemPullStore implements FileTransfer.Local {
     store.capture(io -> { if (!Files.isRegularFile(staged(io, name))) throw new IOException("Missing system file"); return null; });
   }
   @Override public String verified(PullManifest.Entry entry) throws IOException {
-    var text = store.capture(io -> place(io, staged(io, entry.localName()), entry.remoteName(), source(entry.remoteName())));
+    var text = copyLeases.await(store.captureAsync(io -> place(io, staged(io, entry.localName()), entry.remoteName(), source(entry.remoteName()))));
     store.publishedSystemText(text);
     return entry.localName(); // Keep the prefix in staging for content-checked resume after growth.
   }

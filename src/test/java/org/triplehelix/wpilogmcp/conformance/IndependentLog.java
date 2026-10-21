@@ -137,6 +137,8 @@ final class IndependentLog {
     /** Of those, the finite ones. */
     int finite;
     double[] times = new double[0];
+    /** Raw coordinates keep the bucket oracle independent of double-second rounding. */
+    long[] micros = new long[0];
     double[] values = new double[0];
     /** How many times and values are kept: {@link #numeric} when kept, otherwise 0. */
     int n;
@@ -154,13 +156,15 @@ final class IndependentLog {
       };
     }
 
-    private void add(double time, double value) {
+    private void add(long timeMicros, double value) {
       if (n == times.length) {
         int capacity = Math.max(64, n * 2);
         times = Arrays.copyOf(times, capacity);
+        micros = Arrays.copyOf(micros, capacity);
         values = Arrays.copyOf(values, capacity);
       }
-      times[n] = time;
+      times[n] = timeMicros / 1e6;
+      micros[n] = timeMicros;
       values[n++] = value;
     }
 
@@ -319,7 +323,7 @@ final class IndependentLog {
             };
             s.numeric++;
             if (Double.isFinite(value)) s.finite++;
-            if (s.kept) s.add(time, value);
+            if (s.kept) s.add(micros, value);
           }
         }
       }

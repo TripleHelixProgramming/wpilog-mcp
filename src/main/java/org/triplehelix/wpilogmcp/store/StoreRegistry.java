@@ -22,6 +22,10 @@ import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 public final class StoreRegistry implements AutoCloseable {
   private final SecurityValidator security;
   private final LogManager logManager;
+  private final DiskSpaceBudgets diskSpace;
+  private final ScheduledExecutorService diskSampler = Executors.newSingleThreadScheduledExecutor(task -> {
+    var thread = new Thread(task, "store-disk-space"); thread.setDaemon(true); return thread;
+  });
   private final ConcurrentHashMap<Path, LogStore> stores = new ConcurrentHashMap<>();
   private boolean closed;
   private ScheduledExecutorService watcher;
@@ -73,10 +77,25 @@ public final class StoreRegistry implements AutoCloseable {
   }
 
   StoreRegistry(SecurityValidator security, LogManager logManager, Discovery discovery) {
+    this(security, logManager, discovery, new DiskSpaceBudgets());
+  }
+
+  /** Every store and copying writer on one filesystem shares this injectable accounting owner. */
+  StoreRegistry(SecurityValidator security, LogManager logManager, Discovery discovery,
+      DiskSpaceBudgets diskSpace) {
+    this.diskSpace = java.util.Objects.requireNonNull(diskSpace);
     this.discovery = discovery;
     this.security = security;
     this.logManager = logManager;
+    diskSampler.scheduleWithFixedDelay(diskSpace::refreshAll, 0, 1, TimeUnit.SECONDS);
   }
+
+  /** Filesystem discovery is admission work, outside the registry publication monitor. */
+  public DiskSpaceBudgets.StoreBudget diskBudget(Path directory) throws IOException {
+    return diskSpace.store(directory);
+  }
+
+  public List<DiskSpaceBudgets.Snapshot> diskSnapshots() { return diskSpace.snapshots(); }
 
   public LogStore store(Path directory) throws IOException {
     validate(directory);
@@ -84,10 +103,11 @@ public final class StoreRegistry implements AutoCloseable {
     var real = directory.toRealPath();
     security.validate(real);
     StoreLock.checkedPath(real, security);
+    var budget = diskBudget(real);
     synchronized (this) {
       if (closed) throw new IllegalStateException("Store registry is closed");
       return stores.computeIfAbsent(real,
-          path -> new LogStore(path, security, logManager, StoreCatalog::read));
+          path -> new LogStore(path, security, logManager, StoreCatalog::read, new LogStore.Mover(), budget));
     }
   }
 
@@ -186,15 +206,37 @@ public final class StoreRegistry implements AutoCloseable {
     stores.values().forEach(LogStore::awaitImports);
   }
 
+  /** Transport closure drains admitted mutations without stopping shared import preparation. */
+  public void awaitMutations() {
+    stores.values().forEach(LogStore::awaitMutations);
+  }
+
   public boolean importing() {
     return stores.values().stream().anyMatch(LogStore::importing);
   }
 
-  /** Queued and running imports finish; daemon workers never keep the process alive. */
+  /** Published accounting is safe for health and metrics without joining any store owner. */
+  public record CatalogCapacity(String storeId, ReplicaCatalogCapacity catalogCapacity) {}
+  public List<CatalogCapacity> catalogCapacities() {
+    return stores.values().stream().map(LogStore::catalogCapacity).filter(java.util.Objects::nonNull)
+        .filter(value -> value.catalogCapacity() != null).sorted(java.util.Comparator.comparing(CatalogCapacity::storeId)).toList();
+  }
+
+  /** Published accounting is safe for health and metrics without joining any store owner. */
+  public record QueueMetrics(long overBudgetTurns, long longestTurnUs) {}
+  public QueueMetrics queueMetrics() {
+    long overBudget = 0, longestUs = 0;
+    for (var store : stores.values()) {
+      var value = store.queueMetrics();
+      overBudget += value.overBudgetTurns();
+      longestUs = Math.max(longestUs, value.longestTurnUs());
+    }
+    return new QueueMetrics(overBudget, longestUs);
+  }
+
+  /** Staging stops before draining short mutations; workers retain their bytes until unwinding. */
   @Override
   public void close() {
-    var ingestion = localIngestion;
-    if (ingestion != null) ingestion.close();
     ScheduledExecutorService polling;
     synchronized (this) {
       if (closed) return;
@@ -202,6 +244,11 @@ public final class StoreRegistry implements AutoCloseable {
       polling = watcher;
       if (polling != null) polling.shutdown();
     }
+    diskSampler.shutdown();
+    diskSpace.close();
+    stores.values().forEach(LogStore::stopImports);
+    var ingestion = localIngestion;
+    if (ingestion != null) ingestion.stop();
     // No monitor held across I/O or the import barrier.
     if (polling != null) {
       try {

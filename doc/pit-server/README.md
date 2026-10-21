@@ -18,7 +18,7 @@ no feature has been enabled or disabled by moving these documents.
 | [Architecture](ARCHITECTURE.md) | Recording, clocks, thread ownership, transfer and provider design |
 | [Testing](DEVELOPMENT.md) | Fixtures, replay, harnesses and what hardware must still prove |
 | [Plan and decisions](PIT_SERVER_PLAN.md) | Specification, milestones and the implementation decision record |
-| [Explorer integration](EXPLORER_PLAN.md) | Viewer plans and decisions concerning remote/live data |
+| [Explorer integration](EXPLORER_REMOTE_SESSIONS.md) | Viewer plans and decisions concerning remote/live data |
 | [Ideas](IDEAS.md) | Related proposals and the harness record |
 | [Dashboard examples](metrics/compose.yaml) | Prometheus/Grafana configuration and its starter dashboard |
 

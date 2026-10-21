@@ -221,7 +221,7 @@ final class NumericSignal {
         continue;
       }
       if (!Double.isNaN(previous)) turns -= Math.rint((v - previous) / angle.period);
-      out.add(turns == 0 ? tv : new TimestampedValue(tv.timestamp(), v + turns * angle.period));
+      out.add(turns == 0 ? tv : tv.withValue(v + turns * angle.period));
       previous = v;
     }
     return out;
@@ -318,13 +318,13 @@ final class NumericSignal {
         int before = out.size();
         for (var leaf : path.resolveAll(tv.value())) {
           var number = FieldPath.toNumber(leaf);
-          if (number != null) out.add(new TimestampedValue(tv.timestamp(), number));
+          if (number != null) out.add(tv.withValue(number));
         }
         if (out.size() == before) without++;
       } else {
         var number = FieldPath.toNumber(path.resolveOne(tv.value()));
         if (number != null) {
-          out.add(new TimestampedValue(tv.timestamp(), number));
+          out.add(tv.withValue(number));
         } else {
           without++;
         }

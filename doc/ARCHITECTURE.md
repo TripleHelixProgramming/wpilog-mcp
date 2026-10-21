@@ -119,6 +119,85 @@ A test run without failures shows that the tools keep their contract, not that t
 
 The rule for every fix is a regression test that fails without it. [DEVELOPMENT.md](DEVELOPMENT.md#testing) describes the tests.
 
+### A recording comes first
+
+A recording cannot be repeated after a match. Imports, analysis and synchronization can wait
+or be retried. Their admission, queues and resource budgets must preserve capture's ability to
+write, and refusing optional work must leave the recorder running.
+
+The unreleased store once hashed, inspected and placed an entire import while owning its only
+mutation queue and cross-process lock. Capture admission waited behind it until its deadline
+expired, then stopped for that robot boot. Asynchronous listener callbacks alone did not
+protect the recording; the shared owner also needed short placement turns and capture priority.
+
+### Single-thread owners take short turns, measured from outside
+
+A single-thread loop serializes work like a lock. Every blocking turn has a stated budget and
+outcome, and work stays on that owner only when it supplies required ordering or backpressure.
+An external watchdog measures the turn. A task queued behind a stall cannot detect it, and a
+slow local owner must not charge its delay to the peer.
+
+The October 2026 Windows keepalive failures judged a peer by when the stalled listener
+processed its pong. The store's whole-import turns later repeated the same ownership mistake.
+Budgets detect and report excessive turns; they do not interrupt a mutation halfway through.
+Reporting is also owner work if its callback can block. Ending an action timer before that
+callback hides part of the owner stall. The current store reporter still has this limit;
+[item 1's disposition](ARCHITECTURE_HARDENING_PLAN.md#implementation-disposition--2026-10-20)
+stops its correction until a bounded logging policy is chosen.
+
+### Cost follows the change
+
+Reuse unchanged facts with an explicit invalidation rule. Discover known members from
+manifests and rechecked listings; admit only work whose time and memory costs are understood.
+Measure before adding a second representation or an index, and state what remains proportional
+to the whole store.
+
+Scoped reads once walked every configured tree three or four times per call; reducing that to
+one walk still made a small log pay for unrelated files. The rejected columnar proposal would
+also have rebuilt scope-wide catalogs for each publication. Both cases show why moving work
+to a different owner does not make its cost disappear.
+
+### No native code runs in the process that records
+
+The recorder's application runtime classpath and shipped server JAR contain no native libraries. A dependency
+that brings native code changes capture's crash, memory and deployment boundary and requires
+a separate design decision. The build checks the runtime classpath and the distribution;
+native libraries used by independent test oracles remain outside both.
+
+The rejected columnar proposal put a native database engine into the same process as capture,
+before demonstrating a workload that needed it. Its failure and allocation behavior would
+have become recording risks. This is a rule about native code, not a claim that all memory is
+on the heap: `MappedLogBytes` already owns read-only file mappings outside the Java heap.
+
+### Derived data is keyed by its inputs and its recipe
+
+A derived result identifies both the source bytes and the format or algorithm that produced
+it. A changed input or incompatible recipe invalidates the result; a cache is never authority
+over its source. Keep units, schema and clock evidence with derived facts so a cache hit gives
+the same answer as fresh computation.
+
+REV synchronization keys include the two inputs and CAN database, but not the application's
+release version. A parser or synchronization correction without a cache-format change would
+therefore keep returning old results. The rejected columnar design reinforced the same lesson:
+content-addressed, versioned derivations are sufficient; an extra scope-wide generation is not
+proof that their answers are current.
+
+### Capture has a disk reserve
+
+The intended rule is that every copying writer shares one budget per filesystem and reserves
+its known size before writing, so optional work cannot consume capture's reserve. The current
+implementation covers import copies, uploads, known-length pull staging and mirror transfers.
+Legacy peer-sync copies, system-log second allocations and cross-filesystem pull placement
+still need an off-owner admission design; [hardening item 2](ARCHITECTURE_HARDENING_PLAN.md#2-nothing-measures-free-disk-space)
+records that incomplete coverage. Capture has a lower floor at which it closes cleanly and a
+separate resume margin. Health and metrics expose capacity; capture progress must distinguish
+stopped from recording.
+
+The unreleased writers previously discovered exhaustion only when a write failed. An import
+or mirror transfer could consume the same remaining disk that capture needed, and a failed
+capture write could stop the rest of that robot boot. Independent per-store limits would not
+fix that when the stores share a filesystem.
+
 ## Technologies
 
 | Technology | Used for |
@@ -410,9 +489,47 @@ cached synchronization that claims one is refused.
 
 #### One writer
 
-There must never be two store writers. `POST /store/import` submits to that registry and exposes an in-memory job for polling. The command finds the named daemon through its PID file and health check and posts to it. It imports in its own process only when no daemon is running, and never falls back after an HTTP failure.
+There must never be two concurrent store mutations. `POST /store/import` submits to the registry
+and exposes an in-memory job for polling. The command probes the configured port and checks the
+server's reported name, whether a launcher or systemd owns that process. No PID record is needed.
+Only a refused connection permits an offline importer; an answering stranger, a different name
+or a failed HTTP import never does. A specific non-loopback bind is refused because path imports
+are loopback-only and probing loopback cannot establish that such a server is absent.
 
-Every import, including an inbox import, takes a nonblocking `FileChannel` lock on `store.lock` before inspection and holds it through placement and manifests. A daemon started during an offline import therefore reports the held lock instead of writing beside it or waiting indefinitely. The lock file stays in place after release: deleting it could give two processes different inodes to lock. Shutdown stops polling and drains imports before closing shared log readers.
+Imports hash, inspect, correlate and verify copied bytes on a staging worker, outside the store
+owner and `store.lock`, while retaining the source read lease. Short publication turns recheck
+source size and modification time, staging identity, inbox stability and the manifest facts used
+for matching and duplicate detection. A changed source is refused instead of being placed on
+stale inspection facts. A WPILOG and its proven REV companions retain their atomic group
+publication; splitting that group into unrelated turns would weaken the pairing guarantee.
+Unrelated capture metadata may advance while bytes are staged. The worker rechecks the batch's
+matching candidates and duplicate identities off the owner, and retries an overtaking metadata
+change at most three times before publication. A changed candidate still refuses the import.
+Inventory notifications return to the owner in generation order so an old staging snapshot
+cannot replace newer capture state.
+
+One daemon owner drains the capture lane before the import lane. Each publication takes a
+nonblocking `FileChannel` lock on `store.lock`. Imports refuse a held lock immediately;
+capture admission retries contention outside the owner with bounded backoff, within its
+existing admission deadline. The lock file stays in place after release: deleting it could
+give two processes different inodes to lock. Import payload reads, hashing, correlation and copying
+do not hold that lock; short manifest and rename operations still need it to serialize writers.
+
+Store shutdown stops new staging admission and cancels work that has not started. A running
+worker retains its staged files, read/move leases, upload and ingestion grants until it
+unwinds; interrupting its wait does not release bytes still used by a publication turn.
+Transport shutdown drains only publication turns and does not cancel another transport's
+shared import. Registry shutdown does not join a blocked staging read.
+`awaitImports` remains the full-completion barrier for offline commands and tests;
+`awaitMutations` is the bounded publication barrier used by transport shutdown.
+
+Copied payloads stage on their destination filesystem in private `.import-staging` directories.
+Each owned stage has a marker and a held file lock. Startup recovery runs off the mutation
+owner and removes abandoned marked stages after acquiring and rechecking their ownership;
+live stages and unmarked unmanaged files survive. Ordinary refused Copy files remain
+unmanaged for inspection. Retiring their ownership marker under its lock prevents a recovery
+race from deleting them. An interrupted Move retains its original until verified placement
+commits; only that operation's owned temporary copy is eligible for cleanup.
 
 The HTTP write surface requires configured directories for both the store and its sources, resolves symlinks with the shared security validator, and uses the MCP Origin gate. Outside sources are local copies or moves into the user's inbox; the endpoint cannot move arbitrary files on the server. Jobs retain their last progress and full result, with at most 100 jobs per transport. Completed jobs are evicted first; if all 100 are active, admission returns 503. Jobs disappear at restart.
 
@@ -472,18 +589,26 @@ and the same queries to third-party clients. `readerJar` packages the pure reade
 owners separately from the server. [READ_API.md](READ_API.md) defines the public lifecycle, wire
 formats, limits and examples; existing REV tool and endpoint behavior keeps its original owner.
 
+`/data/entries` is the bulk presentation route for viewers, scripts and dashboards. `/read/v1`
+is the exact typed-read protocol for retained snapshots, sessions, follows and typed values.
+The visualization routes serve the preview's admitted sources and panels. These roles retain
+Explorer decision 7; they do not merge formats or change admission.
+
 Both adapters feed `SampleCursors` through a borrowed `RecordSeries`. Local snapshots, cached
 WPILOGs and writer-owned live prefixes share this traversal; sorting permutations and cursor
 lifetime guards each have one owner. `LegacyMaterializer` preserves whole-entry decode counts,
-first-error wording, cached values, unknown-type previews and stable double-second ordering for
-existing tools and Arrow/CSV. The selection engine admits a contiguous range to the backend, whose
-tight loop delivers decoded values to the sink. Whole-entry reads use one range, without per-record
+first-error wording, cached values, unknown-type previews and stable original-microsecond ordering
+for existing tools and Arrow/CSV; compatibility values retain their seconds view. The selection
+engine admits a contiguous range to the backend, whose tight loop delivers decoded values to the sink. Whole-entry reads use one range, without per-record
 query dispatch or a second sample/batch representation. File and live backends own their storage
 access; both clients share the decoding and failure policy. Narrow cursors still read headers
-before copying or decoding payloads. In particular, adjacent large integer timestamps can round to the
-same double; the legacy view preserves their file order, while native cursors retain exact
-microsecond ordering. The compatibility view is the original `LogData` object, because reload
-and REV synchronization checks rely on its identity. Domain rules and existing encodings stay
+before copying or decoding payloads. Adjacent original integer timestamps can round to the same
+double seconds. Both the legacy materializer and native cursors order WPILOG samples by their
+original microseconds, retaining file order only for equal original timestamps. Numeric projections
+retain that coordinate; derived REV clocks retain their aligned seconds representation. Changing
+this ordering raises the synchronization-cache format because wall-clock selection and correlation
+consume the materialized samples. The compatibility view is the original `LogData` object, because
+reload and REV synchronization checks rely on its identity. Domain rules and existing encodings stay
 above this boundary, and narrow legacy queries still validate the whole entry.
 
 `LogScan` owns indexing and corruption rules for both paths. Indexing telemetry and locating a
@@ -523,10 +648,14 @@ sessions may be skipped by either, but invalid robot/control manifests still sto
 
 A query selects one entry and explicit disjoint windows, with inclusive or exclusive right ends.
 `read.FieldPath` owns projection for native and legacy callers; `NumericBucket` owns arithmetic
-for their reductions. Native buckets use exact integer boundaries while legacy tools retain their
-double-second results. `TimeWindows` shares containment and binary-boundary traversal without
-rounding one clock representation into the other. Multi-entry reads admit their cursors together
-and return separate tables rather than inventing a join. A manifest-backed session union applies
+for their reductions. Native and legacy numeric reducers share `BucketCoordinates` for exact
+integer-microsecond membership and use original-microsecond order. Explicit second bounds use
+the data endpoint's existing nearest-microsecond conversion. Route preparation remains distinct:
+sparse legacy reads can return exact rows, while chart preparation filters nonfinite values,
+unwraps declared angles and reduces each occupied scope part. Shared membership does not make
+those routes' complete results interchangeable. `TimeWindows` continues to share containment and
+binary-boundary traversal without changing their existing window-selection contracts. Multi-entry
+reads admit their cursors together and return separate tables rather than inventing a join. A manifest-backed session union applies
 recorded clock transforms to an explicit anchor, rejects unexplained overlaps by default, and
 keeps source coordinates. Capture rollover needs no fitted offset: `CaptureWriter` keeps the same
 session object through rollover and continuing reconnects, and creates a new one after a backward
@@ -679,7 +808,9 @@ no authority over a managed server. Only the internal daemon accepts its spawn's
 
 `config.ServiceUnit` prints templates from `resources/service/`; it installs nothing. A system
 account owns the state directory, systemd owns restarts and bounded signal shutdown, and the
-separate unprivileged health timer reports failures. The templates preserve JIT and leave JVM
+separate unprivileged health probe makes three attempts before its `OnFailure=` invokes a narrow
+root unit that runs `try-restart` for the named server. An explicitly stopped service stays
+stopped; a stopped recorder still answers process health with `status: ok`. The templates preserve JIT and leave JVM
 heap sizing to the existing launcher rather than imposing a second memory limit. STANDALONE.md
 owns installation, hardening exceptions and the calendar-clock caveat.
 
@@ -717,6 +848,7 @@ If a call still runs out of memory, it returns an error that suggests a narrower
 | Each log's decoded values | Memory | Within the log's budget; the entries used least are dropped first |
 | Struct decoding plans | Memory | The life of the loaded log (the life of the server, for logs that record no schemas) |
 | Listing metadata (event, match, team) | Memory | Until the file's modification time changes |
+| Child-directory listings for source discovery | Memory | Rechecked directory facts, two-second recent-timestamp guard and one-minute maximum listing age; ten minutes idle |
 | REV log sync results | Memory | Until the wpilog is unloaded |
 | REV signals shifted onto the wpilog's clock | Memory | Until the wpilog is unloaded |
 | REV log sync results | Disk | Until the cache's format version changes, or the cache is trimmed to its size limit |
@@ -726,6 +858,14 @@ If a call still runs out of memory, it returns an error that suggests a narrower
 The disk cache saves the expensive part of loading a log that has REV logs: parsing them and correlating their signals. Its key covers what a result depends on: a fingerprint of each file, both file names (the time in a REV log's name feeds the alignment), and a hash of the CAN database used to decode the frames.
 
 The key does not cover the code. So the cache has a format version that is raised with any change to parsing, decoding, or synchronization, and entries of another version are deleted. Before that rule, results computed by older, wrong code were served indefinitely. The server's own version is not part of the key: a release changes the server for many reasons, and rebuilding the cache with each one would make every user wait for synchronizations that come out the same.
+
+`SyncCacheVersionGuardTest` checks a reviewed digest baseline for REV sources and their shared
+parser, decoder, sample, clock and synchronization inputs. A changed source requires a dated
+compatibility decision and new hashes: increase the format when cached answers change, or state
+why the change leaves them valid. The guard checks that decision's version relationship as well
+as the source hashes; it does not decide semantic compatibility itself. The baseline normalizes
+CRLF so checkout line endings alone do not change it. New shared dependencies and external
+library changes still need review; the source list is not a dependency-completeness proof.
 
 Other choices in the disk cache:
 
@@ -738,7 +878,12 @@ Other choices in the disk cache:
 
 [STANDALONE.md](STANDALONE.md#config-fields) says where the cache directory is and how to change it or its size limit. The VS Code extension's servers use a cache directory of their own, so the extension and a standalone install never delete each other's files when their versions differ.
 
-An older disk cache of parsed logs is still configured and cleaned, but nothing reads or writes it now that logs are scanned lazily from memory-mapped files.
+An older disk cache of parsed logs is still configured and cleaned, but normal parsed-log reads
+no longer use it now that logs are scanned lazily from memory-mapped files. Its `DiskCache`
+owner still performs startup cleanup and enforces the size budget shared with REV synchronization
+files. `diskcachedir` and `diskcachesize` remain active. Synthetic measurements alone do not
+settle whether to persist scan indexes or replace this cleanup owner; those changes remain
+stopped in the [hardening plan](ARCHITECTURE_HARDENING_PLAN.md#5-costs-grow-with-the-whole-store).
 
 ## REV Logs and Synchronization
 
@@ -813,6 +958,25 @@ The design keeps shared mutable state small:
 - Check-then-act sequences are atomic. A log is loaded once under its path's lock, after a second look at the cache. An entry's values are decoded once, through the cache's per-key computation. A finished synchronization replaces its placeholder only if the placeholder is still there, so a log unloaded in the meantime stays unloaded.
 - A background start claims its PID file with an atomic create. A version-mismatch restart replaces the old daemon's record with the starter's PID and `starting` marker while still holding the start lock used to check its version, then retains that claim through stopping and spawning. Another start therefore waits even after the old daemon's PID dies; it cannot decide on the same old record or remove the restart's claim as stale. No start lock is held while waiting for a process to exit or boot.
 - Background work is limited to a single thread that runs REV log synchronizations one at a time, a timer that checks heap pressure every 5 minutes, a timer that removes expired sessions, one sweep of the disk cache at startup, and the known-store inbox poller. The value caches' own upkeep is Caffeine's, which runs it on the JVM's shared pool.
+
+Each store also owns a daemon staging worker, a single mutation owner with separate capture
+and import lanes, and an outside turn observer. The observer measures elapsed time while a
+mutation action is still running: an over-one-second action is counted once and submitted to
+the log sink with its kind and observed duration, including when completion races observation.
+It never interrupts the owner. The metrics expose that count and the longest observed action;
+this is an operating budget, not a bound on filesystem latency. The action timer currently
+excludes a blocking completion-report callback, which can hold the owner; a blocked observer
+sink can also delay observations. The decided remedy, a bounded log buffer with its own
+writer, is not yet implemented; see [the hardening plan](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer).
+
+Capture's public health facts have a separate bounded owner, `CaptureProgress`, instead of
+exposing the live source's private paths and errors. Writer transitions and successful header
+or record writes publish scalar state and monotonic write time; a force-only close does not
+invent a new write. Health reads these facts and the independent listener/store observations
+without joining their owners or doing filesystem I/O. Each interval maximum and its active
+work are published together, so completion racing a probe is not lost. All health callers
+share the probe boundary, an ongoing stall remains visible, and interval drains leave the
+cumulative metrics intact. Store observations retain the action-duration limitation above.
 
 On shutdown, the HTTP transport ends its event streams, waits up to 5 seconds for calls in progress, and closes its listener. Then the log manager stops its background threads and unloads the logs, so that calls in progress can finish before their logs are closed.
 
@@ -1524,20 +1688,41 @@ Absolute server-local paths are explicit file choices, preserving multi-input an
 access guards recheck it on cached pages. Shared verified hashes retain their existing owner.
 Directory leases remain session-owned shared grants across clients; this adds no authentication
 or session-private directory model. Metadata discovery does filesystem work outside shared locks.
-Scope descriptor pages are bounded. Selection refreshes store discovery once per scoped request
-so a newly created nested store cannot be mistaken for part of an ordinary directory. The admitted
+Scope descriptor pages are bounded. Selection refreshes store discovery once per scoped request.
+Discovery reuses child-directory listings after rechecking directory modification time, file
+identity, creation time and size. Every known directory is checked directly for a store header,
+so a new store in an existing directory is a choice on the next request. Timestamps within two
+seconds, future timestamps and clock rollback force a new listing; listings are refreshed after
+one minute regardless. These are stated timestamp-resolution and delayed-attribute policies,
+not guarantees about every filesystem. A new subtree whose parent metadata is delayed or
+deliberately restored may wait for the maximum-age refresh. The admitted
 scope travels with the managed read; post-open and post-call checks read its configuration,
 store identity and file ancestry without rescanning trees. Recording access tickets use those
 same bounded checks on cached pages and follows. Discovery publication remains immutable and
 all filesystem work stays outside shared locks.
 
+An aged, unchanged loose tree can avoid directory streams while still requiring metadata checks
+for all known directories. Store manifests continue to name managed files. The listing cache and
+pending-directory traversal each have an approximate 32 MiB accounting budget; wide listings or
+traversals fall back to streaming discovery. Those estimates are not a measured heap ceiling:
+temporary lists, cache bookkeeping and concurrent traversals allocate additional memory.
+An iteration I/O failure closes the stream, discards its partial listing and marks only that
+configured root unavailable; unrelated healthy sources remain selectable.
+
 A local macOS warm-cache probe on 2026-10-19 used two directory roots, one 100-sample WPILOG and
 100 unrelated folders holding 2,000 then 20,000 text files, with five warm-ups and twenty timed
 `get_statistics` calls. Scoped means fell from 32.229 / 207.337 ms to 7.952 / 55.954 ms; absolute
 path means were 0.387 / 0.332 ms before and 0.333 / 0.326 ms after. These measure this one
-warm-cache setup, not
-season-sized stores, sustained throughput, cold storage or heap use. One full discovery remains
-proportional to tree size; future scan caching still needs explicit invalidation evidence.
+warm-cache setup, not season-sized stores, sustained throughput, cold storage or heap use.
+The later listing cache reduces directory enumeration, but metadata traversal remains
+proportional to known directories; this is not constant-cost source selection.
+
+On 2026-10-20, a separate synthetic store with fifty 100-topic sessions and 20,000 unrelated
+text files measured discovery means of 69.880 ms before listing reuse and 1.954 ms after it,
+over twenty requests after five warm-ups. Actual directory-listing opens fell from 103 to
+zero per request; one traversal and its directory metadata checks remained. The same logs'
+direct index scans averaged 18.099 and 19.756 ms per file. OS caches were uncontrolled, and
+synthetic results do not settle a persistent-index design or claim real-season throughput.
 
 Visualization API 2 negotiates qualified references while API 1 remains legacy-only. Working
 view source identities are immutable and version admission precedes edits, including retry
@@ -1628,6 +1813,20 @@ costs; the 64 KiB transfer buffer is not a bound on the complete scan's heap. Ph
 Windows/Linux behavior and sustained throughput remain separate gates. Format-2 mirrors now
 reconcile paged offers through this owner. `ready` means migrated, while `synchronized` requires
 a complete selected master catalog traversal; peer-only availability remains `partial`.
+
+Replica status also reports `catalog_capacity`: record and exclusion counts, their separate
+4,096 limits, and `near_limit`. The warning starts at 3,277 of either, the first integer at or
+above 80 percent. Encoded part/index limits remain separate; these counts are not a byte or
+heap measurement. Metrics read immutable capacity facts from the initial validated header and
+subsequent store-owner publications, without filesystem reads or joins. A delayed off-owner
+notification cannot replace newer facts. Replica turns publish these facts even when their other
+observers are suppressed. Invalid or unavailable initial facts are omitted, not reported as zero.
+
+A capture's pending replica-publication marker does not durably record an aggregate failure
+cause. Count warnings therefore do not prove that a mirror has seen every completed recording,
+or explain a pending publication after restart. The decided change, recording each pending
+publication's cause for catalog status and mirrors, is not yet implemented; existing admitted
+immutable pages are unchanged.
 
 
 ### Replica exchange and discovery ownership

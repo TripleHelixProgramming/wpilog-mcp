@@ -55,10 +55,10 @@ import org.triplehelix.wpilogmcp.sync.SyncMethod;
 import org.triplehelix.wpilogmcp.sync.SyncResult;
 
 /**
- * One store's import queue, independent of HTTP and the extension. Inspection and correlation
- * finish before placement, and a manifest is committed only after every file in a pair loads
- * at its destination. Failed ordinary copies remain strays; failed cross-volume Move copies are
- * removed without changing their originals. A committed payload is never rolled back.
+ * One store's import staging and publication owner, independent of HTTP and the extension.
+ * Inspection, correlation and copy verification finish before a short turn renames each
+ * prepared group and commits its manifest. Failed ordinary copies remain strays; failed
+ * cross-volume Move copies are removed without changing their originals.
  */
 public final class LogStore implements AutoCloseable {
   /** Placement and recorded-source admission share one content proof. Callers validate grants first. */
@@ -87,8 +87,8 @@ public final class LogStore implements AutoCloseable {
       new java.util.concurrent.atomic.AtomicReference<>();
 
   /**
-   * Arrival order must not decide whether two completed files are paired. This bounded queue
-   * turn reuses assignment's exact correlation and placement path, without inventing a robot.
+   * Arrival order must not decide whether two completed files are paired. This bounded staging
+   * batch reuses assignment's exact correlation and placement path, without inventing a robot.
    * Per-content attempt receipts suppress repeated correlations across idle scans and restarts;
    * only the set of session-owned WPILOG hashes invalidates them. An unmatched REV imported
    * later has no receipt and is therefore still considered against the complete candidate set.
@@ -100,11 +100,14 @@ public final class LogStore implements AutoCloseable {
       var result = new CompletableFuture<Reconsideration>();
       if (!reconsidering.compareAndSet(null, result)) continue;
       pending.incrementAndGet();
+      importJobs.add(result);
+      result.whenComplete((value, failure) -> { importJobs.remove(result); pending.decrementAndGet(); });
       try {
-        queue.execute(() -> {
+        staging.execute(new StagedJob(result, () -> {
           Reconsideration value = null;
           Throwable failure = null;
-          try (var lock = StoreLock.acquire(root, security)) {
+          try {
+            ensureImporting();
             if (!StoreCatalog.isStore(root)) value = new Reconsideration(0, 0, 0, List.of());
             else {
               var io = new StoreFiles(root, security, this::published);
@@ -116,14 +119,12 @@ public final class LogStore implements AutoCloseable {
           } catch (Exception e) { failure = e; }
           catch (OutOfMemoryError e) { failure = new IOException("Not enough heap to reconsider REV files", e); }
           finally {
-            pending.decrementAndGet();
             reconsidering.compareAndSet(result, null);
           }
           // Callbacks may enqueue more work: release the store lock before completing them.
           if (failure == null) result.complete(value); else result.completeExceptionally(failure);
-        });
+        }));
       } catch (RuntimeException e) {
-        pending.decrementAndGet();
         reconsidering.compareAndSet(result, null);
         result.completeExceptionally(e);
       }
@@ -132,7 +133,7 @@ public final class LogStore implements AutoCloseable {
   }
 
   private Reconsideration reconsiderRev(StoreFiles io) throws IOException {
-    var catalog = new ImportCatalog(catalogReader.read(root, security));
+    var catalog = readImportCatalog();
     migrateUnassigned(io, catalog);
     var hashes = catalog.files.values().stream()
         .filter(f -> f.session() != null && "wpilog".equals(f.file().kind()))
@@ -200,9 +201,11 @@ public final class LogStore implements AutoCloseable {
       }
       // A placement failure never becomes an attempted-generation receipt. It must be retryable.
       last = source.file().sha256();
-      io.write(directory.resolve(last + ".json"), new RevAttempt(generation));
+      String receipt = last;
+      importTurn(owned -> { owned.write(directory.resolve(receipt + ".json"), new RevAttempt(generation)); return null; });
     }
-    io.write(cursorPath, new RevCursor(generation, last));
+    String completed = last;
+    importTurn(owned -> { owned.write(cursorPath, new RevCursor(generation, completed)); return null; });
     return new Reconsideration(batch.size(), placed, pending.size() - batch.size(), imported.files());
   }
 
@@ -221,7 +224,19 @@ public final class LogStore implements AutoCloseable {
 
   private final Path root;
   private final SecurityValidator security;
-  private final ExecutorService queue;
+  private final StoreQueue queue;
+  private final ExecutorService staging = Executors.newSingleThreadExecutor(task -> {
+    var thread = new Thread(task, "store-import-staging"); thread.setDaemon(true); return thread;
+  });
+  private final java.util.concurrent.atomic.AtomicBoolean importsStopped = new java.util.concurrent.atomic.AtomicBoolean();
+  private final Set<CompletableFuture<?>> importJobs = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  /** Only work which never started can release its caller's uploads and grants immediately. */
+  private record StagedJob(CompletableFuture<?> result, Runnable operation) implements Runnable {
+    @Override public void run() { operation.run(); }
+    void abandon() {
+      result.completeExceptionally(new IOException("Store closed before import preparation; source retained"));
+    }
+  }
   private final LogManager logManager;
   private final CatalogReader catalogReader;
   private final StoreInbox inbox;
@@ -281,7 +296,8 @@ public final class LogStore implements AutoCloseable {
     void move(Path source, Path destination, java.nio.file.CopyOption... options) throws IOException {
       Files.move(source, destination, options);
     }
-    CopyAttributes copy(Path source, Path destination) throws IOException {
+    /** An externally growing source cannot consume more than its inspected reservation. */
+    CopyAttributes copy(Path source, Path destination, long admittedBytes) throws IOException {
       var attributes = CopyAttributes.read(source);
       // CREATE_NEW establishes ownership: failure cleanup must never delete an existing file.
       boolean created = false;
@@ -291,10 +307,13 @@ public final class LogStore implements AutoCloseable {
             attributes.creationAttributes(destination))) {
           created = true;
           byte[] bytes = new byte[64 * 1024];
-          int count;
-          while ((count = input.read(bytes)) != -1) {
+          long remaining = admittedBytes;
+          while (remaining > 0) {
+            int count = input.read(bytes, 0, (int) Math.min(bytes.length, remaining));
+            if (count == -1) break;
             var buffer = java.nio.ByteBuffer.wrap(bytes, 0, count);
             while (buffer.hasRemaining()) output.write(buffer);
+            remaining -= count;
           }
         }
         return attributes;
@@ -321,11 +340,16 @@ public final class LogStore implements AutoCloseable {
   }
 
   /**
-   * One import's catalog. Only this store's queue writes manifests, so successful writes can
-   * update these facts without re-reading a season of manifests or walking for strays per file.
+   * One staging worker's catalog. Own commits update it directly; concurrent capture changes
+   * refresh it off-owner only when the facts used for the batch's decisions remain valid.
    */
   private static final class ImportCatalog {
     Header header;
+    Map<Path, FileSnapshot> stamps = Map.of();
+    List<ImportInspection> inputs = List.of();
+    Map<Path, Robot> selectedRobots = Map.of();
+    String statedRobot;
+    ImportProof proof;
     final Map<String, Robot> robots = new LinkedHashMap<>();
     final Map<String, StoredFile> files = new LinkedHashMap<>();
     final Map<String, StoredFile> assigning = new LinkedHashMap<>();
@@ -360,6 +384,209 @@ public final class LogStore implements AutoCloseable {
     }
   }
 
+  /** Metadata replacements invalidate preparation without hashing any payload on the owner. */
+  private Map<Path, FileSnapshot> importStamps() throws IOException {
+    var stamps = new LinkedHashMap<Path, FileSnapshot>();
+    for (var base : List.of(root.resolve("robots"), root.resolve("unassigned"))) {
+      stamps.put(base, FileSnapshot.of(base));
+      if (!Files.isDirectory(base)) continue;
+      try (var paths = Files.walk(base, base.getFileName().toString().equals("robots") ? 5 : 2)) {
+        for (var path : paths.toList()) {
+          String name = path.getFileName().toString();
+          if (Files.isDirectory(path) || name.equals("robot.json") || name.equals("session.json")
+              || name.equals("import.json")) {
+            security.validate(path);
+            stamps.put(path, FileSnapshot.of(path));
+          }
+        }
+      }
+    }
+    stamps.put(root.resolve("store.json"), FileSnapshot.of(root.resolve("store.json")));
+    return stamps;
+  }
+
+  private ImportCatalog readImportCatalog() throws IOException {
+    for (int attempt = 0; attempt < 3; attempt++) {
+      var before = importStamps();
+      var catalog = new ImportCatalog(catalogReader.read(root, security));
+      var after = importStamps();
+      if (before.equals(after)) { catalog.stamps = after; return catalog; }
+    }
+    throw new IOException("Store metadata changed during import preparation; retry");
+  }
+
+  private void refreshImportCatalog(ImportCatalog catalog) throws IOException {
+    boolean changed = !importCatalogUnchanged(catalog);
+    var latest = changed ? readImportCatalog() : catalog;
+    if (catalog.proof != null) {
+      var now = importProof(latest, catalog.inputs, catalog.selectedRobots, catalog.statedRobot);
+      if (!catalog.proof.remainsValid(now))
+        throw new IOException("Import candidates or duplicate receipts changed after preparation; retry");
+      catalog.proof = now;
+    }
+    if (!changed) return;
+    catalog.header = latest.header;
+    catalog.robots.clear(); catalog.robots.putAll(latest.robots);
+    catalog.files.clear(); catalog.files.putAll(latest.files);
+    catalog.assigning.keySet().forEach(catalog.files::remove);
+    catalog.sessions.clear(); catalog.sessions.putAll(latest.sessions);
+    catalog.stamps = latest.stamps;
+  }
+
+  private record RobotChoice(String id, String serial, String name) {
+    static RobotChoice of(Robot robot) {
+      return robot == null ? null : new RobotChoice(robot.id(), robot.serialNumber(), robot.name());
+    }
+  }
+  private record ImportCandidate(Path input, Path path, Path manifest, RobotChoice robot,
+      String sessionId, String startedAt, String provenance, Matching matching, String hash) {}
+  private record ImportOverlap(Path input, Path manifest, String sessionId, String startedAt) {}
+  private record ImportProof(String storeId, Map<Path, RobotChoice> robots,
+      Map<ImportCandidate, FileSnapshot> candidates, Set<ImportOverlap> overlaps) {
+    boolean remainsValid(ImportProof now) {
+      if (!Objects.equals(storeId, now.storeId) || !robots.equals(now.robots)
+          || !overlaps.equals(now.overlaps) || !candidates.keySet().equals(now.candidates.keySet())) return false;
+      for (var entry : candidates.entrySet()) {
+        var before = entry.getValue(); var after = now.candidates.get(entry.getKey());
+        if (before == null) {
+          if (after != null) return false;
+          continue;
+        }
+        if (after == null) return false;
+        if (!before.sameAs(after) && !(entry.getKey().hash() == null && after.grewFrom(before))) return false;
+      }
+      return true;
+    }
+  }
+
+  /**
+   * Calendar and identity only nominate the bytes that were compared. A growing capture may
+   * retain its proven prefix, while a replacement, new candidate, or changed duplicate must
+   * invalidate the decision. Unrelated capture statistics are not part of that proof.
+   */
+  private ImportProof importProof(ImportCatalog catalog, List<ImportInspection> inputs,
+      Map<Path, Robot> selectedRobots, String stated) throws IOException {
+    var robots = new LinkedHashMap<Path, RobotChoice>();
+    var candidates = new LinkedHashMap<ImportCandidate, FileSnapshot>();
+    var overlaps = new HashSet<ImportOverlap>();
+    var batchHashes = inputs.stream().map(ImportInspection::hash).collect(java.util.stream.Collectors.toSet());
+    for (var input : inputs) {
+      var selected = selectedRobots.get(input.path());
+      var robot = selected == null ? null : catalog.robots.get(selected.id());
+      robots.put(input.path(), RobotChoice.of(robot));
+      var duplicate = catalog.files.get(input.hash());
+      if (duplicate != null) {
+        var key = new ImportCandidate(input.path(), duplicate.path(), duplicate.manifestPath(),
+            RobotChoice.of(duplicate.robot()), duplicate.session() == null ? null : duplicate.session().id(),
+            null, "duplicate", null, duplicate.file().sha256());
+        candidates.put(key, FileSnapshot.of(duplicate.path()));
+      }
+      if (input.kind().equals("revlog")) {
+        for (var file : catalog.files.values()) {
+          if (!file.file().kind().equals("wpilog") || file.session() == null
+              || batchHashes.contains(file.file().sha256())) continue;
+          if (stated != null && (file.robot() == null
+              || !stated.equals(file.robot().id()) && !stated.equals(file.robot().name()))) continue;
+          if (!input.nearClock(Instant.parse(file.session().startedAt()),
+              Instant.parse(file.session().endedAt()))) continue;
+          addImportCandidate(candidates, input, file);
+        }
+      } else if (robot != null) {
+        for (var entry : catalog.sessions.entrySet()) {
+          var manifest = entry.getKey(); var session = entry.getValue();
+          var owner = catalog.robots.get(root.relativize(manifest).getName(1).toString());
+          if (owner == null || !owner.id().equals(robot.id())
+              && (robot.serialNumber() == null || !robot.serialNumber().equals(owner.serialNumber()))) continue;
+          if (input.start() != null && !input.end().isBefore(Instant.parse(session.startedAt()))
+              && !input.start().isAfter(Instant.parse(session.endedAt())))
+            overlaps.add(new ImportOverlap(input.path(), manifest, session.id(), session.startedAt()));
+          if (!input.nearClock(Instant.parse(session.startedAt()), Instant.parse(session.endedAt()))) continue;
+          for (var file : importAnchors(session)) {
+            if (file.sha256() != null && batchHashes.contains(file.sha256())) continue;
+            var path = new StoreFiles(root, security).resolve(manifest.getParent(), file.path());
+            addImportCandidate(candidates, input, new StoredFile(path, manifest, owner, session, file));
+          }
+        }
+      }
+    }
+    return new ImportProof(catalog.header.id(), robots, candidates, overlaps);
+  }
+
+  private void addImportCandidate(Map<ImportCandidate, FileSnapshot> candidates,
+      ImportInspection input, StoredFile file) throws IOException {
+    security.validate(file.path());
+    var key = new ImportCandidate(input.path(), file.path(), file.manifestPath(), RobotChoice.of(file.robot()),
+        file.session().id(), file.session().startedAt(), file.file().provenance().kind(),
+        file.file().matching(), file.file().sha256());
+    candidates.put(key, FileSnapshot.of(file.path()));
+  }
+
+  /** Matching and its recheck must nominate exactly the same anchors. */
+  private static List<LogFile> importAnchors(Session session) {
+    var files = new ArrayList<>(session.files());
+    if (session.openCapture() != null) {
+      var open = session.openCapture();
+      files.add(new LogFile(open.path(), null, open.sizeBytes(), "wpilog", open.provenance(), false,
+          open.minTimestampSec(), open.maxTimestampSec(), session.startedAt(), session.endedAt(),
+          session.startBasis(), false, null));
+    }
+    var captures = files.stream().filter(f -> f.kind().equals("wpilog")
+        && f.provenance().kind().equals("captured")).toList();
+    return captures.isEmpty() ? files.stream().filter(f -> f.kind().equals("wpilog")
+        && f.matching() != null && "by_correlation".equals(f.matching().method())).toList() : captures;
+  }
+
+  private void checkImportCatalog(ImportCatalog catalog) throws IOException {
+    if (!importCatalogUnchanged(catalog))
+      throw new ImportCatalogChanged();
+  }
+
+  private static final class ImportCatalogChanged extends IOException {
+    ImportCatalogChanged() { super("Store metadata changed after import preparation; retry"); }
+  }
+
+  /**
+   * Capture takes priority even after staging refreshed its facts. Retry only that pre-mutation
+   * metadata race off-owner, retaining verified bytes; source or admission failures never retry.
+   */
+  private <T> T preparedImportTurn(ImportCatalog catalog, CaptureOperation<T> operation) throws IOException {
+    for (int attempt = 0; attempt < 3; attempt++) {
+      refreshImportCatalog(catalog);
+      try {
+        return importTurn(io -> {
+          checkImportCatalog(catalog);
+          return operation.run(io);
+        });
+      } catch (ImportCatalogChanged changed) {
+        if (attempt == 2)
+          throw new IOException("Store metadata changed during three publication attempts; retry the import", changed);
+      }
+    }
+    throw new AssertionError("Bounded import attempts must return or refuse");
+  }
+
+  private boolean importCatalogUnchanged(ImportCatalog catalog) throws IOException {
+    for (var entry : catalog.stamps.entrySet())
+      if (!Objects.equals(entry.getValue(), FileSnapshot.of(entry.getKey()))) return false;
+    return true;
+  }
+
+  /** Known metadata and its ancestors suffice after our own turn; no tree walk runs on the owner. */
+  private void updateImportStamps(ImportCatalog catalog, Path... additionalPaths) throws IOException {
+    var paths = new HashSet<>(catalog.stamps.keySet());
+    catalog.robots.values().forEach(robot -> paths.add(root.resolve("robots").resolve(robot.id()).resolve("robot.json")));
+    catalog.files.values().forEach(file -> paths.add(file.manifestPath()));
+    paths.addAll(catalog.sessions.keySet());
+    paths.addAll(List.of(additionalPaths));
+    for (var path : List.copyOf(paths)) {
+      for (var parent = path.getParent(); parent != null && parent.startsWith(root) && !parent.equals(root);
+          parent = parent.getParent()) paths.add(parent);
+    }
+    var updated = new LinkedHashMap<Path, FileSnapshot>();
+    for (var path : paths) updated.put(path, FileSnapshot.of(path));
+    catalog.stamps = updated;
+  }
+
   LogStore(Path root, SecurityValidator security) {
     this(root, security, LogManager.getInstance(), StoreCatalog::read);
   }
@@ -370,6 +597,12 @@ public final class LogStore implements AutoCloseable {
 
   LogStore(Path root, SecurityValidator security, LogManager logManager, CatalogReader catalogReader,
       Mover mover) {
+    this(root, security, logManager, catalogReader, mover, null);
+  }
+
+  LogStore(Path root, SecurityValidator security, LogManager logManager, CatalogReader catalogReader,
+      Mover mover, DiskSpaceBudgets.StoreBudget diskBudget) {
+    this.diskBudget.set(diskBudget);
     FileNameEncoding.warnIfNeeded();
     this.root = root;
     this.security = security;
@@ -377,10 +610,15 @@ public final class LogStore implements AutoCloseable {
     this.catalogReader = catalogReader;
     this.inbox = new StoreInbox(this, security);
     this.mover = mover;
-    queue = Executors.newSingleThreadExecutor(task -> {
-      var thread = new Thread(task, "store-import");
-      thread.setDaemon(true);
-      return thread;
+    queue = new StoreQueue();
+    // Recovery may walk a season of directories. It shares staging's lifetime and never
+    // delays a capture turn or runs under the registry's constructor/publication monitor.
+    staging.execute(() -> {
+      try { if (!importsStopped.get()) ImportStage.recover(new StoreFiles(root, security)); }
+      catch (IOException | RuntimeException failure) {
+        LoggerFactory.getLogger(LogStore.class).warn("Abandoned import stage recovery will retry: {}", failure.getMessage());
+      }
+      if (!importsStopped.get()) initialCatalogCapacity();
     });
   }
 
@@ -393,6 +631,24 @@ public final class LogStore implements AutoCloseable {
   /** Only bounded replica metadata uses this turn; transfer, hashing and retirement stay off-queue. */
   <T> CompletableFuture<T> replicaTurn(CaptureOperation<T> operation) {
     return mutate(operation, true, false);
+  }
+
+  private final java.util.concurrent.atomic.AtomicReference<DiskSpaceBudgets.StoreBudget> diskBudget =
+      new java.util.concurrent.atomic.AtomicReference<>();
+
+  /** Package-level owners share the manager's registry instead of inventing another disk budget. */
+  public DiskSpaceBudgets.StoreBudget diskBudget() throws IOException {
+    var value = diskBudget.get();
+    if (value != null) return value;
+    value = logManager.stores().diskBudget(root);
+    diskBudget.compareAndSet(null, value);
+    return diskBudget.get();
+  }
+
+  /** Resolve the destination filesystem off-owner; a nested mount cannot spend its parent's space. */
+  DiskSpaceBudgets.Reservation reserveDiskCopy(Path destinationDirectory, long bytes) throws IOException {
+    var destination = new StoreFiles(root, security).check(destinationDirectory);
+    return diskBudget().destination(destination).reserveCopy(bytes);
   }
 
   public Path root() {
@@ -416,18 +672,114 @@ public final class LogStore implements AutoCloseable {
     for (var observer : textObservers) try { observer.accept(text); }
     catch (RuntimeException failure) { LoggerFactory.getLogger(LogStore.class).warn("System text gateway publication failed; durable text retained: {}", failure.getMessage()); }
   }
+  private final java.util.concurrent.atomic.AtomicLong publicationGeneration = new java.util.concurrent.atomic.AtomicLong();
+  private final java.util.concurrent.atomic.AtomicBoolean inventoryRetryQueued = new java.util.concurrent.atomic.AtomicBoolean();
+
+  private final java.util.concurrent.atomic.AtomicReference<StoreRegistry.CatalogCapacity> catalogCapacity =
+      new java.util.concurrent.atomic.AtomicReference<>();
+
+  /** Status and scrapes read the last observed header; they never wait for a store mutation. */
+  StoreRegistry.CatalogCapacity catalogCapacity() { return catalogCapacity.get(); }
+
+  private void initialCatalogCapacity() {
+    if (catalogCapacity.get() != null) return;
+    try {
+      if (!StoreCatalog.isStore(root)) return;
+      var header = new StoreFiles(root, security).read(root.resolve("store.json"), Header.class);
+      catalogCapacity.compareAndSet(null, capacityOf(header));
+    } catch (IOException | RuntimeException failure) {
+      // Unknown is omitted, never an invented empty catalog. A later publication supplies facts.
+      LoggerFactory.getLogger(LogStore.class).warn("Initial replica capacity is unavailable: {}", failure.getClass().getSimpleName());
+    }
+  }
+
+  private StoreRegistry.CatalogCapacity capacityOf(Header header) throws IOException {
+    StoreCatalog.validateHeader(root, header);
+    return new StoreRegistry.CatalogCapacity(header.id(), ReplicaCatalogCapacity.of(header.replicas()));
+  }
+
+  /**
+   * Only committed owner turns replace these facts. A replica worker can notify observers after
+   * a later turn has committed, so its delayed header must not rewind the capacity warning.
+   */
+  private void publishCatalogCapacity(Path path, Object value) {
+    if (!(value instanceof Header header) || !path.equals(root.resolve("store.json"))) return;
+    try { catalogCapacity.set(capacityOf(header)); }
+    catch (IOException invalid) {
+      // A non-null unknown marker also prevents an older startup read from winning its CAS.
+      catalogCapacity.set(new StoreRegistry.CatalogCapacity(null, null));
+    }
+  }
+
   private void published(Path path, Object value) {
+    if (queue.ownsCurrentThread()) publishCatalogCapacity(path, value);
+    publicationGeneration.incrementAndGet();
     logManager.catalogPublished();
     for (var observer : observers) {
       try { observer.manifest(path, value); }
       catch (RuntimeException e) { org.slf4j.LoggerFactory.getLogger(LogStore.class).warn("Session status update failed", e); }
     }
   }
+
+  /**
+   * Import preparation reads inventory off the owner, then joins only its bounded publication.
+   * Capture has priority over that publication, so a generation check discards a snapshot which
+   * a newer capture update overtook. A stale view must never erase that newer live state.
+   */
   private void publishInventory() throws IOException {
     if (observers.isEmpty()) return;
+    long generation = publicationGeneration.get();
     var snapshot = StoreCatalog.readInventory(root, security, (manifest, reason) ->
         LoggerFactory.getLogger(LogStore.class).warn("Skipping invalid session inventory {}: {}", manifest, reason));
+    if (queue.ownsCurrentThread()) {
+      publishInventorySnapshot(snapshot);
+      return;
+    }
+    var published = new CompletableFuture<Boolean>();
+    try {
+      queue.importTurn("inventory-publication", () -> {
+        try {
+          if (publicationGeneration.get() != generation) published.complete(false);
+          else { publishInventorySnapshot(snapshot); published.complete(true); }
+        } catch (Throwable failure) { published.completeExceptionally(failure); }
+      });
+    } catch (java.util.concurrent.RejectedExecutionException closed) {
+      return; // The durable import is committed; a closed observer owner needs no refresh.
+    }
+    boolean interrupted = false;
+    try {
+      for (;;) {
+        try {
+          if (!published.get()) retryInventory();
+          return;
+        } catch (InterruptedException stopping) {
+          // Do not finish a staging job while its admitted observer publication is still using it.
+          interrupted = true;
+        } catch (java.util.concurrent.ExecutionException failure) {
+          throw new IOException("Inventory publication failed", failure.getCause());
+        }
+      }
+    } finally { if (interrupted) Thread.currentThread().interrupt(); }
+  }
+
+  private void publishInventorySnapshot(StoreCatalog.Snapshot snapshot) {
+    publicationGeneration.incrementAndGet();
     observers.forEach(observer -> observer.inventory(snapshot));
+  }
+
+  /** One deferred read retries an overtaken view without failing an already committed import. */
+  private void retryInventory() {
+    if (importsStopped.get() || observers.isEmpty() || !inventoryRetryQueued.compareAndSet(false, true)) return;
+    try {
+      staging.execute(() -> {
+        inventoryRetryQueued.set(false);
+        if (importsStopped.get()) return;
+        try { publishInventory(); }
+        catch (IOException | RuntimeException failure) {
+          LoggerFactory.getLogger(LogStore.class).warn("Inventory refresh remains pending: {}", failure.getMessage());
+        }
+      });
+    } catch (java.util.concurrent.RejectedExecutionException stopped) { inventoryRetryQueued.set(false); }
   }
   private volatile String replicaPublicationFailure;
   String replicaPublicationFailure() { return replicaPublicationFailure; }
@@ -536,6 +888,9 @@ public final class LogStore implements AutoCloseable {
 
   <T> CompletableFuture<T> captureAsync(CaptureOperation<T> operation) { return mutate(operation, false); }
   <T> CompletableFuture<T> recordingAsync(CaptureOperation<T> operation) {
+    return recordingAsync(operation, System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30));
+  }
+  <T> CompletableFuture<T> recordingAsync(CaptureOperation<T> operation, long deadlineNanos) {
     return mutate(io -> {
       var header = io.read(root.resolve("store.json"), Header.class);
       if (header.replicas() != null) io.recording(reason -> {
@@ -543,7 +898,7 @@ public final class LogStore implements AutoCloseable {
         LoggerFactory.getLogger(LogStore.class).warn("{}", reason);
       });
       return operation.run(io);
-    }, false);
+    }, false, true, true, deadlineNanos);
   }
 
   private <T> CompletableFuture<T> mutate(CaptureOperation<T> operation, boolean allowMirror) {
@@ -551,27 +906,70 @@ public final class LogStore implements AutoCloseable {
   }
 
   private <T> CompletableFuture<T> mutate(CaptureOperation<T> operation, boolean allowMirror, boolean inventory) {
+    return mutate(operation, allowMirror, inventory, false, 0);
+  }
+
+  private static final java.util.concurrent.ScheduledExecutorService LOCK_RETRIES =
+      Executors.newSingleThreadScheduledExecutor(task -> {
+        var thread = new Thread(task, "store-lock-retry"); thread.setDaemon(true); return thread;
+      });
+
+  private <T> CompletableFuture<T> mutate(CaptureOperation<T> operation, boolean allowMirror,
+      boolean inventory, boolean priority, long deadlineNanos) {
     var result = new CompletableFuture<T>();
-    try { queue.execute(() -> {
-      T value = null; Throwable failure = null;
-      var publications = new ArrayList<Map.Entry<Path, Object>>();
-      try (var lock = StoreLock.acquire(root, security)) {
-        var io = new StoreFiles(root, security, (path, record) -> publications.add(Map.entry(path, record)));
-        if (!StoreCatalog.isStore(root)) io.write(root.resolve("store.json"),
-            new Header(StoreManifest.FORMAT_VERSION, Instant.now().toString(), UUID.randomUUID().toString(), List.of()));
-        var header = io.read(root.resolve("store.json"), Header.class);
-        if (!StoreManifest.readable(header.formatVersion())) throw new IOException("Unsupported store format version " + header.formatVersion());
-        if (header.mirror() && !allowMirror) throw new IOException("A mirror is written only by its mirror synchronization");
-        value = operation.run(io);
-      } catch (Throwable e) { failure = e; }
-      // Observers and future completions can run arbitrary caller code. Store ordering remains
-      // on the queue, but none of those callbacks inherits the cross-process file lock.
-      if (inventory) for (var publication : publications) published(publication.getKey(), publication.getValue());
-      if (failure == null && allowMirror && inventory) try { publishInventory(); } catch (Throwable e) { failure = e; }
-      if (failure == null) result.complete(value); else result.completeExceptionally(failure);
-    }); } catch (java.util.concurrent.RejectedExecutionException closed) { result.completeExceptionally(new IOException("Store is closed", closed)); }
+    class Attempt implements Runnable {
+      private int retries;
+      void submit() {
+        try {
+          if (priority) queue.capture("capture", this);
+          else queue.importTurn("metadata", this);
+        } catch (java.util.concurrent.RejectedExecutionException closed) {
+          result.completeExceptionally(new IOException("Store is closed", closed));
+        }
+      }
+      @Override public void run() {
+        if (result.isDone()) return;
+        T value = null; Throwable failure = null;
+        var publications = new ArrayList<Map.Entry<Path, Object>>();
+        try {
+          if (deadlineNanos != 0 && System.nanoTime() >= deadlineNanos)
+            throw new IOException("Capture admission deadline expired before its store turn");
+          try (var lock = StoreLock.acquire(root, security)) {
+            if (deadlineNanos != 0 && System.nanoTime() >= deadlineNanos)
+              throw new IOException("Capture admission deadline expired while acquiring store.lock");
+            var io = new StoreFiles(root, security, (path, record) -> publications.add(Map.entry(path, record)));
+            if (!StoreCatalog.isStore(root)) io.write(root.resolve("store.json"),
+                new Header(StoreManifest.FORMAT_VERSION, Instant.now().toString(), UUID.randomUUID().toString(), List.of()));
+            var header = io.read(root.resolve("store.json"), Header.class);
+            if (!StoreManifest.readable(header.formatVersion())) throw new IOException("Unsupported store format version " + header.formatVersion());
+            if (header.mirror() && !allowMirror) throw new IOException("A mirror is written only by its mirror synchronization");
+            value = operation.run(io);
+          }
+        } catch (StoreLock.Held held) {
+          long remaining = deadlineNanos - System.nanoTime();
+          if (priority && remaining > 0 && !queue.isShutdown()) {
+            long delay = Math.min(remaining, java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+                Math.min(50, 5L << Math.min(retries++, 4))));
+            LOCK_RETRIES.schedule(this::submit, delay, java.util.concurrent.TimeUnit.NANOSECONDS);
+            return;
+          }
+          failure = held;
+        } catch (Throwable e) { failure = e; }
+        // Observers and future completions can run arbitrary caller code. Store ordering remains
+        // on the queue, but none of those callbacks inherits the cross-process file lock.
+        if (inventory) for (var publication : publications) published(publication.getKey(), publication.getValue());
+        else for (var publication : publications) publishCatalogCapacity(publication.getKey(), publication.getValue());
+        if (failure == null && allowMirror && inventory) try { publishInventory(); } catch (Throwable e) { failure = e; }
+        if (failure == null) result.complete(value); else result.completeExceptionally(failure);
+      }
+    }
+    new Attempt().submit();
     return result;
   }
+
+  StoreQueue.Metrics queueMetrics() { return queue.metrics(); }
+  /** Public health reads one store's published turn timing without joining the queue. */
+  public long takeLongestTurnUs() { return queue.takeLongestTurnUs(); }
 
   public CaptureStore captures(java.time.Clock clock) { return new CaptureStore(this, logManager, clock); }
 
@@ -841,7 +1239,7 @@ public final class LogStore implements AutoCloseable {
   }
 
   public StoreUpload receiveUpload(String name, long length, String hash, java.io.InputStream input) throws IOException {
-    return StoreUpload.receive(root, security, name, length, hash, input);
+    return StoreUpload.receive(root, security, name, length, hash, input, this::reserveDiskCopy);
   }
 
   /** The laptop original is never moved; only the HTTP-owned staging file may be consumed. */
@@ -886,62 +1284,119 @@ public final class LogStore implements AutoCloseable {
     Objects.requireNonNull(progress);
     var result = new CompletableFuture<Result>();
     pending.incrementAndGet();
+    importJobs.add(result);
+    result.whenComplete((value, failure) -> { importJobs.remove(result); pending.decrementAndGet(); });
     try {
-      queue.execute(() -> {
+      staging.execute(new StagedJob(result, () -> {
         try {
-          Result imported;
-          try (var lock = StoreLock.acquire(root, security)) {
-            if (StoreCatalog.isStore(root) && new StoreFiles(root, security, this::published).read(root.resolve("store.json"), Header.class).mirror()) {
+          importTurn(io -> {
+            if (io.read(root.resolve("store.json"), Header.class).mirror()) {
               throw new IOException("A mirror is owned by its synchronization; imports and assignments are refused");
             }
-            notify(progress, new Progress("starting", root, 0, request.paths().size()));
-            imported = run(preparation.prepare(request), progress, assignment);
-            beforeUnlock.accept(imported);
-            publishInventory();
-          }
+            Files.createDirectories(io.check(root.resolve("inbox")));
+            return null;
+          });
+          notify(progress, new Progress("starting", root, 0, request.paths().size()));
+          var admitted = importTurn(io -> preparation.prepare(request));
+          var imported = run(admitted, progress, assignment, preparation);
+          importTurn(io -> { beforeUnlock.accept(imported); return null; });
+          publishInventory();
           result.complete(imported);
         } catch (Exception e) {
           result.completeExceptionally(e);
         } catch (OutOfMemoryError e) {
           result.completeExceptionally(new IOException("Not enough heap to inspect this import", e));
-        } finally {
-          pending.decrementAndGet();
         }
-      });
+      }));
     } catch (RuntimeException e) {
-      pending.decrementAndGet();
-      throw e;
+      result.completeExceptionally(new IOException("Store import staging is closed", e));
     }
     return result;
   }
 
+  /** The staging worker may wait for a short publication turn; the owner never waits for it. */
+  private <T> T importTurn(CaptureOperation<T> operation) throws IOException {
+    ensureImporting();
+    boolean interrupted = false;
+    var turn = mutate(io -> { ensureImporting(); return operation.run(io); }, false);
+    try {
+      while (true) {
+        try { return turn.get(); }
+        catch (InterruptedException stop) {
+          // The caller can be refused promptly, but this worker retains its staged bytes until
+          // an already-running owner turn has finished using them.
+          interrupted = true;
+        } catch (java.util.concurrent.ExecutionException failed) {
+          if (failed.getCause() instanceof IOException io) throw io;
+          throw new IOException("Import publication failed: " + failed.getCause().getMessage(), failed.getCause());
+        }
+      }
+    } finally {
+      if (interrupted) Thread.currentThread().interrupt();
+    }
+  }
+
+  private void ensureImporting() throws IOException {
+    if (importsStopped.get() || Thread.currentThread().isInterrupted())
+      throw new IOException("Import staging stopped before placement; source retained");
+  }
+
+  /** An OS read may unwind later, but it cannot publish after shutdown stops staging admission. */
+  void stopImports() {
+    if (!importsStopped.compareAndSet(false, true)) return;
+    for (var job : staging.shutdownNow()) if (job instanceof StagedJob staged) staged.abandon();
+  }
+
   @Override
   public void close() {
+    stopImports();
     replicaTransfers.close();
     queue.shutdown();
   }
 
-  /** A barrier for transport shutdown, before the log manager closes its readers. */
+  /** An explicit completion barrier for offline callers and tests, including preparation. */
   public void awaitImports() {
+    if (!staging.isShutdown()) {
+      var staged = new CompletableFuture<Void>();
+      try { staging.execute(() -> staged.complete(null)); }
+      catch (java.util.concurrent.RejectedExecutionException closed) { staged.complete(null); }
+      awaitBarrier(staged, 30);
+    }
+    awaitMutations(importsStopped.get() ? 1 : 30);
+  }
+
+  /** A transport does not own shared staging; closing it drains only admitted owner turns. */
+  public void awaitMutations() { awaitMutations(1); }
+
+  private void awaitMutations(long seconds) {
     var drained = new CompletableFuture<Void>();
-    queue.execute(() -> drained.complete(null));
-    drained.join();
+    try { queue.execute(() -> drained.complete(null)); }
+    catch (java.util.concurrent.RejectedExecutionException closed) { drained.complete(null); }
+    awaitBarrier(drained, seconds);
+  }
+
+  private static void awaitBarrier(CompletableFuture<Void> barrier, long seconds) {
+    try { barrier.get(seconds, java.util.concurrent.TimeUnit.SECONDS); }
+    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+    catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException failed) {
+      LoggerFactory.getLogger(LogStore.class).warn("Store barrier did not finish within {} seconds", seconds);
+    }
   }
 
   private Result run(Request request, Consumer<Progress> progress, boolean assignment) throws IOException {
+    return run(request, progress, assignment, candidate -> candidate);
+  }
+
+  private Result run(Request request, Consumer<Progress> progress, boolean assignment, Preparation preparation) throws IOException {
     if (request.statedRobot() != null) StoreFiles.robotName(request.statedRobot());
     var io = new StoreFiles(root, security, this::published);
+    ImportStage.recover(io);
     var outcomes = new ArrayList<Outcome>();
     var sameRobots = new ArrayList<SameRobot>();
     var sources = expand(request.paths(), outcomes);
-    if (!StoreCatalog.isStore(root)) {
-      io.write(root.resolve("store.json"), new Header(StoreManifest.FORMAT_VERSION,
-          Instant.now().toString(), UUID.randomUUID().toString(), List.of()));
-    }
-    var catalog = new ImportCatalog(catalogReader.read(root, security));
+    var catalog = readImportCatalog();
     var migrated = migrateUnassigned(io, catalog);
     sources = sources.stream().map(path -> migrated.getOrDefault(path, path)).toList();
-    Files.createDirectories(io.check(root.resolve("inbox")));
     var known = new HashMap<String, Path>();
     catalog.files.values().forEach(f -> known.put(f.file().sha256(), f.path()));
     var inspected = new ArrayList<ImportInspection>();
@@ -951,8 +1406,10 @@ public final class LogStore implements AutoCloseable {
     var parser = new RevLogParser(new DbcLoader().load(null));
     int completed = 0;
     for (var source : sources) {
+      ensureImporting();
       notify(progress, new Progress("inspecting", source, completed++, sources.size()));
-      try {
+      try (var sourceLease = LogFileAccess.read(source)) {
+        ensureImporting();
         security.validate(source);
         StoreFiles.component(source.getFileName().toString());
         if (request.move()) refuseManagedMove(source, otherStores);
@@ -976,9 +1433,23 @@ public final class LogStore implements AutoCloseable {
           known.remove(hash);
         }
         if (known.containsKey(hash)) {
-          if (!hash.equals(StoreFiles.hash(known.get(hash)))) {
-            throw new IOException("Stored content no longer matches its manifest: " + known.get(hash));
+          var heldPath = known.get(hash);
+          FileSnapshot heldSnapshot;
+          try (var heldLease = LogFileAccess.read(known.get(hash))) {
+            heldSnapshot = FileSnapshot.of(heldPath);
+            if (!hash.equals(StoreFiles.hash(known.get(hash)))) {
+              throw new IOException("Stored content no longer matches its manifest: " + known.get(hash));
+            }
           }
+          var checked = heldSnapshot;
+          preparedImportTurn(catalog, owned -> {
+            if (checked == null || !checked.sameAs(FileSnapshot.of(heldPath)))
+              throw new IOException("Stored duplicate changed after verification: " + heldPath);
+            var held = catalog.files.get(hash);
+            if (held == null || !held.path().equals(heldPath))
+              throw new IOException("Stored duplicate receipt changed after verification: " + heldPath);
+            return null;
+          });
           outcomes.add(new Outcome(source, "present", known.get(hash), "Already held by SHA-256"));
           continue;
         }
@@ -994,9 +1465,10 @@ public final class LogStore implements AutoCloseable {
     }
 
     var robots = new HashMap<Path, Robot>();
+    refreshImportCatalog(catalog);
     for (var input : inspected) {
       if (!input.kind().equals("wpilog")) continue;
-      robots.put(input.path(), robotFor(io, catalog, input, request.statedRobot(), sameRobots));
+      robots.put(input.path(), prepareRobot(catalog, input, request.statedRobot(), sameRobots));
     }
     // A serial promotion updates the catalog; earlier files in this batch use that identity too.
     var currentRobots = catalog.robots.values();
@@ -1004,6 +1476,10 @@ public final class LogStore implements AutoCloseable {
         .filter(r -> r.id().equals(robot.id()) || robot.serialNumber() == null
             && Objects.equals(r.name(), robot.name()))
         .findFirst().orElse(robot));
+    catalog.inputs = List.copyOf(inspected);
+    catalog.selectedRobots = new HashMap<>(robots);
+    catalog.statedRobot = request.statedRobot();
+    catalog.proof = importProof(catalog, catalog.inputs, catalog.selectedRobots, catalog.statedRobot);
     var candidates = new ArrayList<Candidate>();
     for (var input : inspected) {
       if (input.kind().equals("wpilog")) {
@@ -1029,20 +1505,20 @@ public final class LogStore implements AutoCloseable {
       group.add(input);
       pending.stream().filter(i -> pairs.containsKey(i.path())
           && pairs.get(i.path()).wpilog().path().equals(input.path())).forEach(group::add);
-      place(io, catalog, group, input, robots.get(input.path()), pairs, request.move(), parser, outcomes, progress);
+      place(io, catalog, group, input, robots.get(input.path()), pairs, request.move(), parser, outcomes, progress, preparation);
       pending.removeAll(group);
       notify(progress, new Progress("placing", input.path(), inspected.size() - pending.size(), inspected.size()));
     }
     for (var input : pending) {
       var pair = pairs.get(input.path());
       if (pair == null) {
-        place(io, catalog, List.of(input), input, null, pairs, request.move(), parser, outcomes, progress);
+        place(io, catalog, List.of(input), input, null, pairs, request.move(), parser, outcomes, progress, preparation);
       } else {
         var stored = catalog.files.values().stream()
             .filter(f -> f.file().sha256().equals(pair.wpilog().hash()) && f.session() != null)
             .findFirst().orElseThrow();
         placeGroup(io, catalog, List.of(input), stored.manifestPath(), stored.robot(), stored.session(), pairs,
-            request.move(), parser, outcomes, progress);
+            request.move(), parser, outcomes, progress, preparation);
       }
     }
     var finalFiles = catalog.files.values();
@@ -1108,6 +1584,24 @@ public final class LogStore implements AutoCloseable {
         || path.equals(root.resolve("inbox").resolve("imported.log"));
   }
 
+  private Robot prepareRobot(ImportCatalog catalog, ImportInspection input, String stated,
+      List<SameRobot> sameRobots) throws IOException {
+    refreshImportCatalog(catalog);
+    String serial = input.metadata().serialNumber();
+    var previous = stated == null ? null : catalog.robots.values().stream()
+        .filter(robot -> robot.id().equals(stated) || stated.equals(robot.name())).findFirst().orElse(null);
+    Path moving = serial != null && previous != null && previous.serialNumber() == null
+        && !Files.exists(root.resolve("robots").resolve(serial))
+        ? root.resolve("robots").resolve(previous.id()) : null;
+    try (var lease = moving == null ? (LogFileAccess.Lease) () -> {} : releaseForMove(List.of(moving))) {
+      return preparedImportTurn(catalog, io -> {
+        var robot = robotFor(io, catalog, input, stated, sameRobots);
+        updateImportStamps(catalog);
+        return robot;
+      });
+    }
+  }
+
   private Robot robotFor(StoreFiles io, ImportCatalog catalog, ImportInspection input, String stated,
       List<SameRobot> sameRobots) throws IOException {
     var metadata = input.metadata();
@@ -1130,9 +1624,7 @@ public final class LogStore implements AutoCloseable {
         return alias;
       }
       io.check(old);
-      try (var lease = releaseForMove(List.of(old))) {
-        Files.move(old, target);
-      }
+      Files.move(old, target);
       io.write(target.resolve("robot.json"), promoted);
       rewriteMoves(io, catalog, old, target);
       catalog.robot(promoted, old, target);
@@ -1225,17 +1717,7 @@ public final class LogStore implements AutoCloseable {
           || robot.serialNumber() != null && robot.serialNumber().equals(owner.serialNumber()));
       if (!sameRobot || !input.nearClock(Instant.parse(session.startedAt()),
           Instant.parse(session.endedAt()))) continue;
-      var files = new ArrayList<>(session.files());
-      if (session.openCapture() != null) {
-        var open = session.openCapture();
-        files.add(new LogFile(open.path(), null, open.sizeBytes(), "wpilog", open.provenance(), false,
-            open.minTimestampSec(), open.maxTimestampSec(), session.startedAt(), session.endedAt(),
-            session.startBasis(), false, null));
-      }
-      var captures = files.stream().filter(f -> f.kind().equals("wpilog") && f.provenance().kind().equals("captured")).toList();
-      var candidates = captures.isEmpty() ? files.stream().filter(f -> f.kind().equals("wpilog")
-          && f.matching() != null && "by_correlation".equals(f.matching().method())).toList() : captures;
-      for (var file : candidates) anchors.add(new StoredFile(io.resolve(manifest.getParent(), file.path()),
+      for (var file : importAnchors(session)) anchors.add(new StoredFile(io.resolve(manifest.getParent(), file.path()),
           manifest, owner, session, file));
     }
     if (anchors.isEmpty()) return new ImportMatch(null, null, "no capture or data-matched anchor", false);
@@ -1280,7 +1762,8 @@ public final class LogStore implements AutoCloseable {
 
   private void place(StoreFiles io, ImportCatalog catalog, List<ImportInspection> inputs, ImportInspection primary,
       Robot robot, Map<Path, Pair> pairs, boolean move, RevLogParser parser,
-      List<Outcome> outcomes, Consumer<Progress> progress) throws IOException {
+      List<Outcome> outcomes, Consumer<Progress> progress, Preparation preparation) throws IOException {
+    refreshImportCatalog(catalog);
     if (robot == null || primary.start() == null) {
       if (inputs.stream().anyMatch(input -> catalog.assigning.containsKey(input.hash()))) {
         for (var input : inputs) outcomes.add(new Outcome(input.path(), "refused", input.path(),
@@ -1290,7 +1773,7 @@ public final class LogStore implements AutoCloseable {
       for (var input : inputs) {
         var directory = root.resolve("unassigned").resolve(input.hash().substring(0, 16));
         placeGroup(io, catalog, List.of(input), directory.resolve("import.json"), null, null, pairs,
-            move, parser, outcomes, progress);
+            move, parser, outcomes, progress, preparation);
       }
       return;
     }
@@ -1298,7 +1781,7 @@ public final class LogStore implements AutoCloseable {
     if (decision.manifest() != null) {
       var owner = catalog.robots.get(root.relativize(decision.manifest()).getName(1).toString());
       placeGroup(io, catalog, inputs, decision.manifest(), owner, catalog.sessions.get(decision.manifest()),
-          pairs, move, parser, outcomes, progress, decision);
+          pairs, move, parser, outcomes, progress, decision, preparation);
       return;
     }
     // Keep the old calendar-only rule only where no nominated boot can supply data proof.
@@ -1311,7 +1794,7 @@ public final class LogStore implements AutoCloseable {
     if (overlap.isPresent()) {
       var found = overlap.get();
       placeGroup(io, catalog, inputs, found.getKey(), robot, found.getValue(), pairs, move, parser, outcomes, progress,
-          new ImportMatch(found.getKey(), null, decision.reason(), false));
+          new ImportMatch(found.getKey(), null, decision.reason(), false), preparation);
       return;
     }
     var metadata = primary.metadata();
@@ -1333,18 +1816,18 @@ public final class LogStore implements AutoCloseable {
         primary.end().toString(), primary.startBasis(), metadata.event(), metadata.matchType(),
         metadata.matchNumber(), metadata.teamNumber(), List.of());
     placeGroup(io, catalog, inputs, directory.resolve("session.json"), robot, session, pairs, move, parser, outcomes, progress,
-        decision.hasAnchors() ? decision : null);
+        decision.hasAnchors() ? decision : null, preparation);
   }
 
   private void placeGroup(StoreFiles io, ImportCatalog catalog, List<ImportInspection> inputs, Path manifest,
       Robot robot, Session session, Map<Path, Pair> pairs, boolean move, RevLogParser parser,
-      List<Outcome> outcomes, Consumer<Progress> progress) throws IOException {
-    placeGroup(io, catalog, inputs, manifest, robot, session, pairs, move, parser, outcomes, progress, null);
+      List<Outcome> outcomes, Consumer<Progress> progress, Preparation preparation) throws IOException {
+    placeGroup(io, catalog, inputs, manifest, robot, session, pairs, move, parser, outcomes, progress, null, preparation);
   }
 
   private void placeGroup(StoreFiles io, ImportCatalog catalog, List<ImportInspection> inputs, Path manifest,
       Robot robot, Session session, Map<Path, Pair> pairs, boolean move, RevLogParser parser,
-      List<Outcome> outcomes, Consumer<Progress> progress, ImportMatch decision) throws IOException {
+      List<Outcome> outcomes, Consumer<Progress> progress, ImportMatch decision, Preparation preparation) throws IOException {
     var known = catalog.files.values();
     var placements = new ArrayList<Placement>();
     for (var input : inputs) {
@@ -1364,151 +1847,230 @@ public final class LogStore implements AutoCloseable {
           wpilogDecision ? decision.reason() : null));
     }
     if (placements.isEmpty()) return;
-    var transferred = new ArrayList<Placement>();
-    var copiedMoves = new HashSet<Placement>();
+    var prepared = new LinkedHashMap<Placement, PreparedTransfer>();
     var removalReasons = new HashMap<Placement, String>();
-    LogFileAccess.Lease reservation;
+    var published = new java.util.concurrent.atomic.AtomicBoolean();
+    boolean committed = false;
     try {
-      reservation = move ? releaseForMove(placements.stream().map(p -> p.input().path()).toList()) : () -> {};
-    } catch (IOException | RuntimeException failure) {
-      for (var placement : placements) outcomes.add(new Outcome(placement.input().path(), "refused",
-          null, failure.getMessage()));
-      return;
-    }
-    try (var lease = reservation) {
-      List<LogFile> records;
-      try {
-        records = new ArrayList<LogFile>(session == null ? List.of() : session.files());
-        String now = Instant.now().toString();
-        for (var placement : placements) {
-          var input = placement.input();
-          var previous = catalog.assigning.get(input.hash());
-          var provenance = previous == null ? uploadSources.getOrDefault(input.path(), new Provenance("imported", input.path().toString(),
-              input.path().getFileName().toString(), now, move)) : previous.file().provenance();
-          records.add(new LogFile(StoreFiles.relative(manifest.getParent(), placement.destination()),
-              input.hash(), input.size(), input.kind(), provenance, true, input.min(), input.max(),
-              input.start() == null ? null : input.start().toString(),
-              input.end() == null ? null : input.end().toString(), input.startBasis(), input.truncated(),
-              placement.matching(), input.robotFingerprint(), placement.reason(), placement.placementMethod()));
-        }
-        if (session != null) {
-          var start = Instant.parse(session.startedAt());
-          var end = Instant.parse(session.endedAt());
-          String basis = session.startBasis();
-          for (var input : inputs) {
-            // Data joined an already-proven boot. Its uncertain source calendar only nominated it.
-            if (decision != null && decision.matching() != null) continue;
-            // A REV wall clock nominates candidates only; the correlated wpilog owns session time.
-            if (!input.kind().equals("wpilog")) continue;
-            if (input.start() != null && input.start().isBefore(start)) {
-              start = input.start();
-              basis = input.startBasis();
-            }
-            if (input.end() != null && input.end().isAfter(end)) end = input.end();
-          }
-          session = new Session(session.id(), start.toString(), end.toString(), basis,
-              session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats(), session.systemLogs(), session.mergedSessionIds(), session.clocks());
-        }
-        ReplicaMasters.preflight(root, io, manifest, session == null ? records.get(0) : session);
-        for (var placement : placements) {
-          var input = placement.input();
-          security.validate(input.path());
-          if (!input.snapshot().sameAs(FileSnapshot.of(input.path()))
-              || !input.hash().equals(StoreFiles.hash(input.path()))) {
-            throw new IOException("File changed before placement: " + input.path());
-          }
-          io.check(placement.destination());
-          Files.createDirectories(placement.destination().getParent());
-          io.check(placement.destination());
-          CopyAttributes copiedAttributes = null;
-          if (move) {
-            boolean renamed = false;
-            if (mover.sameFileStore(input.path(), placement.destination())) {
-              // ATOMIC_MOVE may replace an occupied target even without REPLACE_EXISTING.
-              if (Files.exists(placement.destination(), LinkOption.NOFOLLOW_LINKS)) {
-                throw new FileAlreadyExistsException(placement.destination().toString());
+      for (int attempt = 0; ; attempt++) {
+        stageTransfers(catalog, placements, move, attempt > 0, progress, prepared);
+        try (var reservation = move
+            ? releaseForMove(placements.stream().map(p -> p.input().path()).toList())
+            : (LogFileAccess.Lease) () -> {}) {
+          try {
+            preparedImportTurn(catalog, owned -> {
+              var current = preparation.prepare(new Request(inputs.stream().map(ImportInspection::path).toList(), move,
+                  robot == null ? null : robot.name()));
+              ensureImporting();
+              for (var placement : placements) {
+                var input = placement.input();
+                if (!current.paths().contains(input.path()))
+                  throw new IOException("Source admission changed after staging: " + input.path());
+                security.validate(input.path());
+                if (!input.snapshot().sameAs(FileSnapshot.of(input.path())))
+                  throw new IOException("File changed after staging before placement: " + input.path());
+                var transfer = prepared.get(placement);
+                if (!transfer.snapshot().sameAs(FileSnapshot.of(transfer.path())))
+                  throw new IOException("Staged file changed before placement: " + transfer.path());
               }
-              try {
-                mover.move(input.path(), placement.destination(), StandardCopyOption.ATOMIC_MOVE);
-                renamed = true;
-              } catch (AtomicMoveNotSupportedException unsupported) {
-                // Never let the JDK implement a non-atomic move as copy-then-delete.
-              }
-            }
-            if (!renamed) {
-              copiedAttributes = mover.copy(input.path(), placement.destination());
-              copiedMoves.add(placement);
-            }
-          } else Files.copy(input.path(), placement.destination(), StandardCopyOption.COPY_ATTRIBUTES);
-          transferred.add(placement);
-          if (copiedAttributes != null) {
-            mover.force(placement.destination());
-            copiedAttributes.restore(placement.destination());
+              var currentSession = session == null ? null : catalog.sessions.getOrDefault(manifest, session);
+              if (session != null && !session.id().equals(currentSession.id()))
+                throw new IOException("Selected import session changed after preparation");
+              publishPreparedGroup(owned, catalog, inputs, placements, prepared, manifest, robot,
+                  currentSession, move, decision, published);
+              updateImportStamps(catalog);
+              return null;
+            });
+            committed = true;
+            catalog.proof = importProof(catalog, catalog.inputs, catalog.selectedRobots, catalog.statedRobot);
+          } catch (AtomicMoveNotSupportedException unsupported) {
+            if (attempt != 0) throw unsupported;
+            // The owner rolled back earlier renames. Copy/force/hash belongs to staging, never
+            // to the fallback branch of a publication turn.
+            continue;
           }
-          notify(progress, new Progress("verifying", placement.destination(), transferred.size() - 1, placements.size()));
-          var verified = ImportInspection.read(placement.destination(), parser);
-          if (!verified.hash().equals(input.hash())) throw new IOException("Copy hash differs: " + input.path());
-        }
-        if (session == null) io.write(manifest, records.get(0)); else io.write(manifest, session);
-      } catch (IOException | RuntimeException e) {
-        // Before commit, discard only Move copies we created; ordinary Copy keeps its strays.
-        // A plain reverse move refuses an intervening original instead of replacing it.
-        if (move) {
-          for (var placement : transferred) {
+          if (move) for (var placement : placements) {
+            if (!prepared.get(placement).copied()) continue;
+            var input = placement.input();
             try {
-              if (copiedMoves.contains(placement)) mover.discardCopy(placement.destination());
-              else mover.move(placement.destination(), placement.input().path());
-            } catch (IOException restore) {
-              e.addSuppressed(restore);
+              security.validate(input.path());
+              if (!input.snapshot().sameAs(FileSnapshot.of(input.path()))
+                  || !input.hash().equals(StoreFiles.hash(input.path())))
+                throw new IOException("Source changed after inspection: " + input.path());
+              mover.delete(input.path());
+            } catch (IOException | RuntimeException failure) {
+              removalReasons.put(placement, "Stored copy verified and committed; original could not be removed: "
+                  + input.path() + ": " + failure.getMessage());
             }
           }
-        }
-        for (var placement : placements) outcomes.add(new Outcome(placement.input().path(), "refused",
-            Files.exists(placement.destination()) ? placement.destination() : null, e.getMessage()));
-        return;
-      }
-      // The payload's manifest is committed. No later failure may roll this placement back.
-      catalog.placed(io, manifest, robot, session, records);
-      if (move) {
-        var header = io.read(root.resolve("store.json"), Header.class);
-        var moves = new ArrayList<>(header.moves());
-        for (var placement : placements) moves.add(new Move(placement.input().path().toString(),
-            StoreFiles.relative(root, placement.destination()), Instant.now().toString()));
-        var updated = header.withMoves(moves);
-        io.write(root.resolve("store.json"), updated);
-        catalog.header = updated;
-      }
-      for (var placement : placements) {
-        var old = catalog.assigning.remove(placement.input().hash());
-        if (old != null) {
-          // Commit the new manifest first; until then the old manifest is the source of truth.
-          Files.delete(io.check(old.manifestPath()));
-          rewriteMoves(io, catalog, old.path(), placement.destination());
-        }
-      }
-      for (var placement : copiedMoves) {
-        var input = placement.input();
-        try {
-          security.validate(input.path());
-          // A writer or another process may have replaced the original during verification.
-          // Keep it rather than deleting a version this import never inspected.
-          if (!input.snapshot().sameAs(FileSnapshot.of(input.path()))
-              || !input.hash().equals(StoreFiles.hash(input.path()))) {
-            throw new IOException("Source changed after inspection: " + input.path());
-          }
-          mover.delete(input.path());
-        } catch (IOException | RuntimeException failure) {
-          removalReasons.put(placement, "Stored copy verified and committed; original could not be removed: "
-              + input.path() + ": " + failure.getMessage());
+          break;
         }
       }
       for (var placement : placements) {
-        String reason = session == null
-            ? "No robot assignment or unique correlated wpilog; awaiting assignment" : null;
+        String reason = session == null ? "No robot assignment or unique correlated wpilog; awaiting assignment" : null;
         if (removalReasons.containsKey(placement)) reason = reason == null ? removalReasons.get(placement)
             : reason + "; " + removalReasons.get(placement);
         outcomes.add(new Outcome(placement.input().path(), session == null ? "unassigned" : "imported",
             placement.destination(), reason));
+      }
+    } catch (IOException | RuntimeException failure) {
+      if (committed || published.get()) {
+        for (var placement : placements) outcomes.add(new Outcome(placement.input().path(),
+            session == null ? "unassigned" : "imported", placement.destination(),
+            "Stored payload committed; import bookkeeping remains pending and any remaining original is retained: " + failure.getMessage()));
+        return;
+      }
+      for (var placement : placements) {
+        var transfer = prepared.get(placement);
+        Path retained = transfer != null && transfer.copied() && Files.exists(transfer.path()) ? transfer.path() : null;
+        // Capacity refusal never admitted this copy; preserve only other failed-Copy diagnostics.
+        if ((move || failure instanceof ReplicaCatalogFiles.CapacityRefused) && retained != null) {
+          try { mover.discardCopy(retained); retained = null; }
+          catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+        }
+        outcomes.add(new Outcome(placement.input().path(), "refused", retained, failure.getMessage()));
+      }
+    } finally {
+      // Only this worker owns its temporary bytes. A cancelled OS copy keeps that ownership
+      // until it unwinds; the source is never cleanup. Crash leftovers remain unmanaged.
+      for (var transfer : prepared.values()) if (transfer.copied()) {
+        if (importsStopped.get() && Files.exists(transfer.path())) {
+          try { mover.discardCopy(transfer.path()); }
+          catch (IOException cleanup) { LoggerFactory.getLogger(LogStore.class).warn("Import staging cleanup remains pending: {}", cleanup.getMessage()); }
+        }
+        transfer.stage().close();
+      }
+    }
+  }
+
+  private record PreparedTransfer(Path path, FileSnapshot snapshot, boolean copied, ImportStage stage) {}
+
+  private void stageTransfers(ImportCatalog catalog, List<Placement> placements, boolean move,
+      boolean copyFallback, Consumer<Progress> progress, Map<Placement, PreparedTransfer> prepared) throws IOException {
+    var copies = preparedImportTurn(catalog, io -> {
+      var result = new HashSet<Placement>();
+      for (var placement : placements) {
+        Files.createDirectories(io.check(placement.destination().getParent()));
+        if (!move || copyFallback || !mover.sameFileStore(placement.input().path(), placement.destination())) {
+          result.add(placement);
+          var held = prepared.get(placement);
+          if (held == null || !held.copied()) {
+            var stage = ImportStage.create(io, placement.destination().getParent());
+            prepared.put(placement, new PreparedTransfer(stage.path(placement.input().path().getFileName()),
+                placement.input().snapshot(), true, stage));
+          }
+        }
+        if (Files.exists(io.check(placement.destination()), LinkOption.NOFOLLOW_LINKS))
+          throw new FileAlreadyExistsException(placement.destination().toString());
+      }
+      updateImportStamps(catalog, placements.stream().map(p -> p.destination().getParent()).toArray(Path[]::new));
+      return result;
+    });
+    int verified = 0;
+    for (var placement : placements) {
+      ensureImporting();
+      var input = placement.input();
+      try (var lease = LogFileAccess.read(input.path())) {
+        security.validate(input.path());
+        if (!input.snapshot().sameAs(FileSnapshot.of(input.path())))
+          throw new IOException("File changed before staging: " + input.path());
+        if (!copies.contains(placement)) {
+          notify(progress, new Progress("verifying", input.path(), verified++, placements.size()));
+          prepared.put(placement, new PreparedTransfer(input.path(), input.snapshot(), false, null));
+          continue;
+        }
+        var held = prepared.get(placement);
+        if (Files.exists(held.path()) && held.snapshot().sameAs(FileSnapshot.of(held.path()))) continue;
+        var path = held.path();
+        try (var reservation = reserveDiskCopy(path.getParent(), input.snapshot().size())) {
+          var attributes = mover.copy(input.path(), path, input.snapshot().size());
+          if (move) mover.force(path);
+          attributes.restore(path);
+        }
+        notify(progress, new Progress("verifying", path, verified++, placements.size()));
+        if (!input.hash().equals(StoreFiles.hash(path))) throw new IOException("Copy hash differs: " + input.path());
+        if (!input.snapshot().sameAs(FileSnapshot.of(input.path())))
+          throw new IOException("File changed after staging: " + input.path());
+        prepared.put(placement, new PreparedTransfer(path, FileSnapshot.of(path), true, held.stage()));
+      }
+    }
+  }
+
+  /** Prepared bytes are renamed together; only metadata work remains under store.lock. */
+  private void publishPreparedGroup(StoreFiles io, ImportCatalog catalog, List<ImportInspection> inputs,
+      List<Placement> placements, Map<Placement, PreparedTransfer> prepared, Path manifest,
+      Robot robot, Session session, boolean move, ImportMatch decision,
+      java.util.concurrent.atomic.AtomicBoolean published) throws IOException {
+    var records = new ArrayList<LogFile>(session == null ? List.of() : session.files());
+    String now = Instant.now().toString();
+    for (var placement : placements) {
+      var input = placement.input();
+      var previous = catalog.assigning.get(input.hash());
+      var provenance = previous == null ? uploadSources.getOrDefault(input.path(), new Provenance("imported", input.path().toString(),
+          input.path().getFileName().toString(), now, move)) : previous.file().provenance();
+      records.add(new LogFile(StoreFiles.relative(manifest.getParent(), placement.destination()),
+          input.hash(), input.size(), input.kind(), provenance, true, input.min(), input.max(),
+          input.start() == null ? null : input.start().toString(),
+          input.end() == null ? null : input.end().toString(), input.startBasis(), input.truncated(),
+          placement.matching(), input.robotFingerprint(), placement.reason(), placement.placementMethod()));
+    }
+    if (session != null) {
+      var start = Instant.parse(session.startedAt());
+      var end = Instant.parse(session.endedAt());
+      String basis = session.startBasis();
+      for (var input : inputs) {
+        // Data joined an already-proven boot. Its uncertain source calendar only nominated it.
+        if (decision != null && decision.matching() != null) continue;
+        // A REV wall clock nominates candidates only; the correlated wpilog owns session time.
+        if (!input.kind().equals("wpilog")) continue;
+        if (input.start() != null && input.start().isBefore(start)) {
+          start = input.start();
+          basis = input.startBasis();
+        }
+        if (input.end() != null && input.end().isAfter(end)) end = input.end();
+      }
+      session = new Session(session.id(), start.toString(), end.toString(), basis,
+          session.event(), session.matchType(), session.matchNumber(), session.teamNumber(), List.copyOf(records), session.openCapture(), session.endReason(), session.deviceIdentity(), session.identityConflicts(), session.conflicts(), session.captureStats(), session.systemLogs(), session.mergedSessionIds(), session.clocks());
+    }
+    ReplicaMasters.preflight(root, io, manifest, session == null ? records.get(0) : session);
+    var transferred = new ArrayList<Placement>();
+    try {
+      for (var placement : placements) {
+        var transfer = prepared.get(placement);
+        io.check(placement.destination());
+        if (Files.exists(placement.destination(), LinkOption.NOFOLLOW_LINKS))
+          throw new FileAlreadyExistsException(placement.destination().toString());
+        if (transfer.copied()) Files.move(transfer.path(), placement.destination(), StandardCopyOption.ATOMIC_MOVE);
+        else mover.move(transfer.path(), placement.destination(), StandardCopyOption.ATOMIC_MOVE);
+        transferred.add(placement);
+      }
+      if (session == null) io.write(manifest, records.get(0)); else io.write(manifest, session);
+      published.set(true);
+    } catch (IOException | RuntimeException failure) {
+      for (int i = transferred.size() - 1; i >= 0; i--) {
+        var placement = transferred.get(i);
+        try { Files.move(placement.destination(), prepared.get(placement).path()); }
+        catch (IOException restore) { failure.addSuppressed(restore); }
+      }
+      updateImportStamps(catalog);
+      throw failure;
+    }
+    // From this point, a later bookkeeping failure cannot roll back the durable payload.
+    catalog.placed(io, manifest, robot, session, records);
+    if (move) {
+      var header = io.read(root.resolve("store.json"), Header.class);
+      var moves = new ArrayList<>(header.moves());
+      for (var placement : placements) moves.add(new Move(placement.input().path().toString(),
+          StoreFiles.relative(root, placement.destination()), Instant.now().toString()));
+      var updated = header.withMoves(moves);
+      io.write(root.resolve("store.json"), updated);
+      catalog.header = updated;
+    }
+    for (var placement : placements) {
+      var old = catalog.assigning.remove(placement.input().hash());
+      if (old != null) {
+        Files.delete(io.check(old.manifestPath()));
+        rewriteMoves(io, catalog, old.path(), placement.destination());
       }
     }
   }
@@ -1525,8 +2087,8 @@ public final class LogStore implements AutoCloseable {
   }
 
   /**
-   * Old manifests remain readable. Under the import lock, copy and verify their payloads before
-   * switching the manifest, then remove the old files: a failed migration must keep log bytes.
+   * Old manifests remain readable. Prepare and verify their payloads on staging, then switch
+   * the manifest before removing the old file: a failed migration must keep log bytes.
    */
   private Map<Path, Path> migrateUnassigned(StoreFiles io, ImportCatalog catalog) throws IOException {
     var migrated = new HashMap<Path, Path>();
@@ -1536,24 +2098,61 @@ public final class LogStore implements AutoCloseable {
       }
       var file = stored.file();
       var destination = payloadDestination(io, stored.manifestPath(), stored.path().getFileName(), file.sha256());
-      try (var lease = releaseForMove(List.of(stored.path()))) {
-        if (!file.sha256().equals(StoreFiles.hash(io.check(stored.path())))) {
-          throw new IOException("Stored content no longer matches its manifest: " + stored.path());
+      ImportStage stage = null;
+      Path staged = null;
+      try {
+        FileSnapshot source;
+        try (var lease = LogFileAccess.read(stored.path())) {
+          source = FileSnapshot.of(stored.path());
+          if (!file.sha256().equals(StoreFiles.hash(io.check(stored.path()))))
+            throw new IOException("Stored content no longer matches its manifest: " + stored.path());
+          stage = importTurn(owned -> {
+            checkImportCatalog(catalog);
+            Files.createDirectories(owned.check(destination.getParent()));
+            var prepared = ImportStage.create(owned, destination.getParent());
+            try {
+              updateImportStamps(catalog, destination.getParent());
+              return prepared;
+            } catch (IOException | RuntimeException failure) {
+              prepared.close();
+              throw failure;
+            }
+          });
+          staged = stage.path(stored.path().getFileName());
+          try (var reservation = reserveDiskCopy(staged.getParent(), source.size())) {
+            mover.copy(stored.path(), staged, source.size()).restore(staged);
+          }
+          if (!file.sha256().equals(StoreFiles.hash(staged)) || !source.sameAs(FileSnapshot.of(stored.path())))
+            throw new IOException("Migration copy changed: " + stored.path());
         }
-        Files.createDirectories(destination.getParent());
-        Files.copy(io.check(stored.path()), io.check(destination), StandardCopyOption.COPY_ATTRIBUTES);
-        if (!file.sha256().equals(StoreFiles.hash(destination))) {
-          throw new IOException("Migration copy hash differs: " + destination);
+        var prepared = staged;
+        try (var lease = releaseForMove(List.of(stored.path()))) {
+          importTurn(owned -> {
+            checkImportCatalog(catalog);
+            if (!source.sameAs(FileSnapshot.of(stored.path())))
+              throw new IOException("Legacy source changed before migration: " + stored.path());
+            if (Files.exists(owned.check(destination), LinkOption.NOFOLLOW_LINKS))
+              throw new FileAlreadyExistsException(destination.toString());
+            Files.move(prepared, owned.check(destination), StandardCopyOption.ATOMIC_MOVE);
+            var updated = new LogFile(StoreFiles.relative(stored.manifestPath().getParent(), destination),
+                file.sha256(), file.sizeBytes(), file.kind(), file.provenance(), file.verified(),
+                file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(),
+                file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint(), file.matchingReason(), file.placementMethod());
+            owned.write(stored.manifestPath(), updated);
+            rewriteMoves(owned, catalog, stored.path(), destination);
+            catalog.placed(owned, stored.manifestPath(), null, null, List.of(updated));
+            Files.delete(owned.check(stored.path()));
+            updateImportStamps(catalog);
+            return null;
+          });
         }
-        var updated = new LogFile(StoreFiles.relative(stored.manifestPath().getParent(), destination),
-            file.sha256(), file.sizeBytes(), file.kind(), file.provenance(), file.verified(),
-            file.minTimestampSec(), file.maxTimestampSec(), file.startedAt(), file.endedAt(),
-            file.startBasis(), file.truncated(), file.matching(), file.robotFingerprint(), file.matchingReason(), file.placementMethod());
-        io.write(stored.manifestPath(), updated);
-        rewriteMoves(io, catalog, stored.path(), destination);
-        catalog.placed(io, stored.manifestPath(), null, null, List.of(updated));
-        Files.delete(io.check(stored.path()));
         migrated.put(stored.path(), destination);
+      } finally {
+        try {
+          if (staged != null && Files.exists(staged)) mover.discardCopy(staged);
+        } finally {
+          if (stage != null) stage.close();
+        }
       }
     }
     return migrated;

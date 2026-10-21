@@ -1,0 +1,15 @@
+[Unit]
+Description=Restart an unresponsive WPILog server (@NAME@)
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/systemctl --no-block try-restart wpilog-mcp-@NAME@.service
+TimeoutStartSec=10s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX

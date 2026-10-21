@@ -80,7 +80,7 @@ public class LogParser {
             // Structs wait for the schemas: keep their bytes until the pass is done
             var value = EntryDecoder.isStruct(info.type()) ? record.getRaw()
                 : EntryDecoder.decodeValue(record, info.type(), StructSchemas.fallbackOnly());
-            values.add(new TimestampedValue(timestamp, value));
+            values.add(TimestampedValue.atMicros(record.getTimestamp(), value));
           } catch (Exception e) {
             failed++;
             if (firstFailure == null) {
@@ -109,8 +109,7 @@ public class LogParser {
         String firstFailure = null;
         for (var tv : raw) {
           try {
-            decoded.add(new TimestampedValue(tv.timestamp(),
-                schemas.decode(info.type(), (byte[]) tv.value())));
+            decoded.add(tv.withValue(schemas.decode(info.type(), (byte[]) tv.value())));
           } catch (StructDecodeException e) {
             failed++;
             if (firstFailure == null) firstFailure = e.getMessage();

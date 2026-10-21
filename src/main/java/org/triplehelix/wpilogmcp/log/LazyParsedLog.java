@@ -430,7 +430,8 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     long sum = 0;
     int[] indices = sampleIndices(values.size());
     for (int idx : indices) sum += estimateValueBytes(values.get(idx).value(), 0);
-    long perValue = 32 + sum / indices.length;
+    // Carrier includes both the seconds view and retained exact microsecond coordinate.
+    long perValue = 48 + sum / indices.length;
     long total = (long) values.size() * perValue + 200;
     return (int) Math.min(total, Integer.MAX_VALUE);
   }

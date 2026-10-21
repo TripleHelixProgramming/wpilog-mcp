@@ -34,6 +34,23 @@ class ServiceUnitTest {
     assertFalse(text.contains("MemoryDenyWriteExecute")); assertFalse(text.contains("MemoryMax"));
     assertFalse(text.contains("TBA_API_KEY=")); assertFalse(text.contains("PIDFile=")); assertFalse(text.contains("--internal-daemon"));
   }
+  @Test void threeFailedProbesRequestARestartWithoutRestartingAnExplicitlyStoppedServer() throws Exception {
+    var files = ServiceUnit.render("pit", 12345, temp.resolve("servers.yaml"));
+    String probe = files.get("wpilog-mcp-pit-health.service");
+    assertTrue(probe.contains("--retry 2 --retry-delay 10 --retry-all-errors --max-time 5"),
+        "Health must make exactly three bounded attempts, ten seconds between retries");
+    assertTrue(probe.contains("TimeoutStartSec=40s"),
+        "Three five-second attempts plus two ten-second waits need 35 seconds and scheduling margin");
+    assertTrue(probe.contains("OnFailure=wpilog-mcp-pit-restart.service"),
+        "Only an exhausted probe activates restart");
+    assertTrue(probe.contains("User=wpilog-mcp"), "The HTTP probe remains unprivileged");
+    String restart = files.get("wpilog-mcp-pit-restart.service");
+    assertNotNull(restart, "Print the referenced restart unit");
+    assertTrue(restart.contains("User=root"), "Restart authority belongs only to its narrow handler");
+    assertTrue(restart.contains("ExecStart=/usr/bin/systemctl --no-block try-restart wpilog-mcp-pit.service"),
+        "try-restart must leave an explicitly stopped server stopped");
+    assertFalse(restart.contains("/bin/sh"), "The restart handler executes a fixed command, not a shell");
+  }
   @Test void argumentsCannotBecomeUnitDirectivesOrSystemdSubstitutions() throws Exception {
     for (String name : List.of("../pit", "pit\nUser=root", "pit%u", "pit$X", "pit with space")) {
       assertThrows(IllegalArgumentException.class, () -> ServiceUnit.render(name, 12345, temp));

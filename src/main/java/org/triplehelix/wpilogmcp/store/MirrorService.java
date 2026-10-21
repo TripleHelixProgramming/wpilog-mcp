@@ -26,7 +26,8 @@ public final class MirrorService implements AutoCloseable {
   public void impacts(ImpactReader reader) { impacts = reader; }
   private volatile Operation operation;
   public record ReplicaSummary(int formatVersion, String catalogEpoch, long catalogRevision,
-      int files, int legacyUnconfirmed, int verified, int exclusions, boolean writerEnabled) {}
+      int files, int legacyUnconfirmed, int verified, int exclusions, boolean writerEnabled,
+      ReplicaCatalogCapacity catalogCapacity) {}
   private final LogStore store;
   private final MirrorConfig config;
   private final Clock clock;
@@ -92,7 +93,7 @@ public final class MirrorService implements AutoCloseable {
         catalog == null ? 0 : catalog.revision(), catalog == null ? 0 : catalog.files().size(),
         catalog == null ? 0 : (int) catalog.files().stream().filter(f -> f.verificationBasis().equals("legacy_unconfirmed")).count(),
         catalog == null ? 0 : (int) catalog.files().stream().filter(f -> f.verificationBasis().equals("verified")).count(),
-        catalog == null ? 0 : catalog.exclusions().size(), catalog != null);
+        catalog == null ? 0 : catalog.exclusions().size(), catalog != null, ReplicaCatalogCapacity.of(catalog));
     return new Status(state, config, last, age, active() ? p.remainingFiles() : 0, active() ? p.remainingBytes() : 0, result, seen, summary, store.replicaTransfers().active() && store.replicaTransfers().capacity() != null ? store.replicaTransfers().capacity() : capacity, operation,
         evidence == null ? null : evidence.coverage(), id());
   }
