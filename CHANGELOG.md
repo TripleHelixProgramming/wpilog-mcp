@@ -681,8 +681,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 
 - `doc/COLUMN_CACHE_PLAN.md` proposes column companions: each log's numeric entries kept as
-  columns beside it in the disk cache, with summaries for overviews, read by memory-mapping
-  with no engine. A throwaway prototype on synthetic logs answered one entry across a season's
+  columns beside it in the disk cache, read by memory-mapping with no engine. A throwaway prototype on synthetic logs answered one entry across a season's
   128 logs in about 13 ms against 1.45 s for today's path after a restart, and needed 16.6
   bytes of heap per value for an open file's columns against today's 82. The maintainer's
   decisions are recorded: struct fields in the first phase, building in the background, the
@@ -690,7 +689,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no smaller rollover size in the meantime. On three local team logs, read-only, every numeric
   value matched today's decode, and a companion answered an overview in under a millisecond
   after a restart, against 0.1 to 0.9 s. Previously the plans weighed only summaries and an
-  engine-backed columnar store.
+  engine-backed columnar store. The plan also records the first build of the format, its writer
+  and its reader, which no reader uses yet: an overview reads every sample, since block
+  summaries would change the endpoint's means in their last bits; a struct array of more than
+  64 elements is left to the log; and a build decodes each entry outside the cache of decoded
+  values, after the first build ran a 4 GB heap out of memory on a 2 GiB team log. The
+  maintainer kept both: no summaries for now, and the build's limits as built.
 
 - `doc/GRAFANA_PLAN.md` proposes the design of its first stage, live panels on the open capture,
   with synthetic measurements and six questions for the maintainer. Previously the plan noted

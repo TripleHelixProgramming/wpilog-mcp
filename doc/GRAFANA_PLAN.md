@@ -179,9 +179,9 @@ Two ways to answer it are measured before either is chosen:
   content and the summary's recipe, as the scan index is: for each numeric entry, minimum,
   maximum, mean and count over short fixed intervals, with UTC. Wide windows read the
   summaries; a window narrow enough to need samples reads the file. No new engine or
-  dependency. The [column companions plan](COLUMN_CACHE_PLAN.md) proposes these summaries
-  together with full-resolution numeric columns, read by every reader, with prototype
-  measurements.
+  dependency. The [column companions plan](COLUMN_CACHE_PLAN.md) keeps full-resolution
+  columns beside each log instead, read by every reader, and leaves summaries for later; its
+  first build overviews twelve two-hour panels in 59 ms by reading every sample.
 - A columnar store on server installs only, which the columnar plan's
   [revisit](COLUMNAR_STORE_PLAN.md#revisited-for-server-installs-2026-10-21) reconsiders under
   that scope.

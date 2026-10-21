@@ -1,0 +1,665 @@
+/*
+ * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
+ * SPDX-License-Identifier: MIT
+ */
+package org.triplehelix.wpilogmcp.columns;
+
+import static org.triplehelix.wpilogmcp.columns.ColumnFileFormat.*;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.zip.CRC32C;
+import org.triplehelix.wpilogmcp.columns.ColumnFileFormat.Kind;
+import org.triplehelix.wpilogmcp.log.DecodeProblem;
+import org.triplehelix.wpilogmcp.log.LogBytes;
+import org.triplehelix.wpilogmcp.log.MappedLogBytes;
+import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
+import org.triplehelix.wpilogmcp.read.FieldPath;
+
+/**
+ * A log's column file, mapped as the log itself is, so its columns live in the operating
+ * system's file cache and no sample becomes an object on the heap.
+ *
+ * <p>A selection holds a path only when the file holds it exactly, and is empty otherwise, so
+ * that the caller reads the log instead: a path with no column, a pooled path ({@code [*]}) on an
+ * incomplete entry, and every path once a section has failed its checksum. A selection checks
+ * every section it will read before it is returned, so a read takes all its values from the file
+ * or all from the log, never some of each.
+ *
+ * <p>One owner closes the file, after every read of it has finished, as with a mapped log: a
+ * mapping released while another thread reads it would crash the process.
+ */
+public final class ColumnFile implements AutoCloseable {
+  private static final int CHUNK = 8192;
+
+  private final MappedLogBytes bytes;
+  private final String source;
+  private final Map<String, Entry> entries;
+  private volatile String damage;
+
+  private ColumnFile(MappedLogBytes bytes, String source, Map<String, Entry> entries) {
+    this.bytes = bytes;
+    this.source = source;
+    this.entries = entries;
+  }
+
+  /**
+   * Opens a column file and checks its header, footer, directory and identity.
+   *
+   * @param expectedSource the identity of the log the caller is reading; a file built from any
+   *     other content is refused
+   * @throws IOException for a file that is not a complete column file of this version and recipe
+   *     for that source
+   */
+  public static ColumnFile open(Path path, String expectedSource) throws IOException {
+    var bytes = new MappedLogBytes(path, MappedLogBytes.windowBytes());
+    try {
+      var directory = new Parser(bytes).parse(expectedSource);
+      return new ColumnFile(bytes, expectedSource, directory);
+    } catch (IOException | RuntimeException failure) {
+      try {
+        bytes.close();
+      } catch (IOException release) {
+        failure.addSuppressed(release);
+      }
+      if (failure instanceof IOException io) throw io;
+      throw new IOException("Malformed column file: " + failure, failure);
+    }
+  }
+
+  public String source() {
+    return source;
+  }
+
+  /** The entry, when the file holds it. */
+  public Optional<Entry> entry(String name) {
+    return Optional.ofNullable(entries.get(name));
+  }
+
+  /** Why the file's columns are no longer read, when a section failed its checksum. */
+  public Optional<String> damage() {
+    return Optional.ofNullable(damage);
+  }
+
+  /**
+   * The samples of {@code path} in {@code entry}, in the order the tools read them, when the file
+   * holds them exactly; empty otherwise, and the caller reads the log.
+   */
+  public Optional<Selection> select(String entry, FieldPath path) {
+    if (damage != null) return Optional.empty();
+    var held = entries.get(entry);
+    if (held == null) return Optional.empty();
+    List<Column> columns;
+    if (!path.hasWildcard()) {
+      var column = held.columns.get(path.toString());
+      if (column == null) return Optional.empty();
+      columns = List.of(column);
+    } else {
+      if (!held.complete) return Optional.empty();
+      columns = pooled(held, path);
+      if (columns.isEmpty()) return Optional.empty();
+    }
+    try {
+      for (var column : columns) {
+        verify(column.times, held.decoded);
+        verify(column.values, held.decoded);
+        if (column.ordinals != null) verify(column.ordinals, held.decoded);
+      }
+    } catch (IOException failed) {
+      damage = failed.getMessage();
+      return Optional.empty();
+    }
+    return Optional.of(new Selection(this, held, columns, path.hasWildcard()));
+  }
+
+  @Override
+  public void close() throws IOException {
+    bytes.close();
+  }
+
+  /**
+   * The columns a pooled path matches, in the order {@code FieldPath.resolveAll} visits their
+   * elements within a record: by the indexes at the pattern's {@code [*]} steps.
+   */
+  private static List<Column> pooled(Entry entry, FieldPath pattern) {
+    var steps = pattern.steps();
+    record Ranked(Column column, int[] rank) {}
+    var matches = new ArrayList<Ranked>();
+    for (var column : entry.columns.values()) {
+      var concrete = column.path.steps();
+      if (concrete.size() != steps.size()) continue;
+      var rank = new ArrayList<Integer>();
+      boolean match = true;
+      for (int i = 0; i < steps.size() && match; i++) {
+        var step = steps.get(i);
+        if (step instanceof FieldPath.All) {
+          if (concrete.get(i) instanceof FieldPath.Index index) rank.add(index.index());
+          else match = false;
+        } else {
+          match = step.equals(concrete.get(i));
+        }
+      }
+      if (match) matches.add(new Ranked(column, rank.stream().mapToInt(Integer::intValue).toArray()));
+    }
+    matches.sort((a, b) -> Arrays.compare(a.rank, b.rank));
+    return matches.stream().map(Ranked::column).toList();
+  }
+
+  /** Checks a section's checksum and order once; a section that fails damages the file. */
+  private void verify(Section section, int decoded) throws IOException {
+    if (section.verified) return;
+    var crc = new CRC32C();
+    long previous = Long.MIN_VALUE;
+    for (int from = 0; from < section.count; from += CHUNK) {
+      int count = Math.min(CHUNK, section.count - from);
+      var view = bytes.view(section.offset + (long) from * section.width, count * section.width);
+      crc.update(view.duplicate());
+      for (int i = 0; i < count; i++) {
+        long value = section.width == 8 ? view.getLong(8 * i) : view.getInt(4 * i);
+        boolean ordered = switch (section.role) {
+          case TIMES -> value >= previous;
+          case ORDINALS -> value > previous && value < decoded && value >= 0;
+          case BOOLS -> value == 0 || value == 1;
+          case FLOATS -> value >>> 32 == 0;
+          case VALUES -> true;
+        };
+        if (!ordered) throw new IOException("Column section at " + section.offset + " holds a value out of place");
+        previous = value;
+      }
+    }
+    if ((int) crc.getValue() != section.crc) throw new IOException("Column section at " + section.offset + " fails its checksum");
+    section.verified = true;
+  }
+
+  /** What a section's values must satisfy beyond its checksum. */
+  private enum Role { TIMES, VALUES, BOOLS, FLOATS, ORDINALS }
+
+  private static final class Section {
+    final long offset;
+    final int count;
+    final int width;
+    final int crc;
+    final Role role;
+    volatile boolean verified;
+
+    Section(long offset, int count, int width, int crc, Role role) {
+      this.offset = offset;
+      this.count = count;
+      this.width = width;
+      this.crc = crc;
+      this.role = role;
+    }
+  }
+
+  private record Column(FieldPath path, Kind kind, int size, boolean full, Section times, Section values,
+      Section ordinals) {}
+
+  /** An entry the file holds: its record counts and decode problem as the log reports them. */
+  public static final class Entry {
+    private final String name;
+    private final String type;
+    private final int records;
+    private final int decoded;
+    private final DecodeProblem problem;
+    private final boolean complete;
+    private final Map<String, Column> columns;
+
+    private Entry(String name, String type, int records, int decoded, DecodeProblem problem,
+        boolean complete, Map<String, Column> columns) {
+      this.name = name;
+      this.type = type;
+      this.records = records;
+      this.decoded = decoded;
+      this.problem = problem;
+      this.complete = complete;
+      this.columns = columns;
+    }
+
+    public String name() { return name; }
+    public String type() { return type; }
+    /** Records the log holds for the entry, decoded or not. */
+    public int records() { return records; }
+    /** Records that decoded, which the columns are positions into. */
+    public int decoded() { return decoded; }
+    public Optional<DecodeProblem> decodeProblem() { return Optional.ofNullable(problem); }
+    /** Whether every numeric leaf of every decoded record has a column, so pooled reads are held. */
+    public boolean complete() { return complete; }
+    /** The paths of the entry's columns, as the field path grammar spells them. */
+    public Set<String> paths() { return Collections.unmodifiableSet(columns.keySet()); }
+  }
+
+  /** The samples of one path, which may pool several columns. */
+  public static final class Selection {
+    private final ColumnFile file;
+    private final Entry entry;
+    private final List<Column> columns;
+    private final boolean pooled;
+
+    private Selection(ColumnFile file, Entry entry, List<Column> columns, boolean pooled) {
+      this.file = file;
+      this.entry = entry;
+      this.columns = columns;
+      this.pooled = pooled;
+    }
+
+    public Entry entry() { return entry; }
+
+    /** Samples in the whole selection. */
+    public int size() {
+      return columns.stream().mapToInt(Column::size).sum();
+    }
+
+    /** The one kind of all its columns, or empty when they differ. */
+    public Optional<Kind> kind() {
+      var kind = columns.get(0).kind;
+      return columns.stream().allMatch(c -> c.kind == kind) ? Optional.of(kind) : Optional.empty();
+    }
+
+    /** Decoded records in which the path held no number, as the tools count them. */
+    public int recordsWithoutValue() {
+      if (!pooled) return entry.decoded - columns.get(0).size;
+      if (columns.stream().anyMatch(Column::full)) return 0;
+      int distinct = 0, last = -1;
+      var cursor = cursor(all());
+      while (cursor.next()) {
+        if (cursor.ordinal() != last) distinct++;
+        last = cursor.ordinal();
+      }
+      return entry.decoded - distinct;
+    }
+
+    public Range all() {
+      var from = new int[columns.size()];
+      var to = new int[columns.size()];
+      for (int c = 0; c < columns.size(); c++) to[c] = columns.get(c).size;
+      return new Range(from, to);
+    }
+
+    /**
+     * The samples a window keeps as the data endpoint keeps them: seconds, computed from the
+     * logged microseconds as the decoded value carries them, at or after {@code startTime} and
+     * at or before {@code endTime}; a null bound is open.
+     */
+    public Range window(Double startTime, Double endTime) {
+      var from = new int[columns.size()];
+      var to = new int[columns.size()];
+      for (int c = 0; c < columns.size(); c++) {
+        var times = new Longs(file.bytes, columns.get(c).times);
+        int size = columns.get(c).size;
+        from[c] = startTime == null ? 0 : first(times, size, t -> t / 1_000_000.0 >= startTime);
+        to[c] = endTime == null ? size : first(times, size, t -> !(t / 1_000_000.0 <= endTime));
+        if (to[c] < from[c]) to[c] = from[c];
+      }
+      return new Range(from, to);
+    }
+
+    /** The first logged microsecond of a range's samples in read order, which is the earliest. */
+    public long firstTimeUs(Range range) {
+      long first = Long.MAX_VALUE;
+      for (int c = 0; c < columns.size(); c++) {
+        if (range.to[c] > range.from[c]) first = Math.min(first, new Longs(file.bytes, columns.get(c).times).get(range.from[c]));
+      }
+      if (first == Long.MAX_VALUE) throw new IllegalArgumentException("The range is empty");
+      return first;
+    }
+
+    /** The last logged microsecond of a range's samples in read order, which is the latest. */
+    public long lastTimeUs(Range range) {
+      long last = Long.MIN_VALUE;
+      boolean any = false;
+      for (int c = 0; c < columns.size(); c++) {
+        if (range.to[c] > range.from[c]) {
+          last = Math.max(last, new Longs(file.bytes, columns.get(c).times).get(range.to[c] - 1));
+          any = true;
+        }
+      }
+      if (!any) throw new IllegalArgumentException("The range is empty");
+      return last;
+    }
+
+    public Cursor cursor(Range range) {
+      if (range.from.length != columns.size()) throw new IllegalArgumentException("The range belongs to another selection");
+      return new Cursor(file.bytes, columns, range);
+    }
+
+    /**
+     * Gives each sample of {@code range} to {@code sink} in read order, as a cursor would. One
+     * column is read straight from its mapped sections, a chunk at a time.
+     */
+    public void forEach(Range range, Sink sink) {
+      if (range.from.length != columns.size()) throw new IllegalArgumentException("The range belongs to another selection");
+      if (columns.size() > 1) {
+        var cursor = cursor(range);
+        while (cursor.next()) sink.accept(cursor.timeUs(), cursor.number());
+        return;
+      }
+      var column = columns.get(0);
+      var kind = column.kind;
+      for (int base = range.from[0]; base < range.to[0]; base += CHUNK) {
+        int count = Math.min(CHUNK, range.to[0] - base);
+        var times = file.bytes.view(column.times.offset + 8L * base, 8 * count);
+        var values = file.bytes.view(column.values.offset + 8L * base, 8 * count);
+        for (int i = 0; i < count; i++) sink.accept(times.getLong(8 * i), kind.number(values.getLong(8 * i)));
+      }
+    }
+
+    private static int first(Longs times, int size, java.util.function.LongPredicate after) {
+      int low = 0, high = size;
+      while (low < high) {
+        int middle = (low + high) >>> 1;
+        if (after.test(times.get(middle))) high = middle;
+        else low = middle + 1;
+      }
+      return low;
+    }
+  }
+
+  /** Receives samples: the logged microsecond, and the value as the tools read it. */
+  @FunctionalInterface
+  public interface Sink {
+    void accept(long timeUs, double number);
+  }
+
+  /** Index ranges into each column of a selection. */
+  public static final class Range {
+    private final int[] from;
+    private final int[] to;
+
+    private Range(int[] from, int[] to) {
+      this.from = from;
+      this.to = to;
+    }
+
+    public int size() {
+      int size = 0;
+      for (int c = 0; c < from.length; c++) size += to[c] - from[c];
+      return size;
+    }
+
+    public boolean isEmpty() {
+      return size() == 0;
+    }
+  }
+
+  /**
+   * A selection's samples in the order the tools read them: by record, and within a record by
+   * element, as {@code FieldPath.resolveAll} visits a record's elements.
+   */
+  public static final class Cursor {
+    private final List<Column> columns;
+    private final Longs[] times;
+    private final Longs[] values;
+    private final Ints[] ordinals;
+    private final int[] position;
+    private final int[] end;
+    private int current = -1;
+    private int index;
+
+    private Cursor(LogBytes bytes, List<Column> columns, Range range) {
+      this.columns = columns;
+      int count = columns.size();
+      times = new Longs[count];
+      values = new Longs[count];
+      ordinals = new Ints[count];
+      position = range.from.clone();
+      end = range.to.clone();
+      for (int c = 0; c < count; c++) {
+        var column = columns.get(c);
+        times[c] = new Longs(bytes, column.times);
+        values[c] = new Longs(bytes, column.values);
+        if (column.ordinals != null) ordinals[c] = new Ints(bytes, column.ordinals);
+      }
+    }
+
+    public boolean next() {
+      int best = -1;
+      for (int c = 0; c < position.length; c++) {
+        if (position[c] < end[c] && (best < 0 || ordinal(c, position[c]) < ordinal(best, position[best]))) best = c;
+      }
+      if (best < 0) return false;
+      current = best;
+      index = position[best]++;
+      return true;
+    }
+
+    public long timeUs() {
+      return times[current].get(index);
+    }
+
+    /** The decoded value's seconds, as {@code TimestampedValue.atMicros} computes them. */
+    public double seconds() {
+      return timeUs() / 1_000_000.0;
+    }
+
+    public long bits() {
+      return values[current].get(index);
+    }
+
+    public Kind kind() {
+      return columns.get(current).kind;
+    }
+
+    /** The value as the tools read it; see {@link Kind#number}. */
+    public double number() {
+      return kind().number(bits());
+    }
+
+    /** The position of the sample's record among the entry's decoded records. */
+    public int ordinal() {
+      return ordinal(current, index);
+    }
+
+    private int ordinal(int column, int at) {
+      if (columns.get(column).full) return at;
+      if (ordinals[column] == null) throw new IllegalStateException("A column outside arrays keeps no record positions");
+      return ordinals[column].get(at);
+    }
+  }
+
+  /** A section's eight-byte values, read through one mapped view of up to 8,192 at a time. */
+  private static final class Longs {
+    private final LogBytes bytes;
+    private final long offset;
+    private final int count;
+    private ByteBuffer view;
+    private int base;
+    private int limit;
+
+    Longs(LogBytes bytes, Section section) {
+      this.bytes = bytes;
+      this.offset = section.offset;
+      this.count = section.count;
+    }
+
+    long get(int i) {
+      if (view == null || i < base || i >= limit) {
+        base = i - i % CHUNK;
+        limit = Math.min(count, base + CHUNK);
+        view = bytes.view(offset + 8L * base, 8 * (limit - base));
+      }
+      return view.getLong(8 * (i - base));
+    }
+  }
+
+  private static final class Ints {
+    private final LogBytes bytes;
+    private final long offset;
+    private final int count;
+    private ByteBuffer view;
+    private int base;
+    private int limit;
+
+    Ints(LogBytes bytes, Section section) {
+      this.bytes = bytes;
+      this.offset = section.offset;
+      this.count = section.count;
+    }
+
+    int get(int i) {
+      if (view == null || i < base || i >= limit) {
+        base = i - i % CHUNK;
+        limit = Math.min(count, base + CHUNK);
+        view = bytes.view(offset + 4L * base, 4 * (limit - base));
+      }
+      return view.getInt(4 * (i - base));
+    }
+  }
+
+  /**
+   * Reads the header, footer and directory, checking every count and offset against the file
+   * and the format's limits before it allocates anything sized by them.
+   */
+  private static final class Parser {
+    private final MappedLogBytes bytes;
+    private ByteBuffer in;
+    private long sectionsEnd;
+
+    Parser(MappedLogBytes bytes) {
+      this.bytes = bytes;
+    }
+
+    Map<String, Entry> parse(String expectedSource) throws IOException {
+      long size = bytes.size();
+      if (size < HEADER_BYTES + FOOTER_BYTES) throw new IOException("Not a column file: " + size + " bytes");
+      var header = bytes.view(0, HEADER_BYTES);
+      if (header.getLong(0) != MAGIC) throw new IOException("Not a column file");
+      int format = header.getInt(8), recipe = header.getInt(12);
+      if (format != FORMAT_VERSION) throw new IOException("Column file format " + format + ", not " + FORMAT_VERSION);
+      if (recipe != RECIPE_VERSION) throw new IOException("Column file recipe " + recipe + ", not " + RECIPE_VERSION);
+      var footer = bytes.view(size - FOOTER_BYTES, FOOTER_BYTES);
+      if (footer.getInt(20) != FOOTER_MAGIC) throw new IOException("Column file is incomplete");
+      long directoryOffset = footer.getLong(0), directoryLength = footer.getLong(8);
+      if (directoryLength < 0 || directoryLength > MAX_DIRECTORY_BYTES || directoryOffset < HEADER_BYTES
+          || directoryOffset % 8 != 0 || directoryOffset != size - FOOTER_BYTES - directoryLength)
+        throw new IOException("Column file directory is out of place");
+      sectionsEnd = directoryOffset;
+      in = bytes.view(directoryOffset, (int) directoryLength);
+      var crc = new CRC32C();
+      crc.update(header.duplicate());
+      crc.update(in.duplicate());
+      if ((int) crc.getValue() != footer.getInt(16)) throw new IOException("Column file directory fails its checksum");
+
+      if (!string().equals(expectedSource)) throw new IOException("Column file belongs to other content");
+      int count = count(MAX_ENTRIES);
+      var entries = new HashMap<String, Entry>();
+      int columns = 0;
+      for (int e = 0; e < count; e++) {
+        var entry = entry();
+        columns += entry.columns.size();
+        if (columns > MAX_COLUMNS) throw new IOException("Column file holds too many columns");
+        if (entries.put(entry.name, entry) != null) throw new IOException("Column file repeats entry " + entry.name);
+      }
+      if (in.hasRemaining()) throw new IOException("Column file directory has trailing bytes");
+      return Map.copyOf(entries);
+    }
+
+    private Entry entry() throws IOException {
+      var name = string();
+      var type = string();
+      int flags = u8();
+      if ((flags & ~3) != 0) throw new IOException("Unknown entry flags " + flags);
+      int records = count(Integer.MAX_VALUE), decoded = count(Integer.MAX_VALUE);
+      DecodeProblem problem = null;
+      if ((flags & 2) != 0) problem = new DecodeProblem(string(), count(Integer.MAX_VALUE), count(Integer.MAX_VALUE));
+      long timesOffset = u64();
+      int timesCrc = i32();
+      var recordTimes = timesOffset == ColumnFileWriter.NONE ? null : section(timesOffset, decoded, 8, timesCrc, Role.TIMES);
+      int count = count(MAX_ENTRY_COLUMNS);
+      if (count == 0) throw new IOException("Entry " + name + " holds no columns");
+      boolean scalar = StructSchemas.structName(type) == null;
+      if (scalar && !ColumnFileWriter.covered(type)) throw new IOException("Entry " + name + " has type " + type);
+      var columns = new LinkedHashMap<String, Column>();
+      for (int c = 0; c < count; c++) {
+        var text = string();
+        var kind = Kind.of(u8());
+        int size = count(decoded);
+        int layout = u8();
+        if ((layout & ~3) != 0) throw new IOException("Unknown column layout " + layout);
+        boolean own = (layout & 1) != 0, positions = (layout & 2) != 0;
+        var path = path(text);
+        boolean indexed = path.steps().stream().anyMatch(step -> step instanceof FieldPath.Index);
+        if (size == 0 || own != size < decoded || positions != (own && indexed) || scalar != path.isRoot())
+          throw new IOException("Column " + name + text + " is laid out inconsistently");
+        var times = own ? section(u64(), size, 8, i32(), Role.TIMES) : recordTimes;
+        if (times == null) throw new IOException("Column " + name + text + " shares timestamps the entry lacks");
+        var values = section(u64(), size, 8, i32(), switch (kind) {
+          case BOOL -> Role.BOOLS;
+          case F32 -> Role.FLOATS;
+          default -> Role.VALUES;
+        });
+        var ordinals = positions ? section(u64(), size, 4, i32(), Role.ORDINALS) : null;
+        if (columns.put(text, new Column(path, kind, size, !own, times, values, ordinals)) != null)
+          throw new IOException("Entry " + name + " repeats column " + text);
+      }
+      if (scalar && columns.size() != 1) throw new IOException("Entry " + name + " is a number with several columns");
+      return new Entry(name, type, records, decoded, problem, (flags & 1) != 0, columns);
+    }
+
+    /** A column's path, which must read back as itself, select one leaf, and stay in limits. */
+    private static FieldPath path(String text) throws IOException {
+      FieldPath path;
+      try {
+        path = FieldPath.parse(text);
+      } catch (IllegalArgumentException malformed) {
+        throw new IOException("Column path " + text + " is malformed");
+      }
+      if (text.length() > MAX_PATH_CHARS || path.hasWildcard() || !path.toString().equals(text)
+          || path.steps().stream().anyMatch(s -> s instanceof FieldPath.Index i && i.index() >= MAX_INDEX))
+        throw new IOException("Column path " + text + " is not one a column file holds");
+      return path;
+    }
+
+    private Section section(long offset, int count, int width, int crc, Role role) throws IOException {
+      long length = (long) count * width;
+      if (offset < HEADER_BYTES || offset % 8 != 0 || offset > sectionsEnd || length > sectionsEnd - offset)
+        throw new IOException("Column section lies outside the file");
+      return new Section(offset, count, width, crc, role);
+    }
+
+    private int count(int limit) throws IOException {
+      int count = i32();
+      if (count < 0 || count > limit) throw new IOException("Column file count " + Integer.toUnsignedString(count) + " exceeds " + limit);
+      return count;
+    }
+
+    private int u8() throws IOException {
+      need(1);
+      return in.get() & 0xFF;
+    }
+
+    private int i32() throws IOException {
+      need(4);
+      return in.getInt();
+    }
+
+    private long u64() throws IOException {
+      need(8);
+      return in.getLong();
+    }
+
+    private String string() throws IOException {
+      int length = count(MAX_STRING_BYTES);
+      need(length);
+      var text = in.slice(in.position(), length);
+      in.position(in.position() + length);
+      return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+          .onUnmappableCharacter(CodingErrorAction.REPORT).decode(text).toString();
+    }
+
+    private void need(int count) throws IOException {
+      if (in.remaining() < count) throw new IOException("Column file directory ends early");
+    }
+  }
+}
