@@ -261,6 +261,9 @@ is not in the log; the team's wiring map is.
    TBA results when the key is configured.
 2. `compare_matches` for two logs, or `get_statistics` with the same `name` and `scope` on each
    log, tabulated. Use `scope: "enabled"` or `"teleop"`; a whole-log maximum is often the boot.
+   When the logs are finished sessions of one store or mirror, `compare_sessions` takes up to 64
+   of them in one call: one statistic per session, each session counting once, with the code
+   version, robot and event of each session listed beside the numbers.
 3. `get_tba_match_data` with `year`, `event_code`, `match_type` and `match_number` for
    outcomes. The event code is TBA's, not necessarily the abbreviation in the file name.
 4. `get_code_metadata` on each log before attributing a change in behaviour to anything else.

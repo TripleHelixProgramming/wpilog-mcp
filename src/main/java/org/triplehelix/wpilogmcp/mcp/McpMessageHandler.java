@@ -335,7 +335,11 @@ public class McpMessageHandler {
         toolResult.getAsJsonObject().addProperty("_execution_time_ms", executionTimeMs);
       }
 
-      return HandlerResult.of(JsonRpc.createResponse(id, wrapToolResult(toolResult, false)));
+      var response = JsonRpc.createResponse(id, wrapToolResult(toolResult, false));
+      if (tool instanceof BoundedReply bounded) {
+        response = bounded(response, bounded, toolResult, id, executionTimeMs);
+      }
+      return HandlerResult.of(response);
     } catch (IllegalArgumentException e) {
       logger.warn("Tool '{}' failed with invalid parameter: {}", toolName, e.getMessage());
       return HandlerResult.of(
@@ -372,6 +376,21 @@ public class McpMessageHandler {
               wrapToolError(
                   e.getMessage() != null ? e.getMessage() : "Unknown error", "internal_error")));
     }
+  }
+
+  /** Both transports encode a reply with this configuration; a reply limit counts its bytes. */
+  private static final Gson REPLY_ENCODING = new GsonBuilder().serializeNulls().create();
+
+  /** The complete reply is measured as sent; one over the limit becomes the tool's refusal. */
+  JsonObject bounded(JsonObject response, BoundedReply tool, JsonElement result,
+      JsonElement id, long executionTimeMs) {
+    long bytes = REPLY_ENCODING.toJson(response).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+    int limit = tool.maxReplyBytes();
+    if (bytes <= limit) return response;
+    var refusal = tool.replyTooLarge(result, bytes, limit);
+    if (refusal.isJsonObject()) refusal.getAsJsonObject().addProperty("_execution_time_ms", executionTimeMs);
+    logger.warn("Tool reply of {} bytes exceeds its {}-byte limit; sent the tool's refusal instead", bytes, limit);
+    return JsonRpc.createResponse(id, wrapToolResult(refusal, false));
   }
 
   private static HandlerResult invalidParams(JsonElement id, String message) {

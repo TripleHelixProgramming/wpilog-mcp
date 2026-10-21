@@ -333,6 +333,24 @@ final class ToolArguments {
           args.addProperty(param, other.path().toString());
         }
         case "name" -> args.addProperty(param, log == null ? "Fixture template" : pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
+        // compare_sessions takes sessions of a store or mirror; the fixtures' sources answer with
+        // their explicit refusals (a plain folder, or several sources without a scope_id).
+        case "sessions" -> {
+          var sessions = new com.google.gson.JsonArray();
+          var session = new JsonObject();
+          session.addProperty("session_id", "conformance-session");
+          sessions.add(session);
+          args.add(param, sessions);
+        }
+        case "metrics" -> {
+          var metrics = new com.google.gson.JsonArray();
+          var metric = new JsonObject();
+          metric.addProperty("id", "conformance");
+          metric.addProperty("name", log == null ? "/Missing/Entry" : pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
+          metric.addProperty("statistic", "mean");
+          metrics.add(metric);
+          args.add(param, metrics);
+        }
         case "velocity_entry" -> args.addProperty(param,
             pick(log, Kind.NUMERIC, n -> n.contains("Velocity"), 0)
                 .or(() -> pick(log, Kind.NUMERIC)).orElse("/Missing/Velocity"));

@@ -17,8 +17,9 @@ estimate, the captured prefix's end is the anchor. It cannot be combined with `s
 
 In the result, `inputs.last_seconds` records N and `inputs.window` the resolved absolute
 start/end. `compare_matches` resolves independently for each log and reports `inputs.windows`
-keyed by path. `inputs.session_time_range` still reports the captured prefix's range, not an
-assertion that fresh values were published throughout that window.
+keyed by path; `compare_sessions` resolves it from each session's end and reports each
+session's resolved scope in its row. `inputs.session_time_range` still reports the captured
+prefix's range, not an assertion that fresh values were published throughout that window.
 
 ## Table of Contents
 
@@ -61,6 +62,7 @@ assertion that fresh values were published throughout that window.
   - [power_analysis](#power_analysis)
   - [can_health](#can_health)
   - [compare_matches](#compare_matches)
+  - [compare_sessions](#compare_sessions)
   - [get_code_metadata](#get_code_metadata)
   - [moi_regression](#moi_regression)
   - [analyze_can_bus](#analyze_can_bus)
@@ -117,7 +119,6 @@ assertion that fresh values were published throughout that window.
   - [visualization_view_save](#visualization_view_save)
   - [visualization_view_discard](#visualization_view_discard)
   - [visualization_view_delete](#visualization_view_delete)
-- [Proposed multi-session analysis contract](#proposed-multi-session-analysis-contract)
 - [Data Types](#data-types)
   - [Primitive types](#primitive-types)
   - [Structs](#structs)
@@ -1107,7 +1108,7 @@ Statistics on numeric signals. The first two subsections describe the field path
 
 ### Field paths
 
-`get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `find_condition`, `align_entries` (each of its `names`), and `compare_matches` measure a **numeric signal**: a scalar entry (double, float, int64, or boolean read as 1/0), or a number inside a struct or array entry, addressed by a field path.
+`get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `find_condition`, `align_entries` (each of its `names`), `compare_matches`, and `compare_sessions` (each metric, without `[*]`) measure a **numeric signal**: a scalar entry (double, float, int64, or boolean read as 1/0), or a number inside a struct or array entry, addressed by a field path.
 
 | Signal | Name |
 |--------|------|
@@ -1126,7 +1127,7 @@ Statistics on numeric signals. The first two subsections describe the field path
 
 ### Scopes and windows
 
-`get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `find_condition`, `align_entries`, `compare_poses`, `pose_corrections`, and `compare_matches` take the time they measure from three optional parameters, which intersect. `analyze_swerve`, `analyze_loop_timing`, `power_analysis`, and `predict_battery_health` take `scope` and `start_time`/`end_time`, but not `windows`.
+`get_statistics`, `compare_entries`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `find_condition`, `align_entries`, `compare_poses`, `pose_corrections`, `compare_matches`, and `compare_sessions` take the time they measure from three optional parameters, which intersect. `analyze_swerve`, `analyze_loop_timing`, `power_analysis`, and `predict_battery_health` take `scope` and `start_time`/`end_time`, but not `windows`.
 
 - `start_time` / `end_time`: one inclusive range.
 - `scope`: `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test`, or `segment:<i>` (the i-th enabled segment of `get_match_phases`, from 0). Segments are half-open: the sample logged at a transition belongs to the new state. Any scope other than `all` on a log with no DriverStation state is an error.
@@ -1720,6 +1721,77 @@ Compare one numeric signal across two log files, over the same phase of each.
 }
 ```
 (Trimmed from the response captured in [TOOL_RESPONSES.md](TOOL_RESPONSES.md#compare_matches).)
+
+### `compare_sessions`
+Compare one statistic of each metric across finished sessions of one store or mirror, each session counting once. `compare_matches` stays the comparison of two files.
+
+The session is the unit. Each metric is one statistic of one number, computed in every selected session; the summary applies the same statistics to those per-session values. Fifty sessions with unequal sample counts therefore give the mean of fifty session means, never the mean of all their samples, which appears only under `pooled` and is labeled sample-weighted. Each session keeps its own clock: scope and windows resolve in its own timeline, on its anchor member's clock, and sessions are never aligned with each other.
+
+Only a store or mirror catalog says which files belong to a session, so a plain folder is refused. A session still recording has no final bytes to verify, so it is skipped. Every member is verified against its recorded SHA-256 before it is read, and a selection that names one session twice, by an alias, or by equal or shared member content is refused: copies are not independent sessions.
+
+**Parameters:**
+- `scope_id` (optional): A store or mirror from `list_source_scopes`; required when several sources are configured. A plain folder is refused (`NOT_A_STORE`), with the remedy to import it into a store or to compare two files with `compare_matches`.
+- `sessions` (required): 1 to 64 objects `{session_id, anchor_path}`. `session_id` is a session id or merge alias in the selected store, as `list_available_logs` lists it. `anchor_path` is the WPILOG member, by its manifest path, whose clock places scope and windows; it defaults to the session's only WPILOG member, and a session with several requires it (`ANCHOR_REQUIRED` lists each one's members).
+- `metrics` (required): 1 to 8 objects `{id, name or role, field, angle, unit, statistic}`. `id` is your label, unique in the call. `name` is an exact entry, optionally with a [field path](#field-paths); `role` is `battery_voltage`, `total_current`, `loop_time_full` or `loop_time_user`, resolved in each session by the shared signal resolver, and a role with competing candidates refuses the call (`AMBIGUOUS_ROLE`, with the candidates). `field` is one scalar struct field or fixed array index; `[*]` is refused. `angle` is `radians` or `degrees` for an angle logged as a plain number. `unit` applies only where the log records none; one that contradicts a logged unit refuses the call. `statistic` is `mean`, `std_dev`, `min`, `max`, `median`, `p5` or `p95`, as `get_statistics` computes them (the n-1 deviation and type-7 percentiles), except that a deviation of one value is null with a reason where `get_statistics` reports 0; an angle takes only `mean` (a circular mean) and `std_dev` (its circular spread).
+- `scope` (optional): `all` (default), `enabled`, `disabled`, `auto`, `teleop`, `test` or `segment:<i>`, resolved in each session's own timeline
+- `start_time`, `end_time` (optional): Seconds on each session's anchor clock
+- `windows` (optional): Explicit `{start, end}` windows ([Scopes and windows](#scopes-and-windows)) on each session's anchor clock
+- `last_seconds` (optional): The last N seconds of each session; cannot be combined with `start_time` or `end_time`
+- `overlap` (optional): `reject` (default) skips a session whose members record one entry over overlapping times; `keep_all` keeps every source
+- `pool_samples` (optional): Also compute each statistic over all contributing sessions' samples together, labeled sample-weighted (default false)
+- `confounder_entries` (optional): Exact entry names for any of `robot`, `git_sha`, `event`, `battery` or `firmware`, used instead of the published conventions
+
+**Returns:**
+- `requested_session_count`, `analyzed_session_count` and `skipped_session_count`; requested always equals analyzed plus skipped
+- `source` (`scope_id`, `kind`, `store_id`, `path`) and `metrics`, the metrics as requested
+- `sessions[]`, one per analyzed session: `position`, `session_id`, `requested_id` (when an alias was given), `anchor` (`path`, and `basis`: `requested` or `only_wpilog_member`), `inputs` (`members` with `path`, `sha256`, `size_bytes` and `verified`; `excluded_members` with reasons; `overlap`), `scope`, `clock_basis`, `log_truncation` when a member ends inside a record, and `metrics[]`: `metric_id`, `statistic`, `role`, `entry`, `field`, `resolution_basis`, `value`, `unit`, `unit_basis`, `unit_reason`, `angle`, `sample_count`, `non_finite_count`, `records_without_value`, `unreadable_records`, `null_reason` and `data_quality`
+- `summary[]`, one per metric: `metric_id`, `statistic`, `unit`, `session_count`, `contributing_sessions`, `excluded_sessions` (each with its reason), and `mean`, `std_dev`, `min`, `max`, `median`, `p5` and `p95` over the per-session values, each session counted once. A value that cannot be computed is null, with its reason under `null_reasons`. Session means of an angle are summarized on the circle: `circular: true`, a circular `mean` and `std_dev`, and null order statistics with `order_statistics_reason`
+- `pooled[]`, only with `pool_samples`: `metric_id`, `statistic`, `weighting: sample_weighted`, `session_count`, `sample_count`, `unit`, `value` and `null_reason`
+- `confounders`: for each of `robot`, `git_sha`, `event`, `battery` and `firmware`, its `basis`, `distinct_value_count`, `values` (each value with its sessions), `evidence` (each value with its session, `source` (`entry` or `manifest`), `entry`, and `first_sec`, `last_sec` and `sample_count` where the log recorded it), `changed_within` (sessions whose value changed while recording), `conflicting_sessions` (sessions whose sources disagree) and `unknown_sessions` (each with its reason). Robot comes from `SystemStats/SerialNumber` string entries and the store manifest's robot, git SHA from string entries named `GitSHA` (as `get_code_metadata` finds them), and event from DriverStation or FMSInfo `EventName` entries and the manifest's event; battery and firmware come only from entries named in `confounder_entries`. A file name, path or server clock supplies none of them
+- `skipped`: each session left out (`kind: session`, `position`, `session_id`, `code`, `reason`, and `metric_reasons` when its metrics were read) and each metric without a value in an analyzed session (`kind: metric`, `session_id`, `metric_id`, `reason`). Session codes: `NOT_FINISHED`, `NO_WPILOG`, `UNREADABLE`, `CHANGED`, `OVERLAP`, `INCOMPATIBLE_MEMBERS`, `SCOPE_UNAVAILABLE`, `EMPTY_SCOPE` and `NO_DATA`
+- `inputs` (`scope_id`, `store_id`, `kind`, `sessions` with each `anchor_path`, the scope parameters given, `overlap`, `pool_samples` and `record_visits`), `warnings` for excluded members, and `server_analysis_directives` from the lowest-quality metric
+
+**Status:**
+- `ok`, or `partial` when a session or a metric was left out (both are in `skipped`)
+- `no_match` (with `looked_for` and a `hint`) when no selected session has a usable value and every reason is absence or an empty scope
+- `error` with a `code`: `NO_ANALYZABLE_SESSION` when no session could be analyzed and at least one was unreadable, changed or still recording; `INVALID_REQUEST`, `SOURCE_SELECTION_REQUIRED`, `SOURCE_UNAVAILABLE`, `NOT_A_STORE`, `UNKNOWN_SESSION`, `DUPLICATE_SELECTION`, `UNKNOWN_ANCHOR`, `ANCHOR_REQUIRED`, `AMBIGUOUS_ROLE` or `INCOMPATIBLE_METRIC` for a selection that cannot be compared as asked; `RESOURCE_LIMIT`, `RESPONSE_TOO_LARGE` or `BUSY` as below
+
+**Limits:** At most two comparisons run at once, server-wide. A third is refused at once as `BUSY` (`retryable`, `retry_after_ms`), never queued. One call takes at most 64 sessions, 8 metrics, 16 resolved windows per session, 256 WPILOG member occurrences (64 in one session), 1 GiB of member files, 8,388,608 record visits, 65,536 kept values per session and metric for `median`, `p5` and `p95` (the other statistics keep none), 1,048,576 pooled values, 64 KiB of encoded arguments, 64 confounder values or spans per fact and session, 256 KiB of confounder evidence, and one complete reply of at most 1 MiB, measured as sent. A cap refuses the whole call as `RESOURCE_LIMIT`, with `limit_name`, `limit`, `requested` and a way to narrow the request; a reply over its limit is refused as `RESPONSE_TOO_LARGE`, with `reply_bytes`, `limit_bytes` and the true session counts. Nothing is truncated into a smaller answer. There is no time limit or cancellation; the caps are the bound.
+
+The comparison reads through the shared log manager and never joins the store queue or takes the store lock, so capture and health keep their turns while it runs.
+
+**Reading the numbers:** a session's value is one observation, and the summary's `session_count` is that metric's sample size, not the analyzed count. Confounders are recorded differences to check, not proven causes, and an unknown fact is not equality. Distinct sessions are not proven independent, one season of sessions is not a random sample of a population, and no significance test is made.
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "status": "ok",
+  "source": {"scope_id": "season-store", "kind": "store", "store_id": "season-store", "path": "<store>"},
+  "requested_session_count": 3,
+  "analyzed_session_count": 3,
+  "skipped_session_count": 0,
+  "metrics": [{"id": "x", "statistic": "mean", "name": "/X"}],
+  "sessions": [
+    {
+      "position": 0,
+      "session_id": "s0",
+      "anchor": {"path": "m.wpilog", "basis": "only_wpilog_member"},
+      "inputs": {"members": [{"path": "<store>/robots/SYNTHETIC-A/sessions/2026-01-01/s0/m.wpilog", "sha256": "...", "verified": true, "...": "..."}],
+                 "excluded_members": [], "overlap": "reject"},
+      "metrics": [{"metric_id": "x", "statistic": "mean", "entry": "/X", "value": 2.0, "sample_count": 3,
+                   "non_finite_count": 0, "records_without_value": 0, "data_quality": {"...": "..."}, "...": "..."}]
+    },
+    {"session_id": "s1", "...": "..."},
+    {"session_id": "s2", "...": "..."}
+  ],
+  "summary": [{"metric_id": "x", "statistic": "mean", "session_count": 3, "contributing_sessions": ["s0", "s1", "s2"],
+               "excluded_sessions": [], "mean": 5.0, "std_dev": 3.0, "min": 2.0, "max": 8.0, "median": 5.0, "p5": 2.3, "p95": 7.7}],
+  "confounders": {"git_sha": {"distinct_value_count": 0, "unknown_sessions": [{"session_id": "s0", "reason": "no string entry named GitSHA (get_code_metadata's convention)"}, "..."], "...": "..."}, "...": "..."},
+  "inputs": {"scope_id": "season-store", "store_id": "season-store", "kind": "store", "overlap": "reject", "pool_samples": false, "record_visits": 9, "...": "..."}
+}
+```
+(Trimmed. A synthetic store of three sessions whose `/X` holds 1, 2, 3; 4, 5, 6; and 7, 8, 9: session means 2, 5 and 8. `TOOL_RESPONSES.md` is generated from real logs, which hold no store.)
 
 ### `get_code_metadata`
 Extract code metadata from string entries whose leaf name is `GitSHA`, `GitBranch`, `GitDirty`, `GitDate`, `BuildDate`, `ProjectName`, or `Version` (case-insensitive; `Version` only under a path containing "metadata"). AdvantageKit records these from the generated `BuildConstants`, for example `/RealMetadata/GitSHA`. When several entries hold the same key (e.g. `/RealMetadata/` and `/ReplayMetadata/`), the lowest entry id wins and a warning says when their values differ.
@@ -3709,154 +3781,6 @@ and source files remain intact; close an attached editor first. Returns the dele
 - `expected_revision` (required, integer): Current revision to compare before mutation.
 
 **Returns:** `api_version`, `status`, `view` on success; `code` and `error` on refusal.
-
----
-
-## Proposed multi-session analysis contract
-
-This is a contract for planned work, not an available tool or an extension to an
-existing schema. It will be implemented as a new tool; `compare_matches` stays the
-two-file comparison. The existing `compare_matches` still compares one numeric
-signal in two files, resolves scope separately on their clocks, and returns
-per-file statistics and second-minus-first differences without a significance
-test. It does not implement the session summary or confounder report below.
-
-### Selection and evidence
-
-The session is the unit of analysis. The caller explicitly identifies the source,
-the sessions, the entries or supported signal roles, and the scope applied within
-each session. A role uses the shared signal resolver; a plausible name, shape or
-same-content copy does not supply missing authority. Ambiguous source or signal
-selection is refused with choices and a usable hint. No server, store, file copy
-or session is silently substituted. This contract does not implicitly merge
-stores; any eventual cross-source mode requires its own explicit selection
-contract before implementation.
-
-Selection fixes the population being requested. Each admitted row identifies its
-qualified source, session, input members, and verified content identity or fixed
-snapshot/prefix basis. A rolled recording's members remain one session; several
-copies or repeated selections of one session do not become independent
-observations. The eventual schema must specify its duplicate-selection refusal
-or explicitly reported normalization. It must never count duplicates silently.
-
-Each session keeps its own clock. Named phases and relative windows resolve in
-that session's own timeline, with the requested scope and actual intervals
-reported. There is no inferred alignment of sessions, interpolation across a gap,
-or invented match boundary. Session member alignment and overlap use the shared
-read layer's recorded evidence and declared policy. A type, unit, schema or clock
-mismatch is explained; it is not repaired by assuming two equal names mean the
-same quantity. Input changes during a read follow the existing snapshot refusal
-contract, rather than combining old and new history in one value.
-
-### Session rows and summaries
-
-Every requested session has an accounted disposition: an analyzed row, or a
-`skipped` entry identifying the qualified session and reason. The result reports
-`requested_session_count`, `analyzed_session_count` and `skipped_session_count`;
-for a fully accounted selection, requested equals analyzed plus skipped.
-Pagination of displayed rows does not change these population counts.
-
-Each analyzed row includes:
-
-- Its `inputs`: source/session identity, member identity or prefix basis, selected
-  entries and fields, declaration/type evidence, and units or the explicit basis
-  for a caller-supplied unit.
-- Requested and applied scope, clock/time basis, finite sample counts for each
-  metric, excluded/unreadable counts where relevant, and the requested
-  per-session values. A value that cannot be computed is null with a reason,
-  never zero, NaN or an implicit successful value.
-- `data_quality` for the actual scoped inputs, with reasons. Logged events retain
-  their evidence; a statistical quality score does not invalidate an observed
-  event. Truncated or incomplete inputs are disclosed by the existing contract.
-- Robot, git SHA and event when recorded, and battery identity and firmware when
-  available, each with its evidence and completeness as described below.
-
-Across-session statistics summarize per-session values. For a mean, every
-contributing session gets equal weight: the mean of ten session means has
-`session_count: 10`, regardless of their individual sample counts or durations.
-Each summary metric identifies its contributing sessions and its own
-`session_count`, because a session may have a usable value for one metric and a
-null value for another. Excluded values have reasons; an overall analyzed count
-must not be used as that metric's statistical sample size. Distinct identifiers
-do not prove that sessions are statistically independent.
-
-Raw-sample pooling is opt-in. A separately labeled `pooled` result reports both
-`session_count` and `sample_count`, states the weighting and compatible units,
-and remains distinct from the equally weighted session summary. It cannot be
-introduced merely to reuse the current two-file implementation's sample arrays.
-No significance test, trend verdict or causal claim follows automatically from
-an aggregate; any future inferential statistic needs its own assumptions and
-acceptance tests.
-
-### Confounders and missing facts
-
-`confounders` reports recorded differences besides the metric: code version,
-robot and event, and battery identity and firmware where logged. Each reported
-value identifies the affected sessions and the entry or authoritative manifest
-that supplied it. A conflict between sources or a change within one session
-remains visible, with its recorded span where available; selecting the first
-value and presenting it as the session's constant identity is not acceptable.
-An unknown fact is null with its reason, and unknown sessions remain listed.
-Missing code metadata is not evidence that the code stayed the same. A filename,
-path, store label or server clock supplies none of these facts.
-
-Confounders describe observations, not proved causes. Unknown or conflicting
-metadata does not by itself erase an otherwise usable metric row; its uncertainty
-travels with the comparison. No comparison silently groups away the unknown
-sessions or treats absence of a battery/firmware identifier as equality.
-
-### Bounded work and refusals
-
-Before implementation, the chosen tool contract must state numeric admission
-bounds for requested sessions, member occurrences, metrics/entries and scope
-windows; retained snapshot/index/working memory; concurrent work and waiting
-work; elapsed work; and encoded request/response size. Those values are not
-settled by this document or by the 50-session synthetic workload. A bound on
-returned rows alone is not a bound on scans, decoding, sorting or queued work.
-Existing shared-read limits still apply and are not bypassed for a season request.
-
-The implementation must check what can be checked before expensive admission,
-charge retained work until it actually unwinds, and release snapshots and
-reservations on success, refusal, cancellation and failure. It must preserve
-capture and health responsiveness. Resource exhaustion must return an explained
-refusal with a way to narrow the request; it must not silently analyze only the
-first sessions that happened to fit and call that the requested population.
-
-Output pagination and work admission are different. Any displayed list cut by a
-limit reports its true `limits` total, returned count and limit. A summary says
-which complete set of contributing sessions it covers, independent of the page
-currently displayed. If the true selection total cannot be established within the
-admission bounds, refuse the operation; do not invent a total from a scanned
-prefix. The eventual schema must settle bounded pagination versus a bounded
-single response before implementation, including how all skipped-session reasons
-and contributor identities remain retrievable.
-
-The existing result statuses keep their meanings. An invalid or ambiguous request
-is `error` with a remedy. An unreadable or changed selected input is not relabeled
-`no_match`. A valid search that finds none of its requested data is `no_match`
-with `looked_for` and a hint, never empty success. A result with usable rows and
-sessions or requested metrics omitted is `partial`, with those omissions in
-`skipped`. The final schema must specify which failures reject the entire
-request and which can be reported per session; a partial result must account for
-all requested sessions and cannot imply the unread ones were analyzed.
-
-### Acceptance workload
-
-The synthetic measurement uses 50 sessions with unequal sample counts. Session
-`s`, starting at zero, contains `1000 + 100s` samples of `s + (i mod 5)`.
-Each session's mean is `s + 2`; the unweighted mean is 26.5 with a session count of
-50. The pooled control contains 172,500 samples with mean
-`5612500 / 172500`, approximately 32.53623188405797. Every per-session count,
-timestamp and value is checked independently. The unequal answers detect
-accidental pooling; they do not establish real-season performance.
-
-Once a tool is chosen, its regression tests must additionally show that a git SHA
-change appears in `confounders`, unknown/conflicting facts remain visible, an
-unreadable session appears in `skipped`, each metric counts only its contributors,
-and output limits cannot silently change the summary population. Bounded-work
-and cancellation tests require the final numeric limits and ownership design.
-Until the tool is built, this checkpoint writes the contract and records synthetic
-measurements only; no tool schema, registration or reasoning guidance is changed.
 
 ---
 

@@ -48,6 +48,7 @@
     {"tool": "power_analysis", "title": "Top channels", "args": {"path": "${q10}", "channel_limit": 3}},
     {"tool": "can_health", "title": "Text and counters", "args": {"path": "${q10}"}},
     {"tool": "compare_matches", "title": "Loop time while enabled, two logs", "args": {"path": "${review}", "compare_path": "${q10}", "name": "/RealOutputs/LoggedRobot/FullCycleMS", "scope": "enabled"}},
+    {"tool": "compare_sessions", "title": "Battery while enabled across sessions; a plain log folder is refused with its remedy", "args": {"sessions": [{"session_id": "a-session-id-from-list_available_logs"}], "metrics": [{"id": "battery", "role": "battery_voltage", "statistic": "mean"}], "scope": "enabled"}},
     {"tool": "get_code_metadata", "title": "Build metadata", "args": {"path": "${q10}"}},
     {"tool": "moi_regression", "title": "Front-left drive module", "args": {"path": "${q10}", "velocity_entry": "/Drive/Module0/DriveVelocityRadPerSec", "current_entry": "/Drive/Module0/DriveCurrentAmps", "applied_volts_entry": "/Drive/Module0/DriveAppliedVolts", "kt": 0.0194, "gear_ratio": 6.75}},
 

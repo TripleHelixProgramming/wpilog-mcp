@@ -55,6 +55,7 @@ public final class ReadBehaviorCorpus {
         "visualization_view_update", "visualization_view_clone", "visualization_view_save",
         "visualization_view_discard", "visualization_view_delete"))
       excluded.put(tool, "Machine-local visualization state; isolated success/receipt conformance covers it, not frozen reader equivalence.");
+    excluded.put("compare_sessions", "Added after the frozen reader baseline and reads only catalogued stores; CompareSessionsToolTest and CompareSessionsLimitsTest pin its answers and refusals.");
     return Map.copyOf(excluded);
   }
   private ReadBehaviorCorpus() {}

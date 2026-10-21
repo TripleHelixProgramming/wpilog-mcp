@@ -55,6 +55,7 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
  *   <li>{@code power_analysis} - Analyze battery and current data
  *   <li>{@code can_health} - Check for CAN bus errors
  *   <li>{@code compare_matches} - Compare entries across multiple logs
+ *   <li>{@code compare_sessions} - Compare one statistic per session across a store's finished sessions
  *   <li>{@code get_code_metadata} - Extract Git info and build metadata
  *   <li>{@code moi_regression} - OLS regression for moment of inertia and damping from velocity/current logs
  * </ul>

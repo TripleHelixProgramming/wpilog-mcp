@@ -39,6 +39,7 @@ public final class RobotAnalysisTools {
     registry.registerTool(new PowerAnalysisTool());
     registry.registerTool(new CanHealthTool());
     registry.registerTool(new CompareMatchesTool());
+    registry.registerTool(new CompareSessionsTool());
     registry.registerTool(new GetCodeMetadataTool());
     registry.registerTool(new MoiRegressionTool());
   }

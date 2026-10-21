@@ -65,6 +65,10 @@ class StressTest {
   private static List<Tool> tools;
   private static List<String> availableLogPaths;
   private static List<String> loadedEntryNames;
+  /** Each store or mirror scope's WPILOG members by session id, from step 1, for compare_sessions. */
+  private static final Map<String, Map<String, List<String>>> storeSessions = new LinkedHashMap<>();
+  /** Plain-folder scopes from step 1, where compare_sessions must refuse. */
+  private static final List<String> folderScopes = new ArrayList<>();
   private static String testCacheFolder;
   private static String revLogLogPath;
   private static boolean revLogLogSearched;
@@ -174,6 +178,9 @@ class StressTest {
     var seenPaths = new java.util.LinkedHashSet<String>();
     for (var scope : scopes) {
       if (!scope.get("available").getAsBoolean()) { System.out.println("Unavailable source: " + scope); continue; }
+      String scopeId = scope.get("scope_id").getAsString();
+      boolean folder = "directory".equals(scope.get("kind").getAsString());
+      if (folder) folderScopes.add(scopeId);
       int count = -1, returned = 0;
       for (int offset = 0; ; ) {
         var listArgs = new JsonObject(); listArgs.addProperty("limit", 500); listArgs.addProperty("offset", offset);
@@ -182,7 +189,16 @@ class StressTest {
         assertTrue(result.get("success").getAsBoolean(), result.toString());
         if (count < 0) count = result.get("log_count").getAsInt();
         var rows = result.getAsJsonArray("logs"); returned += rows.size();
-        rows.forEach(row -> seenPaths.add(row.getAsJsonObject().get("path").getAsString()));
+        rows.forEach(row -> {
+          var log = row.getAsJsonObject();
+          String path = log.get("path").getAsString();
+          seenPaths.add(path);
+          if (!folder && log.has("session") && path.endsWith(".wpilog")) {
+            storeSessions.computeIfAbsent(scopeId, k -> new LinkedHashMap<>())
+                .computeIfAbsent(log.getAsJsonObject("session").get("id").getAsString(), k -> new ArrayList<>())
+                .add(Path.of(path).getFileName().toString());
+          }
+        });
         offset += rows.size(); if (!result.get("has_more").getAsBoolean()) break;
         assertFalse(rows.isEmpty(), "A shortened page must make progress");
       }
@@ -881,6 +897,59 @@ class StressTest {
         });
       }
     }
+
+    // compare_sessions: each store's or mirror's finished sessions, a small and a large selection,
+    // with and without pooling; a session with several WPILOG members anchors on its first.
+    for (var store : storeSessions.entrySet()) {
+      var ids = new ArrayList<>(store.getValue().keySet());
+      for (int size : new java.util.TreeSet<>(List.of(Math.min(8, ids.size()), Math.min(64, ids.size())))) {
+        var selection = new com.google.gson.JsonArray();
+        for (var id : ids.subList(0, size)) {
+          var item = new JsonObject();
+          item.addProperty("session_id", id);
+          var members = store.getValue().get(id);
+          if (members.size() > 1) item.addProperty("anchor_path", members.get(0));
+          selection.add(item);
+        }
+        for (boolean pool : List.of(false, true)) {
+          var args = new JsonObject();
+          args.addProperty("scope_id", store.getKey());
+          args.add("sessions", selection);
+          var metrics = new com.google.gson.JsonArray();
+          metrics.add(sessionMetric("battery", "battery_voltage", "mean"));
+          metrics.add(sessionMetric("loop", "loop_time_full", "p95"));
+          args.add("metrics", metrics);
+          args.addProperty("scope", "enabled");
+          args.addProperty("pool_samples", pool);
+          testTool("compare_sessions", args, result -> System.out.println("  compare_sessions: "
+              + result.get("analyzed_session_count") + " of " + result.get("requested_session_count")
+              + " sessions of " + store.getKey()));
+        }
+      }
+    }
+    // A plain folder names no sessions, so it is refused with its remedy.
+    for (var folder : folderScopes) {
+      var args = new JsonObject();
+      args.addProperty("scope_id", folder);
+      var selection = new com.google.gson.JsonArray();
+      var item = new JsonObject();
+      item.addProperty("session_id", "not-a-session");
+      selection.add(item);
+      args.add("sessions", selection);
+      var metrics = new com.google.gson.JsonArray();
+      metrics.add(sessionMetric("battery", "battery_voltage", "mean"));
+      args.add("metrics", metrics);
+      var result = executeTool(findTool("compare_sessions"), args);
+      assertEquals("NOT_A_STORE", result.has("code") ? result.get("code").getAsString() : null, result.toString());
+    }
+  }
+
+  private static JsonObject sessionMetric(String id, String role, String statistic) {
+    var metric = new JsonObject();
+    metric.addProperty("id", id);
+    metric.addProperty("role", role);
+    metric.addProperty("statistic", statistic);
+    return metric;
   }
 
   // ==================== 8. RevLog Tools ====================

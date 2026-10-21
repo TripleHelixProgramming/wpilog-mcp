@@ -48,6 +48,7 @@ class AdvancedToolsTest extends ToolTestBase {
               "power_analysis",
               "can_health",
               "compare_matches",
+              "compare_sessions",
               "get_code_metadata",
               "export_csv",
               "generate_report");
@@ -62,8 +63,9 @@ class AdvancedToolsTest extends ToolTestBase {
     @Test
     @DisplayName("total tool count is correct")
     void totalToolCountIsCorrect() {
-      // Includes the three server-library operations; live tools register separately.
-      assertEquals(82, tools.size());
+      // Includes the three server-library operations and compare_sessions; live tools register
+      // separately.
+      assertEquals(83, tools.size());
     }
   }
 

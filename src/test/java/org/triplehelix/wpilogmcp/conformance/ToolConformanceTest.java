@@ -263,6 +263,8 @@ class ToolConformanceTest {
     }
 
     calls.addAll(VisualizationConformance.exercise(FixtureLogs.defaultDirectory().resolve("visualization-state"), fixtures.get(0).path()));
+    calls.addAll(CompareSessionsConformance.exercise(FixtureLogs.defaultDirectory().resolve("compare-sessions"),
+        tools.stream().filter(tool -> tool.name().equals("compare_sessions")).findFirst().orElseThrow()));
     writeReport(calls);
     var results = calls.stream()
         .map(c -> java.util.Map.entry(c.tool(), c.result() == null

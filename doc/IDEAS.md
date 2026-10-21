@@ -37,7 +37,7 @@ Priority: Low. Complexity: High.
 
 Align several logs from the same event (the practice runs, say) on a common time base, to compare autonomous attempts, track mechanism tuning, or find intermittent issues.
 
-Today `compare_matches` compares one signal's statistics across two logs, each on its own clock. The only alignment between files is REV log to wpilog sync.
+Today `compare_matches` compares one signal's statistics across two logs, each on its own clock, and `compare_sessions` compares one statistic per session across up to 64 finished sessions of a store, each on its own clock too. Neither aligns files on a common time base; the only alignment between files is REV log to wpilog sync.
 
 ### NetworkTables Receipt Time
 
@@ -91,7 +91,7 @@ Track mechanism health across many logs:
 - Encoder noise (bearing wear)
 - Response time degradation
 
-`profile_mechanism` covers one log at a time, and `compare_matches` compares one signal across two logs.
+`profile_mechanism` covers one log at a time, and `compare_matches` compares one signal across two logs. `compare_sessions` gives one statistic per session across up to 64 finished sessions of a store, with each session's code version, robot and event, which is the raw material for these trends; nothing yet fits a trend or says when one is real.
 
 ---
 

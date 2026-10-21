@@ -333,7 +333,7 @@ final class NumericSignal {
     return new NumericSignal(entryName, path, type, angle, out, raw.size(), without);
   }
 
-  private static void validateProjectionType(LogData log, String entry, String type, String structName, FieldPath path) {
+  static void validateProjectionType(LogData log, String entry, String type, String structName, FieldPath path) {
     boolean scalar = ToolUtils.isNumericType(type) || "boolean".equals(type);
 
     if (path.isRoot() && !scalar) throw notANumber(log, entry, type, structName);

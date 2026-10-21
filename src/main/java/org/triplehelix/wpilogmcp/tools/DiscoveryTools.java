@@ -253,6 +253,12 @@ public final class DiscoveryTools {
         List.of("Compare auto performance across matches", "Find patterns across matches"),
         true, List.of("get_statistics")));
 
+    tools.add(new ToolInfo("compare_sessions", "robot_analysis",
+        "One statistic per metric across up to 64 finished sessions of a store, each session counted once",
+        List.of("compare", "sessions", "season", "event", "across", "store", "mirror", "trend"),
+        List.of("Compare battery sag across an event's matches", "Compare loop time across sessions with their code versions"),
+        false, List.of("compare_matches", "list_source_scopes", "list_available_logs")));
+
     tools.add(new ToolInfo("get_code_metadata", "robot_analysis",
         "Extract Git SHA, branch, and build info",
         List.of("git", "code", "version", "build", "sha", "branch"),
