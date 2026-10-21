@@ -130,6 +130,12 @@ server receives, forwards the robot's timestamps, and ignores writes with one wa
 connection. It follows `WPILOG_HTTP_BIND`, carries no authentication, and belongs on the
 private network. `wpilog_gateway_clients` at `/metrics` counts the dashboards.
 
+AdvantageScope connects only after its request for `GET /` on port 5810 succeeds within 250 ms,
+then opens a second, clock-only connection ([NT4 gateway for dashboards](STANDALONE.md#nt4-gateway-for-dashboards)).
+Once it is connected, the server log shows `NT4 gateway client connected: AdvantageScope` twice,
+once with `v4.1.networktables.first.wpi.edu` and once with `rtt.networktables.first.wpi.edu`, and
+`wpilog_gateway_clients` reads 1.
+
 ### 1.6 Pulling the robot's logs
 
 With `capture.pull.enabled: true`, the pit server copies the robot's own log files whenever the
@@ -397,6 +403,7 @@ the same for a plain file or folder. Reference: [Importing Logs](../STANDALONE.m
 |---|---|---|
 | The pit server never connects | `list_sessions`: `connected: false`; the server log | Check `capture.robot`: team number for mDNS and `10.TE.AM.2`, `usb: true` on the tether, or `host`. The robot must be on and on the same network |
 | The gateway reads `waiting` | `/health`: `gateway.cause` | Another program holds the port: stop it or change `capture.gateway.port`; capture continues meanwhile |
+| AdvantageScope never connects to the gateway | Open `http://<pit>:5810/` from that computer: it should show "WebSockets must be used to access NetworkTables." | A 404 means the pit server predates AdvantageScope support: update it. If the page loads but slowly, the link is too slow for AdvantageScope's 250 ms check: connect from the pit network |
 | Pulling never starts | `list_sessions`: the robot must be `connected` and disabled for `settle_sec`; the server log | `capture.pull.enabled: true`; the robot disabled; SSH accepted. A changed host key is reported: verify, then `accept_changed_host_key: true` once, or clear the pin in `robot.json` |
 | A provider reads `stand_down` | Its `reason` in `list_sessions` | PhotonVision: wrong version or unreachable host. JVM: the launch flags, or the port. SSH stats or tail: the command or file the reason names |
 | `sync` answers 409 | A sync for that store is already running | Wait for it; `GET /store/sync/<job>` shows its state |

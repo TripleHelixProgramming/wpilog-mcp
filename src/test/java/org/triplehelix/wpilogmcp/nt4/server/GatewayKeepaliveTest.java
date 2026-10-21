@@ -163,8 +163,9 @@ class GatewayKeepaliveTest {
       var field = Nt4Gateway.class.getDeclaredField("server"); field.setAccessible(true);
       server = (WebSocketServer) field.get(gateway); peer = connect("healthy");
     }
-    Peer connect(String name) {
-      var peer = new Peer(server);
+    Peer connect(String name) { return connect(name, Nt4Client.V41); }
+    Peer connect(String name, String protocol) {
+      var peer = new Peer(server, protocol);
       var request = new HandshakeImpl1Client(); request.setResourceDescriptor("/nt/" + name);
       server.onOpen(peer, request); loop.drain(); return peer;
     }
@@ -172,11 +173,15 @@ class GatewayKeepaliveTest {
   }
   private static final class Peer extends WebSocketImpl {
     final WebSocketServer server;
+    final String protocol;
+    final List<org.triplehelix.wpilogmcp.nt4.ValueFrame> frames = new java.util.ArrayList<>();
     boolean answer = true;
     int pings, pongs, values;
     String dropped;
-    Peer(WebSocketServer server) { super(server, new Draft_6455()); this.server = server; }
-    @Override public Protocol getProtocol() { return new Protocol(Nt4Client.V41); }
+    Peer(WebSocketServer server, String protocol) {
+      super(server, new Draft_6455()); this.server = server; this.protocol = protocol;
+    }
+    @Override public Protocol getProtocol() { return new Protocol(protocol); }
     @Override public boolean isOpen() { return dropped == null; }
     @Override public void sendPing() { pings++; if (answer) server.onWebsocketPong(this, new PongFrame()); }
     @Override public void sendFrame(Framedata frame) { if (frame instanceof PongFrame) pongs++; }
@@ -184,7 +189,8 @@ class GatewayKeepaliveTest {
         java.nio.ByteBuffer bytes, boolean fin) {
       if (opcode == org.java_websocket.enums.Opcode.BINARY) {
         var copy = new byte[bytes.remaining()]; bytes.get(copy);
-        values += org.triplehelix.wpilogmcp.nt4.ValueFrame.decode(copy).size();
+        var decoded = org.triplehelix.wpilogmcp.nt4.ValueFrame.decode(copy);
+        frames.addAll(decoded); values += decoded.size();
       }
     }
     @Override public void closeConnection(int code, String reason) { dropped = reason; }
@@ -211,6 +217,24 @@ class GatewayKeepaliveTest {
       assertNull(f.peer.dropped); assertEquals(6, f.peer.pings);
       f.loop.elapse(199_999); assertNull(f.peer.dropped);
       f.loop.advance(1); assertEquals("NT4 pong timeout", f.peer.dropped);
+    }
+  }
+
+  /** AdvantageScope's NT4.1 timing connection: clock replies only, kept alive, not a dashboard. */
+  @Test void aTimingConnectionAnswersClocksAndExpiresLikeAnNt41PeerWithoutCountingAsOne() throws Exception {
+    try (var f = new Fixture()) {
+      var timing = f.connect("timing", "rtt.networktables.first.wpi.edu");
+      assertEquals(1, f.gateway.clientCount(), "The dashboard that opened it is already counted");
+      f.server.onMessage(timing, java.nio.ByteBuffer.wrap(new org.triplehelix.wpilogmcp.nt4.ValueFrame(-1, 55, 2, 7L).encode()));
+      f.loop.drain();
+      assertEquals(List.of(new org.triplehelix.wpilogmcp.nt4.ValueFrame(-1, 0, 2, 7L)), timing.frames,
+          "The server clock replaces the request's timestamp; the client's send time is echoed");
+      f.loop.advance(200_000); assertEquals(1, timing.pings);
+      timing.answer = false;
+      for (int i = 0; i < 5; i++) f.loop.advance(200_000);
+      assertNull(timing.dropped, "The unanswered ping from 400 ms is not yet a second old");
+      f.loop.advance(200_000); assertEquals("NT4 pong timeout", timing.dropped);
+      assertNull(f.peer.dropped, "Losing the timing connection leaves the dashboard's own connection");
     }
   }
 

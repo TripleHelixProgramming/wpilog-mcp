@@ -255,7 +255,7 @@ The listener enables address reuse and retries a busy bind forever with 1 s doub
 Capture and pulling start independently. `GET /health` and `list_sessions` publish its state,
 port, cause while waiting and UTC time of the state change; the log records state changes only.
 
-- **Handshake**: accepts the two subprotocols; the client name from the path is logged.
+- **Handshake**: accepts the two subprotocols and NT4.1's timing-only one, and answers ntcore's root page; the client name from the path is logged.
 - **Announce**: on subscribe, every topic matching the subscription's prefixes is announced with the robot's type string and properties, and the gateway's own ids.
 - **Values**: per client, per subscription, honoring `periodic`, `all`, `topicsonly`, and `prefix` as the robot would: with `all`, every change since the last send; without it, the latest value per topic per period. Sends are coalesced per period per client on the fan-out thread.
 - **Time sync**: answered with the robot's clock (the client's offset applied to the local monotonic clock), so a gateway client's "server time" is robot time. Without that estimate, replies use local monotonic time, as an ntcore server does; the first valid estimate after each robot connection resets downstream connections so their first time-sync reply uses the new clock.

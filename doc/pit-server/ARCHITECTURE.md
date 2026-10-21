@@ -235,6 +235,15 @@ so retaining a connection across a clock change would retain the wrong offset. T
 probe verifies its received timestamps through a separate NetworkTableInstance. A real dashboard
 or AdvantageScope session remains a manual hardware check.
 
+Clients reach the gateway as they reach ntcore, which is more than RFC 6455. AdvantageScope
+requests `GET /` before opening its WebSocket and connects only after a 2xx answer; Java-WebSocket
+answers any request that is not an upgrade with a 404, so AdvantageScope polled without ever
+connecting. The adapter's connections answer that one request with ntcore's page and headers
+and hand every other request to the library whole. After a 4.1 handshake AdvantageScope also opens
+a timing-only connection (`rtt.networktables.first.wpi.edu`) and sends clock requests only there.
+The gateway answers them with the main connection's clock, pings the connection like a 4.1 peer,
+and keeps it out of the core and the client count, since it belongs to a dashboard already counted.
+
 #### MessagePack
 
 The MessagePack subset is written from the format specification, like the Arrow data writer, and

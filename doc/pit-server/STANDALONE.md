@@ -767,6 +767,23 @@ serves the topics already received while it was waiting.
 UTC. `wpilog_gateway_clients` counts the downstream clients; `wpilog_nt_connected` is the robot
 connection.
 
+**AdvantageScope.** AdvantageScope 26 connects in three steps, and the gateway answers each the
+way the robot's NetworkTables server does:
+
+1. Every 350 ms it requests `GET /` on the port and allows 250 ms for the answer, until one
+   arrives with a 2xx status. The gateway answers with the robot's one-line page and its
+   `Access-Control-Allow-Origin: *` header. On a slow link, such as a relayed VPN path, that
+   250 ms limit can keep AdvantageScope polling without ever connecting.
+2. It opens its NT4 connection, offering 4.1 and 4.0, and the gateway chooses 4.1.
+3. It opens a second connection with the clock-only subprotocol `rtt.networktables.first.wpi.edu`
+   and sends its time-sync requests only there. The gateway answers them with the main
+   connection's clock, pings the connection as it pings a 4.1 client, and sends nothing else on
+   it. This connection is not counted in `wpilog_gateway_clients`, so each AdvantageScope counts
+   once.
+
+The server log records each connection as `NT4 gateway client connected: AdvantageScope`, with
+the protocol in parentheses.
+
 **Reconnection and time sync.** A robot disconnect unannounces its topics; a reconnection
 announces them with new gateway ids. Time-sync replies use the measured robot clock; while that
 estimate is absent they use the pit server's local monotonic clock, as an ntcore server does.
@@ -1304,7 +1321,7 @@ NaN and infinities retain their Prometheus spellings. Each emitted topic gets on
 | `wpilog_replica_pending_publications` | Completed local capture receipts awaiting catalog publication, by opaque `store_id`. Emitted only for a complete pending inventory; unknown or incomplete totals have no sample. |
 | `wpilog_capture_records_total`, `wpilog_capture_bytes_total` | The live tools' recorder counts across rollover files: NT4 value records and bytes including record headers, excluding context/control records and copied schema seeds. The `session_started_at` label identifies the counter lifetime; snapshots refresh after the 250 ms asynchronous flush completes. |
 | `wpilog_nt_time_offset_seconds`, `wpilog_nt_round_trip_seconds` | Selected clock estimate (robot minus local monotonic time) and its round trip; absent without sync. |
-| `wpilog_gateway_clients` | Connected downstream gateway clients; 0 when the gateway is disabled. Independent of the robot-side connection. |
+| `wpilog_gateway_clients` | Connected downstream gateway clients; 0 when the gateway is disabled. Independent of the robot-side connection. A client's clock-only connection (`rtt.networktables.first.wpi.edu`) is not counted. |
 | `wpilog_pull_bytes_total`, `wpilog_pull_files_total` | Per-`robot` process counters: received transfer payload bytes, including retransfers and bytes still awaiting a local checkpoint, and successful verifications, including growing-file updates. The byte count is not a durable-offset receipt. |
 | `wpilog_pull_files_waiting` | Per-`robot` known unfinished files at a closed gate, from the last listing; unknown remote files are not counted. |
 | `wpilog_provider_sample_duration_seconds`, `wpilog_provider_sample_bytes` | Last completed sample's round trip and response bytes, by `provider`. |

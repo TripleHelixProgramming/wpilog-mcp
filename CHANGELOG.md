@@ -274,6 +274,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The unreleased NT4 gateway now accepts AdvantageScope. AdvantageScope 26 requests `GET /` on
+  the NT4 port and opens its WebSocket only after a 2xx answer; the gateway answered 404, so
+  AdvantageScope polled every 350 ms and never connected. After an NT4.1 handshake it also opens
+  a timing-only connection (`rtt.networktables.first.wpi.edu`) for its clock requests, which the
+  gateway refused, leaving it without the robot's clock. The gateway now answers `GET /` with
+  ntcore's page and headers, and accepts the timing connection: it answers clock requests there,
+  keeps the connection alive like a 4.1 connection, and leaves it out of `wpilog_gateway_clients`.
+
 - The unreleased capture service now continues startup after verified local receipts encounter
   publication-only failures; previously a full replica catalog could stop recording after
   restart. Unsafe or corrupt recovery still fails startup.

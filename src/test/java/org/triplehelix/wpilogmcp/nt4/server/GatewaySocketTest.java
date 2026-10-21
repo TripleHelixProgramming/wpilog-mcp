@@ -31,8 +31,8 @@ class GatewaySocketTest {
     final ByteArrayOutputStream binary = new ByteArrayOutputStream();
     final java.util.concurrent.CompletableFuture<Integer> closed = new java.util.concurrent.CompletableFuture<>();
     final WebSocket socket;
-    WireClient(int port, String protocol) throws Exception {
-      socket = HttpClient.newHttpClient().newWebSocketBuilder().subprotocols(protocol)
+    WireClient(int port, String protocol, String... fallbacks) throws Exception {
+      socket = HttpClient.newHttpClient().newWebSocketBuilder().subprotocols(protocol, fallbacks)
           .buildAsync(RobotAddress.uri("127.0.0.1", port, "wire"), this).get(5, TimeUnit.SECONDS);
     }
     @Override public void onOpen(WebSocket socket) { socket.request(1); }
@@ -106,6 +106,48 @@ class GatewaySocketTest {
       assertThrows(java.util.concurrent.ExecutionException.class, () -> http.newWebSocketBuilder().subprotocols(Nt4Client.V41)
           .buildAsync(URI.create("ws://127.0.0.1:" + gateway.port() + "/other"), new WebSocket.Listener() {}).get(5, TimeUnit.SECONDS));
       try (var valid = new WireClient(gateway.port(), Nt4Client.V41)) { assertEquals(Nt4Client.V41, valid.socket.getSubprotocol()); }
+    }
+  }
+
+  /** AdvantageScope 26 requests the root page and opens its WebSocket only after a 2xx answer. */
+  @Test void rootPageAnswersAsNtcoreDoesSoAdvantageScopeOpensItsWebSocket() throws Exception {
+    try (var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 0)) {
+      gateway.start().get(5, TimeUnit.SECONDS);
+      // An Electron fetch speaks HTTP/1.1; the JDK client would otherwise offer an h2c upgrade.
+      var http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
+      // The future bounds the body too: a request timeout ends once the headers arrive.
+      var root = http.sendAsync(java.net.http.HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + gateway.port())).build(),
+          java.net.http.HttpResponse.BodyHandlers.ofString()).get(5, TimeUnit.SECONDS);
+      assertEquals(200, root.statusCode(), "AdvantageScope keeps polling until this succeeds");
+      assertEquals("*", root.headers().firstValue("Access-Control-Allow-Origin").orElse(null),
+          "The request comes from AdvantageScope's page, another origin");
+      assertEquals("<html><head><title>NetworkTables</title></head><body><p>WebSockets must be used to access"
+          + " NetworkTables.</body></html>", root.body());
+      var other = http.sendAsync(java.net.http.HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + gateway.port() + "/other")).build(),
+          java.net.http.HttpResponse.BodyHandlers.ofString()).get(5, TimeUnit.SECONDS);
+      assertEquals(404, other.statusCode(), "Only the root page is new");
+      assertThrows(java.util.concurrent.ExecutionException.class, () -> http.newWebSocketBuilder().subprotocols(Nt4Client.V41)
+          .buildAsync(URI.create("ws://127.0.0.1:" + gateway.port() + "/"), new WebSocket.Listener() {}).get(5, TimeUnit.SECONDS),
+          "A WebSocket still needs /nt/<client name>");
+    }
+  }
+
+  /** After an NT4.1 handshake, AdvantageScope sends clock requests only on a second connection. */
+  @Test void timingConnectionAnswersClockRequestsAndIsNotAnotherDashboard() throws Exception {
+    try (var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 1234567)) {
+      gateway.start().get(5, TimeUnit.SECONDS); gateway.announce("/x", "int", new JsonObject()).join();
+      try (var main = new WireClient(gateway.port(), Nt4Client.V41, Nt4Client.V40);
+           var timing = new WireClient(gateway.port(), "rtt.networktables.first.wpi.edu")) {
+        assertEquals(Nt4Client.V41, main.socket.getSubprotocol());
+        assertEquals("rtt.networktables.first.wpi.edu", timing.socket.getSubprotocol());
+        main.send(GatewayCoreTest.sub(0, "", "{\"prefix\":true,\"periodic\":60}"));
+        assertEquals("/x", ((Announce) main.next()).name());
+        // The client's send time comes back with the server's clock, as on the main connection.
+        timing.send(new ValueFrame(-1, 55, 2, 42L));
+        assertEquals(new ValueFrame(-1, 1234567, 2, 42L), timing.next());
+        assertEquals(1, gateway.clientCount(), "One dashboard, however many connections it opens");
+        assertTrue(timing.events.isEmpty(), "A timing connection carries nothing else");
+      }
     }
   }
 }

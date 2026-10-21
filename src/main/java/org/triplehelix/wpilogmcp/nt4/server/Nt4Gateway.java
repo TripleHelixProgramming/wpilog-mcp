@@ -55,6 +55,8 @@ public final class Nt4Gateway implements AutoCloseable {
   private final ClientScheduler loop;
   private final Map<String, Peer> peers = new HashMap<>();
   private final Map<WebSocket, String> connections = new HashMap<>();
+  // Timing-only connections: loop-owned, outside the core and the client count.
+  private final Map<WebSocket, Peer> timers = new HashMap<>();
   private final Map<WebSocket, CompletableFuture<Void>> closing = new HashMap<>();
   // Only pong receipt crosses threads; the rest of each peer's state remains loop-owned.
   private final Map<WebSocket, Keepalive> keepalives = new java.util.concurrent.ConcurrentHashMap<>();
@@ -113,8 +115,17 @@ public final class Nt4Gateway implements AutoCloseable {
     return new BoundedReceiveDraft(protocols, maxBytes, maxFragments);
   }
 
+  /**
+   * NT4.1's timing-only subprotocol, which ntcore accepts. After a 4.1 handshake AdvantageScope
+   * opens a second connection with it and sends its clock requests only there; refusing it left
+   * the client without the robot's clock. Such a connection gets clock replies and nothing else.
+   */
+  static final String RTT = "rtt.networktables.first.wpi.edu";
+  // Server order decides the choice: a client offering 4.1 and 4.0 still gets 4.1.
+  private static final List<String> PROTOCOLS = List.of(Nt4Client.V41, Nt4Client.V40, RTT);
+
   public Nt4Gateway(InetSocketAddress address, LongSupplier serverClock) {
-    this(address, serverClock, List.of(Nt4Client.V41, Nt4Client.V40));
+    this(address, serverClock, PROTOCOLS);
   }
 
   public Nt4Gateway(InetSocketAddress address, LongSupplier serverClock, List<String> protocols) {
@@ -123,7 +134,7 @@ public final class Nt4Gateway implements AutoCloseable {
 
   /** Capture supplies its wall clock; tests advance bind backoff without sleeping. */
   public Nt4Gateway(InetSocketAddress address, LongSupplier serverClock, Clock wallClock, ClientScheduler binds) {
-    this(address, serverClock, List.of(Nt4Client.V41, Nt4Client.V40), MAX_QUEUED_FRAGMENTS,
+    this(address, serverClock, PROTOCOLS, MAX_QUEUED_FRAGMENTS,
         (name, reason) -> {}, wallClock, binds);
   }
 
@@ -474,15 +485,47 @@ public final class Nt4Gateway implements AutoCloseable {
       var peer = entry.getValue();
       SocketWrites.rearm(server, peer.socket);
       if (!Nt4Client.V41.equals(peer.socket.getProtocol().getProvidedProtocol())) continue;
-      if (peer.keepalive.expired(now)) drop(entry.getKey(), "NT4 pong timeout");
-      else if (peer.socket.isOpen()) {
-        try { checkQueue(peer.socket); peer.keepalive.sent(nowUs()); peer.socket.sendPing(); }
-        catch (SlowClient e) { drop(entry.getKey(), "NT4 client fell behind: socket send queue limit"); }
-        catch (org.java_websocket.exceptions.WebsocketNotConnectedException e) {
-          // The peer can close between isOpen and sendPing; other peers still need keepalives.
-        }
-      }
+      String failure = ping(peer, now);
+      if (failure != null) drop(entry.getKey(), failure);
     }
+    // Only a 4.1 client opens a timing connection, so it is kept alive the same way.
+    for (var peer : List.copyOf(timers.values())) {
+      SocketWrites.rearm(server, peer.socket);
+      String failure = ping(peer, now);
+      if (failure != null) dropTimer(peer.socket, failure);
+    }
+  }
+
+  /** Why the peer must go, or null once a ping is sent or while one is outstanding. */
+  private String ping(Peer peer, long now) {
+    if (peer.keepalive.expired(now)) return "NT4 pong timeout";
+    if (!peer.socket.isOpen()) return null;
+    try { checkQueue(peer.socket); peer.keepalive.sent(nowUs()); peer.socket.sendPing(); }
+    catch (SlowClient e) { return "NT4 client fell behind: socket send queue limit"; }
+    catch (org.java_websocket.exceptions.WebsocketNotConnectedException e) {
+      // The peer can close between isOpen and sendPing; other peers still need keepalives.
+    }
+    return null;
+  }
+
+  /** Answers clock requests as the main connection does, with the server clock, and ignores the rest. */
+  private void answerClock(WebSocket socket, byte[] bytes) {
+    for (var request : ValueFrame.decode(bytes)) {
+      if (request.topicId() != -1) continue;
+      var reply = new ValueFrame(-1, serverClock.getAsLong(), request.typeCode(), request.value());
+      try { sendBinary(socket, reply.encode()); }
+      catch (SlowClient e) { dropTimer(socket, "NT4 client fell behind: socket send queue limit"); return; }
+      catch (RuntimeException e) { dropTimer(socket, "NT4 send failed"); return; }
+    }
+  }
+
+  private void dropTimer(WebSocket socket, String reason) {
+    var peer = timers.remove(socket);
+    if (peer == null) return;
+    synchronized (admission) { shares.remove(socket); }
+    keepalives.remove(socket);
+    LoggerFactory.getLogger(Nt4Gateway.class).warn("NT4 gateway client {} timing connection closed: {}", peer.name, reason);
+    socket.closeConnection(1001, reason);
   }
 
   private void send(List<GatewayCore.Delivery> deliveries) {
@@ -558,7 +601,7 @@ public final class Nt4Gateway implements AutoCloseable {
       var drafts = List.of(receiveDraft(protocols, MessagePack.MAX_BYTES, MAX_QUEUED_FRAGMENTS));
       setWebSocketFactory(new org.java_websocket.server.DefaultWebSocketServerFactory() {
         @Override public org.java_websocket.WebSocketImpl createWebSocket(org.java_websocket.WebSocketAdapter adapter,
-            List<Draft> ignored) { return super.createWebSocket(adapter, drafts); }
+            List<Draft> ignored) { return new RootPageSocket(adapter, drafts); }
       });
       setReuseAddr(true); setDaemon(true);
       // The library's global pinger also pings 4.0 peers, which NT4 forbids.
@@ -585,14 +628,19 @@ public final class Nt4Gateway implements AutoCloseable {
     }
     @Override public void onOpen(WebSocket socket, ClientHandshake request) {
       enqueue(socket, 256, () -> () -> {
-        String id = Integer.toString(nextClient++);
-        connections.put(socket, id);
         String name = request.getResourceDescriptor().substring(4);
         var peer = new Peer(socket, name);
-        peers.put(id, peer); keepalives.put(socket, peer.keepalive);
-        core.connect(id);
-        clientCount = peers.size();
-        LoggerFactory.getLogger(Nt4Gateway.class).info("NT4 gateway client connected: {} ({})", name, socket.getProtocol().getProvidedProtocol());
+        String protocol = socket.getProtocol().getProvidedProtocol();
+        keepalives.put(socket, peer.keepalive);
+        if (RTT.equals(protocol)) timers.put(socket, peer);
+        else {
+          String id = Integer.toString(nextClient++);
+          connections.put(socket, id);
+          peers.put(id, peer);
+          core.connect(id);
+          clientCount = peers.size();
+        }
+        LoggerFactory.getLogger(Nt4Gateway.class).info("NT4 gateway client connected: {} ({})", name, protocol);
       }).exceptionally(error -> { socket.closeConnection(1008, WORK_LIMIT); return null; });
     }
     @Override public void onClose(WebSocket socket, int code, String reason, boolean remote) {
@@ -602,6 +650,7 @@ public final class Nt4Gateway implements AutoCloseable {
       try { loop.execute(() -> {
         var id = connections.remove(socket);
         keepalives.remove(socket);
+        timers.remove(socket);
         if (id != null) { peers.remove(id); core.disconnect(id); clientCount = peers.size(); }
         var done = closing.remove(socket);
         if (done != null) done.complete(null);
@@ -622,6 +671,7 @@ public final class Nt4Gateway implements AutoCloseable {
       enqueue(socket, 256L + data.remaining(), () -> {
         var bytes = new byte[data.remaining()]; data.get(bytes);
         return () -> {
+          if (timers.containsKey(socket)) { answerClock(socket, bytes); return; }
           var id = connections.get(socket);
           if (id == null) return;
           for (var value : ValueFrame.decode(bytes)) send(core.receive(id, value, serverClock.getAsLong()));
