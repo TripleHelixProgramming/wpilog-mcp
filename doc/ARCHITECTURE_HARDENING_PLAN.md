@@ -1,6 +1,8 @@
 # Architecture hardening plan
 
-Status: partially implemented; the second run has stopped for review on 2026-10-20, not accepted.
+Status: items 1 to 6 are accepted after the third run's phase A full build on 2026-10-20 (4,896
+passed, none failed, 87 skipped); item 7 is being built in that run's phase B
+([Third run](#third-run)). The rest of this paragraph is the record before the third run.
 The first run paused at the maintainer's request after Phase 0 and item 1's import work.
 Item 1's bounded logging decision now has an implementation and targeted verification.
 Item 2's shared budget, capture floor and initial copy paths passed targeted verification.
@@ -56,19 +58,19 @@ implementation stops at a decision that has not been made.
 
 | Item | Weakness | Change | Phase |
 |---|---|---|---|
-| [1](#1-capture-waits-behind-imports) | Capture shares one store queue and one cross-process lock with imports. A long import, or an import in another process, can stop a recording for the rest of the robot's boot, and the `import` command does not see a managed server. | Stage imports outside the queue, run capture turns first, time every turn, retry a held lock within the admission deadline, and send the command's imports to a managed server. | 1 — import work and bounded logging implemented; targeted checks and behavioral plants complete |
-| [2](#2-nothing-measures-free-disk-space) | Nothing measures free disk space. Every writer finds a full disk by failing. | One free-space budget per filesystem, a reserve only capture may use, a clean low-disk close and resume, and free space in `/health` and the metrics. | 1 — copy ownership implemented; targeted checks and 39 behavioral plants passed; full-build acceptance open |
+| [1](#1-capture-waits-behind-imports) | Capture shares one store queue and one cross-process lock with imports. A long import, or an import in another process, can stop a recording for the rest of the robot's boot, and the `import` command does not see a managed server. | Stage imports outside the queue, run capture turns first, time every turn, retry a held lock within the admission deadline, and send the command's imports to a managed server. | 1 — import work and bounded logging implemented; targeted checks and behavioral plants complete; accepted by the third run's phase A full build |
+| [2](#2-nothing-measures-free-disk-space) | Nothing measures free disk space. Every writer finds a full disk by failing. | One free-space budget per filesystem, a reserve only capture may use, a clean low-disk close and resume, and free space in `/health` and the metrics. | 1 — copy ownership implemented; targeted checks and 39 behavioral plants passed; accepted by the third run's phase A full build |
 | [8](#8-the-rules-are-not-written-down) | The rules this plan follows were not design principles, native dependencies were unchecked, and decision locations were ambiguous. | Six principles, a build-time native-library guard, a checked decision index, and the pit Explorer plan rename. | 2 — targeted checks, plants and the native-library guard passed |
-| [3](#3-one-process-records-and-analyzes) | One process records and analyzes, `/health` cannot see a stalled capture, and nothing restarts a hung server. | A soak test, capture progress in `/health`, and a restart after repeated failed probes. | 3 — soak, targeted checks, plants and harness passed; real systemd unverified |
-| [6](#6-no-wall-clock-time-on-the-data-routes) | The data routes carry only the log's clock. | An opt-in UTC timestamp from the log's own wall-clock readings, with its basis. | 4 — UTC, ambiguity handling and exact inverse targeted checks complete; 37 of 38 plant attempts caught, all restored; full-build acceptance open |
-| [4](#4-three-routes-serve-reduced-samples) | Three routes serve reduced samples, with shared arithmetic but different bucket membership, admission, formats and unwritten roles. | A differential test, one membership rule, and a written role for each route. | 4 — integer correction, angle presentation and five-route matrix targeted checks complete; all 23 second-run plants caught and restored; full-build acceptance open |
-| [5](#5-costs-grow-with-the-whole-store) | Discovery, scanning and replica catalogs cost in proportion to everything the server can see. | Measure; then persist scan indexes by content, discover from manifests, and warn before the catalog cap. | 5 — synthetic measurement, discovery, capacity warning and guard targeted checks/plants complete; scan index targeted checks and 31 plants complete; publication causes targeted complete with 42 caught/restored plants; full-build acceptance open |
+| [3](#3-one-process-records-and-analyzes) | One process records and analyzes, `/health` cannot see a stalled capture, and nothing restarts a hung server. | A soak test, capture progress in `/health`, and a restart after repeated failed probes. | 3 — soak, targeted checks, plants and harness passed; real systemd unverified; accepted by the third run's phase A full build |
+| [6](#6-no-wall-clock-time-on-the-data-routes) | The data routes carry only the log's clock. | An opt-in UTC timestamp from the log's own wall-clock readings, with its basis. | 4 — UTC, ambiguity handling and exact inverse targeted checks complete; 37 of 38 plant attempts caught, all restored; accepted by the third run's phase A full build |
+| [4](#4-three-routes-serve-reduced-samples) | Three routes serve reduced samples, with shared arithmetic but different bucket membership, admission, formats and unwritten roles. | A differential test, one membership rule, and a written role for each route. | 4 — integer correction, angle presentation and five-route matrix targeted checks complete; all 23 second-run plants caught and restored; accepted by the third run's phase A full build |
+| [5](#5-costs-grow-with-the-whole-store) | Discovery, scanning and replica catalogs cost in proportion to everything the server can see. | Measure; then persist scan indexes by content, discover from manifests, and warn before the catalog cap. | 5 — synthetic measurement, discovery, capacity warning and guard targeted checks/plants complete; scan index targeted checks and 31 plants complete; publication causes targeted complete with 42 caught/restored plants; accepted by the third run's phase A full build, the scan index's setting awaiting the maintainer |
 | [7](#7-questions-across-many-sessions-have-no-contract) | Questions across many sessions have no contract. | Write the contract, then measure, then build. | 5 — detailed design and synthetic measurement complete; design approved with amendments after the second run; the new tool is not yet built |
 
 The order is 1, 2, 8, 3, 6, 4, 5, 7. Phases 1 through 3 have the dispositions above.
 Phase 4 has implemented item 6's settled forward mapping and subsequent exact-inverse
 decision, and item 4's integer correction, angle presentation and full differential matrix,
-with targeted checks complete and full-build acceptance open. Phase 5 retains its
+with targeted checks complete; the third run's phase A full build accepted them. Phase 5 retains its
 decision gates and has measured the same synthetic
 store before and after discovery changes.
 
@@ -325,7 +327,7 @@ has no such receipt and keeps its existing alias/retry contract. Copied original
 only after commit and revalidation. New telemetry and system-text receipts retain their
 selected identities across process death; legacy receipts remain readable. Targeted recovery,
 200 ms capture-admission, reservation-lifetime and documentation checks pass, and all 39
-behavioral plants were caught and restored. Full-build acceptance remains open. Unknown-length command
+behavioral plants were caught and restored. The third run's phase A full build accepted it. Unknown-length command
 output remains outside the copy-admission change.
 
 Every registered store begins with a standing 2 GiB reserve. Its first explicit capture policy
@@ -489,7 +491,7 @@ then corrected. Existing-path integration passed 200 cases in 10.027 seconds, wi
 expected missing-coverage claims then corrected. The final coverage, conformance and
 documentation run passed all 14 cases in 14.472 seconds. All 23 second-run behavioral plants
 were caught and restored to identical hashes. These targeted results complete item 4's
-second-run checkpoint; the full-build acceptance remains open.
+second-run checkpoint; the third run's phase A full build accepted it.
 
 ### What is wrong
 
@@ -672,7 +674,7 @@ configuration settings remain active. `health_check` replaces `parsed_log_disk_c
 field change is documented as breaking. An eligible open verifies current whole-file content
 under a read lease before using an index; known growing captures are excluded. Invalid or
 unsupported indexes fall back to a scan. Targeted checks and all 31 behavioral plants passed,
-with exact restoration; full-build acceptance remains open.
+with exact restoration; the third run's phase A full build accepted it.
 
 The same 50-file synthetic workload measured mean first admission at 21.172 ms before and
 44.348 ms after, and second admission after eviction at 14.906 ms before and 12.578 ms after.
@@ -726,6 +728,13 @@ initialization races, lost nondurable failure time, fractional timestamp orderin
 completeness after failed header/receipt inspection. All 42 owner, startup, metric, HTTP and traversal-bound mutation plants were caught and
 exactly restored, including an independently counted actual directory tree. The final restored-source owner, documentation and compatibility-guard check passed all 72
 cases, with no failures or skips. See the second-run end-gate disposition below.
+
+The third run made registration's publication step lock-free in a folder that holds no store:
+it records that there is no store, and still reports a store this process knew about that has
+vanished, without creating `store.lock`. A folder that holds a store keeps the locked step and
+its refusal of a symbolic-link lock. A new test registers an empty folder and finds it still
+empty. The symbolic-link admission test, which the second run's build skipped once, now fails
+rather than skips when its link cannot be made.
 
 Change 4 adds the synchronization-cache source guard with a reviewed 47-source baseline at
 format 13, previous format 12. Item 4 changed the format because exact WPILOG timestamp order
@@ -842,7 +851,7 @@ item 6, 37 of 38 behavioral plant attempts were caught and all 38 restored with 
 hashes. The first raw-anchor rounding plant escaped because its final double masked the
 intermediate loss; an independently calculated odd-microsecond witness caught the same
 plant. The miss remains part of the record. Targeted implementation, regression, plant and
-documentation work is complete; full-build acceptance remains open.
+documentation work is complete; the third run's phase A full build accepted it.
 
 ## 7. Questions across many sessions have no contract
 
@@ -1163,6 +1172,41 @@ mutation attempts, not unique test counts. Item 7 ended the run as a detailed de
 synthetic measurement only; the maintainer approved the design afterwards, with amendments,
 and the tool is not yet built. The run is not accepted while the failed full-build gate
 remains.
+
+### Third run
+
+Phase A closed items 1 to 6 on 2026-10-20 with synthetic data, apart from one authorized local
+timing:
+
+| Check | Passed | Failed | Skipped | Seconds |
+|---|---:|---:|---:|---:|
+| Registration lock, failing first on the old code | 13 | 5 | 0 | 14.106 |
+| Registration lock with the adjacent store suites | 138 | 0 | 0 | 11.873 |
+| Daemon restart regression, failing first on the old order | 0 | 1 | 0 | 7.568 |
+| `DaemonManagerTest` with the corrected fixture | 57 | 0 | 0 | 19.646 |
+| Documentation and claim checks | 21 | 0 | 0 | 6.387 |
+| `env -u LANG -u LC_ALL ./gradlew build` | 4,896 | 0 | 87 | 157.631 |
+
+Registration's publication step no longer takes or creates `store.lock` in a folder that holds
+no store. Its failing-first run reproduced the second build's skip as a failure: the lock that
+registration created was already there when the test made its link. The daemon tests' fake
+daemon now closes its port, and checks that nothing accepts a connection, before it reports its
+process gone. A latch-held regression reproduces the old order, in which the restart's probe
+found the old daemon still answering and started nothing. `DaemonManager` is unchanged. Four
+behavioral plants were caught and restored exactly: the registration lock restored, publication
+turns left unlocked for a real store, the fake's old order, and a port left listening.
+
+The full build includes the license check and the native-library guard. Against the second
+run's approved build, the only change in skipped tests is the symbolic-link lock case, which now
+runs. The verification policy did not require `npm test`, `followBrokerTest` or the native
+harness for these changes: no extension, capture, pull, NT4, harness, reader or broker code
+changed. Items 1 to 6 are accepted.
+
+The persistent scan index was timed on three local team logs, read-only, with a throwaway cache
+and no server; the results stay in local, ignored evidence. The estimate for a multi-session
+call at its 1 GiB cap stayed below the work order's 15-second threshold, so phase B went ahead.
+Whether the index stays on, is off by default or gets a larger size limit is the maintainer's
+decision.
 
 ## Out of scope
 
