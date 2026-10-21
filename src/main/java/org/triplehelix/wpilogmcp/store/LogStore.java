@@ -862,11 +862,17 @@ public final class LogStore implements AutoCloseable {
     try {
       if (!StoreCatalog.isStore(root)) {
         publicationStartProbe.selected(null);
-        publicationMutation(null, files -> {
+        // Most registered folders hold no store. Recording that takes neither the lock nor any
+        // other file, which would be the only thing in an untouched folder. A store this process
+        // knew about that has vanished is still reported, and one that appeared since the check
+        // above fails this pass, as the locked turn did.
+        publicationState(() -> {
+          ensureImporting();
+          if (StoreCatalog.isStore(root)) throw new IOException("SOURCE_UNAVAILABLE: store identity changed");
           if (replicaPublications.snapshot().storeId() != null)
             throw new IOException("SOURCE_UNAVAILABLE: known store disappeared");
-          return null;
-        }, ignored -> { replicaPublications.begin(null); replicaPublications.finish(true, null); });
+          replicaPublications.begin(null); replicaPublications.finish(true, null);
+        });
         return;
       }
       io = new StoreFiles(root, security);
@@ -935,7 +941,9 @@ public final class LogStore implements AutoCloseable {
     replicaPublicationFailure = null;
   }
 
-  private void publicationState(Runnable update) throws IOException {
+  @FunctionalInterface private interface PublicationStep { void run() throws IOException; }
+
+  private void publicationState(PublicationStep update) throws IOException {
     var completed = new CompletableFuture<Void>();
     try {
       queue.importTurn("publication-status", () -> {

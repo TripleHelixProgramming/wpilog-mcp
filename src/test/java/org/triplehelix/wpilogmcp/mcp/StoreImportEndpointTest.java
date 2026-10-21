@@ -257,18 +257,18 @@ class StoreImportEndpointTest {
   @ParameterizedTest
   @CsvSource({"/store/import, false", "/store/import, true", "/store/assign, false", "/store/assign, true"})
   void symlinkLockIsRefusedBeforeJobAdmission(String route, boolean targetExists) throws Exception {
+    requireSymbolicLinks();
     Files.createDirectories(root);
     manager.clearAllowedDirectories();
     manager.addAllowedDirectory(root);
-    manager.stores().store(root); // Admission must recheck even a previously registered store.
+    // Admission must recheck even a previously registered store. Registration's own step has
+    // finished, so a lock it wrongly created is found here instead of racing the link below.
+    manager.stores().store(root).publicationsSettled().get(10, TimeUnit.SECONDS);
     var outside = temp.resolve("outside-lock");
     if (targetExists) Files.writeString(outside, "untouched sentinel");
     var link = root.resolve("store.lock");
-    try {
-      Files.createSymbolicLink(link, outside);
-    } catch (UnsupportedOperationException | IOException e) {
-      Assumptions.abort("Symlinks unavailable: " + e.getMessage());
-    }
+    // Links work (probed above), so any failure here, an existing file included, fails the test.
+    Files.createSymbolicLink(link, outside);
     var response = request(route, body(root, true).toString());
     assertTrue(response.statusCode() >= 400 && response.statusCode() < 500, response.toString());
     var refused = JsonParser.parseString(response.body()).getAsJsonObject();
@@ -280,6 +280,16 @@ class StoreImportEndpointTest {
     assertTrue(Files.isSymbolicLink(link));
     assertFalse(Files.exists(root.resolve("store.json")));
     assertFalse(Files.exists(root.resolve("inbox")));
+  }
+
+  /** Probe once where nothing can already exist, so only missing link support skips a test. */
+  private void requireSymbolicLinks() throws IOException {
+    var probe = Files.createTempDirectory(temp, "link-probe");
+    try {
+      Files.createSymbolicLink(probe.resolve("link"), probe.resolve("target"));
+    } catch (UnsupportedOperationException | IOException e) {
+      Assumptions.abort("Symlinks unavailable: " + e.getMessage());
+    }
   }
 
   @Test void unknownJobAndOriginRefusalsMatchTransport() throws Exception {

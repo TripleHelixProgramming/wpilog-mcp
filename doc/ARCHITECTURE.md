@@ -1933,7 +1933,9 @@ capture intact and reports `cause_durable: false`; restart can recover only dura
 `ReplicaPublications` publishes immutable pending facts from the store owner. Initial and
 explicit recovery enumerate off that owner, bounded to 32,768 paths; one short metadata turn
 rechecks each candidate's receipt witness before retrying publication. Payload hashes and tree
-walks stay outside the turn. Live outcomes take precedence over stale sweep observations.
+walks stay outside the turn. In a folder that holds no store, the initial pass takes no lock and
+creates no file: it records that there is no store, and reports a store this process knew about
+that has since vanished. Live outcomes take precedence over stale sweep observations.
 Retained pending facts and sweep bookkeeping share a 32 MiB accounted bound and 32,768-entry
 limits; these are accounting limits, not measured heap. Incomplete or failed recovery never
 reports a fabricated total of zero. Only a complete safe recovery may classify its remaining
