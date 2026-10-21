@@ -144,6 +144,8 @@ REV log synchronizations are cached on disk, keyed by the two files and the CAN 
 
 A result read from the cache must give the same answers as a fresh one; the in-process stress test compares them. The cache is input the server did not necessarily write: a corrupt or crafted file is rejected (every file carries a checksum and a format version), and reading one must never crash the server or exhaust the heap.
 
+Scan indexes of finished logs are cached beside REV results and share their size limit and cleanup. Raise the index's format or scan-recipe version with any change to how a log is scanned or an index is read; a test fails when the scan's source changes, until its recorded baseline says whether old indexes still give the same answers (`doc/DEVELOPMENT.md` describes both cache guards). An index follows the same rules as a REV result: the same answers as a fresh scan, and a corrupt or crafted file is rejected and the log scanned again.
+
 ## Security
 
 - Path traversal prevention with symlink resolution is enforced for all file access. When handling file paths, always validate through the security validator; a path must resolve to a file inside the configured log directories. CSV exports are restricted to a configured export directory.

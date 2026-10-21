@@ -99,3 +99,11 @@ record; test results and historical defect reports are not new architectural dec
 | 2026-10-20 | standing | System-log wall-clock inversion is exact until its final conversion to double | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
 | 2026-10-20 | standing | Remote replica status gains bounded pending-session lookup without changing immutable file identities | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
 | 2026-10-20 | standing | Capture startup continues after verified publication-only failure; unsafe or corrupt recovery remains fatal | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
+| 2026-10-20 | standing | Registering a folder that holds no store neither takes nor creates its store lock | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
+| 2026-10-20 | standing | The one real-log exception: the persistent scan index is timed on three local team logs, with results kept local | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
+| 2026-10-20 | standing | Multi-session analysis compares finished sessions in stores and mirrors only | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
+| 2026-10-20 | standing | A multi-session metric is one statistic of one number: mean, std_dev, min, max, median, p5 or p95; angles get a circular mean and spread | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
+| 2026-10-20 | standing | Multi-session work is capped before it starts, at most two comparisons run at once, and no new work service is added | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
+| 2026-10-20 | standing | A multi-session call reads at most 1 GiB of logs; median and percentiles keep at most 65,536 values per session and metric | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
+| 2026-10-20 | standing | A session's anchor defaults to its only WPILOG file; a session with several requires a choice | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |
+| 2026-10-20 | standing | Multi-session analysis chooses its source by scope_id as other tools do and keeps its designed duplicate, failure, pooling, confounder, unit and reply rules | [Record](ARCHITECTURE_HARDENING_PLAN.md#decisions-for-the-maintainer) |

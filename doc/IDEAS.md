@@ -490,6 +490,34 @@ file records the attaching session until detach or restart. Decide whether to lo
 a short keyed digest instead and to create logs and visualization state owner-only, then verify
 both with a second local account. The log line is released behavior.
 
+### A Joined Start Waits Out a Failed Start
+
+When two starts of one server overlap, as when two VS Code windows run `wpilog-mcp start` at
+once, the second waits for the first. If the first gives up, for example because another
+program holds the port, it fails at once with that reason. The second keeps waiting for three
+start timeouts, 30 seconds by default, then reports only "Failed to start server". Let the
+waiting start stop as soon as the first gives up, and report the first start's reason. A
+concurrent restart test timed out this way in the second hardening run's full build, most
+likely after its fake daemon made the first start give up.
+
+### Time Limits and Cancellation for Long Tool Calls
+
+No tool call has a time limit, and the server does not act on a client's cancellation notice:
+a long call runs to completion on its request thread after the client has stopped waiting. The
+multi-session tool's first version caps its work before it starts instead of adding its own
+deadline. Design one mechanism for every heavy tool: a whole-call deadline, the client's
+cancellation notice, checks between bounded steps of hashing, scanning, sorting and decoding,
+and reply memory held until the transport has finished sending.
+
+### Scope IDs From Another Server
+
+A plain folder's scope ID is derived from its path; stores and mirrors use their own store IDs.
+Two servers that serve the same folder path on different machines therefore report the same
+scope ID for different files, and an agent that lists scopes on one and passes the ID to the
+other gets that server's folder without an error. `list_source_scopes` also returns
+`server_instance_id`. Decide whether scoped tools should accept it and refuse a scope ID listed
+by a different server, and apply the rule to every scoped tool at once.
+
 ---
 
 ## 9. File access and visualization
