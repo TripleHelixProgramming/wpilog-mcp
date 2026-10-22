@@ -17,9 +17,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Function;
 import java.util.function.IntToLongFunction;
@@ -154,13 +152,9 @@ public final class ColumnFileWriter {
    * time order by the same stable sort; null for an entry the file does not hold.
    */
   private static Collected stream(LogData log, EntryInfo info, RecordSeries series, int maxSamples) throws IOException {
-    var struct = StructSchemas.structName(info.type());
-    if (struct != null && StructSchemas.isArrayType(info.type())) {
-      var schema = log.structSchemas().info(struct).filter(s -> s.valid() && s.size() > 0);
-      if (schema.isPresent()) {
-        long widest = (long) schema.get().size() * MAX_INDEX;
-        for (int i = 0; i < series.size(); i++) if (series.payloadBytes(i) > widest) return null;
-      }
+    long widest = StructLeaves.widestRecord(log.structSchemas(), info.type());
+    if (widest > 0) {
+      for (int i = 0; i < series.size(); i++) if (series.payloadBytes(i) > widest) return null;
     }
     var walk = new Walk(series.size(), maxSamples);
     var sink = new SampleCursors.Sink() {
@@ -223,8 +217,11 @@ public final class ColumnFileWriter {
    */
   private record Facts(long[] offsets, int[] ordinals, long payload, long[] payloads) {}
 
-  /** The numeric leaves of an entry's records, gathered by path in the order they first appear. */
-  private static final class Walk {
+  /**
+   * The numeric leaves of an entry's records, gathered by path in the order they first appear,
+   * by the rules {@link StructLeaves} keeps for this file and an open capture's columns alike.
+   */
+  private static final class Walk implements StructLeaves.Leaves<Node> {
     /** Thrown once an entry's columns would hold more samples than a build may. */
     static final class TooMany extends RuntimeException {
       TooMany() {
@@ -244,6 +241,8 @@ public final class ColumnFileWriter {
     final Node root = new Node("", false, 0);
     final List<Node> columns = new ArrayList<>();
     boolean complete = true;
+    /** The record being walked: its position among the entry's decoded records. */
+    private int position;
 
     Walk(int records, int maxSamples) {
       times = new long[records];
@@ -253,7 +252,8 @@ public final class ColumnFileWriter {
     void record(long time, Object value) {
       if (decoded == times.length) grow();
       times[decoded] = time;
-      visit(root, value, decoded);
+      position = decoded;
+      StructLeaves.walk(root, value, this);
       decoded++;
     }
 
@@ -275,6 +275,24 @@ public final class ColumnFileWriter {
       else payload = payloadBytes;
       record(time, value);
     }
+
+    @Override public int columns() { return columns.size(); }
+
+    @Override public void begin(Node node) { columns.add(node); }
+
+    @Override
+    public void value(Node node, long bits) {
+      if (++samples > maxSamples) throw new TooMany();
+      node.add(position, bits);
+    }
+
+    @Override
+    public void drop(Node node) {
+      samples -= node.size;
+      node.clear();
+    }
+
+    @Override public void incomplete() { complete = false; }
 
     private void grow() {
       int capacity = Math.max(16, decoded * 2);
@@ -325,54 +343,6 @@ public final class ColumnFileWriter {
       }
     }
 
-    private void visit(Node node, Object value, int ordinal) {
-      if (value == null) return;
-      if (value instanceof Map<?, ?> fields) {
-        if (node.depth >= MAX_DEPTH) { complete = false; return; }
-        for (var field : fields.entrySet()) {
-          var child = field.getKey() instanceof String name && addressable(name) ? node.field(name) : null;
-          if (child != null) visit(child, field.getValue(), ordinal);
-          else complete = false;
-        }
-      } else if (value instanceof List<?> elements) {
-        if (node.depth >= MAX_DEPTH) { complete = false; return; }
-        if (elements.size() > MAX_INDEX) complete = false;
-        for (int i = 0; i < Math.min(elements.size(), MAX_INDEX); i++) {
-          var child = node.element(i);
-          if (child != null) visit(child, elements.get(i), ordinal);
-          else complete = false;
-        }
-      } else {
-        leaf(node, value, ordinal);
-      }
-    }
-
-    private void leaf(Node node, Object value, int ordinal) {
-      var kind = kindOf(value);
-      if (kind == null) {
-        // A number of another type, or an array whose elements a path could still address.
-        if (FieldPath.toNumber(value) != null || value.getClass().isArray() && !(value instanceof byte[])) complete = false;
-        return;
-      }
-      if (node.dropped) return;
-      if (node.kind == null) {
-        if (columns.size() == MAX_ENTRY_COLUMNS) { node.drop(); complete = false; return; }
-        node.kind = kind;
-        columns.add(node);
-      } else if (node.kind != kind) {
-        samples -= node.size;
-        node.drop();
-        complete = false;
-        return;
-      }
-      if (++samples > maxSamples) throw new TooMany();
-      node.add(ordinal, bitsOf(value));
-    }
-
-    /** A name the grammar reads back as one field step. */
-    private static boolean addressable(String name) {
-      return !name.isEmpty() && name.indexOf('.') < 0 && name.indexOf('[') < 0;
-    }
   }
 
   /**
@@ -380,36 +350,18 @@ public final class ColumnFileWriter {
    * keeps its records' positions only from the first record that lacks the leaf; until then a
    * sample's position is its index.
    */
-  private static final class Node {
-    final String path;
-    final boolean indexed;
-    final int depth;
-    Map<String, Node> fields;
-    List<Node> elements;
-    Kind kind;
-    boolean dropped;
+  private static final class Node extends StructLeaves.Node<Node> {
     int size;
     LongBlocks bits = new LongBlocks();
     IntBlocks ordinals;
 
     Node(String path, boolean indexed, int depth) {
-      this.path = path;
-      this.indexed = indexed;
-      this.depth = depth;
+      super(path, indexed, depth);
     }
 
-    /** The node of a field, or null when its path would be longer than a column's may be. */
-    Node field(String name) {
-      if (path.length() + 1 + name.length() > MAX_PATH_CHARS) return null;
-      if (fields == null) fields = new HashMap<>();
-      return fields.computeIfAbsent(name, n -> new Node(path + "." + n, indexed, depth + 1));
-    }
-
-    Node element(int index) {
-      if (path.length() + 12 > MAX_PATH_CHARS) return null;
-      if (elements == null) elements = new ArrayList<>();
-      while (elements.size() <= index) elements.add(new Node(path + "[" + elements.size() + "]", true, depth + 1));
-      return elements.get(index);
+    @Override
+    protected Node child(String path, boolean indexed, int depth) {
+      return new Node(path, indexed, depth);
     }
 
     void add(int ordinal, long value) {
@@ -439,8 +391,8 @@ public final class ColumnFileWriter {
       for (int i = 0; i < count; i++) add((int) (keys[i] >>> 32), oldBits.get((int) keys[i]));
     }
 
-    void drop() {
-      dropped = true;
+    /** Lets go of the samples of a column the walk dropped. */
+    void clear() {
       bits = new LongBlocks();
       ordinals = null;
       size = 0;

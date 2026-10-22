@@ -11,8 +11,6 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -180,27 +178,7 @@ public final class ColumnFile implements AutoCloseable {
    * elements within a record: by the indexes at the pattern's {@code [*]} steps.
    */
   private static List<Column> pooled(Entry entry, FieldPath pattern) {
-    var steps = pattern.steps();
-    record Ranked(Column column, int[] rank) {}
-    var matches = new ArrayList<Ranked>();
-    for (var column : entry.columns.values()) {
-      var concrete = column.path.steps();
-      if (concrete.size() != steps.size()) continue;
-      var rank = new ArrayList<Integer>();
-      boolean match = true;
-      for (int i = 0; i < steps.size() && match; i++) {
-        var step = steps.get(i);
-        if (step instanceof FieldPath.All) {
-          if (concrete.get(i) instanceof FieldPath.Index index) rank.add(index.index());
-          else match = false;
-        } else {
-          match = step.equals(concrete.get(i));
-        }
-      }
-      if (match) matches.add(new Ranked(column, rank.stream().mapToInt(Integer::intValue).toArray()));
-    }
-    matches.sort((a, b) -> Arrays.compare(a.rank, b.rank));
-    return matches.stream().map(Ranked::column).toList();
+    return StructLeaves.pooled(entry.columns.values(), column -> column.path, pattern);
   }
 
   /** Checks a section's checksum and order once; a section that fails damages the file. */

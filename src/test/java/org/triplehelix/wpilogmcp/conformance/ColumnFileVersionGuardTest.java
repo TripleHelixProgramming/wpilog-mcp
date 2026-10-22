@@ -27,6 +27,7 @@ class ColumnFileVersionGuardTest {
   private static final Path BASELINE = Path.of("src/test/resources/conformance/column-file-inputs.json");
   private static final List<String> INPUTS = List.of(
       "columns/ColumnFileFormat.java", "columns/ColumnFileWriter.java", "columns/ColumnFile.java", "columns/Packed.java",
+      "columns/StructLeaves.java",
       "log/subsystems/EntryDecoder.java", "log/subsystems/BinaryReader.java", "log/struct/StructSchemas.java",
       "log/struct/CanonicalSchemas.java", "log/struct/StructMap.java", "log/struct/EnumValue.java",
       "log/struct/UnsignedEnumValue.java", "log/LazyParsedLog.java", "log/LogReader.java", "log/LogScan.java",
