@@ -129,3 +129,4 @@ architectural decisions.
 | 2026-10-21 | standing | Column files keep no summaries for now: an overview reads every sample, so its means are the data endpoint's | [Record](COLUMN_CACHE_PLAN.md#decisions-from-the-first-build) |
 | 2026-10-21 | standing | For finished files, a struct array of more than 64 elements a record and an entry of more than about 16.8 million samples are left to the log | [Record](COLUMN_CACHE_PLAN.md#decisions-from-the-first-build) |
 | 2026-10-21 | standing | A log's derived columns are called column files, not companions, which already names the REV log paired with a WPILOG | [Record](COLUMN_CACHE_PLAN.md#decisions-from-the-first-build) |
+| 2026-10-21 | standing | Column files keep each record's byte position packed as differences, with payload sizes and indexes only where they cannot be derived, so native reads can use them | [Record](COLUMN_CACHE_PLAN.md#decision-on-the-record-facts) |

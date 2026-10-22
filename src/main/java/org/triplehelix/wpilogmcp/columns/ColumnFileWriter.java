@@ -169,7 +169,7 @@ public final class ColumnFileWriter {
 
       @Override
       public void sample(long time, long offset, int ordinal, Object value) {
-        walk.record(time, value);
+        walk.record(time, value, offset, ordinal, series.payloadBytes(ordinal));
       }
 
       @Override
@@ -210,11 +210,18 @@ public final class ColumnFileWriter {
     if (StructSchemas.structName(info.type()) == null
         && (columns.size() != 1 || columns.get(0).size != walk.decoded)) return null;
     return new Collected(info.name(), info.type(), log.sampleCount(info.name()), walk.decoded, problem,
-        walk.complete, walk.times, columns);
+        walk.complete, walk.times, columns, walk.facts());
   }
 
   private record Collected(String name, String type, int records, int decoded, DecodeProblem problem,
-      boolean complete, long[] recordTimes, List<Node> columns) {}
+      boolean complete, long[] recordTimes, List<Node> columns, Facts facts) {}
+
+  /**
+   * Each decoded record's byte position in the log, in time order; its index among the entry's
+   * records in file order, or null while every index is the record's position; and its payload's
+   * size, one for all when they agree ({@code payloads} null) or one per record.
+   */
+  private record Facts(long[] offsets, int[] ordinals, long payload, long[] payloads) {}
 
   /** The numeric leaves of an entry's records, gathered by path in the order they first appear. */
   private static final class Walk {
@@ -229,6 +236,11 @@ public final class ColumnFileWriter {
     long[] times;
     int decoded;
     long samples;
+    /** The facts of each record, kept when its source reports them; see {@link Facts}. */
+    long[] offsets;
+    int[] sourceOrdinals;
+    long[] payloads;
+    long payload;
     final Node root = new Node("", false, 0);
     final List<Node> columns = new ArrayList<>();
     boolean complete = true;
@@ -239,10 +251,42 @@ public final class ColumnFileWriter {
     }
 
     void record(long time, Object value) {
-      if (decoded == times.length) times = Arrays.copyOf(times, Math.max(16, decoded * 2));
+      if (decoded == times.length) grow();
       times[decoded] = time;
       visit(root, value, decoded);
       decoded++;
+    }
+
+    /** As above, keeping the record's facts: where it lies, its index, and its payload's size. */
+    void record(long time, Object value, long offset, int ordinal, long payloadBytes) {
+      if (offsets == null) offsets = new long[times.length];
+      if (decoded == times.length) grow();
+      offsets[decoded] = offset;
+      if (sourceOrdinals == null && ordinal != decoded) {
+        sourceOrdinals = new int[times.length];
+        for (int i = 0; i < decoded; i++) sourceOrdinals[i] = i;
+      }
+      if (sourceOrdinals != null) sourceOrdinals[decoded] = ordinal;
+      if (payloads == null && decoded > 0 && payloadBytes != payload) {
+        payloads = new long[times.length];
+        Arrays.fill(payloads, 0, decoded, payload);
+      }
+      if (payloads != null) payloads[decoded] = payloadBytes;
+      else payload = payloadBytes;
+      record(time, value);
+    }
+
+    private void grow() {
+      int capacity = Math.max(16, decoded * 2);
+      times = Arrays.copyOf(times, capacity);
+      if (offsets != null) offsets = Arrays.copyOf(offsets, capacity);
+      if (sourceOrdinals != null) sourceOrdinals = Arrays.copyOf(sourceOrdinals, capacity);
+      if (payloads != null) payloads = Arrays.copyOf(payloads, capacity);
+    }
+
+    /** The records' facts in time order, or null for decoded values, which carry none. */
+    Facts facts() {
+      return offsets == null ? null : new Facts(offsets, sourceOrdinals, payloads == null ? payload : -1, payloads);
     }
 
     /**
@@ -265,6 +309,20 @@ public final class ColumnFileWriter {
       }
       times = sorted;
       for (var column : columns) if (!column.dropped) column.reorder(rank);
+      if (offsets == null) return;
+      // A record moved in time order keeps its facts, and its index can no longer be its position.
+      var fileOffsets = offsets;
+      var fileOrdinals = sourceOrdinals;
+      var filePayloads = payloads;
+      offsets = new long[decoded];
+      sourceOrdinals = new int[decoded];
+      if (filePayloads != null) payloads = new long[decoded];
+      for (int k = 0; k < decoded; k++) {
+        int from = order[k];
+        offsets[k] = fileOffsets[from];
+        sourceOrdinals[k] = fileOrdinals == null ? from : fileOrdinals[from];
+        if (filePayloads != null) payloads[k] = filePayloads[from];
+      }
     }
 
     private void visit(Node node, Object value, int ordinal) {
@@ -443,6 +501,16 @@ public final class ColumnFileWriter {
     }
     directory.u64(timesOffset);
     directory.u32(timesCrc);
+    var facts = entry.facts;
+    if (facts == null) {
+      directory.u8(0);
+    } else {
+      directory.u8(1 | (facts.payloads() != null ? 2 : 0) | (facts.ordinals() != null ? 4 : 0));
+      packed(out, directory, i -> facts.offsets()[i], entry.decoded);
+      if (facts.payloads() != null) packed(out, directory, i -> facts.payloads()[i], entry.decoded);
+      else directory.u64(facts.payload());
+      if (facts.ordinals() != null) packed(out, directory, i -> facts.ordinals()[i], entry.decoded);
+    }
     directory.u32(entry.columns.size());
     for (var column : entry.columns) {
       boolean own = column.size < entry.decoded, positions = own && column.indexed;
@@ -461,6 +529,15 @@ public final class ColumnFileWriter {
         directory.u32(out.ints(column::ordinal, column.size));
       }
     }
+  }
+
+  /** A packed section and its directory record: its offset, its length and its checksum. */
+  private static void packed(Output out, Directory directory, IntToLongFunction values, int count) throws IOException {
+    long offset = out.position();
+    var section = out.packed(values, count);
+    directory.u64(offset);
+    directory.u64(section.length());
+    directory.u32(section.crc());
   }
 
   private static byte[] utf8(String text) {
@@ -496,6 +573,34 @@ public final class ColumnFileWriter {
         buffer.putLong(values.applyAsLong(i));
       }
       return end();
+    }
+
+    record Packing(long length, int crc) {}
+
+    /** A packed section of {@code count} values, as {@link Packed} lays it out. */
+    Packing packed(IntToLongFunction values, int count) throws IOException {
+      int blocks = Packed.blocks(count);
+      var starts = new long[blocks];
+      long data = 0;
+      for (int b = 0; b < blocks; b++) {
+        starts[b] = data;
+        int end = (int) Math.min(count, (long) (b + 1) << Packed.SHIFT);
+        for (int i = (b << Packed.SHIFT) + 1; i < end; i++)
+          data += Packed.varintBytes(Packed.zigzag(values.applyAsLong(i) - values.applyAsLong(i - 1)));
+      }
+      begin();
+      for (int b = 0; b < blocks; b++) {
+        if (buffer.remaining() < Packed.INDEX_BYTES) drain(true);
+        buffer.putLong(values.applyAsLong(b << Packed.SHIFT)).putLong(starts[b]);
+      }
+      for (int i = 1; i < count; i++) {
+        if ((i & Packed.BLOCK - 1) == 0) continue;
+        if (buffer.remaining() < Packed.MAX_VARINT_BYTES) drain(true);
+        Packed.putVarint(buffer, Packed.zigzag(values.applyAsLong(i) - values.applyAsLong(i - 1)));
+      }
+      int checksum = end();
+      align();
+      return new Packing((long) Packed.INDEX_BYTES * blocks + data, checksum);
     }
 
     int ints(IntUnaryOperator values, int count) throws IOException {

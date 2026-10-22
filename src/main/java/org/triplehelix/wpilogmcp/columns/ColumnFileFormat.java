@@ -16,11 +16,14 @@ import org.triplehelix.wpilogmcp.log.struct.EnumValue;
  * <pre>
  * header     magic, format version, recipe version, two reserved words               32 bytes
  * sections   per entry: the timestamps of its decoded records (int64 microseconds), shared
- *            by every column with a value in each record; per column: its own timestamps
- *            when it has fewer samples, its values (8 bytes each), and for an array element
- *            missing from some records, each sample's record position (int32)
- * directory  the source's identity; per entry its name, type, record counts, decode problem
- *            and columns; per section its offset and CRC32C
+ *            by every column with a value in each record; its records' facts, packed (see
+ *            Packed): each record's byte position in the log, its payload's size when the
+ *            sizes vary, and its index among the entry's records in file order when that is
+ *            not its position; per column: its own timestamps when it has fewer samples, its
+ *            values (8 bytes each), and for an array element missing from some records, each
+ *            sample's record position (int32)
+ * directory  the source's identity; per entry its name, type, record counts, decode problem,
+ *            record facts and columns; per section its offset and CRC32C
  * footer     directory offset and length, CRC32C of the header and directory, magic    24 bytes
  * </pre>
  *
@@ -30,6 +33,9 @@ import org.triplehelix.wpilogmcp.log.struct.EnumValue;
  * the file and against fixed limits before anything is allocated, so a corrupt or crafted file
  * can neither crash the server nor exhaust its heap. The recipe version changes whenever the
  * values a file holds would change for the same log.
+ *
+ * <p>Format 2 added the record facts, which native reads report with every sample; a file of
+ * format 1 is refused, and the startup sweep removes it for a rebuild.
  */
 public final class ColumnFileFormat {
   private ColumnFileFormat() {}
@@ -38,7 +44,7 @@ public final class ColumnFileFormat {
   public static final long MAGIC = 0x31534C4F43495057L;
   /** "COLE", read little-endian. */
   public static final int FOOTER_MAGIC = 0x454C4F43;
-  public static final int FORMAT_VERSION = 1;
+  public static final int FORMAT_VERSION = 2;
   public static final int RECIPE_VERSION = 1;
   static final int HEADER_BYTES = 32;
   static final int FOOTER_BYTES = 24;

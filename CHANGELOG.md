@@ -46,7 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store would refuse a copy for want of recording's reserve, publish nothing when the file
   changed while it was read, and trim the cache to its limit afterwards. Before, the cache's
   size limit was enforced only at startup; now it is also enforced after each build, so other
-  cached files can be evicted sooner. A guard test, like the scan index's, fails when a source
+  cached files can be evicted sooner. Each file also keeps its records' byte positions, packed
+  as differences, with payload sizes and indexes where they cannot be derived, in 6 to 8% of the
+  file, so native reads can use it. A guard test, like the scan index's, fails when a source
   that shapes a column file changes, until the change is decided.
 - `compare_sessions` compares one statistic of up to eight metrics across up to 64 finished
   sessions of one store or mirror, each session counting once, with sample-weighted pooling

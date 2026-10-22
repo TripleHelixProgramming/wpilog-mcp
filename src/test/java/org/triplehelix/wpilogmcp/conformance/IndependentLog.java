@@ -142,18 +142,41 @@ final class IndependentLog {
     double[] values = new double[0];
     /** How many times and values are kept: {@link #numeric} when kept, otherwise 0. */
     int n;
+    /** Whether every record's byte offset, microseconds and payload size are kept, in file order. */
+    final boolean keptFacts;
+    long[] factOffsets = new long[0];
+    long[] factMicros = new long[0];
+    long[] factSizes = new long[0];
+    int facts;
 
     Series(String name, String type, boolean kept, boolean keptRaw) {
+      this(name, type, kept, keptRaw, false);
+    }
+
+    Series(String name, String type, boolean kept, boolean keptRaw, boolean keptFacts) {
       this.name = name;
       this.type = type;
       this.kept = kept;
       this.keptRaw = keptRaw;
+      this.keptFacts = keptFacts;
       this.width = switch (type) {
         case "double", "int64" -> 8;
         case "float" -> 4;
         case "boolean" -> 1;
         default -> 0;
       };
+    }
+
+    private void fact(long offset, long timeMicros, long size) {
+      if (facts == factOffsets.length) {
+        int capacity = Math.max(64, facts * 2);
+        factOffsets = Arrays.copyOf(factOffsets, capacity);
+        factMicros = Arrays.copyOf(factMicros, capacity);
+        factSizes = Arrays.copyOf(factSizes, capacity);
+      }
+      factOffsets[facts] = offset;
+      factMicros[facts] = timeMicros;
+      factSizes[facts++] = size;
     }
 
     private void add(long timeMicros, double value) {
@@ -236,6 +259,15 @@ final class IndependentLog {
   /** As {@link #read(Path, Set)}, also keeping the raw payloads of the entries in {@code keepRaw}. */
   static IndependentLog read(Path file, Set<String> keep, Set<String> keepRaw)
       throws IOException {
+    return read(file, keep, keepRaw, Set.of());
+  }
+
+  /**
+   * As above, also keeping each record's byte offset, microseconds and payload size, in file
+   * order, for the entries in {@code keepFacts}.
+   */
+  static IndependentLog read(Path file, Set<String> keep, Set<String> keepRaw, Set<String> keepFacts)
+      throws IOException {
     var b = bytes(file);
     long length = b.limit();
     if (length < 12 || unsigned(b, 0, 6) != 0x474F4C495057L) { // "WPILOG", little-endian
@@ -279,7 +311,7 @@ final class IndependentLog {
           }
           var existing = log.series.get(name);
           if (existing == null) {
-            existing = new Series(name, type, keep.contains(name), keepRaw.contains(name));
+            existing = new Series(name, type, keep.contains(name), keepRaw.contains(name), keepFacts.contains(name));
             log.series.put(name, existing);
             active.put(entry, existing);
           } else {
@@ -305,6 +337,7 @@ final class IndependentLog {
           log.lastRecords.addLast(s.name);
           if (log.lastRecords.size() > NEAR_DAMAGE) log.lastRecords.removeFirst();
           s.records++;
+          if (s.keptFacts) s.fact(pos, micros, size);
           log.dataRecords++;
           if (s.keptRaw) {
             var raw = new byte[(int) size];

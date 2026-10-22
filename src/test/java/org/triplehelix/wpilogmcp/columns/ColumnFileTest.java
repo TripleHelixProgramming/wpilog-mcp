@@ -445,7 +445,8 @@ class ColumnFileTest {
   @Test
   void aDamagedHeaderFooterOrDirectoryIsRefused() throws IOException {
     assertRefused(copy("magic.columns", b -> b[0] ^= 1), "Not a column file");
-    assertRefused(copy("format.columns", b -> b[8] = 2), "format 2");
+    assertRefused(copy("format.columns", b -> b[8] = 9), "format 9");
+    assertRefused(copy("format-1.columns", b -> b[8] = 1), "format 1");
     assertRefused(copy("recipe.columns", b -> b[12] = 9), "recipe 9");
     assertRefused(copy("footer.columns", b -> b[b.length - 1] ^= 1), "incomplete");
     assertRefused(copy("directory.columns", b -> b[(int) directoryOffset(b) + 6] ^= 1), "checksum");
@@ -485,7 +486,10 @@ class ColumnFileTest {
     int name = entryCount + 4;
     int type = name + 4 + "/b".length();
     int records = type + 4 + "boolean".length() + 1;
-    int columnCount = records + 4 + 4 + 8 + 4;
+    int facts = records + 4 + 4 + 8 + 4;
+    int packedOffsets = facts + 1;
+    int payload = packedOffsets + 8 + 8 + 4;
+    int columnCount = payload + 8;
     int path = columnCount + 4;
     int kind = path + 4;
     int size = kind + 1;
@@ -497,6 +501,111 @@ class ColumnFileTest {
     assertRefused(crafted("size.columns", size, b -> b.putInt(4)), "exceeds");
     assertRefused(crafted("far.columns", valuesOffset, b -> b.putLong(Long.MAX_VALUE - 7)), "outside");
     assertRefused(crafted("unaligned.columns", valuesOffset, b -> b.putLong(36)), "outside");
+    assertRefused(crafted("facts.columns", facts, b -> b.put((byte) 8)), "Unknown record facts layout");
+    assertRefused(crafted("facts-far.columns", packedOffsets, b -> b.putLong(Long.MAX_VALUE - 7)), "outside");
+    assertRefused(crafted("facts-long.columns", packedOffsets + 8, b -> b.putLong(1L << 40)), "outside");
+    assertRefused(crafted("payload.columns", payload, b -> b.putLong(-1)), "payload size");
+  }
+
+  /** Where the directory locates {@code /b}'s packed byte positions, as the crafted test counts. */
+  private static int firstPackedOffsets() {
+    int name = 4 + SOURCE.length() + 4;
+    int type = name + 4 + "/b".length();
+    return type + 4 + "boolean".length() + 1 + 4 + 4 + 8 + 4 + 1;
+  }
+
+  /**
+   * The built file with {@code /b}'s packed byte positions rewritten, and their checksum and the
+   * directory's made right, so only the section's own checks can refuse it. {@code /b} holds
+   * three records: one block, a whole first position and two differences.
+   */
+  private static Path craftedFacts(String name, java.util.function.UnaryOperator<byte[]> rewrite) throws IOException {
+    return copy(name, bytes -> {
+      var all = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+      int directory = (int) directoryOffset(bytes);
+      int field = directory + firstPackedOffsets();
+      int offset = (int) all.getLong(field), length = (int) all.getLong(field + 8);
+      var crafted = rewrite.apply(java.util.Arrays.copyOfRange(bytes, offset, offset + length));
+      // The section may grow into its own padding, never into the next section.
+      if (crafted.length > (length + 7 & ~7)) throw new IllegalArgumentException("A crafted section outgrows its place");
+      System.arraycopy(crafted, 0, bytes, offset, crafted.length);
+      var section = new CRC32C();
+      section.update(crafted);
+      all.putLong(field + 8, crafted.length).putInt(field + 16, (int) section.getValue());
+      var crc = new CRC32C();
+      crc.update(bytes, 0, ColumnFileFormat.HEADER_BYTES);
+      crc.update(bytes, directory, (int) all.getLong(bytes.length - 16));
+      all.putInt(bytes.length - 8, (int) crc.getValue());
+    });
+  }
+
+  /** The index and differences of a crafted one-block section of byte positions. */
+  private static byte[] block(long first, long start, int... data) {
+    var bytes = le(16 + data.length).putLong(first).putLong(start);
+    for (int value : data) bytes.put((byte) value);
+    return bytes.array();
+  }
+
+  private static void assertDamaged(Path path, String why) throws IOException {
+    try (var file = ColumnFile.open(path, SOURCE)) {
+      assertTrue(file.facts("/b").isEmpty(), "the crafted facts are not read");
+      var damage = file.damage().orElseThrow();
+      assertTrue(damage.contains(why), "damaged for " + damage + ", expected " + why);
+      assertTrue(file.select("/b", FieldPath.ROOT).isEmpty(), "a file found damaged is not read again");
+    }
+  }
+
+  /** Packed byte positions whose checksum is right but whose values are not: each is refused when first read. */
+  @Test
+  void aCraftedPackedSectionIsRefusedBeforeItIsBelieved() throws IOException {
+    long first;
+    try (var file = ColumnFile.open(built, SOURCE)) {
+      first = file.facts("/b").orElseThrow().offset(0);
+    }
+    assertDamaged(craftedFacts("start.columns", s -> block(first, 1, 16, 16)), "starts out of place");
+    // zigzag(-2) is 3: the second record would begin before the first.
+    assertDamaged(craftedFacts("backwards.columns", s -> block(first, 0, 3, 16)), "out of place");
+    assertDamaged(craftedFacts("short.columns", s -> block(first, 0, 0x90)), "ends inside a value");
+    assertDamaged(craftedFacts("past.columns", s -> block(first, 0, 16, 16, 16)), "past its values");
+    assertDamaged(craftedFacts("negative.columns", s -> block(-8, 0, 16, 16)), "out of place");
+    assertDamaged(copy("flipped.columns", b -> {
+      var all = ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN);
+      int field = (int) directoryOffset(b) + firstPackedOffsets();
+      b[(int) all.getLong(field) + 16] ^= 1;
+    }), "checksum");
+  }
+
+  /**
+   * Each record's facts by its position in time order, worked out from the log as written: {@code
+   * /d} was logged at 3.0, 1.0, 2.0, 2.0, 4.0 and 0.5 s; {@code /bad}'s second record fails to
+   * decode; {@code /s} holds 0, 2, 4 and 2 module states of 16 bytes each.
+   */
+  @Test
+  void recordFactsFollowTheRecordsIntoTimeOrder() throws IOException {
+    try (var file = ColumnFile.open(built, SOURCE); var use = LogManager.getInstance().acquire(log.toString())) {
+      var series = ((org.triplehelix.wpilogmcp.log.LazyParsedLog) use.log()).records("/d", false);
+      var d = file.facts("/d").orElseThrow();
+      int[] order = {5, 1, 2, 3, 0, 4};
+      for (int p = 0; p < order.length; p++) {
+        assertEquals(order[p], d.ordinal(p), "position " + p);
+        assertEquals(series.offset(order[p]), d.offset(p), "position " + p);
+        assertEquals(8, d.payloadBytes(p));
+      }
+      var bad = file.facts("/bad").orElseThrow();
+      assertEquals(0, bad.ordinal(0));
+      assertEquals(2, bad.ordinal(1), "a record after one that failed keeps its own index");
+      assertEquals(24, bad.payloadBytes(1));
+      var s = file.facts("/s").orElseThrow();
+      long[] sizes = {0, 32, 64, 32};
+      for (int p = 0; p < sizes.length; p++) {
+        assertEquals(p, s.ordinal(p));
+        assertEquals(sizes[p], s.payloadBytes(p));
+      }
+      var b = file.facts("/b").orElseThrow();
+      assertTrue(b.offset(0) < b.offset(1) && b.offset(1) < b.offset(2), "in file order");
+      assertEquals(1, b.payloadBytes(2));
+      assertTrue(file.facts("/missing").isEmpty());
+    }
   }
 
   /** The built file with directory bytes from {@code at} rewritten, and its checksum made right. */

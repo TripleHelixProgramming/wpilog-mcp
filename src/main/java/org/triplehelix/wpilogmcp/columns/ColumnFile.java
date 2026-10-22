@@ -126,6 +126,28 @@ public final class ColumnFile implements AutoCloseable {
     return Optional.of(new Selection(this, held, columns, path.hasWildcard()));
   }
 
+  /**
+   * The facts of an entry's records, by each record's position among the entry's decoded records,
+   * which a cursor's ordinal gives: where the record lies in the log, its payload's size, and its
+   * index among the entry's records in file order, as native reads report them. Empty when the
+   * file holds none for the entry, or when one of their sections fails its check, which damages
+   * the file as a column's would. A view belongs to one reading thread.
+   */
+  public Optional<RecordFacts> facts(String entry) {
+    if (damage != null) return Optional.empty();
+    var held = entries.get(entry);
+    if (held == null || held.facts == null) return Optional.empty();
+    try {
+      verify(held.facts.offsets(), held);
+      if (held.facts.sizes() != null) verify(held.facts.sizes(), held);
+      if (held.facts.ordinals() != null) verify(held.facts.ordinals(), held);
+    } catch (IOException failed) {
+      damage = failed.getMessage();
+      return Optional.empty();
+    }
+    return Optional.of(new RecordFacts(bytes, held.facts));
+  }
+
   @Override
   public void close() throws IOException {
     bytes.close();
@@ -185,8 +207,158 @@ public final class ColumnFile implements AutoCloseable {
     section.verified = true;
   }
 
+  /**
+   * Checks a packed section once: its checksum over exactly its bytes first, so damage reads as
+   * damage, then its block index and every value decoded in order, each block's differences
+   * ending exactly where the next block's begin, which a crafted section with a right checksum
+   * must also pass.
+   */
+  private void verify(PackedSection section, Entry entry) throws IOException {
+    if (section.verified) return;
+    var crc = new CRC32C();
+    for (long done = 0; done < section.length; done += 1 << 16) {
+      crc.update(bytes.view(section.offset + done, (int) Math.min(1 << 16, section.length - done)));
+    }
+    if ((int) crc.getValue() != section.crc) throw new IOException("Packed section at " + section.offset + " fails its checksum");
+    int blocks = Packed.blocks(section.count);
+    long indexBytes = (long) Packed.INDEX_BYTES * blocks;
+    long dataBytes = section.length - indexBytes;
+    var firsts = new long[blocks];
+    var starts = new long[blocks + 1];
+    for (int from = 0; from < blocks; from += CHUNK) {
+      int count = Math.min(CHUNK, blocks - from);
+      var view = bytes.view(section.offset + (long) Packed.INDEX_BYTES * from, Packed.INDEX_BYTES * count);
+      for (int b = 0; b < count; b++) {
+        firsts[from + b] = view.getLong(Packed.INDEX_BYTES * b);
+        starts[from + b] = view.getLong(Packed.INDEX_BYTES * b + 8);
+      }
+    }
+    starts[blocks] = dataBytes;
+    if (blocks > 0 && starts[0] != 0) throw new IOException("Packed section at " + section.offset + " starts out of place");
+    boolean increasing = section.fact == Fact.OFFSETS && entry.facts.ordinals() == null;
+    long previous = Long.MIN_VALUE;
+    for (int b = 0; b < blocks; b++) {
+      long length = starts[b + 1] - starts[b];
+      if (length < 0 || length > (long) Packed.MAX_VARINT_BYTES * Packed.BLOCK)
+        throw new IOException("Packed section at " + section.offset + " is laid out out of order");
+      var data = bytes.view(section.offset + indexBytes + starts[b], (int) length);
+      int first = b << Packed.SHIFT, end = (int) Math.min(section.count, (long) (b + 1) << Packed.SHIFT);
+      long value = firsts[b];
+      for (int i = first; i < end; i++) {
+        if (i > first) value += Packed.unzigzag(Packed.getVarint(data));
+        boolean fits = switch (section.fact) {
+          case OFFSETS -> value >= 0 && (!increasing || value > previous);
+          case SIZES -> value >= 0 && value <= Integer.MAX_VALUE;
+          case ORDINALS -> value >= 0 && value < entry.records;
+        };
+        if (!fits) throw new IOException("Packed section at " + section.offset + " holds a value out of place");
+        previous = value;
+      }
+      if (data.hasRemaining()) throw new IOException("Packed section at " + section.offset + " holds bytes past its values");
+    }
+    section.verified = true;
+  }
+
   /** What a section's values must satisfy beyond its checksum. */
   private enum Role { TIMES, VALUES, BOOLS, FLOATS, ORDINALS }
+
+  /** Which record fact a packed section holds. */
+  private enum Fact { OFFSETS, SIZES, ORDINALS }
+
+  private static final class PackedSection {
+    final long offset;
+    final int count;
+    final long length;
+    final int crc;
+    final Fact fact;
+    volatile boolean verified;
+
+    PackedSection(long offset, int count, long length, int crc, Fact fact) {
+      this.offset = offset;
+      this.count = count;
+      this.length = length;
+      this.crc = crc;
+      this.fact = fact;
+    }
+  }
+
+  /** An entry's record facts as the directory locates them; one payload size when they agree. */
+  private record Facts(PackedSection offsets, PackedSection sizes, long payload, PackedSection ordinals) {}
+
+  /** An entry's record facts by record position; see {@link ColumnFile#facts}. */
+  public static final class RecordFacts {
+    private final PackedValues offsets;
+    private final PackedValues sizes;
+    private final long payload;
+    private final PackedValues ordinals;
+
+    private RecordFacts(LogBytes bytes, Facts facts) {
+      offsets = new PackedValues(bytes, facts.offsets());
+      sizes = facts.sizes() == null ? null : new PackedValues(bytes, facts.sizes());
+      payload = facts.payload();
+      ordinals = facts.ordinals() == null ? null : new PackedValues(bytes, facts.ordinals());
+    }
+
+    /** Where the record begins in the log, in bytes from the start of the file. */
+    public long offset(int position) {
+      return offsets.get(position);
+    }
+
+    public long payloadBytes(int position) {
+      return sizes == null ? payload : sizes.get(position);
+    }
+
+    /** The record's index among the entry's records in file order. */
+    public int ordinal(int position) {
+      return ordinals == null ? position : (int) ordinals.get(position);
+    }
+  }
+
+  /** A verified packed section's values by index, decoded forward from the block that holds one. */
+  private static final class PackedValues {
+    private final LogBytes bytes;
+    private final PackedSection section;
+    private final int blocks;
+    private final long indexBytes;
+    private int block = -1;
+    private int current;
+    private long value;
+    private ByteBuffer data;
+
+    PackedValues(LogBytes bytes, PackedSection section) {
+      this.bytes = bytes;
+      this.section = section;
+      blocks = Packed.blocks(section.count);
+      indexBytes = (long) Packed.INDEX_BYTES * blocks;
+    }
+
+    long get(int i) {
+      if (i < 0 || i >= section.count) throw new IndexOutOfBoundsException("Record position " + i);
+      int b = i >>> Packed.SHIFT;
+      if (b != block || i < current) start(b);
+      while (current < i) {
+        try {
+          value += Packed.unzigzag(Packed.getVarint(data));
+        } catch (IOException verified) {
+          throw new IllegalStateException("A verified packed section no longer reads", verified);
+        }
+        current++;
+      }
+      return value;
+    }
+
+    private void start(int b) {
+      var index = bytes.view(section.offset + (long) Packed.INDEX_BYTES * b, Packed.INDEX_BYTES);
+      value = index.getLong(0);
+      long from = index.getLong(8);
+      long to = b + 1 < blocks
+          ? bytes.view(section.offset + (long) Packed.INDEX_BYTES * (b + 1) + 8, 8).getLong(0)
+          : section.length - indexBytes;
+      data = bytes.view(section.offset + indexBytes + from, (int) (to - from));
+      block = b;
+      current = b << Packed.SHIFT;
+    }
+  }
 
   private static final class Section {
     final long offset;
@@ -217,9 +389,10 @@ public final class ColumnFile implements AutoCloseable {
     private final DecodeProblem problem;
     private final boolean complete;
     private final Map<String, Column> columns;
+    private final Facts facts;
 
     private Entry(String name, String type, int records, int decoded, DecodeProblem problem,
-        boolean complete, Map<String, Column> columns) {
+        boolean complete, Map<String, Column> columns, Facts facts) {
       this.name = name;
       this.type = type;
       this.records = records;
@@ -227,6 +400,7 @@ public final class ColumnFile implements AutoCloseable {
       this.problem = problem;
       this.complete = complete;
       this.columns = columns;
+      this.facts = facts;
     }
 
     public String name() { return name; }
@@ -590,6 +764,20 @@ public final class ColumnFile implements AutoCloseable {
       long timesOffset = u64();
       int timesCrc = i32();
       var recordTimes = timesOffset == ColumnFileWriter.NONE ? null : section(timesOffset, decoded, 8, timesCrc, Role.TIMES);
+      int layoutOfFacts = u8();
+      if ((layoutOfFacts & ~7) != 0 || layoutOfFacts != 0 && (layoutOfFacts & 1) == 0)
+        throw new IOException("Unknown record facts layout " + layoutOfFacts);
+      Facts facts = null;
+      if (layoutOfFacts != 0) {
+        var offsets = packed(decoded, Fact.OFFSETS);
+        PackedSection sizes = null;
+        long payload = -1;
+        if ((layoutOfFacts & 2) != 0) sizes = packed(decoded, Fact.SIZES);
+        else if ((payload = u64()) < 0 || payload > Integer.MAX_VALUE)
+          throw new IOException("Entry " + name + " has a record payload size out of place");
+        var ordinals = (layoutOfFacts & 4) != 0 ? packed(decoded, Fact.ORDINALS) : null;
+        facts = new Facts(offsets, sizes, payload, ordinals);
+      }
       int count = count(MAX_ENTRY_COLUMNS);
       if (count == 0) throw new IOException("Entry " + name + " holds no columns");
       boolean scalar = StructSchemas.structName(type) == null;
@@ -618,7 +806,18 @@ public final class ColumnFile implements AutoCloseable {
           throw new IOException("Entry " + name + " repeats column " + text);
       }
       if (scalar && columns.size() != 1) throw new IOException("Entry " + name + " is a number with several columns");
-      return new Entry(name, type, records, decoded, problem, (flags & 1) != 0, columns);
+      return new Entry(name, type, records, decoded, problem, (flags & 1) != 0, columns, facts);
+    }
+
+    /** A packed section's place, which must lie inside the file and fit the values it can hold. */
+    private PackedSection packed(int count, Fact fact) throws IOException {
+      long offset = u64(), length = u64();
+      int crc = i32();
+      long index = (long) Packed.INDEX_BYTES * Packed.blocks(count);
+      if (offset < HEADER_BYTES || offset % 8 != 0 || offset > sectionsEnd || length < index
+          || length > sectionsEnd - offset || length - index > (long) Packed.MAX_VARINT_BYTES * count)
+        throw new IOException("Packed section lies outside the file");
+      return new PackedSection(offset, count, length, crc, fact);
     }
 
     /** A column's path, which must read back as itself, select one leaf, and stay in limits. */

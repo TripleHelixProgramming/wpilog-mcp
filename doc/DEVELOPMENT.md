@@ -251,7 +251,7 @@ CRLF, and changing the baseline alone does not prove compatibility.
 **Column-file compatibility.** `ColumnFileVersionGuardTest` does the same for column files,
 against `src/test/resources/conformance/column-file-inputs.json` and the format and recipe
 versions in the column file format. Its inputs are the sources that decide what a file holds
-and how it is read back: the format, writer and reader, the entry and struct decode, the
+and how it is read back: the format and its packing, writer and reader, the entry and struct decode, the
 lazy log's record reads, the scan and its offsets, the mapped reader, the field path grammar,
 the record cursors, and the WPILib access adapter. A change that alters a file's bytes or
 their meaning raises the format or recipe version, and files of another version are removed

@@ -43,6 +43,9 @@ One column file for each WPILOG file:
 - No summaries, for now. An overview reads every sample of its window with the data
   endpoint's own arithmetic, so its answers are the endpoint's to the last bit. A later format
   version can add summaries if reads across a season need them.
+- Each record's facts as native reads report them: where it begins in the log, its payload's
+  size, and its index among the entry's records, packed into 6 to 8% of the file (see
+  [Record facts for native reads](#record-facts-for-native-reads)).
 - The log's wall-clock readings and the UTC mapping built from them, once.
 - A directory: each entry's name, type and sample count, and where its columns start; and the
   source file's identity and the recipe version that built it.
@@ -253,6 +256,38 @@ each built from the file, with the values recorded, and a capture still recordin
 Thirty-five planted mistakes, from a gate left open to a content hash recorded before the
 proof that justifies it, each failed them, as did four planted in the new guard and its
 baseline.
+
+## Record facts for native reads
+
+Native reads report three facts with every sample about its record: where it begins in the log,
+its payload's size, and its index among the entry's records in file order. A program uses them
+to find or check the record behind a sample, to read only what a growing file appended, and to
+count bytes against its budgets. Format 2 keeps them for every record a file holds:
+
+- **Byte positions, packed.** Each block of 4,096 records keeps its first position whole and
+  the rest as the difference from the record before, in as few bytes as the difference needs.
+  An entry's records lie a few hundred bytes to a few kilobytes apart, so a difference takes
+  two or three bytes.
+- **Payload sizes, once when they agree.** A number or a plain struct has one size, which the
+  directory keeps once; a struct array's sizes vary and are packed like positions.
+- **Indexes only where needed.** A record's index is its position in time order unless the
+  entry was logged out of order or a record failed to decode; only then are indexes kept.
+
+Measured on the three team logs, the facts add 5.6 to 7.6% to their files, against 21 to 22%
+with whole positions and 39 to 42% with every fact whole. On the 2 GiB log's file, reading
+positions forward took 4.5 ns a record against 1.8 ns for whole eight-byte values, and finding
+a window's first record from its block took 6.4 µs. A packed section is checked the first time
+a read uses it: its checksum over exactly its bytes, then every value in order, each block's
+differences ending where the next block's begin, so damage reads as damage and a crafted
+section with a right checksum is still refused. A file of the first format is refused by its
+version, removed at startup, and built again when its log is next read.
+
+### Decision on the record facts
+
+The maintainer chose this layout on 2026-10-21 from four measured choices: every fact whole,
+whole positions with derived indexes and sizes, these packed positions, or native reads left on
+the log's path. The read cost was to be measured before relying on it, with whole positions as
+the fallback; it was, and packed positions stay.
 
 ## Costs and risks
 
