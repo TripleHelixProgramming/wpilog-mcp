@@ -195,6 +195,44 @@ class DataEndpointCaptureTest {
     return Instant.ofEpochSecond(Math.floorDiv(epochUs, 1_000_000L), Math.floorMod(epochUs, 1_000_000L) * 1000).toString();
   }
 
+  /**
+   * A robot that publishes no clock is placed by this server's own: the capture records the
+   * server's clock at the first value after a time synchronization, and a UTC window reads the
+   * recording, then its finished file, by it. One reading at robot 1 s, W: robot time t is W + (t - 1 s).
+   */
+  @Test
+  void aRobotWithoutAClockIsPlacedByTheServersRecordedClock() throws Exception {
+    long w = 1_792_663_200_000_000L; // 2026-10-22T10:00:00Z
+    var path = directory.resolve("no-clock.wpilog");
+    var index = new CaptureIndex((address, start) -> path, LogManager.getInstance(), 10_000_000, () -> 3_000_000.0);
+    var topic = new Announce("/x", 1, "int", null, new JsonObject());
+    var fixed = java.time.Clock.fixed(Instant.ofEpochSecond(w / 1_000_000), java.time.ZoneOffset.UTC);
+    var window = Map.of("names", "NT:/x", "format", "csv", "start_utc", instant(w + 40_000), "end_utc", instant(w + 100_000));
+    var withPath = new java.util.HashMap<>(window);
+    withPath.put("path", path.toString());
+    try (var writer = new CaptureWriter(fixed, new ManualScheduler(), CapturePolicy.ALL, index)) {
+      writer.connected(RobotAddress.uri("127.0.0.1", 5810, "data-endpoint-capture-test"), "networktables.first.wpi.edu");
+      writer.timeSync(1_000_000, 0);
+      writer.announce(topic);
+      for (int i = 0; i < 10; i++) writer.value(topic, new ValueFrame(1, 1_000_000 + 20_000L * i, 2, (long) i), 0);
+      var capture = new LiveCapture(directory, new ManualScheduler());
+      live.set(capture);
+      capture.status(status(path, true));
+      var current = new java.util.HashMap<>(window);
+      current.put("capture", "current");
+      var response = get(current);
+      assertEquals(200, response.statusCode(), response.body());
+      assertEquals(List.of(2.0, 3.0, 4.0, 5.0), values(response.body()), "the samples at 1.04 s to 1.10 s");
+      assertTrue(response.body().contains("\"clock\":\"pit_clock\""), response.body());
+      assertTrue(response.body().contains("2026-10-22T10:00:00.040000Z"), response.body());
+      writer.disconnected();
+    }
+    var finished = get(withPath);
+    assertEquals(200, finished.statusCode(), finished.body());
+    assertEquals(List.of(2.0, 3.0, 4.0, 5.0), values(finished.body()), "the finished file places them alike");
+    assertTrue(finished.body().contains("\"entry\":\"/Daemon/Clock/EpochTimeMicros\""), finished.body());
+  }
+
   @Test
   void withoutARecordingTheRequestIsRefusedWithItsReason() throws Exception {
     var request = Map.of("capture", "current", "names", "NT:/x");

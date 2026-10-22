@@ -149,8 +149,11 @@ final class ReplayPull implements AutoCloseable {
         }
         var baseline = bus.expected();
         var row = new LinkedHashMap<String, Object>(); row.put("path", original.toString());
+        // The source's record set: the recorder's own clock is no source entry.
         row.put("numeric_records_compared", joined.entries().values().stream()
-            .filter(e -> List.of("double", "float", "int64").contains(e.type())).mapToLong(e -> joined.sampleCount(e.name())).sum());
+            .filter(e -> List.of("double", "float", "int64").contains(e.type()))
+            .filter(e -> !e.name().equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY))
+            .mapToLong(e -> joined.sampleCount(e.name())).sum());
         row.put("source_method", baseline.method()); row.put("capture_method", actual.method());
         row.put("source_offset_us", baseline.offsetMicros()); row.put("capture_offset_us", actual.offsetMicros());
         row.put("expected_offset_us", baseline.offsetMicros() + shiftUs);

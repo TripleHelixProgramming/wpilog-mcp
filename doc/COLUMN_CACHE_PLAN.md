@@ -468,7 +468,8 @@ gap in the same process keeps its columns; a rollover starts a new file with new
 
 The maintainer answered all four on 2026-10-22: as proposed. Struct fields decode their window,
 blocks are packed, blocks stay in the heap when the disk cannot take them, and numbers leave the
-hot window.
+hot window. The first was reversed the same day, for live struct panels at any zoom: the writer
+records struct fields as columns ([Grafana plan](GRAFANA_PLAN.md#decisions-for-the-maintainer)).
 
 ### Tests that must fail first
 

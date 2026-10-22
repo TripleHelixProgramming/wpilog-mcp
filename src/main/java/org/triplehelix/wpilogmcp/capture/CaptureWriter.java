@@ -527,6 +527,52 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     if (output == null && !failed && !diskPaused) progress.stopped(CaptureProgress.Reason.WAITING_FOR_CLOCK);
   }
 
+  /**
+   * The recorder's clock entry's metadata. A reading is this server's wall clock when the robot's
+   * time synchronization reply arrived, carried to the robot time of the next value logged after
+   * it, so it runs late by the reply's one-way network delay.
+   */
+  private static final String CLOCK_METADATA = "{\"source\":\"time_sync\",\"clock\":\"recorder\"}";
+  /** Readings at least this far apart in robot time, so drift between synchronizations never runs the clock backwards. */
+  private static final long CLOCK_SPACING_US = 1_000_000;
+  /** The latest synchronization: the robot time it carried, and this server's wall clock when it arrived. */
+  private long clockRobotUs, clockEpochUs;
+  /** A synchronization or a new file awaits a reading, which the next value logged takes at its own time. */
+  private boolean clockPending;
+  private long lastClockUs = Long.MIN_VALUE;
+  /** The clock entry of the current file, declared there at its first reading. */
+  private EntryInfo clockEntry;
+
+  private static long epochMicros(Instant instant) {
+    return Math.addExact(Math.multiplyExact(instant.getEpochSecond(), 1_000_000L), instant.getNano() / 1000);
+  }
+
+  /**
+   * One reading of this server's wall clock, at the robot time of a value just written, so a
+   * capture whose robot publishes no clock can still be placed in UTC. At a value's time it never
+   * widens the file's time range; it is not forwarded, since it measures this recorder alone; and
+   * it never rolls a file over: a reading that does not fit waits for the next file.
+   */
+  private void writeClock(long robotUs) throws IOException {
+    String name = org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY;
+    long epoch = clockEpochUs + (robotUs - clockRobotUs);
+    byte[] payload = WpilogOutput.payload(2, epoch);
+    int declaration = clockEntry == null ? WpilogOutput.startSize(name, "int64", CLOCK_METADATA, robotUs) : 0;
+    long reserved = (activeEntries() + (clockEntry == null ? 1L : 0L)) * FINISH_RESERVE_BYTES;
+    if (output.size() + declaration + WpilogOutput.recordSize(Integer.MAX_VALUE, robotUs, payload.length) + reserved > maxFileBytes) return;
+    if (clockEntry == null) {
+      clockEntry = new EntryInfo(output.start(name, "int64", CLOCK_METADATA, robotUs), name, "int64", CLOCK_METADATA);
+      progress.written();
+      observer.entry(session, clockEntry);
+    }
+    var written = output.append(clockEntry.id(), robotUs, payload);
+    progress.written();
+    session.sizeBytes = output.size();
+    observer.value(session, clockEntry, new ValueFrame(clockEntry.id(), robotUs, 2, epoch), written);
+    clockPending = false;
+    lastClockUs = robotUs;
+  }
+
   @Override public void timeSync(long timestampUs, long receivedAtUs) {
     if (defer(() -> timeSync(timestampUs, receivedAtUs), () -> 16)) return;
     long elapsed = receivedAtUs - receiptUs;
@@ -542,6 +588,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     if (output == null && opening == null && !failed && !diskPaused) progress.stopped(CaptureProgress.Reason.WAITING_FOR_TOPIC);
     if (restartHere) for (var topic : List.copyOf(announced.values())) announce(topic);
     if (output != null) io(() -> observer.timeSync(session, timestampUs));
+    // The wall clock at the reply's receipt, not at this call, which may run from the queue.
+    clockRobotUs = timestampUs; clockEpochUs = epochMicros(wallNow()) - (nowUs() - receivedAtUs); clockPending = true;
   }
 
   @Override public void announce(Announce announce) {
@@ -564,6 +612,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       }
       String name = org.triplehelix.wpilogmcp.nt4.ContextTopic.metadata(announce.name(), announce.properties()).isPresent()
           ? announce.name() : "NT:" + announce.name();
+      // An upstream recorder's clock, as a pit gateway forwards it: this recorder measures its own.
+      if (name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) return;
       String type = NtType.fromNt4(announce.type()).wpilog();
       int seedBytes = diskSeed == null ? 0 : ((byte[]) diskSeed.frame().value()).length;
       room(WpilogOutput.startSize(name, type, metadata, serverUs)
@@ -629,6 +679,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     session.open = true; session.endedAt = null; session.sizeBytes = output.size();
     session.observedAtUs = nowUs(); session.observedAt = wallNow();
     observer.opened(session, append);
+    clockEntry = null; clockPending = haveClock; lastClockUs = Long.MIN_VALUE;
     scheduleFlush(output);
     writeIdentity();
   }
@@ -713,7 +764,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       if (changed) io(() -> observer.providers(session));
     }
   }
-  private int activeEntries() { return topics.size() + contexts.size(); }
+  private int activeEntries() { return topics.size() + contexts.size() + (clockEntry == null ? 0 : 1); }
   private long contextDeclarations() {
     return contexts.values().stream().mapToLong(e -> WpilogOutput.startSize(e.name(), e.type(), e.metadata(), serverUs)).sum();
   }
@@ -813,6 +864,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       cost.add(receivedAtUs, written.size());
       observer.value(session, topic.entry, frame, written);
       observer.publication(session, receivedAtUs, loop.nowUs());
+      if (clockPending && frame.timestampUs() >= lastClockUs + CLOCK_SPACING_US) writeClock(frame.timestampUs());
     });
   }
 
@@ -890,6 +942,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     try {
       for (var topic : topics.values()) { closing.finish(topic.entry.id(), serverUs); progress.written(); }
       for (var entry : contexts.values()) { closing.finish(entry.id(), serverUs); progress.written(); }
+      if (clockEntry != null) { closing.finish(clockEntry.id(), serverUs); progress.written(); clockEntry = null; }
     }
     catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
     try { closing.close(); }

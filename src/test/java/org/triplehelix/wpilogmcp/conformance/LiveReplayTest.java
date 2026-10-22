@@ -176,13 +176,16 @@ public class LiveReplayTest {
           for (var captured : files.filter(p -> p.getFileName().toString().matches("capture(?:-[0-9]+)?\\.wpilog")).toList()) {
             try (var recorded = new IndependentLog.Records(captured)) {
               var seeds = new java.util.HashSet<Long>();
+              // The recorder's own clock is not a captured topic: the session's counts leave it out.
+              var recorders = new java.util.HashSet<Long>();
               for (int at = recorded.first; ; ) {
                 var record = recorded.at(at); if (record == null) break; at = record.end();
                 if (record.id() == 0 && recorded.control(record) == 0) {
                   var start = recorded.start(record);
                   var metadata = com.google.gson.JsonParser.parseString(start.metadata()).getAsJsonObject();
                   if (metadata.has("capture_schema_seed")) seeds.add(recorded.controlId(record));
-                } else if (record.id() != 0 && !seeds.remove(record.id())) { records++; bytes += record.end() - record.offset(); }
+                  if (start.name().equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) recorders.add(recorded.controlId(record));
+                } else if (record.id() != 0 && !recorders.contains(record.id()) && !seeds.remove(record.id())) { records++; bytes += record.end() - record.offset(); }
               }
             }
           }

@@ -254,7 +254,13 @@ class LiveSourceInspectionTest {
     assertEquals("2", snapshot.getAsJsonObject("sample_counts").get("NT:/x").getAsString());
     for (var signal : after.getAsJsonArray("entries")) {
       var entry = signal.getAsJsonObject();
-      assertEquals(entry.get("name").getAsString().equals("NT:/x") ? 2 : 0, entry.get("sample_count").getAsLong());
+      // The recorder's clock took one reading, at the first value.
+      long expected = switch (entry.get("name").getAsString()) {
+        case "NT:/x" -> 2;
+        case WallClock.PIT_CLOCK_ENTRY -> 1;
+        default -> 0;
+      };
+      assertEquals(expected, entry.get("sample_count").getAsLong(), entry.get("name").getAsString());
     }
     assertEquals(9.0, after.get("start_time_sec").getAsDouble()); assertEquals(10.0, after.get("end_time_sec").getAsDouble());
     assertEquals(14.0, after.getAsJsonObject("clock").get("robot_time_sec").getAsDouble());
@@ -330,7 +336,8 @@ class LiveSourceInspectionTest {
     assertEquals("double", member(result, "rollover.wpilog").getAsJsonObject("snapshot").getAsJsonObject("entries").getAsJsonObject("NT:/x").get("type").getAsString());
     assertEquals("int64", member(result, "capture.wpilog").getAsJsonObject("snapshot").getAsJsonObject("entries").getAsJsonObject("NT:/x").get("type").getAsString());
     assertEquals(5.0, result.get("start_time_sec").getAsDouble()); assertEquals(10.0, result.get("end_time_sec").getAsDouble());
-    assertEquals(0, result.getAsJsonArray("entries").size(), "Conflicting member types cannot become one selectable signal");
+    assertTrue(result.getAsJsonArray("entries").asList().stream().noneMatch(e -> e.getAsJsonObject().get("name").getAsString().equals("NT:/x")),
+        "Conflicting member types cannot become one selectable signal");
     assertEquals("NT:/x", result.getAsJsonArray("entry_conflicts").get(0).getAsJsonObject().get("name").getAsString());
   }
 
@@ -361,12 +368,16 @@ class LiveSourceInspectionTest {
     var entry = new LogFile("rollover.wpilog", LogStore.contentHash(extra), Files.size(extra), "wpilog",
         new Provenance("captured", null, "rollover.wpilog", WHEN, false), true, 5, 5, WHEN, WHEN, "pit_clock", false, null);
     session.getAsJsonArray("files").add(StoreJson.JSON.toJsonTree(entry)); writeManifest();
-    var inventory = inventory(); var signal = inventory.getAsJsonArray("entries").get(0).getAsJsonObject();
+    var inventory = inventory();
+    var signal = inventory.getAsJsonArray("entries").asList().stream().map(e -> e.getAsJsonObject())
+        .filter(e -> e.get("name").getAsString().equals("NT:/x")).findFirst().orElseThrow();
     assertEquals(2, signal.get("sample_count").getAsLong()); assertEquals(2, signal.getAsJsonArray("member_ids").size());
     assertTrue(inventory.getAsJsonArray("entry_conflicts").isEmpty());
     var update = new JsonObject(); update.addProperty("unit", "changed");
     writer.properties(new org.triplehelix.wpilogmcp.nt4.ControlMessage.Properties("/x", null, update));
-    var conflict = inventory(); assertTrue(conflict.getAsJsonArray("entries").isEmpty()); assertEquals(1, conflict.getAsJsonArray("entry_conflicts").size());
+    var conflict = inventory();
+    assertTrue(conflict.getAsJsonArray("entries").asList().stream().noneMatch(e -> e.getAsJsonObject().get("name").getAsString().equals("NT:/x")));
+    assertEquals(1, conflict.getAsJsonArray("entry_conflicts").size());
   }
 
   @Test void aggregateMetadataRefusesAtItsCapAndReleasesAllMemberPrefixes() throws Exception {

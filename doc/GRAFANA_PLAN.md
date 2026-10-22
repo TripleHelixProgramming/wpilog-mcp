@@ -373,7 +373,7 @@ change](#the-change):
    clock's new readings, and each request maps its own prefix exactly as a fresh read would.
    The robot's clock places a log when it has a valid reading, otherwise a recorded server
    clock, `/Daemon/Clock/EpochTimeMicros`, labeled `pit_clock`; an ambiguous robot clock is
-   refused, not replaced. Captures do not record that entry yet; see the first decision below.
+   refused, not replaced. Every capture records that entry, as the first decision below settled.
 
 Built tests: `capture=current` against rows worked by hand, its refusals, and a capture that
 moves to its next file; hand-worked UTC windows at and beside each end, open ends, fractions of
@@ -381,7 +381,10 @@ a microsecond, offsets, buckets and refusals; a differential on every fixture wi
 which each UTC window holds exactly the rows a whole read places in it; a recording's mapping
 against a fresh read of each prefix, through a clock set, a clock stepped an hour and an
 ambiguous clock; and, counted, a ten-second UTC window on a two-hour recording that decodes at
-most 40 of its 1,400 blocks. Twenty-two planted mistakes each fail them. Items 5 and 6, the gate
+most 40 of its 1,400 blocks. Twenty-two planted mistakes each fail them. The recorder's clock is
+checked against readings worked by hand from a moving test clock, for files too small to hold a
+reading beside their last value, against an upstream topic of its name, and end to end: a robot
+with no clock read by a UTC window on its recording and its finished file. Items 5 and 6, the gate
 and the Compose example, are not built.
 
 ### Decisions for the maintainer
@@ -401,14 +404,20 @@ and the Compose example, are not built.
    session's readings go to the store's clock record beside the capture, as the roboRIO's
    uptime pairs do; a copy of the file alone then cannot be placed in UTC for such a robot.
    Proposed: the entry, at value times and not forwarded, as the stage 1 answer described it,
-   with the tests updated.
+   with the tests updated. Answered on 2026-10-22: the entry in each capture, as proposed; it is
+   built, and the replay audit checks every reading falls on a recorded value's time.
 2. **Struct fields on a recording.** For: a live panel of a struct field, such as a pose's
    `x`. Two hours of a 50 Hz pose is 360,000 records, all decoded for every refresh today,
    against the gate's 250 ms and 50 MB for twelve panels. Reading through the shared cursor
    decodes only the window, but the decode problems reported beside a series then describe the
    window's records, not the entry's as a finished file's do. Proposed: keep the entry's decode
    problems, found once per record by the first refresh past it, as the clock's readings are,
-   so the metadata means the same for every log.
+   so the metadata means the same for every log. Asked again with a third way, the maintainer's
+   own question: the writer decomposes each struct record into columns as it records, as finished
+   column files already hold struct fields, at about 1% more writer time for a struct-heavy robot
+   and scratch disk about the size of the struct records while the file is open. Answered on
+   2026-10-22: fields as columns, recorded. That reverses the recording phase's first answer, and
+   the maintainer confirmed it in words the same day; it is built next.
 
 ## Tests
 

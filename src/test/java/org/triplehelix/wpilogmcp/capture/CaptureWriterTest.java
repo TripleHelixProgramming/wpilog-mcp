@@ -101,12 +101,13 @@ class CaptureWriterTest {
     connect(writer, 30_000_000, 4_000_000); writer.disconnected();
     assertEquals(List.of(false, true, false, false), resumes); assertEquals(3, paths.size());
     var reader = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(paths.get(0))));
-    var ids = new ArrayList<Integer>(); var values = new ArrayList<Long>();
+    var ids = new ArrayList<Integer>(); var clocks = new ArrayList<Integer>();
     for (var record : reader) {
-      if (record.isStart()) ids.add(record.getStartData().entry);
-      else if (!record.isControl()) values.add(record.getInteger());
+      if (record.isStart()) (record.getStartData().name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY) ? clocks : ids).add(record.getStartData().entry);
     }
-    assertEquals(List.of(1, 2), ids); assertEquals(List.of(3L, 4L), values);
+    // Each opening declares the recorder's clock at its first reading, so the robot's ids skip it.
+    assertEquals(List.of(1, 3), ids); assertEquals(List.of(2, 4), clocks);
+    assertEquals(List.of(3L, 4L), org.triplehelix.wpilogmcp.fixtures.CaptureRecords.integers(paths.get(0)));
   }
 
   @Test void serviceForwardsPropertiesWithoutReplacingRecorderProvenance() throws Exception {
@@ -157,12 +158,13 @@ class CaptureWriterTest {
     writer.unannounce(new Unannounce("/x", 17)); writer.disconnected();
     assertEquals(2, writer.rejectedValues()); assertEquals(1, closed.get());
     loop.advance(1_000_000); assertEquals(flushedBeforeClose, flushes.get()); assertEquals(1, reports.get());
-    var starts = new ArrayList<String>(); var values = new ArrayList<Long>();
+    var starts = new ArrayList<String>();
     for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(writer.session().path())))) {
-      if (record.isStart()) { starts.add(record.getStartData().name); assertTrue(record.getStartData().metadata.contains("\"period_sec\":1.0")); }
-      else if (!record.isControl()) values.add(record.getInteger());
+      // The recorder's own clock is no topic, so it has no period of its own.
+      if (!record.isStart() || record.getStartData().name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) continue;
+      starts.add(record.getStartData().name); assertTrue(record.getStartData().metadata.contains("\"period_sec\":1.0"));
     }
-    assertEquals(List.of("NT:/x"), starts); assertEquals(List.of(0L, 1_000_000L), values);
+    assertEquals(List.of("NT:/x"), starts); assertEquals(List.of(0L, 1_000_000L), org.triplehelix.wpilogmcp.fixtures.CaptureRecords.integers(writer.session().path()));
   }
 
   @Test void rolloverFinishesAndRedeclaresEntriesWithoutLosingAValue() throws Exception {
@@ -197,11 +199,13 @@ class CaptureWriterTest {
         if (record.isStart()) names.put(record.getStartData().entry, record.getStartData().name);
         else if (record.isFinish()) finishes.add(record.getFinishEntry());
         else if (!record.isControl()) {
+          if (names.get(record.getEntry()).equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) continue;
           if (names.get(record.getEntry()).equals("NT:/x")) { assertEquals(10_000_000 + ints.size(), record.getTimestamp()); ints.add(record.getInteger()); }
           else { assertEquals(10_000_000 + strings.size(), record.getTimestamp()); strings.add(record.getString()); }
         }
       }
-      assertEquals(List.of("NT:/x", "NT:/y"), List.copyOf(names.values()));
+      // A file that took a clock reading declares the recorder's clock too, and finishes it like the rest.
+      assertEquals(List.of("NT:/x", "NT:/y"), names.values().stream().filter(name -> !name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)).toList());
       assertEquals(List.copyOf(names.keySet()), finishes);
     }
     assertEquals(java.util.stream.LongStream.range(0, 100).boxed().toList(), ints);
@@ -221,8 +225,15 @@ class CaptureWriterTest {
         (path, id, resume) -> new WpilogOutput(path, id, resume) {
           final boolean fail = opens.getAndIncrement() == 0;
           int records;
+          /** The recorder's clock entry: the planted failure counts the robot's values alone. */
+          int clock = -1;
+          @Override public int start(String name, String type, String metadata, long timestampUs) throws java.io.IOException {
+            int started = super.start(name, type, metadata, timestampUs);
+            if (name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) clock = started;
+            return started;
+          }
           @Override public Written append(int entry, long time, byte[] payload) throws java.io.IOException {
-            if (fail && records++ == 2) throw new java.io.IOException("planted disk full");
+            if (fail && entry != clock && records++ == 2) throw new java.io.IOException("planted disk full");
             return super.append(entry, time, payload);
           }
         })) {
@@ -241,7 +252,7 @@ class CaptureWriterTest {
     }
     assertEquals(2, closes.get());
     var first = new ArrayList<Long>();
-    for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(paths.get(0))))) if (!record.isControl()) first.add(record.getInteger());
+    first.addAll(org.triplehelix.wpilogmcp.fixtures.CaptureRecords.integers(paths.get(0)));
     assertEquals(List.of(0L, 1L), first);
   }
 

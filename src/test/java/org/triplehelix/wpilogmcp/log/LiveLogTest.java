@@ -99,7 +99,8 @@ class LiveLogTest {
           var result = new JsonObject();
           result.addProperty("status", "ok"); result.addProperty("success", true);
           result.addProperty("count", log.sampleCount("NT:/x"));
-          result.addProperty("entries", log.entries().size());
+          // The robot's entries: the recorder's own clock is declared beside them at the first value.
+          result.addProperty("entries", log.entries().keySet().stream().filter(name -> !name.equals(WallClock.PIT_CLOCK_ENTRY)).count());
           result.addProperty("sum", log.values().get("NT:/x").stream().mapToLong(v -> ((Number) v.value()).longValue()).sum());
           var inputs = new JsonObject(); inputs.addProperty("role", "NT:/x"); result.add("inputs", inputs);
           return result;
@@ -298,7 +299,8 @@ class LiveLogTest {
       writer.value(sameType, new ValueFrame(3, 90_000_000_000L, 2, 3L), 0);
       String warning;
       try (var use = manager.acquire(path.toString())) {
-        assertEquals(1, use.log().entryCount()); assertEquals(1, use.log().entries().get("NT:/x").id());
+        assertEquals(1, use.log().entries().keySet().stream().filter(name -> !name.equals(WallClock.PIT_CLOCK_ENTRY)).count());
+        assertEquals(1, use.log().entries().get("NT:/x").id());
         assertEquals(2, use.log().sampleCount("NT:/x"));
         assertEquals(List.of(2L, 1L), use.log().values().get("NT:/x").stream().map(TimestampedValue::value).toList(),
             "Decoded views are chronological; the negative timestamp precedes the positive one");

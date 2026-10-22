@@ -40,8 +40,15 @@ public final class CaptureRecoveryProcess {
           path, 0.001, CapturePolicy.ALL, 0);
       var service = new CaptureService(config, manager, CaptureRecoveryTest.WALL, loop,
           (file, id, resume) -> new WpilogOutput(file, id, resume) {
+            /** The recorder's clock entry, whose readings are not the robot's values this waits for. */
+            private int clock = -1;
+            @Override public int start(String name, String type, String metadata, long timestampUs) throws java.io.IOException {
+              int started = super.start(name, type, metadata, timestampUs);
+              if (name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) clock = started;
+              return started;
+            }
             @Override public Written append(int entry, long timestamp, byte[] payload) throws java.io.IOException {
-              var written = super.append(entry, timestamp, payload); received.incrementAndGet(); return written;
+              var written = super.append(entry, timestamp, payload); if (entry != clock) received.incrementAndGet(); return written;
             }
           }, Duration.ZERO);
       service.start(); gateway.value("/x", 10_000_000, 2, 1L).join(); loop.until(() -> received.get() == 1);

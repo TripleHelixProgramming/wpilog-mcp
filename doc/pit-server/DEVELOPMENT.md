@@ -620,7 +620,13 @@ strings with a zero hot window while numbers keep no hot values, mapping retirem
 reader, resume after eviction, and rename after release. The index's columns are checked on their
 own and against an independent read of the same bytes at sampled publication boundaries, in a file
 and in the heap; ten million numbers leave the heap within 16 MB of where it started, and a
-ten-second window on two hours decodes only the blocks that hold it. The store rename tests now keep a live mapping beside the writer too. These run in the
+ten-second window on two hours decodes only the blocks that hold it. The recorder's clock is checked
+against readings worked out by hand from a test clock that moves with the scheduler, including a
+synchronization handled after its reply arrived; in files too small to hold a reading beside their
+last value, none of which may start with a reading; against an upstream topic of its name; and end
+to end through a UTC window on a recording and on its finished file. The replay audit checks every
+reading of every replayed capture falls on a recorded value's time, a second or more after the one
+before; tests that pin a capture's exact records read the robot's records apart from it. The store rename tests now keep a live mapping beside the writer too. These run in the
 normal Linux and Windows suite.
 
 A sparse WPILOG beyond the mapping limit is refused by import without moving or placing its bytes;

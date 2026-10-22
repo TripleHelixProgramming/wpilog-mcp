@@ -50,6 +50,8 @@ class LiveCaptureConformanceTest {
           try (var use = manager.acquire(capture.toString())) {
             assertInstanceOf(LiveLog.View.class, use.log());
             for (var entry : use.log().entries().values()) {
+              // The recorder's own clock is no captured topic, so it carries no injected metadata.
+              if (entry.name().equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) continue;
               assertTrue(entry.metadata().contains("live_metadata_check"), entry.name());
             }
             for (var tool : tools) for (var variant : ToolArguments.variants(tool, fixture, use.log(), fixtures, export)) {

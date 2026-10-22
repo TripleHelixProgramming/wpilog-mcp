@@ -781,7 +781,7 @@ the data routes uses it.
    capture whose robot publishes no clock is placed by the clock of the server that recorded it,
    as a measurement the capture records, and the basis names it `pit_clock`. Since 2026-10-22 the
    data endpoint reads such a recorded clock, `/Daemon/Clock/EpochTimeMicros`, when the robot's
-   clock has no valid reading; captures do not record it yet
+   clock has no valid reading, and every capture records it
    ([stage 1, built so far](GRAFANA_PLAN.md#stage-1-built-so-far)).
 4. Arrow gains a nullable UTC column beside `timestamp`, and CSV an ISO 8601 column beside
    `timestamp_sec`; the existing columns stay. Where JSON carries the value (`/read/v1`'s

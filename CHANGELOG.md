@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every capture records its server's wall clock as `/Daemon/Clock/EpochTimeMicros`: after each
+  NetworkTables time synchronization, the next value logged takes a reading at its own robot
+  time, so a robot that publishes no wall clock can still be placed in UTC, live and in its
+  finished file, with `utc_basis.clock: pit_clock`. Before, such a capture refused every UTC
+  window with "No wall-clock entry". There are about 1,200 readings an hour; they never widen a
+  file's time range, are never forwarded to gateway clients and never make a file roll over, and
+  an upstream topic of the same name is not recorded.
 - `/data/entries` takes `capture=current` in place of `path`: the capture this server is
   recording when the request arrives, so a dashboard panel follows it across a rollover or a
   new session without knowing its file. The response names the file it read; with nothing
@@ -654,6 +661,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The recorder's clock is checked against readings worked out by hand from a moving test clock,
+  in files too small to hold a reading beside their last value, against an upstream topic of its
+  name, and end to end through a UTC window on a recording and on its finished file; the replay
+  audit checks every reading of every replayed capture. Tests that pin a capture's exact entries,
+  records or bytes now count the robot's records apart from the recorder's clock.
 - UTC windows are checked against rows worked out by hand, at and beside each end, with open
   ends, fractions of a microsecond, offsets, buckets and refusals, and by a differential on every
   fixture with a clock in which each window holds exactly the rows a whole read places in it.
@@ -808,10 +820,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- `doc/GRAFANA_PLAN.md` records what stage 1 has built and two decisions it leaves to the
-  maintainer: whether a capture records its server's clock as an entry, which building it showed
-  changes every capture file and about 70 tests, and whether struct fields on a recording keep
-  the whole entry's decode problems. `doc/ARCHITECTURE_HARDENING_PLAN.md` item 6 notes the
+- `doc/GRAFANA_PLAN.md` records what stage 1 has built and the maintainer's two answers: every
+  capture records its server's clock as an entry, now built, and struct fields on a recording
+  become columns as the writer records them, which reverses the recording phase's first answer
+  and which the maintainer confirmed in words. `doc/ARCHITECTURE_HARDENING_PLAN.md` item 6 notes the
   maintainer's relaxation for captures and what the data endpoint reads today.
 - `doc/COLUMN_CACHE_PLAN.md` proposes the recording phase's design: the open capture's columns
   written as it records, to a scratch file in the disk cache that is never forced to disk, so

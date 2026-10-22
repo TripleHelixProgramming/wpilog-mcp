@@ -67,7 +67,8 @@ class CaptureLowDiskTest {
     for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(file)))) {
       if (record.isStart()) {
         var entry = record.getStartData();
-        if (entry.type.equals("int64")) names.put(entry.entry, entry.name);
+        // The recorder's own clock is not one of the values the robot sent.
+        if (entry.type.equals("int64") && !entry.name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) names.put(entry.entry, entry.name);
       } else if (!record.isControl() && names.containsKey(record.getEntry())) {
         values.computeIfAbsent(names.get(record.getEntry()), ignored -> new ArrayList<>()).add(record.getInteger());
       }

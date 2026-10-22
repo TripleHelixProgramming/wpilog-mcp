@@ -406,6 +406,15 @@ with fresh entry ids and a new live index. Retained schema definitions seed the 
 marked in entry metadata and timestamped at the rollover's server time, so a file can decode its own
 structs without inheriting the boot-time schema's range. Tools continue to read one file per call.
 
+The writer records its own wall clock, `/Daemon/Clock/EpochTimeMicros`, so a capture whose robot
+publishes no clock can still be placed in UTC. A time synchronization only makes a reading
+pending; the next value written takes it at its own robot time, carried from the server's clock
+when the reply arrived. Read at the synchronization's own robot time, a reading after the robot's
+last value would widen the file's time range. Readings stay at least a second apart, so the
+synchronizations' jitter never makes the clock run backwards. The entry is not provider context: it
+is never forwarded to gateway clients, it is declared in a file only at its first reading, and a
+reading that does not fit is left for the next file rather than rolling this one over.
+
 A writer IOException closes recording with its reason and keeps the client connected. Only another
 robot clock permits recording again. Record writes roll back an incomplete tail when possible, and
 failed rollback forbids appending finishes. Session `end_reason` preserves the reason without

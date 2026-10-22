@@ -40,8 +40,15 @@ class CaptureShutdownTest {
           root, 0.001, CapturePolicy.ALL, 0, 256);
       var service = new CaptureService(config, manager, Clock.systemUTC(), loop,
           (path, id, resume) -> new WpilogOutput(path, id, resume) {
+          /** The recorder's clock entry: the counts here are the robot's values. */
+          int clock = -1;
+          @Override public int start(String name, String type, String metadata, long timestampUs) throws java.io.IOException {
+            int started = super.start(name, type, metadata, timestampUs);
+            if (name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) clock = started;
+            return started;
+          }
             @Override public Written append(int entry, long timestamp, byte[] payload) throws java.io.IOException {
-              var written = super.append(entry, timestamp, payload); values.incrementAndGet(); return written;
+              var written = super.append(entry, timestamp, payload); if (entry != clock) values.incrementAndGet(); return written;
             }
             @Override public void close() throws java.io.IOException { try { super.close(); } finally { fileClosed.incrementAndGet(); } }
           });

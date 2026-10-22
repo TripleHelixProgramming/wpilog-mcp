@@ -180,8 +180,7 @@ class CaptureBlockedLoggingTest {
       var values = new ArrayList<Integer>();
       var times = new ArrayList<Long>();
       for (var path : new LinkedHashSet<>(opened)) {
-        for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(path)))) {
-          if (record.isControl()) continue;
+        for (var record : org.triplehelix.wpilogmcp.fixtures.CaptureRecords.robot(path)) {
           byte[] payload = record.getRaw();
           assertEquals(200, payload.length);
           int expected = values.size() + 1;

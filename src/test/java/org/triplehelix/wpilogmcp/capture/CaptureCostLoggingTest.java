@@ -48,8 +48,10 @@ class CaptureCostLoggingTest {
     var summaries = lines.stream().filter(line -> line.contains("Capture cost:")).toList();
     assertEquals(2, summaries.size(), "Every five-minute report needs an aggregate");
     // Payloads are 1 through 1,000 ASCII bytes: 500,500 bytes. The WPILOG headers have
-    // four bytes for entries/payloads 1..255 and six for 256..1,000: another 5,490 bytes.
-    String expected = "topics=1000, records=1000, bytes=505990, dropped=500, thinned=333";
+    // four bytes for entries/payloads 1..255 and six for 256..1,000: another 5,490 bytes. The
+    // recorder's clock entry takes the second id at the first value, so topic 255 has id 256 and
+    // one more header byte: 505,991.
+    String expected = "topics=1000, records=1000, bytes=505991, dropped=500, thinned=333";
     String top = "top_by_bytes=[/topic-1000=1006, /topic-0999=1005, /topic-0998=1004, "
         + "/topic-0997=1003, /topic-0996=1002]";
     for (var summary : summaries) {

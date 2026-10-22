@@ -1298,9 +1298,10 @@ values `true` and `false` are accepted, once; omission or `utc=false` preserves 
 columns and metadata. The clock comes from the log's selected `systemTime` or supported
 `EpochTimeMicros` entry, including its existing `NT:` and AdvantageKit aliases. The existing
 clock-set policy retains plausible readings after the last clock jump. When that clock has no
-valid reading, or the log has none, a `/Daemon/Clock/EpochTimeMicros` entry, where the log holds
-one, places the samples instead: the wall clock of the server that recorded the log. A robot
-clock that is ambiguous is refused, not replaced. UTC interpolates epoch microseconds
+valid reading, or the log has none, a capture's `/Daemon/Clock/EpochTimeMicros` entry places the
+samples instead: the wall clock of the server that recorded it, read at each time synchronization
+([the server's clock](pit-server/STANDALONE.md#sessions-and-capture-files)). A robot clock that is ambiguous is
+refused, not replaced. UTC interpolates epoch microseconds
 between the readings, keeps the last reading's offset afterward, and is null before the first
 valid reading. The final epoch is rounded once to the nearest microsecond, ties to the even
 epoch microsecond. A filename, a file's modification time or the server's clock when it answers

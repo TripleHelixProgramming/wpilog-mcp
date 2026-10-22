@@ -56,8 +56,11 @@ class CaptureAdmissionTest {
       abandoned.add(reason); return CompletableFuture.completedFuture(null);
     }
     public void opened(CaptureWriter.Session session, boolean resumed) { opened++; }
+    /** The robot's values: the recorder's own clock readings are not what admission drains. */
     public void value(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry,
-        ValueFrame frame, WpilogOutput.Written written) { values++; }
+        ValueFrame frame, WpilogOutput.Written written) {
+      if (!entry.name().equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) values++;
+    }
     public void closed(CaptureWriter.Session session) { ends.add(session.endedAt()); closedProviders.add(session.statistics().providers()); }
   }
   private CaptureWriter writer(Wall wall, ManualScheduler loop, Placement placement, CaptureWriter.AdmissionLimits limits) {
@@ -110,7 +113,7 @@ class CaptureAdmissionTest {
     assertEquals(List.of(1), countAtMarker, "First slice is announce then first value; remainder yields to ready work");
     assertEquals(5, placement.values); assertFalse(writer.session().open());
     var values = new ArrayList<Long>();
-    for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(placement.path)))) if (!record.isControl()) values.add(record.getInteger());
+    for (var record : org.triplehelix.wpilogmcp.fixtures.CaptureRecords.robot(placement.path)) values.add(record.getInteger());
     assertEquals(List.of(0L, 1L, 2L, 3L, 4L), values);
   }
   @Test void eventOverflowIsExplicitAndLateCompletionCannotOpenAHealthySession() {
@@ -177,7 +180,7 @@ class CaptureAdmissionTest {
     first.complete(files.get(0)); loop.drain();
     for (int n = 0; n < 2; n++) {
       var values = new ArrayList<Long>();
-      for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(files.get(n))))) if (!record.isControl()) values.add(record.getInteger());
+      for (var record : org.triplehelix.wpilogmcp.fixtures.CaptureRecords.robot(files.get(n))) values.add(record.getInteger());
       assertEquals(List.of(21L + n), values);
     }
     assertFalse(writer.session().open()); writer.admissionCompletion().join();
@@ -206,7 +209,7 @@ class CaptureAdmissionTest {
     first.complete(old); loop.drain();
     assertEquals(1, retired.size()); assertFalse(Files.exists(old)); assertTrue(Files.exists(fresh));
     var values = new ArrayList<Long>();
-    for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(fresh)))) if (!record.isControl()) values.add(record.getInteger());
+    for (var record : org.triplehelix.wpilogmcp.fixtures.CaptureRecords.robot(fresh)) values.add(record.getInteger());
     assertEquals(List.of(42L), values); assertFalse(writer.session().open());
   }
 

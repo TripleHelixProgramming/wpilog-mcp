@@ -97,9 +97,8 @@ class CaptureStartTest {
         assertNotNull(captured, "The start path must attach the capture listener when the robot appears");
         var stop = run("stop", "pit"); assertTrue(stop.waitFor(20, TimeUnit.SECONDS)); assertEquals(0, stop.exitValue());
       }
-      var records = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(captured)));
       var values = new ArrayList<Long>();
-      for (var record : records) if (!record.isControl()) { assertEquals(10_000_000, record.getTimestamp()); values.add(record.getInteger()); }
+      for (var record : org.triplehelix.wpilogmcp.fixtures.CaptureRecords.robot(captured)) { assertEquals(10_000_000, record.getTimestamp()); values.add(record.getInteger()); }
       assertEquals(List.of(42L), values);
       var manifest = JsonParser.parseString(Files.readString(captured.getParent().resolve("session.json"))).getAsJsonObject();
       assertTrue(manifest.get("open_capture").isJsonNull()); assertEquals(Files.size(captured), manifest.getAsJsonArray("files").get(0).getAsJsonObject().get("size_bytes").getAsLong());

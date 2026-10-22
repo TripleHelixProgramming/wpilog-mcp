@@ -469,6 +469,16 @@ changes, and they do not extend the file's time range back to the boot-time sche
 declarations, schemas, one value and the finishes cannot fit the configured bound, recording
 stops with an explained error.
 
+**The server's clock.** Each capture file records this server's wall clock as
+`/Daemon/Clock/EpochTimeMicros`, epoch microseconds with the metadata `source: time_sync` and
+`clock: recorder`. After each NetworkTables time synchronization, every three seconds, the next
+value logged takes a reading at its own robot time, carried from the server's clock when the
+synchronization's reply arrived, so a reading runs late by that reply's one-way network delay,
+a few milliseconds on a pit network. Readings are at least a second apart and never widen the
+file's time range. A file declares the entry at its first reading, and a reading that would not
+fit before a rollover waits for the next file. When the robot publishes no wall clock of its own,
+the data endpoint places the capture by this one, with `utc_basis.clock: pit_clock`.
+
 **Fidelity.** Excluded or thinned topics are a deliberate reduction in capture fidelity; thinning
 is recorded in the entry metadata. Every five minutes, one INFO topic-cost summary reports the
 topic count, cumulative recorded records and bytes, dropped and thinned counts, and up to five
@@ -727,7 +737,10 @@ The `wpilog_context` topic property has `version: 1` and `metadata`, including t
 and available clock or receipt facts. A remote wpilog-mcp recorder preserves the canonical `/Daemon/` entry name and
 metadata, so the clock and provider conventions remain usable. An ordinary topic with a similar
 name stays ordinary NT data; the explicit property is required. If an upstream topic uses the
-same name, upstream owns it and the local provider cannot replace its value or type.
+same name, upstream owns it and the local provider cannot replace its value or type. The
+capture's own clock is the exception: `/Daemon/Clock/EpochTimeMicros` is not published, since it
+measures the recording server alone, and a recorder that receives an upstream topic of that name
+does not record it, keeping its own.
 
 Newly committed pulled text is published as JSON on `/Daemon/System/<source>`, where `source`
 is `kernel`, `syslog`, `program` or `jvm_crash`. Each value includes `text`, `remote_path`,

@@ -64,8 +64,7 @@ class CaptureSyncAdmissionTest {
         placement.completion().get(10, TimeUnit.SECONDS);
         var values = new ArrayList<Long>();
         var times = new ArrayList<Long>();
-        for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(writer.session().path())))) {
-          if (record.isControl()) continue;
+        for (var record : org.triplehelix.wpilogmcp.fixtures.CaptureRecords.robot(writer.session().path())) {
           values.add(record.getInteger());
           times.add(record.getTimestamp());
         }

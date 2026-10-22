@@ -80,8 +80,15 @@ class CaptureFailureTest {
         new CaptureIndex(placement, manager, 0), 4096, (path, id, resume) -> new WpilogOutput(path, id, resume) {
           final boolean fail = opened.getAndIncrement() == 0;
           int records;
+          /** The recorder's clock entry: the counts here are the robot's values. */
+          int clock = -1;
+          @Override public int start(String name, String type, String metadata, long timestampUs) throws IOException {
+            int started = super.start(name, type, metadata, timestampUs);
+            if (name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) clock = started;
+            return started;
+          }
           @Override public Written append(int entry, long timestamp, byte[] payload) throws IOException {
-            if (fail && records++ == 2) throw new IOException("planted disk full");
+            if (fail && entry != clock && records++ == 2) throw new IOException("planted disk full");
             return super.append(entry, timestamp, payload);
           }
         });

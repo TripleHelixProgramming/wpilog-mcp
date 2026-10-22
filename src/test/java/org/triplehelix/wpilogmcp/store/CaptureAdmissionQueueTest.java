@@ -59,8 +59,8 @@ class CaptureAdmissionQueueTest {
         loop.until(() -> writer.session() != null && !writer.session().open());
         placement.completion().get(10, TimeUnit.SECONDS);
         var values = new java.util.ArrayList<Long>();
-        for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(writer.session().path()))))
-          if (!record.isControl()) { assertEquals(1_000_100, record.getTimestamp()); values.add(record.getInteger()); }
+        for (var record : org.triplehelix.wpilogmcp.fixtures.CaptureRecords.robot(writer.session().path()))
+          { assertEquals(1_000_100, record.getTimestamp()); values.add(record.getInteger()); }
         assertEquals(List.of(17L), values);
         assertTrue(waitMs < 250, "First announce must not wait behind the 750 ms import: " + waitMs);
       }

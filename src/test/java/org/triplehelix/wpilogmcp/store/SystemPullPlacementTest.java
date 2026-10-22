@@ -146,8 +146,7 @@ class SystemPullPlacementTest {
         writer.disconnected(); loop.drain(); placement.completion().get(5, TimeUnit.SECONDS);
         var values = new ArrayList<Long>();
         var times = new ArrayList<Long>();
-        for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(writer.session().path())))) {
-          if (record.isControl()) continue;
+        for (var record : org.triplehelix.wpilogmcp.fixtures.CaptureRecords.robot(writer.session().path())) {
           times.add(record.getTimestamp()); values.add(record.getInteger());
         }
         assertEquals(List.of(17L, 18L, 19L), values);

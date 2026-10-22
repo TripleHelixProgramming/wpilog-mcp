@@ -59,6 +59,25 @@ final class ReplayAudit {
 
   private void check(boolean matches, String category) { if (!matches) failures.merge(category, 1L, Long::sum); }
 
+  /**
+   * The recorder's own clock, which no source holds: each reading at the time of a value the
+   * file records, so it never widens the file's range, at least a second after the reading
+   * before, and a plausible epoch.
+   */
+  private void checkClock(ReplaySource log, ReplaySource.Entry clock, java.util.Set<Long> times) {
+    check(clock.type.equals("int64"), "clock_type");
+    long previous = Long.MIN_VALUE;
+    for (int i = 0; i < clock.count; i++) {
+      var record = log.reader.at(clock.offset(i));
+      check(times.contains(record.timestampUs()), "clock_time");
+      check(previous == Long.MIN_VALUE || record.timestampUs() - previous >= 1_000_000, "clock_spacing");
+      byte[] payload = log.reader.payload(record);
+      check(payload.length == 8 && org.triplehelix.wpilogmcp.log.WallClock.plausible(
+          java.nio.ByteBuffer.wrap(payload).order(java.nio.ByteOrder.LITTLE_ENDIAN).getLong()), "clock_value");
+      previous = record.timestampUs();
+    }
+  }
+
   Map<String, Object> verify(ReplaySource source, ReplayCapture capture, long shiftUs) throws Exception {
     return verify(source, capture, shiftUs, capture.files, capture.writer.session());
   }
@@ -86,8 +105,14 @@ final class ReplayAudit {
           var range = listing.getAsJsonObject("time_range_sec");
           check(range.get("start").getAsDouble() == log.minUs / 1e6 && range.get("end").getAsDouble() == log.maxUs / 1e6, "http_range");
         }
+        var times = new java.util.HashSet<Long>();
+        for (var entry : log.entries.values()) {
+          if (entry.name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) continue;
+          for (int i = 0; i < entry.count; i++) times.add(log.reader.at(entry.offset(i)).timestampUs());
+        }
         for (var entry : log.entries.values()) {
           if (entry.name.equals("/Daemon/Robot/Identity")) continue;
+          if (entry.name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY)) { checkClock(log, entry, times); continue; }
           costBytes.putIfAbsent(entry.name.substring(3), 0L);
           costRecords.putIfAbsent(entry.name.substring(3), 0L);
           var metadata = JsonParser.parseString(entry.metadata).getAsJsonObject();
