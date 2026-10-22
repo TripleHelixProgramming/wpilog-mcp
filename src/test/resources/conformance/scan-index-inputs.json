@@ -3,7 +3,7 @@
   "recipe_version": 1,
   "reviewed_at": "2026-10-22",
   "decision": "cache_unaffected",
-  "reason": "Format 2 and recipe 1 are unchanged. The disk cache gains the open capture's scratch file of columns, named by the capture's identity, counted toward the size limit but never evicted, and deleted by the startup sweep when it is older than the process; the log manager hands a capture its placement and discards a capture's index at shutdown. A scratch file is never read by another process or kept across a restart, so it carries no version. How a log is scanned, how an index is encoded, read and trusted, and which files are eligible are untouched, so indexes already written give the same answers.",
+  "reason": "Format 2 and recipe 1 are unchanged. A loaded log now keeps its UTC mapping once it has read it. How a log is scanned, how an index is encoded, read and trusted, and which files are eligible are untouched, so indexes already written give the same answers.",
   "previous_format_version": 2,
   "previous_recipe_version": 1,
   "source_sha256": {
@@ -12,7 +12,7 @@
     "org/triplehelix/wpilogmcp/cache/ScanIndexSerializer.java": "6a01be30d6a0ecc330d7637bdb50bcc45fe96619173dcceef93fd36867e82787",
     "org/triplehelix/wpilogmcp/log/EntryInfo.java": "c0c5958be7e2b1df9066349e8080f701a91d66235dc52cb06e37d42dd10edd3c",
     "org/triplehelix/wpilogmcp/log/FileSnapshot.java": "394586e261df0b8ead605f67ff09334b4d439c114ae526e7de332df0c65bc68b",
-    "org/triplehelix/wpilogmcp/log/LazyParsedLog.java": "a9b75ab538ca52e4d7fc18f1d33ac4b201c5e3a54ff39881abc75e3b2664cce4",
+    "org/triplehelix/wpilogmcp/log/LazyParsedLog.java": "1834b8cd05ec020579db9dfd7d2451ee0b9092ba840934af8a3983f632aa25cc",
     "org/triplehelix/wpilogmcp/log/LogBytes.java": "7132f203db4e70b6bbdff119acd960432944d87ec4fddfcc3da24a9580428a75",
     "org/triplehelix/wpilogmcp/log/LogManager.java": "646d615c7be28f28afdb610df9f81e5b6a39d6f204189a00f24232606c16db89",
     "org/triplehelix/wpilogmcp/log/LogReader.java": "86ac1517f2acbe03ef880b44af7972fd258214b2b7c19c59ee3ff1fa317d7adc",

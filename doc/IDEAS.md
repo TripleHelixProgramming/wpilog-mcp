@@ -20,7 +20,8 @@ down. Its three runs built all seven items, the cross-session contract as `compa
 
 [Recorded history in Grafana](GRAFANA_PLAN.md) plans plotting stored sessions in the Grafana
 that shows the live metrics, on server installs, after live panels on the open capture
-(section 9.5 below). Its decisions are recorded; nothing in it is built yet.
+(section 9.5 below). Its decisions are recorded; stage 1's server reads, live and by UTC,
+are built, and its gate and dashboard are next.
 [The column file plan](COLUMN_CACHE_PLAN.md) proposes keeping each log's numeric entries as
 columns beside it, so reads at any zoom and across sessions skip the per-sample cost. Its file
 format, writer and reader are built, the server builds the files in the background, the

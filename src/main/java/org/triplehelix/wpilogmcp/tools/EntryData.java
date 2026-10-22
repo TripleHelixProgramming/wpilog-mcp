@@ -65,9 +65,11 @@ public final class EntryData {
 
   /**
    * Prepared presentation values and whether Arrow must represent them as floating point, with
-   * their numbers by position when the series has them.
+   * their numbers by position when the series has them, and the window's samples as recorded,
+   * before any angle is unwrapped, which its sampling class is scored on.
    */
-  public record Prepared(List<TimestampedValue> values, boolean angle, NumericSamples samples) {}
+  public record Prepared(List<TimestampedValue> values, boolean angle, NumericSamples samples,
+      List<TimestampedValue> recordedValues, NumericSamples recordedSamples) {}
 
   /** Invalid explicit units are refused even when the selected interval contains no records. */
   public static void validateAngle(String angle) {
@@ -88,18 +90,41 @@ public final class EntryData {
    */
   public static Prepared prepare(LogData log, Series series, Double start, Double end,
       String angle) {
+    var window = new org.triplehelix.wpilogmcp.read.SecondsWindow(start, end);
+    return prepare(log, series, angle, samples -> new int[] {window.from(samples), window.to(samples)},
+        values -> series.inWindow(start, end));
+  }
+
+  /**
+   * The same presentation over an inclusive window of log microseconds, which is what a UTC
+   * window becomes: the log's clock never runs backwards, so the samples whose UTC lies in the
+   * UTC window are exactly the samples of this one.
+   */
+  public static Prepared prepareMicros(LogData log, Series series, long startUs, long endUs, String angle) {
+    return prepare(log, series, angle, samples -> new int[] {
+          org.triplehelix.wpilogmcp.read.TimeWindows.bound(samples.size(), i -> samples.timeUs(i) < startUs),
+          org.triplehelix.wpilogmcp.read.TimeWindows.bound(samples.size(), i -> samples.timeUs(i) <= endUs)},
+        values -> values.stream().filter(tv -> tv.timestampUs() >= startUs && tv.timestampUs() <= endUs).toList());
+  }
+
+  private static Prepared prepare(LogData log, Series series, String angle,
+      java.util.function.Function<NumericSamples, int[]> range,
+      java.util.function.UnaryOperator<List<TimestampedValue>> inWindow) {
     var explicit = angleArgument(angle);
     boolean numeric = series.numeric() || "boolean".equals(series.type());
     if (explicit != null && !numeric)
       throw new IllegalArgumentException("Entry " + series.name() + " is " + series.type()
           + "; angle requires a numeric scalar or selected numeric field");
     boolean wildcard = series.field() != null && FieldPath.parse(series.field()).hasWildcard();
-    if (series.samples() != null) return prepare(log, series, start, end, explicit, wildcard);
-    var values = series.inWindow(start, end);
-    if (wildcard) return new Prepared(values, false, null);
+    if (series.samples() != null) {
+      int[] window = range.apply(series.samples());
+      return prepare(log, series, window[0], window[1], explicit, wildcard);
+    }
+    var values = inWindow.apply(series.values());
+    if (wildcard) return new Prepared(values, false, null, values, null);
     double period = explicit == null
         ? VisualizationBindings.anglePeriod(log, series.entry(), series.field()) : explicit.period;
-    if (period == 0) return new Prepared(values, false, null);
+    if (period == 0) return new Prepared(values, false, null, values, null);
     var unwrapper = new AngleUnwrapper(period);
     var prepared = new ArrayList<TimestampedValue>(values.size());
     for (var value : values) {
@@ -108,29 +133,27 @@ public final class EntryData {
         throw new IllegalArgumentException("Entry " + series.name() + " has a non-numeric angle value");
       prepared.add(value.withValue(unwrapper.apply(number)));
     }
-    return new Prepared(prepared, true, null);
+    return new Prepared(prepared, true, null, values, null);
   }
 
   /**
    * The same presentation by position, for a series in time order: the window is found by
    * search, as the filter above keeps it, and an angle is unwrapped into one array of numbers.
    */
-  private static Prepared prepare(LogData log, Series series, Double start, Double end,
+  private static Prepared prepare(LogData log, Series series, int from, int to,
       NumericSignal.AngleUnit explicit, boolean wildcard) {
     var samples = series.samples();
-    var window = new org.triplehelix.wpilogmcp.read.SecondsWindow(start, end);
-    int from = window.from(samples), to = window.to(samples);
     var values = series.values().subList(from, to);
     var windowed = NumericSamples.range(samples, from, to);
-    if (wildcard) return new Prepared(values, false, windowed);
+    if (wildcard) return new Prepared(values, false, windowed, values, windowed);
     double period = explicit == null
         ? VisualizationBindings.anglePeriod(log, series.entry(), series.field()) : explicit.period;
-    if (period == 0) return new Prepared(values, false, windowed);
+    if (period == 0) return new Prepared(values, false, windowed, values, windowed);
     var unwrapper = new AngleUnwrapper(period);
     var numbers = new double[windowed.size()];
     for (int i = 0; i < numbers.length; i++) numbers[i] = unwrapper.apply(windowed.number(i));
     var unwrapped = NumericSamples.withNumbers(windowed, numbers);
-    return new Prepared(NumericSamples.asValues(unwrapped), true, unwrapped);
+    return new Prepared(NumericSamples.asValues(unwrapped), true, unwrapped, values, windowed);
   }
 
   /**
@@ -270,10 +293,14 @@ public final class EntryData {
     return DataQuality.fromValues(values).sampling().name().toLowerCase(java.util.Locale.ROOT);
   }
 
-  public static String sampling(LogData log, Series series) {
-    var quality = series.samples() != null
-        ? DataQuality.fromSamples(log, series.entry(), List.of(series.samples()))
-        : DataQuality.fromSegments(log, series.entry(), List.of(series.values()));
+  /**
+   * The sampling class of the window's samples as recorded, as data quality is scored on a
+   * window everywhere else; a refresh then costs what its window holds, not the whole entry.
+   */
+  public static String sampling(LogData log, Series series, Prepared window) {
+    var quality = window.recordedSamples() != null
+        ? DataQuality.fromSamples(log, series.entry(), List.of(window.recordedSamples()))
+        : DataQuality.fromSegments(log, series.entry(), List.of(window.recordedValues()));
     return quality.sampling().name().toLowerCase(java.util.Locale.ROOT);
   }
 

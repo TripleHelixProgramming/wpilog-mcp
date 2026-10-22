@@ -1,7 +1,8 @@
 # Recorded History in Grafana
 
 Status: proposed on 2026-10-21 at the maintainer's request, and its [decisions](#decisions)
-answered the same day. Nothing in it is implemented. Two answers differ from the proposal: a
+answered the same day. Stage 1's server reads were [built](#stage-1-built-so-far) on
+2026-10-22; its gate and dashboard are not. Two answers differ from the proposal: a
 dashboard starts from a robot and a time range, and live panels on the open capture come first.
 The designs those answers need are agreed before they are built. The first stage's design is
 [proposed below](#stage-1-design-the-open-capture); the maintainer answered its six questions
@@ -349,6 +350,65 @@ stages 2 and 3.
 - The UTC mapping extended reading by reading equals one built fresh from the same prefix, and
   an ambiguous clock is refused in both.
 - The gate, opt-in like the soak test, fails on today's code at two hours.
+
+## Stage 1: built so far
+
+On 2026-10-22, after the column plan's recording phase, the server side of [the
+change](#the-change):
+
+1. **`capture=current`** answers from the capture recording when each request arrives, names
+   the file it read in `inputs.log`, and follows the capture to its next file. With nothing
+   recording it is refused with `404`, the reason and the last session.
+2. **`start_utc` and `end_utc`** choose the window by measured UTC, ends included, imply
+   `utc=true`, and are refused beside `start_time` or `end_time`. The UTC window becomes one
+   window of the log's microseconds, found by search over the mapping, so the rows are exactly
+   those whose `timestamp_utc` lies in it. A log that cannot be placed is refused with `422`
+   and the reason; each entry's `utc_basis` counts its samples before the clock's first reading.
+3. **Windows cost what they hold, for numbers.** A number is read from its column by search,
+   in a capture as in a finished file. The sampling class is scored over the window, the sample
+   count comes from the index, and a recording finds that a number whose column holds every
+   record has no decode problem without decoding it. Struct fields on a recording still decode
+   the whole entry for each request; see the second decision below.
+4. **The UTC mapping is kept.** A loaded log builds it once; a recording extends it by the
+   clock's new readings, and each request maps its own prefix exactly as a fresh read would.
+   The robot's clock places a log when it has a valid reading, otherwise a recorded server
+   clock, `/Daemon/Clock/EpochTimeMicros`, labeled `pit_clock`; an ambiguous robot clock is
+   refused, not replaced. Captures do not record that entry yet; see the first decision below.
+
+Built tests: `capture=current` against rows worked by hand, its refusals, and a capture that
+moves to its next file; hand-worked UTC windows at and beside each end, open ends, fractions of
+a microsecond, offsets, buckets and refusals; a differential on every fixture with a clock in
+which each UTC window holds exactly the rows a whole read places in it; a recording's mapping
+against a fresh read of each prefix, through a clock set, a clock stepped an hour and an
+ambiguous clock; and, counted, a ten-second UTC window on a two-hour recording that decodes at
+most 40 of its 1,400 blocks. Twenty-two planted mistakes each fail them. Items 5 and 6, the gate
+and the Compose example, are not built.
+
+### Decisions for the maintainer
+
+1. **The recorder's clock entry.** For: live panels on a robot that publishes no wall clock
+   over NetworkTables, which is any robot without AdvantageKit's `EpochTimeMicros`. Today a
+   `start_utc` window on such a capture is refused with "No wall-clock entry". Built, the
+   capture would record this server's clock at each NetworkTables time synchronization, every
+   three seconds, and its samples would be placed to within the synchronization's one-way delay,
+   a few milliseconds. Building it showed what that costs. Written at the synchronization's
+   own robot time, a reading widened the capture's time range past its last value; written as
+   provider context, the gateway forwarded it to its clients. Written instead at the time of the
+   next value, and not forwarded, both go away, but the entry still joins every capture file, is
+   declared again at each rollover and counts toward each file's reserve, and about 70 tests that
+   pin a capture's exact entries or records change with it. The alternative keeps it out of the
+   WPILOG: the live mapping uses the time synchronization held in memory, and a finished
+   session's readings go to the store's clock record beside the capture, as the roboRIO's
+   uptime pairs do; a copy of the file alone then cannot be placed in UTC for such a robot.
+   Proposed: the entry, at value times and not forwarded, as the stage 1 answer described it,
+   with the tests updated.
+2. **Struct fields on a recording.** For: a live panel of a struct field, such as a pose's
+   `x`. Two hours of a 50 Hz pose is 360,000 records, all decoded for every refresh today,
+   against the gate's 250 ms and 50 MB for twelve panels. Reading through the shared cursor
+   decodes only the window, but the decode problems reported beside a series then describe the
+   window's records, not the entry's as a finished file's do. Proposed: keep the entry's decode
+   problems, found once per record by the first refresh past it, as the clock's readings are,
+   so the metadata means the same for every log.
 
 ## Tests
 

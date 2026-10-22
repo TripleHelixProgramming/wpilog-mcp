@@ -184,6 +184,7 @@ class DataEndpointUtcTest {
     assertEquals(JsonParser.parseString("""
         {
           "entry": "systemTime",
+          "clock": "robot",
           "reading_count": 1,
           "first_offset_us": "9223372036854775806",
           "last_offset_us": "9223372036854775806",
@@ -402,6 +403,126 @@ class DataEndpointUtcTest {
     } finally {
       transport.setDataMaxBytes(DataEndpoint.DEFAULT_MAX_BYTES);
     }
+  }
+
+  // ---- windows chosen by UTC, as a dashboard's time range chooses them ----
+
+  /** Samples at 4, 10, 12.5, 15, 20, 25 and 30 s, which the worked anchors place at none, W, W+3, W+6, W+12, W+17 and W+22 s. */
+  private Path windowFixture() throws IOException {
+    return fixture("systemTime", workedAnchors(), numbers(VALUE,
+        new long[] {4_000_000, 10_000_000, 12_500_000, 15_000_000, 20_000_000, 25_000_000, 30_000_000},
+        1, 2, 3, 4, 5, 6, 7));
+  }
+
+  private static String iso(long epochUs) {
+    return Instant.ofEpochSecond(Math.floorDiv(epochUs, 1_000_000L), Math.floorMod(epochUs, 1_000_000L) * 1000).toString();
+  }
+
+  private Payload window(Path path, String format, Map<String, String> query) throws Exception {
+    var suffix = new StringBuilder();
+    new java.util.TreeMap<>(query).forEach((key, value) -> suffix.append('&').append(encode(key)).append('=').append(encode(value)));
+    return payload(get(path, VALUE, format, suffix.toString(), Map.of()), format);
+  }
+
+  private JsonObject refusal(Path path, String suffix, int status) throws Exception {
+    var response = get(path, VALUE, "csv", suffix, Map.of());
+    assertEquals(status, response.statusCode(), () -> new String(response.body(), StandardCharsets.UTF_8));
+    return JsonParser.parseString(new String(response.body(), StandardCharsets.UTF_8)).getAsJsonObject();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"arrow", "csv"})
+  void aUtcWindowHoldsTheSamplesWhoseUtcLiesInItEndIncluded(String format) throws Exception {
+    var path = windowFixture();
+    var both = window(path, format, Map.of("start_utc", iso(W + 3_000_000), "end_utc", iso(W + 12_000_000)));
+    assertUtc(both, VALUE, new long[] {12_500_000, 15_000_000, 20_000_000},
+        new Long[] {W + 3_000_000, W + 6_000_000, W + 12_000_000});
+    assertEquals(List.of(3.0, 4.0, 5.0), numericColumn(both, VALUE, "value"));
+    var basis = basis(both, VALUE);
+    assertEquals("robot", basis.get("clock").getAsString());
+    assertEquals(1, basis.get("unplaced_sample_count").getAsInt(), "the sample at 4 s has no UTC");
+    assertEquals(BEFORE, basis.get("unplaced_reason").getAsString());
+    assertEquals(0, basis.get("null_sample_count").getAsInt(), "every row of a UTC window has its UTC");
+    // A microsecond inside either end leaves that end's sample out.
+    assertEquals(List.of(4.0), numericColumn(window(path, format,
+        Map.of("start_utc", iso(W + 3_000_001), "end_utc", iso(W + 11_999_999))), VALUE, "value"));
+    // Open ends: from W+17 s on, and up to W, where the sample before the first reading is in neither.
+    assertEquals(List.of(6.0, 7.0), numericColumn(window(path, format, Map.of("start_utc", iso(W + 17_000_000))), VALUE, "value"));
+    assertEquals(List.of(2.0), numericColumn(window(path, format, Map.of("end_utc", iso(W))), VALUE, "value"));
+    // Wholly before or after the log: empty, not refused.
+    assertUtc(window(path, format, Map.of("end_utc", iso(W - 1))), VALUE, new long[0], new Long[0]);
+    assertUtc(window(path, format, Map.of("start_utc", iso(W + 100_000_000))), VALUE, new long[0], new Long[0]);
+    // Between two microseconds, a start rounds up and an end down; an offset is honored.
+    assertEquals(List.of(4.0), numericColumn(window(path, format, Map.of(
+        "start_utc", "2026-01-01T00:00:03.0000005Z", "end_utc", "2026-01-01T01:00:11.9999995+01:00")), VALUE, "value"));
+    assertEquals(List.of(3.0, 4.0, 5.0), numericColumn(window(path, format, Map.of(
+        "start_utc", "2026-01-01T00:00:02.9999995Z", "end_utc", "2026-01-01T00:00:12.0000005Z")), VALUE, "value"));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"arrow", "csv"})
+  void aUtcWindowsBucketsSpanTheWindowInTheLogsTime(String format) throws Exception {
+    var path = windowFixture();
+    var result = window(path, format, Map.of("start_utc", iso(W), "end_utc", iso(W + 22_000_000), "max_points", "2"));
+    // The window is 10 s to 30 s of the log: two buckets of 10 s, starting at W and at W+12 s.
+    assertUtc(result, VALUE, new long[] {10_000_000, 20_000_000}, new Long[] {W, W + 12_000_000});
+    assertEquals(List.of(3.0, 3.0), numericColumn(result, VALUE, "count"));
+    assertEquals(List.of(2.0, 5.0), numericColumn(result, VALUE, "min"));
+    assertEquals(List.of(4.0, 7.0), numericColumn(result, VALUE, "max"));
+    // A window wider than the data keeps its own edges: from the first reading, 10 s, to 35 s,
+    // which W+27 s maps back to, in buckets of 12.5 s.
+    var wide = window(path, format, Map.of("start_utc", iso(W - 5_000_000), "end_utc", iso(W + 27_000_000), "max_points", "2"));
+    assertUtc(wide, VALUE, new long[] {10_000_000, 22_500_000}, new Long[] {W, W + 14_500_000});
+    assertEquals(List.of(4.0, 2.0), numericColumn(wide, VALUE, "count"));
+    // A window starting between samples starts its first bucket there: at 10.833333 s, the first
+    // microsecond whose UTC is W+1 s, not at 12.5 s, the first sample inside.
+    var between = window(path, format, Map.of("start_utc", iso(W + 1_000_000), "end_utc", iso(W + 27_000_000), "max_points", "2"));
+    assertEquals(List.of(3.0, 2.0), numericColumn(between, VALUE, "count"));
+    if (format.equals("arrow")) {
+      assertEquals(10_833_333L, arrowColumn(between, VALUE, "timestamp").get(0));
+      assertEquals(W + 1_000_000, arrowColumn(between, VALUE, "timestamp_utc").get(0));
+    } else {
+      assertEquals("2026-01-01T00:00:01.000000Z", between.csv().get(VALUE).rows().get(0).get(1));
+    }
+  }
+
+  /** Sampling describes the window asked for, as data quality does everywhere: a periodic start does not make an irregular end periodic. */
+  @Test
+  void theSamplingClassIsTheWindows() throws Exception {
+    var times = new ArrayList<Long>();
+    var values = new ArrayList<Double>();
+    for (int i = 0; i < 500; i++) { times.add(20_000L * i); values.add(i * 0.5); }
+    long t = 12_000_000;
+    long[] steps = {1_000_000, 3_700_000, 400_000, 2_200_000, 900_000, 5_100_000, 1_300_000, 2_600_000, 700_000, 4_000_000};
+    for (int i = 0; i < 20; i++) { times.add(t); values.add(1000.0 + i); t += steps[i % steps.length]; }
+    var path = fixture(null, List.of(), numbers(VALUE, times.stream().mapToLong(Long::longValue).toArray(),
+        values.stream().mapToDouble(Double::doubleValue).toArray()));
+    assertEquals("periodic", metadata(payload(get(path, VALUE, "csv", "", Map.of()), "csv"), VALUE).get("sampling").getAsString());
+    var late = payload(get(path, VALUE, "csv", "&start_time=11&end_time=60", Map.of()), "csv");
+    assertEquals("change_only", metadata(late, VALUE).get("sampling").getAsString());
+    assertEquals(520, metadata(late, VALUE).get("sample_count").getAsInt(), "the count is the entry's");
+    assertEquals(20, metadata(late, VALUE).get("total_in_range").getAsInt());
+  }
+
+  @Test
+  void aUtcWindowIsRefusedWhenTheLogCannotBePlacedOrTheWindowIsMalformed() throws Exception {
+    var start = "&start_utc=" + encode(iso(W));
+    assertEquals("This log cannot be placed in UTC: No wall-clock entry", refusal(
+        fixture(null, List.of(), numbers(VALUE, new long[] {0, 10_000_000}, 1, 2)), start, 422).get("error").getAsString());
+    var unset = refusal(fixture("systemTime", List.of(new Anchor(10_000_000, 5)),
+        numbers(VALUE, new long[] {0, 10_000_000}, 1, 2)), start, 422);
+    assertEquals("This log cannot be placed in UTC: No valid wall-clock readings", unset.get("error").getAsString());
+    assertEquals("systemTime", unset.getAsJsonObject("utc_basis").get("entry").getAsString());
+    assertTrue(refusal(fixture("systemTime", List.of(new Anchor(10_000_000, W), new Anchor(10_000_000, W + 5)),
+        numbers(VALUE, new long[] {10_000_000}, 1)), start, 422).get("error").getAsString()
+        .endsWith("Ambiguous wall-clock mapping: one log timestamp has conflicting epoch readings"));
+    var path = windowFixture();
+    assertTrue(refusal(path, start + "&start_time=1", 400).get("error").getAsString().contains("not both"));
+    assertTrue(refusal(path, start + "&utc=false", 400).get("error").getAsString().contains("utc cannot be false"));
+    assertTrue(refusal(path, start + "&end_utc=" + encode(iso(W - 1)), 400).get("error").getAsString().contains("is before start_utc"));
+    assertTrue(refusal(path, "&start_utc=yesterday", 400).get("error").getAsString().contains("ISO 8601 instant"));
+    assertTrue(refusal(path, "&end_utc=2026-01-01T00:00:00", 400).get("error").getAsString().contains("with its offset"),
+        "an instant without its offset names no moment");
   }
 
   private static List<Anchor> workedAnchors() {

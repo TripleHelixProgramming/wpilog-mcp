@@ -52,14 +52,8 @@ public final class LiveTools {
       return result;
     }
     abstract ResponseBuilder read(JsonObject arguments, LiveCapture live, CaptureStore.Status current) throws Exception;
-    private record Location(String path, String endedAt) {}
-    private static Location location(LiveCapture live, CaptureStore.Status current) {
-      if (current != null) return new Location(live.resolve(current.path()).toString(), current.endedAt() == null ? null : current.endedAt().toString());
-      if (live != null) for (var view : live.sessions()) {
-        var capture = view.session().files().stream().filter(f -> "captured".equals(f.provenance().kind())).findFirst();
-        if (capture.isPresent()) return new Location(live.resolve(view.directory().resolve(capture.get().path())).toString(), view.session().endedAt());
-      }
-      return new Location(null, null);
+    private static LiveCapture.Location location(LiveCapture live, CaptureStore.Status current) {
+      return LiveCapture.location(live, current);
     }
     static ResponseBuilder inactive(LiveCapture live, CaptureStore.Status current) {
       var last = location(live, current);

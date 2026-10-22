@@ -1269,9 +1269,15 @@ An `http` server also serves every sample of an entry in one request, for a scri
 
 ```
 GET /data/entries?path=<log>&names=<entry>[,<entry>...][&start_time=<s>][&end_time=<s>][&max_points=<n>][&format=arrow|csv][&utc=true|false][&angle=radians|degrees]
+GET /data/entries?capture=current&names=<entry>[,<entry>...][&start_utc=<instant>][&end_utc=<instant>][...]
 ```
 
-`path` is the log, as `list_available_logs` lists it. `names` is a comma-separated list of one or more of: an entry; an entry with a field path appended (`/Drive/Pose.translation.x`, as `get_statistics` takes it); or a REV log signal's key as `list_revlog_signals` gives it (`REV/SparkMax_3/AppliedOutput`). `start_time` and `end_time` are seconds, as every tool takes them. `max_points` buckets by the same rule as `read_entry`'s `max_points` (see [TOOLS.md](TOOLS.md#read_entry)): at most that many buckets of equal duration over the window, each with its count, minimum, maximum, mean, first, and last.
+`path` is the log, as `list_available_logs` lists it. `capture=current` names instead the capture
+this server is recording when the request arrives, so a dashboard follows it across a rollover or a
+new session without knowing the file; `inputs.log` names the file it read, and `inputs.capture` is
+`current`. With nothing recording it answers `404` with the reason, `last_session` (the newest
+session's captured file, as `list_sessions` names it) and `ended_at`. It is refused beside `path`
+or a source qualification. `names` is a comma-separated list of one or more of: an entry; an entry with a field path appended (`/Drive/Pose.translation.x`, as `get_statistics` takes it); or a REV log signal's key as `list_revlog_signals` gives it (`REV/SparkMax_3/AppliedOutput`). `start_time` and `end_time` are seconds, as every tool takes them. `max_points` buckets by the same rule as `read_entry`'s `max_points` (see [TOOLS.md](TOOLS.md#read_entry)): at most that many buckets of equal duration over the window, each with its count, minimum, maximum, mean, first, and last.
 
 WPILOG bucket membership and first/last order use original integer microseconds; equal original
 timestamps retain file order. Explicit second bounds round to the nearest microsecond, and the
@@ -1291,12 +1297,28 @@ uses Arrow float64 so fractional turns are not truncated; ordinary typed reads k
 values `true` and `false` are accepted, once; omission or `utc=false` preserves the existing
 columns and metadata. The clock comes from the log's selected `systemTime` or supported
 `EpochTimeMicros` entry, including its existing `NT:` and AdvantageKit aliases. The existing
-clock-set policy retains plausible readings after the last clock jump. UTC interpolates epoch
-microseconds between those readings, keeps the last reading's offset afterward, and is null
-before the first valid reading. The final epoch is rounded once to the nearest microsecond,
-ties to the even epoch microsecond. A filename, file modification time or server clock never
-supplies this value. Reduced rows map the bucket's exact start, which can precede the first
+clock-set policy retains plausible readings after the last clock jump. When that clock has no
+valid reading, or the log has none, a `/Daemon/Clock/EpochTimeMicros` entry, where the log holds
+one, places the samples instead: the wall clock of the server that recorded the log. A robot
+clock that is ambiguous is refused, not replaced. UTC interpolates epoch microseconds
+between the readings, keeps the last reading's offset afterward, and is null before the first
+valid reading. The final epoch is rounded once to the nearest microsecond, ties to the even
+epoch microsecond. A filename, a file's modification time or the server's clock when it answers
+never supplies this value. Reduced rows map the bucket's exact start, which can precede the first
 valid clock reading even when a later sample in the bucket has a set clock.
+
+`start_utc` and `end_utc` choose the window by that measured UTC, as a dashboard's time range
+does: ISO 8601 instants with their offset (`2026-03-21T16:30:00Z`, as Grafana's
+`${__from:date:iso}` writes them). They cannot be combined with `start_time` or `end_time`, and
+they imply `utc=true`. The window holds the samples whose UTC lies in it, both ends included; a
+start between two microseconds rounds up and an end rounds down. A sample before the clock's
+first valid reading has no UTC and lies in no window, and each entry's `utc_basis` counts such
+samples. A log that cannot be placed in UTC (no wall-clock entry, no valid reading, or an
+ambiguous clock) is refused with `422` and the reason, never answered with an empty table, so a
+panel shows why it is blank. With `max_points` the buckets span the window in the log's own
+seconds, from the first microsecond whose UTC is in it to the last. A loaded log keeps its
+mapping, and a capture still recording extends it with each new reading, so a refresh does not
+read the clock entry again.
 
 The wall-clock inverse used by [`search_system_logs`](TOOLS.md#search_system_logs) shares
 the exact mapping arithmetic and ambiguity checks, rounding only its final robot-seconds
@@ -1310,7 +1332,7 @@ A REV signal streams on the wpilog's clock, as `get_revlog_data` reads it. Its e
   - With `utc=true`, nullable `timestamp_utc` follows `timestamp`; it is an Arrow timestamp with microsecond units and zone `UTC`. The original timestamp remains unchanged.
   - One stream has one schema, so the entries in one request must share a value type; bucketed, any numeric entries go together.
   - Enum fields carry `value` and `label`; a number absent from the schema has a null label (CSV keeps the number at the field name and an empty `.label` cell).
-  - Each record batch is tagged with its entry in its message metadata. The schema's metadata carries what a tool result would: the server version, `inputs`, the log's time range, and per entry its type, its sampling class (periodic, change-only, event), the unit its name states by a conventional suffix where it does, its decoded `sample_count`, its original `total_records`, and, bucketed, its bucket length.
+  - Each record batch is tagged with its entry in its message metadata. The schema's metadata carries what a tool result would: the server version, `inputs`, the log's time range, and per entry its type, its sampling class over the requested window (periodic, change-only, event), the unit its name states by a conventional suffix where it does, its decoded `sample_count`, its original `total_records`, and, bucketed, its bucket length.
   - An entry with decoding failures also carries `decode_problem` (`entry`, `failed_records`, `total_records`, and the first failure’s `reason`) and the same `warning` text tools return; CSV carries these fields in its `# entries:` comment.
   - `pyarrow.ipc.open_stream` or `polars.read_ipc_stream` reads the response bytes; `read_next_batch_with_custom_metadata()` gives each batch's entry.
 - `format=csv` is one table per entry in the form `export_csv` writes (`timestamp_sec`, then the value's flattened columns, or the bucket columns), after `#` comment lines with the server version, `inputs`, and the entries' metadata, and a `# entry: <name>` line before each table.
@@ -1323,6 +1345,7 @@ Arrow schema's `entries` metadata or CSV's `# entries:` comment:
 | Field | Meaning |
 |---|---|
 | `entry` | Exact selected wall-clock entry name, or null when none exists. |
+| `clock` | `robot` for the robot's own clock, `pit_clock` for a recording server's `/Daemon/Clock/EpochTimeMicros`, or null when the log has no clock. |
 | `reading_count` | Retained valid readings, including identical repeated pairs. |
 | `first_offset_us` | First retained epoch minus its log coordinate, as an exact decimal string. |
 | `last_offset_us` | Last retained epoch minus its log coordinate, as an exact decimal string. |
@@ -1330,6 +1353,8 @@ Arrow schema's `entries` metadata or CSV's `# entries:` comment:
 | `rounding` | `nearest_microsecond_ties_to_even`. |
 | `null_sample_count` | Null logical sample or bucket coordinates, counted before CSV array expansion. |
 | `null_reasons` | Objects with `reason` and `count`, one for each cause of null coordinates. |
+| `unplaced_sample_count` | With `start_utc` or `end_utc`: the entry's samples before the clock's first valid reading, which no UTC window holds. |
+| `unplaced_reason` | With `start_utc` or `end_utc`: why those samples have no UTC, or null when there are none. |
 
 The three offset fields are null when there are no valid readings. An ambiguous clock retains
 its measured basis but supplies no UTC timestamps. Identical repeated pairs are redundant;
@@ -1352,7 +1377,8 @@ curl 'http://127.0.0.1:2363/data/entries?path=/Users/me/riologs/akit_26-03-21_16
 
 **Access and limits.** The endpoint reads only files inside configured or currently leased log directories, as every tool does, and refuses a request from a web page as the MCP endpoint does. A response is capped at 512 MiB: a request over the cap is refused with the row count, the size, and the hint to narrow the window or pass `max_points`; it is never cut short. A missing entry is an error naming it, with the tools that list entries and field paths.
 
-**Changing files and caching.** A file that changes while it streams ends the stream with an empty batch whose metadata says so (`file_changed`), or a `# file_changed:` line in CSV, and a reader discards what it received. `ETag` comes from the file and the query, plus each requested REV source file and its synchronization method, offset, drift, and confidence, so a repeated request for an unchanged file with `If-None-Match` is a `304`.
+**Changing files and caching.** A file that changes while it streams ends the stream with an empty batch whose metadata says so (`file_changed`), or a `# file_changed:` line in CSV, and a reader discards what it received. `ETag` comes from the file and the query, plus each requested REV source file and its synchronization method, offset, drift, and confidence, so a repeated request for an unchanged file with `If-None-Match` is a `304`. A capture still
+recording has no `ETag`: each request reads the prefix its writer has published.
 
 `get_server_guide` names the endpoint as `data_endpoint` whenever the transport is HTTP; a stdio server has none, and `export_csv` is the way there.
 

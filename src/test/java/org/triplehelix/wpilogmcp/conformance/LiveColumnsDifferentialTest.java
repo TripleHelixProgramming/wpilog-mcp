@@ -6,6 +6,7 @@ package org.triplehelix.wpilogmcp.conformance;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
@@ -98,7 +99,11 @@ class LiveColumnsDifferentialTest {
         }
         live.advance(time + 1);
         if (step % 13 == 0) live.expire();
-        if (step == 1 || step == 7 || step % 433 == 0 || step == 2600) compared += compare(manager, path, step);
+        if (step == 1 || step == 7 || step % 433 == 0 || step == 2600) {
+          // With no hot window, expiring first leaves every record of the prefix cold.
+          if (hotWindowUs == 0) live.expire();
+          compared += compare(manager, path, step, hotWindowUs == 0);
+        }
       }
     } finally {
       live.finish(); manager.shutdown(); live.discard();
@@ -108,7 +113,7 @@ class LiveColumnsDifferentialTest {
   }
 
   /** One prefix: every record of every entry against an independent read of a copy of the bytes. */
-  private int compare(LogManager manager, Path path, int step) throws Exception {
+  private int compare(LogManager manager, Path path, int step, boolean coldPrefix) throws Exception {
     var copy = directory.resolve("prefix-" + step + ".wpilog");
     // Read through a channel, which shares the file with its open writer on Windows too.
     Files.write(copy, Files.readAllBytes(path));
@@ -131,6 +136,21 @@ class LiveColumnsDifferentialTest {
           compared++;
         }
         assertColumn(view, name, series, where);
+        int width = switch (view.entries().get(name).type()) {
+          case "double", "int64" -> 8;
+          case "float" -> 4;
+          case "boolean" -> 1;
+          default -> -1;
+        };
+        // Only a cold prefix decodes every payload: a hot record is answered as its frame carried it.
+        // There a malformed number fails the whole read, as the live read's legacy policy keeps it;
+        // a number whose column holds every record finds no problem without decoding one.
+        if (width > 0 && coldPrefix) {
+          boolean malformed = false;
+          for (int i = 0; i < series.facts; i++) malformed |= series.factSizes[i] != width;
+          if (malformed) assertThrows(java.util.InputMismatchException.class, () -> view.decodeProblem(name), where);
+          else assertTrue(view.decodeProblem(name).isEmpty(), where + ": no record is malformed");
+        }
       }
     } finally {
       Files.delete(copy);

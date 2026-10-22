@@ -775,6 +775,14 @@ the data routes uses it.
    offset used and the largest disagreement between readings.
 3. Before the robot's clock was set, the UTC timestamp is null, with the reason. It is never
    made up from a file name, a modification time or the server's clock.
+
+   On 2026-10-21 the maintainer relaxed this for captures only
+   ([Grafana plan, stage 1, question 2](GRAFANA_PLAN.md#questions-for-the-maintainer)): a
+   capture whose robot publishes no clock is placed by the clock of the server that recorded it,
+   as a measurement the capture records, and the basis names it `pit_clock`. Since 2026-10-22 the
+   data endpoint reads such a recorded clock, `/Daemon/Clock/EpochTimeMicros`, when the robot's
+   clock has no valid reading; captures do not record it yet
+   ([stage 1, built so far](GRAFANA_PLAN.md#stage-1-built-so-far)).
 4. Arrow gains a nullable UTC column beside `timestamp`, and CSV an ISO 8601 column beside
    `timestamp_sec`; the existing columns stay. Where JSON carries the value (`/read/v1`'s
    NDJSON), epoch microseconds are decimal strings, as the read API's other integer timestamps

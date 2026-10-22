@@ -96,6 +96,46 @@ public final class LiveLog implements LogData, AutoCloseable {
     }
   }
 
+  /**
+   * One clock entry's valid readings, shared by every view of this recording and extended by
+   * whichever reads first past them, so no view reads the clock entry from its start again.
+   */
+  private static final class Clock {
+    private final WallClock.ValidReadings readings = new WallClock.ValidReadings();
+    private org.triplehelix.wpilogmcp.read.UtcTimeMapping last;
+    private int lastLength = -1;
+
+    /**
+     * The mapping of the entry's first {@code length} values, in log order; null when a jump
+     * after them began a new run and only a fresh read can give theirs.
+     */
+    org.triplehelix.wpilogmcp.read.UtcTimeMapping mapping(String entry, String clock, List<TimestampedValue> values, int length) {
+      int start;
+      synchronized (this) {
+        if (length == lastLength) return last;
+        start = readings.values();
+      }
+      // Read outside the lock: a column's blocks may come from the scratch file.
+      var added = new TimestampedValue[Math.max(0, length - start)];
+      for (int i = 0; i < added.length; i++) added[i] = values.get(start + i);
+      WallClock.Prefix prefix;
+      synchronized (this) {
+        for (int i = readings.values() - start; i < added.length; i++) readings.add(added[i]);
+        prefix = readings.prefixOf(length).orElse(null);
+      }
+      if (prefix == null) return null;
+      var mapping = org.triplehelix.wpilogmcp.read.UtcTimeMapping.of(entry, clock, prefix);
+      synchronized (this) {
+        if (length > lastLength) {
+          last = mapping;
+          lastLength = length;
+        }
+      }
+      return mapping;
+    }
+  }
+  private final java.util.concurrent.ConcurrentHashMap<String, Clock> clocks = new java.util.concurrent.ConcurrentHashMap<>();
+
   /** One entry: its columns, and the hot values of its records that are read from the WPILOG. */
   private static final class Entry {
     final OpenColumns.Series columns;
@@ -449,7 +489,30 @@ public final class LiveLog implements LogData, AutoCloseable {
       }
       return Optional.of(new NumericColumn(samples, length, 0, new Values()));
     }
-    @Override public Optional<DecodeProblem> decodeProblem(String name) { values().get(name); return Optional.ofNullable(problems.get(name)); }
+    /** A number whose column holds every record of this prefix decoded each as its type; anything else is decoded to find out. */
+    @Override public Optional<DecodeProblem> decodeProblem(String name) {
+      var entry = seen.entries().get(name);
+      if (entry != null && entry.width >= 0 && entry.firstOther >= sampleCount(name)) return Optional.empty();
+      values().get(name);
+      return Optional.ofNullable(problems.get(name));
+    }
+
+    /**
+     * The recording's clock readings up to this prefix: a clock whose column holds every record is
+     * extended from where the recording's readings stopped; any other is read whole, as a loaded
+     * log reads it.
+     */
+    @Override public org.triplehelix.wpilogmcp.read.UtcTimeMapping utcMapping() {
+      return org.triplehelix.wpilogmcp.read.UtcTimeMapping.choose(this, (name, clock) -> {
+        var column = numericColumn(name, org.triplehelix.wpilogmcp.read.FieldPath.ROOT);
+        if (column.isPresent() && column.get().values() != null) {
+          var mapping = clocks.computeIfAbsent(name, key -> new Clock())
+              .mapping(name, clock, column.get().values(), sampleCount(name));
+          if (mapping != null) return mapping;
+        }
+        return org.triplehelix.wpilogmcp.read.UtcTimeMapping.of(name, clock, values().get(name));
+      });
+    }
     @Override public Map<String, List<TimestampedValue>> values() {
       return new AbstractMap<>() {
         @Override public boolean containsKey(Object key) { return entries.containsKey(key); }
@@ -582,7 +645,8 @@ public final class LiveLog implements LogData, AutoCloseable {
   }
   @Override public StructSchemas structSchemas() { return current().structSchemas(); }
   long mappedReadCount() { return mappedReads.get(); }
-  long columnBlocksRead() { return columns.blocksRead(); }
+  /** Column blocks readers have decoded, which tests count to show a read costs what its window holds. */
+  public long columnBlocksRead() { return columns.blocksRead(); }
   int otherListGrowths(String name) {
     var entry = state.entries().get(name);
     return entry == null ? 0 : entry.otherGrowths;

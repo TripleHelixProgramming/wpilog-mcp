@@ -822,6 +822,17 @@ whose unsigned struct conversion is unchanged. Run the checker with `TZ=UTC` on 
 its legacy timestamp comparison uses Python's local interpretation of timezone-free datetimes,
 and the Linux CI runner already uses UTC.
 
+UTC windows are checked against rows worked out by hand from two clock readings: each end on a
+sample's instant, a microsecond inside it, open ends, fractions of a microsecond and offsets,
+buckets that keep the window's own edges, the samples before the first reading counted, and each
+refusal. A differential then asks every fixture with a clock for random UTC windows, ends on,
+inside and beside a sample's instant, and requires exactly the rows a whole read places inside by
+its own `timestamp_utc`. `capture=current` is checked against two recordings written by capture
+writers, with the capture's status moved from one to the next and then closed. A recording's
+mapping must equal a fresh read of every sampled prefix, for views held while later ones extend
+it, through a clock set, a clock stepped an hour and an ambiguous clock; and a ten-second UTC
+window on a two-hour recording, counted, decodes at most 40 of its 1,400 column blocks.
+
 ### Shared reader checks
 
 `LocalLogAccessTest`, `LocalReadBoundaryTest`, `LocalReadConcurrencyTest` and `HeaderIndexTest`

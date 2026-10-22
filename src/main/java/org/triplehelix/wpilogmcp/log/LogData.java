@@ -126,6 +126,14 @@ public interface LogData {
    * empty otherwise, and the caller decodes the log as before. The samples belong to the
    * caller's use of this log, on one thread.
    */
+  /**
+   * This log's time mapped to UTC by its measured clock. A loaded log keeps its mapping; a view of
+   * a recording extends its recording's readings rather than reading the clock entry again.
+   */
+  default org.triplehelix.wpilogmcp.read.UtcTimeMapping utcMapping() {
+    return org.triplehelix.wpilogmcp.read.UtcTimeMapping.from(this);
+  }
+
   default Optional<NumericColumn> numericColumn(String entryName, org.triplehelix.wpilogmcp.read.FieldPath path) {
     return Optional.empty();
   }

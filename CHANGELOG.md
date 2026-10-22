@@ -37,6 +37,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `/data/entries` takes `capture=current` in place of `path`: the capture this server is
+  recording when the request arrives, so a dashboard panel follows it across a rollover or a
+  new session without knowing its file. The response names the file it read; with nothing
+  recording the request is refused with `404`, the reason and the last session's file. Before, a
+  panel looked the open file up in the catalog and went on plotting the old file after a
+  rollover until the dashboard was reloaded.
+- `/data/entries` takes `start_utc` and `end_utc`, ISO 8601 instants as Grafana's time range
+  gives them, to choose the window by the log's measured UTC: the window holds the samples whose
+  UTC lies in it, both ends included, and implies `utc=true`. A log that cannot be placed in UTC
+  is refused with `422` and the reason, not answered with an empty table, and each entry's
+  `utc_basis` counts the samples before the clock's first reading, which no UTC window holds.
+  Before, a window could be asked for only in the log's own seconds.
 - The server builds a column file for each finished log in the background and keeps it in the
   disk cache, named by the content's SHA-256 and the format and recipe versions, and numeric
   reads take their numbers from it once it is built. A log gets one when the server reads it from its file, and when a store's
@@ -263,6 +275,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The data endpoint's UTC mapping is kept: a loaded log builds it once, and a capture still
+  recording extends it by the clock's new readings, so a request no longer reads the whole clock
+  entry again. On a two-hour recording, a ten-second UTC window decodes at most 40 of its 1,400
+  column blocks, and a number whose column holds every record reports its decode problems
+  without being decoded. `utc_basis` gains `clock`: `robot` for the robot's own clock, or
+  `pit_clock` when a recorded `/Daemon/Clock/EpochTimeMicros` entry places a log whose robot
+  clock has no valid reading; an ambiguous robot clock is refused, not replaced.
+- The `sampling` class the data endpoint reports for each entry describes the requested window,
+  as data quality does everywhere else. Before, it was scored over the whole entry, so a window
+  of an irregular stretch of an otherwise periodic entry was called periodic, and every request
+  on a recording scored every sample.
 - A recording keeps its index in columns outside the heap. Each entry's records keep their
   publication sequence, time, byte position and payload size, and a number its value, in blocks
   of 512 records packed as a column file packs its positions and written to a scratch file in
@@ -631,6 +654,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- UTC windows are checked against rows worked out by hand, at and beside each end, with open
+  ends, fractions of a microsecond, offsets, buckets and refusals, and by a differential on every
+  fixture with a clock in which each window holds exactly the rows a whole read places in it.
+  `capture=current` is checked across two recordings and a closed one; a recording's UTC mapping
+  against a fresh read of each prefix, through a clock set, a clock stepped an hour and an
+  ambiguous clock; and, counted, a ten-second window on a two-hour recording. The clock rule
+  that keeps valid readings is checked against its previous form on every prefix of random
+  clocks. Twenty-two planted mistakes each fail them. The data endpoint's ETag test now moves a
+  copy's modification time, not the shared match fixture's: a later test class that Gradle ran in
+  the same JVM was told the fixture had been reloaded and failed.
 - The open capture's columns are read back from a file and from the heap in every order, by a
   reader that starts at the latest record too, and compared at sampled publication boundaries
   with an independent read of the same WPILOG prefix: every record's position, time, size and
@@ -775,6 +808,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- `doc/GRAFANA_PLAN.md` records what stage 1 has built and two decisions it leaves to the
+  maintainer: whether a capture records its server's clock as an entry, which building it showed
+  changes every capture file and about 70 tests, and whether struct fields on a recording keep
+  the whole entry's decode problems. `doc/ARCHITECTURE_HARDENING_PLAN.md` item 6 notes the
+  maintainer's relaxation for captures and what the data endpoint reads today.
 - `doc/COLUMN_CACHE_PLAN.md` proposes the recording phase's design: the open capture's columns
   written as it records, to a scratch file in the disk cache that is never forced to disk, so
   the open file's index no longer grows the heap. A throwaway prototype on synthetic values at

@@ -27,7 +27,7 @@ class UtcTimeMappingTest {
     assertEquals(new UtcTimeMapping.Mapping(W + 6_000_000, null), mapping.at(15_000_000));
     assertEquals(new UtcTimeMapping.Mapping(W + 12_000_000, null), mapping.at(20_000_000));
     assertEquals(new UtcTimeMapping.Mapping(W + 17_000_000, null), mapping.at(25_000_000));
-    assertEquals(new UtcTimeMapping.Basis("systemTime", 2, "1699999990000000",
+    assertEquals(new UtcTimeMapping.Basis("systemTime", UtcTimeMapping.ROBOT_CLOCK, 2, "1699999990000000",
         "1699999992000000", "2000000", "nearest_microsecond_ties_to_even"), mapping.basis());
   }
 
@@ -101,10 +101,10 @@ class UtcTimeMappingTest {
   @Test void missingAndUnsetClocksHaveDifferentReasonsAndNoInventedBasis() {
     var absent = UtcTimeMapping.from(new ParsedLog("synthetic.wpilog", Map.of(), Map.of(), 0, 1));
     assertEquals(new UtcTimeMapping.Mapping(null, "No wall-clock entry"), absent.at(0));
-    assertEquals(new UtcTimeMapping.Basis(null, 0, null, null, null, UtcTimeMapping.ROUNDING), absent.basis());
+    assertEquals(new UtcTimeMapping.Basis(null, null, 0, null, null, null, UtcTimeMapping.ROUNDING), absent.basis());
     var unset = mapping(at(0, 0), at(1_000_000, 1_000_000));
     assertEquals(new UtcTimeMapping.Mapping(null, "No valid wall-clock readings"), unset.at(1_000_000));
-    assertEquals(new UtcTimeMapping.Basis("systemTime", 0, null, null, null, UtcTimeMapping.ROUNDING), unset.basis());
+    assertEquals(new UtcTimeMapping.Basis("systemTime", UtcTimeMapping.ROBOT_CLOCK, 0, null, null, null, UtcTimeMapping.ROUNDING), unset.basis());
   }
 
   @Test void exactHelperKeepsPublishedClockAliasesAndSelectionPriority() {

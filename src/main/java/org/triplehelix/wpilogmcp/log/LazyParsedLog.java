@@ -377,6 +377,14 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
   /** The content's SHA-256 when its scan index proved it; null for a log read without one. */
   private volatile String contentSha256;
+  /** The UTC mapping, once read: the file does not change under this log. */
+  private volatile org.triplehelix.wpilogmcp.read.UtcTimeMapping utcMapping;
+
+  @Override public org.triplehelix.wpilogmcp.read.UtcTimeMapping utcMapping() {
+    var mapping = utcMapping;
+    if (mapping == null) utcMapping = mapping = org.triplehelix.wpilogmcp.read.UtcTimeMapping.from(this);
+    return mapping;
+  }
 
   /**
    * The SHA-256 of the content this log was read from, when the scan index proved it: an index

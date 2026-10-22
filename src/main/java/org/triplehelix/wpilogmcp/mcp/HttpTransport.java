@@ -116,9 +116,12 @@ public class HttpTransport {
   private volatile Duration idleExit;
   private volatile Runnable onIdle;
   private final AtomicBoolean idleExitRun = new AtomicBoolean();
-  /** {@code GET /data/entries} (see {@link DataEndpoint}). */
+  /**
+   * {@code GET /data/entries} (see {@link DataEndpoint}). Its live capture is read at each
+   * request: the field is declared below and set when capture starts.
+   */
   private final DataEndpoint dataEndpoint =
-      new DataEndpoint(org.triplehelix.wpilogmcp.log.LogManager.getInstance());
+      new DataEndpoint(org.triplehelix.wpilogmcp.log.LogManager.getInstance(), () -> this.liveCapture.get());
   private final org.triplehelix.wpilogmcp.store.StoreRegistry stores =
       org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores();
   private java.util.function.Supplier<java.util.List<org.triplehelix.wpilogmcp.store.DiskSpaceBudgets.Snapshot>>

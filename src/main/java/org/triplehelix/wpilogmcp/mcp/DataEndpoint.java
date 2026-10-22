@@ -52,11 +52,15 @@ import org.triplehelix.wpilogmcp.tools.EntryData;
  * endpoint serves only files inside the configured log directories, and the transport's
  * {@code Origin} check keeps a web page from fetching it.
  *
- * <p>Query parameters: {@code path} (the log), {@code names} (entries or field paths, comma
- * separated, or repeated), {@code start_time} and {@code end_time} (seconds), {@code max_points}
- * (buckets, by {@link Buckets}' rule, the same as {@code read_entry}'s), and {@code format}
- * ({@code arrow}, the default, or {@code csv}). Optional {@code utc=true} adds a nullable
- * timestamp measured from the log's WallClock readings, with its basis beside each series.
+ * <p>Query parameters: {@code path} (the log), or {@code capture=current} for the capture
+ * recording at the time of the request, which follows a rollover or a new session without the
+ * caller knowing the file; {@code names} (entries or field paths, comma separated, or repeated),
+ * {@code start_time} and {@code end_time} (seconds), {@code max_points} (buckets, by
+ * {@link Buckets}' rule, the same as {@code read_entry}'s), and {@code format} ({@code arrow}, the
+ * default, or {@code csv}). Optional {@code utc=true} adds a nullable timestamp measured from the
+ * log's WallClock readings, with its basis beside each series. {@code start_utc} and
+ * {@code end_utc} instead choose the window by that measured UTC, as a dashboard's time range
+ * does; a log that cannot be placed in UTC is refused rather than answered with an empty table.
  * Scalar struct angles unwrap before presentation; {@code angle=radians|degrees} declares
  * the same treatment for plain numbers.
  * An Arrow stream has one schema, so every entry
@@ -82,12 +86,19 @@ final class DataEndpoint {
 
   private final LogManager logManager;
   private final org.triplehelix.wpilogmcp.read.server.ManagedLogAccess logAccess;
+  /** The capture this server records, if any: {@code capture=current} reads its open file. */
+  private final java.util.function.Supplier<org.triplehelix.wpilogmcp.capture.LiveCapture> captures;
   private final Gson gson = new GsonBuilder().serializeNulls().create();
   private volatile long maxBytes = DEFAULT_MAX_BYTES;
 
   DataEndpoint(LogManager logManager) {
+    this(logManager, () -> null);
+  }
+
+  DataEndpoint(LogManager logManager, java.util.function.Supplier<org.triplehelix.wpilogmcp.capture.LiveCapture> captures) {
     this.logManager = logManager;
     this.logAccess = logManager.readAccess();
+    this.captures = captures;
   }
 
   /** The size cap, in bytes. */
@@ -115,10 +126,20 @@ final class DataEndpoint {
     }
   }
 
-  /** A request, parsed. */
-  private record Request(String path, List<String> names, Double startTime, Double endTime,
-      Integer maxPoints, String format, String scopeId, JsonObject source, boolean utc,
-      String angle) {}
+  /**
+   * A request, parsed. {@code path} is null for {@code capture=current} until the capture is
+   * resolved; {@code startUtc} and {@code endUtc} are epoch microseconds, a start rounded up and an
+   * end down, so the window holds the whole microseconds inside the instants asked for.
+   */
+  private record Request(String path, boolean currentCapture, List<String> names, Double startTime,
+      Double endTime, Long startUtc, Long endUtc, Integer maxPoints, String format, String scopeId,
+      JsonObject source, boolean utc, String angle) {
+    boolean utcWindow() { return startUtc != null || endUtc != null; }
+    Request at(String resolved) {
+      return new Request(resolved, currentCapture, names, startTime, endTime, startUtc, endUtc, maxPoints,
+          format, scopeId, source, utc, angle);
+    }
+  }
 
   @FunctionalInterface interface SourceResolver { java.nio.file.Path resolve(JsonObject source) throws IOException; }
 
@@ -165,7 +186,12 @@ final class DataEndpoint {
     if (rawQuery != null && rawQuery.length() > 65536) throw new Refusal(413, "Data query exceeds 64 KiB", null);
     var q = query(rawQuery);
     var paths = q.getOrDefault("path", List.of());
-    if (paths.size() != 1 || paths.get(0).isBlank()) {
+    String capture = one(q, "capture");
+    if (capture != null && !capture.equals("current"))
+      throw new Refusal(400, "capture must be current, the capture recording when the request arrives, not " + capture, null);
+    if (capture != null && !paths.isEmpty())
+      throw new Refusal(400, "Pass either path or capture=current, not both", null);
+    if (capture == null && (paths.size() != 1 || paths.get(0).isBlank())) {
       throw new Refusal(400, "The query needs one path: the log file, as list_available_logs "
           + "gives it", "GET /data/entries?path=<log>&names=<entry>[,<entry>...]");
     }
@@ -184,6 +210,13 @@ final class DataEndpoint {
     if (start != null && end != null && end < start) {
       throw new Refusal(400, "end_time " + end + " is before start_time " + start, null);
     }
+    Long startUtc = instant(q, "start_utc", true);
+    Long endUtc = instant(q, "end_utc", false);
+    if ((startUtc != null || endUtc != null) && (start != null || end != null))
+      throw new Refusal(400, "A window is start_time and end_time, in the log's seconds, or start_utc and "
+          + "end_utc, as instants; not both", null);
+    if (startUtc != null && endUtc != null && endUtc < startUtc)
+      throw new Refusal(400, "end_utc " + one(q, "end_utc") + " is before start_utc " + one(q, "start_utc"), null);
     Integer maxPoints = null;
     var maxPointsText = q.getOrDefault("max_points", List.of());
     if (!maxPointsText.isEmpty()) {
@@ -201,6 +234,9 @@ final class DataEndpoint {
     String utc = one(q, "utc");
     if (utc != null && !utc.equals("true") && !utc.equals("false"))
       throw new Refusal(400, "utc must be true or false", null);
+    boolean utcWindow = startUtc != null || endUtc != null;
+    if (utcWindow && "false".equals(utc))
+      throw new Refusal(400, "start_utc and end_utc choose the window by UTC, so utc cannot be false", null);
     String angle = one(q, "angle");
     try { EntryData.validateAngle(angle); }
     catch (IllegalArgumentException invalid) { throw new Refusal(400, invalid.getMessage(), null); }
@@ -218,8 +254,27 @@ final class DataEndpoint {
         scope = source.get("scope_id").getAsString();
       }
     } catch (RuntimeException invalid) { throw new Refusal(400, "Invalid data source qualification: " + invalid.getMessage(), null); }
-    return new Request(paths.get(0), List.copyOf(names), start, end, maxPoints, format, scope,
-        source, "true".equals(utc), angle);
+    if (capture != null && (scope != null || source != null))
+      throw new Refusal(400, "capture=current reads this server's own recording, which no source qualification names", null);
+    return new Request(capture == null ? paths.get(0) : null, capture != null, List.copyOf(names), start, end,
+        startUtc, endUtc, maxPoints, format, scope, source, utcWindow || "true".equals(utc), angle);
+  }
+
+  /**
+   * An ISO 8601 instant as epoch microseconds. A start that falls between two microseconds
+   * rounds up and an end rounds down, so the window holds exactly the whole microseconds inside it.
+   */
+  private static Long instant(Map<String, List<String>> q, String key, boolean start) throws Refusal {
+    String text = one(q, key);
+    if (text == null) return null;
+    try {
+      var instant = java.time.OffsetDateTime.parse(text.strip()).toInstant();
+      long micros = Math.addExact(Math.multiplyExact(instant.getEpochSecond(), 1_000_000L), instant.getNano() / 1000);
+      return start && instant.getNano() % 1000 != 0 ? Math.addExact(micros, 1) : micros;
+    } catch (java.time.format.DateTimeParseException | ArithmeticException invalid) {
+      throw new Refusal(400, key + " must be an ISO 8601 instant with its offset, such as "
+          + "2026-03-21T16:30:00Z, not " + text, null);
+    }
   }
 
   private static String one(Map<String, List<String>> q, String name) throws Refusal {
@@ -247,9 +302,60 @@ final class DataEndpoint {
       ArrowType valueType, Buckets.Result buckets, String sampling, String unit,
       EntryData.RevSync rev, JsonObject decoding, JsonObject utcBasis) {}
 
+  /**
+   * The open file of the capture recording now. With nothing recording, a refusal that says why
+   * and names the last session, so a panel shows why it is blank.
+   */
+  private String currentCapture() throws Refusal {
+    var live = captures.get();
+    var current = live == null ? null : live.current();
+    if (current != null && current.open()) return live.resolve(current.path()).toString();
+    var last = org.triplehelix.wpilogmcp.capture.LiveCapture.location(live, live == null ? null : current);
+    var body = new JsonObject();
+    body.addProperty("error", live == null ? "Capture is not enabled on this server" : "No capture session is open");
+    body.addProperty("last_session", last.path());
+    body.addProperty("ended_at", last.endedAt());
+    body.addProperty("hint", "Read a finished session by its path, as list_sessions or list_available_logs gives it");
+    throw new Refusal(404, body);
+  }
+
+  /**
+   * The inclusive window of log microseconds whose samples have UTC inside [startUtc, endUtc],
+   * or null when none can. The mapping never runs backwards along the log's time, so its first
+   * and last such microseconds are found by search: a sample is inside exactly when its time is.
+   * Samples before the clock's first reading have no UTC and lie in no window.
+   */
+  static long[] logWindow(UtcTimeMapping utc, Long startUtc, Long endUtc) {
+    long first = utc.firstLogMicros();
+    long low = startUtc == null ? first : firstAtOrAfter(utc, first, startUtc);
+    if (endUtc == null) return new long[] {low, Long.MAX_VALUE};
+    var atFirst = utc.at(first).epochMicros();
+    if (atFirst == null || atFirst > endUtc) return null;
+    // The last microsecond still at or before endUtc: past it the mapping exceeds it or overflows.
+    long lo = first, hi = Long.MAX_VALUE;
+    while (lo < hi) {
+      long middle = lo + (hi - lo + 1) / 2;
+      var epoch = utc.at(middle).epochMicros();
+      if (epoch != null && epoch <= endUtc) lo = middle; else hi = middle - 1;
+    }
+    return low > lo ? null : new long[] {low, lo};
+  }
+
+  /** The first microsecond, from {@code first} on, that the mapping places at or after {@code target}. */
+  private static long firstAtOrAfter(UtcTimeMapping utc, long first, long target) {
+    long lo = first, hi = Long.MAX_VALUE;
+    while (lo < hi) {
+      long middle = lo + (hi - lo) / 2;
+      var epoch = utc.at(middle).epochMicros();
+      if (epoch == null || epoch >= target) hi = middle; else lo = middle + 1;
+    }
+    return lo;
+  }
+
   private void serve(HttpExchange exchange, Request request, SourceResolver sources) throws IOException, Refusal {
     org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot use;
     try {
+      if (request.currentCapture()) request = request.at(currentCapture());
       checkSource(request, sources);
       use = logAccess.acquire(request.path(), request.scopeId());
     } catch (SourceScopes.Failure failure) {
@@ -263,7 +369,18 @@ final class DataEndpoint {
     try (use) {
       var log = use.log();
       var before = use.snapshot();
-      var utc = request.utc() ? UtcTimeMapping.from(log) : null;
+      var utc = request.utc() ? log.utcMapping() : null;
+      long[] logWindow = null;
+      if (request.utcWindow()) {
+        var unplaced = utc.unavailableReason();
+        if (unplaced.isPresent()) {
+          var refusal = new Refusal(422, "This log cannot be placed in UTC: " + unplaced.get(),
+              "Read it by start_time and end_time, in the log's own seconds");
+          refusal.body.add("utc_basis", basisJson(utc.basis()));
+          throw refusal;
+        }
+        logWindow = logWindow(utc, request.startUtc(), request.endUtc());
+      }
 
       var prepared = new ArrayList<Prepared>();
       var revValidators = new ArrayList<EntryData.RevValidator>();
@@ -293,8 +410,14 @@ final class DataEndpoint {
         }
         EntryData.Prepared presentation;
         try {
-          presentation = EntryData.prepare(log, series, request.startTime(), request.endTime(),
-              request.angle());
+          if (!request.utcWindow()) {
+            presentation = EntryData.prepare(log, series, request.startTime(), request.endTime(), request.angle());
+          } else if (logWindow != null) {
+            presentation = EntryData.prepareMicros(log, series, logWindow[0], logWindow[1], request.angle());
+          } else {
+            // No microsecond of the log lies in the UTC window: an empty selection, presented alike.
+            presentation = EntryData.prepareMicros(log, series, 0, -1, request.angle());
+          }
         } catch (IllegalArgumentException invalid) {
           throw new Refusal(400, invalid.getMessage(), "Select a numeric entry or scalar field for angle presentation");
         }
@@ -311,13 +434,13 @@ final class DataEndpoint {
           if (numbers != null) {
             // By position: the window's numbers are bucketed where they lie.
             buckets = numbers.size() > request.maxPoints()
-                ? Buckets.of(numbers, request.startTime(), request.endTime(), request.maxPoints())
+                ? Buckets.of(numbers, bucketStart(request, logWindow), bucketEnd(request, logWindow), request.maxPoints())
                 : null;
             if (!series.numeric()) values = org.triplehelix.wpilogmcp.read.NumericSamples.asValues(numbers);
           } else {
             var numeric = series.numeric() ? values : asNumbers(values);
             buckets = numeric.size() > request.maxPoints()
-                ? Buckets.of(numeric, request.startTime(), request.endTime(), request.maxPoints())
+                ? Buckets.of(numeric, bucketStart(request, logWindow), bucketEnd(request, logWindow), request.maxPoints())
                 : null;
             if (!series.numeric()) values = numeric;
           }
@@ -332,11 +455,12 @@ final class DataEndpoint {
         rows += count;
         estimatedBytes += buckets != null ? count * 56 : size(values, valueType);
         if (utc != null) estimatedBytes += utcSize(request, values, buckets, count, utc);
+        var basis = utc == null ? null : utcBasis(utc, values, buckets);
+        if (basis != null && request.utcWindow()) unplaced(basis, utc, series);
         prepared.add(new Prepared(series, values, valueType, buckets,
-            EntryData.sampling(log, series),
+            EntryData.sampling(log, series, presentation),
             rev != null && rev.unit() != null ? rev.unit() : EntryData.unitFromName(name), rev,
-            EntryData.decodingMetadata(log, series),
-            utc == null ? null : utcBasis(utc, values, buckets)));
+            EntryData.decodingMetadata(log, series), basis));
       }
       if (estimatedBytes > maxBytes) {
         var refusal = new Refusal(413, "The response would be about " + estimatedBytes + " bytes ("
@@ -439,17 +563,50 @@ final class DataEndpoint {
     return bytes;
   }
 
-  /** Count emitted coordinates, not expanded CSV array rows, and retain a reason for each null. */
-  private static JsonObject utcBasis(UtcTimeMapping utc, List<TimestampedValue> values,
-      Buckets.Result buckets) {
-    var basis = utc.basis();
+  /** A UTC window's bucket edges are the window's own, in the log's seconds; a whole read's are the data's. */
+  private static Double bucketStart(Request request, long[] logWindow) {
+    if (!request.utcWindow()) return request.startTime();
+    return logWindow == null ? null : logWindow[0] / 1e6;
+  }
+
+  private static Double bucketEnd(Request request, long[] logWindow) {
+    if (!request.utcWindow()) return request.endTime();
+    return logWindow == null || logWindow[1] == Long.MAX_VALUE ? null : logWindow[1] / 1e6;
+  }
+
+  /**
+   * A sample from before the clock's first reading has no UTC and lies in no UTC window; a
+   * dashboard's response says how many of the entry's samples that leaves out, and why.
+   */
+  private static void unplaced(JsonObject basis, UtcTimeMapping utc, EntryData.Series series) {
+    long first = utc.firstLogMicros();
+    long count;
+    if (series.samples() != null) {
+      var samples = series.samples();
+      count = org.triplehelix.wpilogmcp.read.TimeWindows.bound(samples.size(), i -> samples.timeUs(i) < first);
+    } else {
+      count = series.values().stream().filter(tv -> tv.timestampUs() < first).count();
+    }
+    basis.addProperty("unplaced_sample_count", count);
+    basis.addProperty("unplaced_reason", count == 0 ? null : "Before the first valid wall-clock reading");
+  }
+
+  private static JsonObject basisJson(UtcTimeMapping.Basis basis) {
     var out = new JsonObject();
     out.addProperty("entry", basis.entry());
+    out.addProperty("clock", basis.clock());
     out.addProperty("reading_count", basis.readingCount());
     out.addProperty("first_offset_us", basis.firstOffsetUs());
     out.addProperty("last_offset_us", basis.lastOffsetUs());
     out.addProperty("max_offset_change_us", basis.maxOffsetChangeUs());
     out.addProperty("rounding", basis.rounding());
+    return out;
+  }
+
+  /** Count emitted coordinates, not expanded CSV array rows, and retain a reason for each null. */
+  private static JsonObject utcBasis(UtcTimeMapping utc, List<TimestampedValue> values,
+      Buckets.Result buckets) {
+    var out = basisJson(utc.basis());
     var reasons = new LinkedHashMap<String, Long>();
     int count = buckets == null ? values.size() : buckets.buckets().size();
     for (int i = 0; i < count; i++) {
@@ -542,6 +699,7 @@ final class DataEndpoint {
       FileSnapshot snapshot, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) {
     var inputs = new JsonObject();
     inputs.addProperty("log", log.path());
+    if (request.currentCapture()) inputs.addProperty("capture", "current");
     if (replica != null) inputs.add("replica", org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJsonTree(replica));
     var entries = new JsonArray();
     for (var p : prepared) entries.add(p.series().name());
@@ -549,6 +707,8 @@ final class DataEndpoint {
     var window = new JsonObject();
     if (request.startTime() != null) window.addProperty("start_time", request.startTime());
     if (request.endTime() != null) window.addProperty("end_time", request.endTime());
+    if (request.startUtc() != null) window.addProperty("start_utc", utcText(request.startUtc()));
+    if (request.endUtc() != null) window.addProperty("end_utc", utcText(request.endUtc()));
     inputs.add("window", window);
     if (request.maxPoints() != null) inputs.addProperty("max_points", request.maxPoints());
     if (request.utc()) inputs.addProperty("utc", true);

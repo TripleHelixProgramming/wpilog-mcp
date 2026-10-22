@@ -632,6 +632,19 @@ selected clock, retained reading count, first/last offsets, largest consecutive 
 and null-coordinate reasons. Reduced rows use exact bucket starts. `/read/v1` retains its
 native log and recorded session coordinates without a UTC option.
 
+A loaded log builds its mapping once and keeps it. A capture still recording keeps one set of
+valid readings for each clock entry, which the first view to ask past them extends by the clock's
+records added since; each view takes only the readings its own prefix holds, so its mapping is
+the one a fresh read of that prefix gives, and a view from before a clock step that began a new
+run reads its prefix afresh. The robot's own clock places a log when it has a valid reading;
+otherwise a `/Daemon/Clock/EpochTimeMicros` entry, the wall clock of the server that recorded
+it, places the log and the basis says `pit_clock`. A robot clock that is ambiguous is refused,
+not replaced. `start_utc` and `end_utc` become one inclusive window of log microseconds, found by
+search over the mapping, which never runs backwards along the log's time: the samples inside it
+are exactly those whose UTC lies in the UTC window, so a sample has one time however it is asked
+for. `capture=current` resolves the capture recording at each request before the same admission
+as any path.
+
 `SystemLogClocks` shares the ambiguity validation: conflicting duplicate coordinates or
 backward epoch readings place neither forward UTC nor an inverse wall-clock time. Identical
 repeated pairs are redundant. Its wall-clock inverse also lives in `UtcTimeMapping`: recognized

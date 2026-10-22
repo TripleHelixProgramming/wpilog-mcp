@@ -165,6 +165,22 @@ public final class LiveCapture implements LogStore.Observer {
     for (var held : catalog.sessions().values()) if (resolve(held.directory()).equals(directory)) return held.session().id();
     return null;
   }
+  /** A capture file and when its session ended (null while it records). */
+  public record Location(String path, String endedAt) {}
+
+  /**
+   * The file a live read answers from: the capture recording now, else the newest session's
+   * captured file, as {@code list_sessions} names it; both null when the store holds none.
+   */
+  public static Location location(LiveCapture live, CaptureStore.Status current) {
+    if (current != null) return new Location(live.resolve(current.path()).toString(), current.endedAt() == null ? null : current.endedAt().toString());
+    if (live != null) for (var view : live.sessions()) {
+      var capture = view.session().files().stream().filter(f -> "captured".equals(f.provenance().kind())).findFirst();
+      if (capture.isPresent()) return new Location(live.resolve(view.directory().resolve(capture.get().path())).toString(), view.session().endedAt());
+    }
+    return new Location(null, null);
+  }
+
   public List<SessionView> sessions() {
     var known = catalog;
     // ISO strings with and without fractional seconds do not sort chronologically. Parse

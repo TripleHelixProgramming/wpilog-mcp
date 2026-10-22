@@ -9,57 +9,146 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import org.triplehelix.wpilogmcp.log.LogData;
+import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.log.WallClock;
 
 /**
  * UTC is a presentation of the log's measured clock, never a filename or server-clock estimate.
  * Exact rational interpolation prevents epoch-sized doubles from moving a sample by a
  * microsecond. Ambiguous pairs cannot supply either a forward or an inverse clock.
+ *
+ * <p>The robot's own clock places a log when it has a valid reading. A capture whose robot
+ * publishes none is placed by the clock of the server that recorded it, which the capture
+ * records at each NetworkTables time synchronization; {@code clock} in the basis says which. That
+ * recorded measurement is the only server clock that supplies UTC, and only here.
  */
 public final class UtcTimeMapping {
   public static final String ROUNDING = "nearest_microsecond_ties_to_even";
+  /** The robot's own wall clock. */
+  public static final String ROBOT_CLOCK = "robot";
+  /** The clock of the server that recorded a capture. */
+  public static final String PIT_CLOCK = "pit_clock";
+  /** Where a capture records its server's clock: epoch microseconds at the robot's time. */
+  public static final String PIT_CLOCK_ENTRY = WallClock.PIT_CLOCK_ENTRY;
+  private static final java.util.Set<String> CLOCK_TYPES = java.util.Set.of("int64", "double", "float");
+
   public record Mapping(Long epochMicros, String reason) {}
-  public record Basis(String entry, int readingCount, String firstOffsetUs, String lastOffsetUs,
+  public record Basis(String entry, String clock, int readingCount, String firstOffsetUs, String lastOffsetUs,
       String maxOffsetChangeUs, String rounding) {}
 
   /** Decimal coordinates retain fractional aligned clocks without rounding them into raw ones. */
   public record Coordinate(BigDecimal logMicros, long epochMicros) {}
 
-  private final List<WallClock.ExactReading> readings;
+  /** The readings in log order, sorted only when the retained order was not. */
+  private final long[] logs, epochs;
+  private final int count;
   private final Basis basis;
   private final String unavailableReason;
 
-  private UtcTimeMapping(List<WallClock.ExactReading> readings, Basis basis, String reason) {
-    this.readings = readings;
+  private UtcTimeMapping(long[] logs, long[] epochs, int count, Basis basis, String reason) {
+    this.logs = logs;
+    this.epochs = epochs;
+    this.count = count;
     this.basis = basis;
     unavailableReason = reason;
   }
 
+  /** The log's mapping, its clock entries read whole. */
   public static UtcTimeMapping from(LogData log) {
-    String entry = WallClock.entry(log).orElse(null);
-    var retained = WallClock.validExactReadings(log);
-    if (retained.isEmpty()) return new UtcTimeMapping(List.of(),
-        new Basis(entry, 0, null, null, null, ROUNDING),
-        entry == null ? "No wall-clock entry" : "No valid wall-clock readings");
-    var coordinates = retained.stream()
-        .map(reading -> new Coordinate(BigDecimal.valueOf(reading.logMicros()), reading.epochMicros()))
-        .toList();
-    String reason = ambiguityReason(coordinates);
-    var firstOffset = offset(retained.get(0));
-    var lastOffset = offset(retained.get(retained.size() - 1));
+    return choose(log, (entry, clock) -> of(entry, clock, log.values().get(entry)));
+  }
+
+  /**
+   * The robot's clock when it has a valid reading, else the recorded server clock, each entry
+   * mapped by {@code mapping} (entry, clock). A robot clock that is ambiguous is refused, not
+   * replaced: the robot published a clock, and it cannot place the log.
+   */
+  public static UtcTimeMapping choose(LogData log, java.util.function.BiFunction<String, String, UtcTimeMapping> mapping) {
+    var robot = WallClock.entry(log).map(entry -> mapping.apply(entry, ROBOT_CLOCK));
+    if (robot.isPresent() && robot.get().count > 0) return robot.get();
+    var pit = pitClockEntry(log).map(entry -> mapping.apply(entry, PIT_CLOCK));
+    if (pit.isPresent() && pit.get().count > 0) return pit.get();
+    return robot.or(() -> pit).orElseGet(() -> unavailable(null, null, "No wall-clock entry"));
+  }
+
+  /** The recorded server clock, when the log holds readings of it. */
+  public static Optional<String> pitClockEntry(LogData log) {
+    var info = log.entries().get(PIT_CLOCK_ENTRY);
+    return info != null && CLOCK_TYPES.contains(info.type()) && log.sampleCount(PIT_CLOCK_ENTRY) > 0
+        ? Optional.of(PIT_CLOCK_ENTRY) : Optional.empty();
+  }
+
+  /** A clock entry's values, in log order, read once. */
+  public static UtcTimeMapping of(String entry, String clock, List<TimestampedValue> values) {
+    var valid = new WallClock.ValidReadings();
+    if (values != null) values.forEach(valid::add);
+    return of(entry, clock, valid.prefix(valid.values()));
+  }
+
+  /**
+   * The readings a clock entry's prefix keeps. The arrays may be longer than the prefix and grow
+   * after it; nothing below its count changes, so a recording's prefix is mapped without a copy.
+   */
+  public static UtcTimeMapping of(String entry, String clock, WallClock.Prefix prefix) {
+    int n = prefix.count();
+    if (n == 0) return unavailable(entry, clock, "No valid wall-clock readings");
+    long[] logs = prefix.logMicros(), epochs = prefix.epochMicros();
+    var firstOffset = offset(logs[0], epochs[0]);
+    var lastOffset = offset(logs[n - 1], epochs[n - 1]);
     var maxChange = BigInteger.ZERO;
-    for (int i = 1; i < retained.size(); i++)
-      maxChange = maxChange.max(offset(retained.get(i)).subtract(offset(retained.get(i - 1))).abs());
-    var basis = new Basis(entry, retained.size(), firstOffset.toString(), lastOffset.toString(),
-        maxChange.toString(), ROUNDING);
-    var distinct = new ArrayList<WallClock.ExactReading>();
-    retained.stream().sorted(Comparator.comparingLong(WallClock.ExactReading::logMicros))
-        .forEach(reading -> {
-          if (distinct.isEmpty() || !distinct.get(distinct.size() - 1).equals(reading))
-            distinct.add(reading);
-        });
-    return new UtcTimeMapping(List.copyOf(distinct), basis, reason);
+    boolean sorted = true;
+    for (int i = 1; i < n; i++) {
+      maxChange = maxChange(maxChange, logs, epochs, i);
+      sorted &= logs[i] >= logs[i - 1];
+    }
+    if (!sorted) {
+      // Readings come in log order from every reader of a log; sort a copy in case one does not.
+      Integer[] order = new Integer[n];
+      for (int i = 0; i < n; i++) order[i] = i;
+      long[] retained = logs, readings = epochs;
+      // Stable, as the list sort was: equal times keep the order they were logged in.
+      java.util.Arrays.sort(order, Comparator.comparingLong(i -> retained[i]));
+      long[] sortedLogs = new long[n], sortedEpochs = new long[n];
+      for (int i = 0; i < n; i++) {
+        sortedLogs[i] = retained[order[i]];
+        sortedEpochs[i] = readings[order[i]];
+      }
+      logs = sortedLogs;
+      epochs = sortedEpochs;
+    }
+    var basis = new Basis(entry, clock, n, firstOffset.toString(), lastOffset.toString(), maxChange.toString(), ROUNDING);
+    return new UtcTimeMapping(logs, epochs, n, basis, ambiguityReason(logs, epochs, n));
+  }
+
+  private static UtcTimeMapping unavailable(String entry, String clock, String reason) {
+    return new UtcTimeMapping(new long[0], new long[0], 0, new Basis(entry, clock, 0, null, null, null, ROUNDING), reason);
+  }
+
+  /** The largest change of offset so far, in exact integers: an offset of extreme values may not fit a long. */
+  private static BigInteger maxChange(BigInteger max, long[] logs, long[] epochs, int i) {
+    try {
+      long change = Math.absExact(Math.subtractExact(Math.subtractExact(epochs[i], logs[i]), Math.subtractExact(epochs[i - 1], logs[i - 1])));
+      return max.bitLength() < 63 && change <= max.longValue() ? max : max.max(BigInteger.valueOf(change));
+    } catch (ArithmeticException wide) {
+      return max.max(offset(logs[i], epochs[i]).subtract(offset(logs[i - 1], epochs[i - 1])).abs());
+    }
+  }
+
+  /** {@link #ambiguityReason(List)} for readings already in log order. */
+  private static String ambiguityReason(long[] logs, long[] epochs, int n) {
+    for (int i = 1; i < n; i++) {
+      int logOrder = Long.compare(logs[i], logs[i - 1]);
+      int epochOrder = Long.compare(epochs[i], epochs[i - 1]);
+      if (logOrder == 0 && epochOrder != 0)
+        return "Ambiguous wall-clock mapping: one log timestamp has conflicting epoch readings";
+      if (logOrder != 0 && epochOrder == 0)
+        return "Ambiguous wall-clock mapping: one epoch reading names multiple log timestamps";
+      if (epochOrder < 0)
+        return "Ambiguous wall-clock mapping: epoch readings move backwards";
+    }
+    return null;
   }
 
   public Basis basis() { return basis; }
@@ -210,28 +299,37 @@ public final class UtcTimeMapping {
     return null;
   }
 
+  /** The log time of the first reading; nothing before it has UTC. Only for a mapping that places samples. */
+  public long firstLogMicros() {
+    if (unavailableReason != null) throw new IllegalStateException(unavailableReason);
+    return logs[0];
+  }
+
+  /** Whether the mapping places samples, and the reason it does not. */
+  public Optional<String> unavailableReason() {
+    return Optional.ofNullable(unavailableReason);
+  }
+
   public Mapping at(long logMicros) {
     if (unavailableReason != null) return new Mapping(null, unavailableReason);
-    var first = readings.get(0);
-    if (logMicros < first.logMicros())
+    if (logMicros < logs[0])
       return new Mapping(null, "Before the first valid wall-clock reading");
-    int low = 0, high = readings.size();
+    int low = 0, high = count;
     while (low < high) {
       int middle = (low + high) >>> 1;
-      if (readings.get(middle).logMicros() < logMicros) low = middle + 1; else high = middle;
+      if (logs[middle] < logMicros) low = middle + 1; else high = middle;
     }
-    if (low < readings.size() && readings.get(low).logMicros() == logMicros)
-      return new Mapping(readings.get(low).epochMicros(), null);
-    var before = readings.get(low - 1);
-    var delta = BigInteger.valueOf(logMicros).subtract(BigInteger.valueOf(before.logMicros()));
+    if (low < count && logs[low] == logMicros)
+      return new Mapping(epochs[low], null);
+    long beforeLog = logs[low - 1], beforeEpoch = epochs[low - 1];
+    var delta = BigInteger.valueOf(logMicros).subtract(BigInteger.valueOf(beforeLog));
     BigInteger epoch;
-    if (low == readings.size()) {
-      epoch = BigInteger.valueOf(before.epochMicros()).add(delta);
+    if (low == count) {
+      epoch = BigInteger.valueOf(beforeEpoch).add(delta);
     } else {
-      var after = readings.get(low);
-      var span = BigInteger.valueOf(after.logMicros()).subtract(BigInteger.valueOf(before.logMicros()));
-      var wallSpan = BigInteger.valueOf(after.epochMicros()).subtract(BigInteger.valueOf(before.epochMicros()));
-      var numerator = BigInteger.valueOf(before.epochMicros()).multiply(span).add(delta.multiply(wallSpan));
+      var span = BigInteger.valueOf(logs[low]).subtract(BigInteger.valueOf(beforeLog));
+      var wallSpan = BigInteger.valueOf(epochs[low]).subtract(BigInteger.valueOf(beforeEpoch));
+      var numerator = BigInteger.valueOf(beforeEpoch).multiply(span).add(delta.multiply(wallSpan));
       epoch = rounded(numerator, span);
     }
     try {
@@ -241,8 +339,8 @@ public final class UtcTimeMapping {
     }
   }
 
-  private static BigInteger offset(WallClock.ExactReading reading) {
-    return BigInteger.valueOf(reading.epochMicros()).subtract(BigInteger.valueOf(reading.logMicros()));
+  private static BigInteger offset(long logMicros, long epochMicros) {
+    return BigInteger.valueOf(epochMicros).subtract(BigInteger.valueOf(logMicros));
   }
 
   /** Round once at the final epoch, including its parity, rather than rounding the offset. */

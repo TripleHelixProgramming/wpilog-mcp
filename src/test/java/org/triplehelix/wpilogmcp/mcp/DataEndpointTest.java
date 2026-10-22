@@ -469,28 +469,32 @@ class DataEndpointTest {
 
   @Test
   @DisplayName("the same request for an unchanged file is a 304; a changed file gets a new ETag")
-  void etag() throws Exception {
+  void etag(@TempDir Path temp) throws Exception {
+    // A copy of its own: moving the shared fixture's time would leave the server's reload record
+    // ahead of what an earlier caller saw, and a later class in this JVM would be told of a reload.
+    var root = temp.toRealPath();
+    var copy = Files.copy(match, root.resolve(match.getFileName()));
+    LogManager.getInstance().addAllowedDirectory(root);
     var p = params("names", "/SystemStats/CANBus/Utilization", "max_points", "5");
+    p.put("path", copy.toString());
     var first = get(p);
     assertEquals(200, first.statusCode());
     var etag = first.headers().firstValue("ETag").orElseThrow();
     var again = get(p, "If-None-Match", etag);
     assertEquals(304, again.statusCode());
     assertEquals(0, again.body().length);
-    var other = get(params("names", "/SystemStats/CANBus/Utilization", "max_points", "6"), "If-None-Match", etag);
+    var others = params("names", "/SystemStats/CANBus/Utilization", "max_points", "6");
+    others.put("path", copy.toString());
+    var other = get(others, "If-None-Match", etag);
     assertEquals(200, other.statusCode(), "another query is another resource");
     assertNotEquals(etag, other.headers().firstValue("ETag").orElseThrow());
     // The file changes: its modification time moves, so the log is loaded again and the tag differs
-    var was = Files.getLastModifiedTime(match);
-    Files.setLastModifiedTime(match, FileTime.fromMillis(was.toMillis() + 5000));
-    try {
-      var changed = get(p, "If-None-Match", etag);
-      assertEquals(200, changed.statusCode());
-      assertNotEquals(etag, changed.headers().firstValue("ETag").orElseThrow());
-      assertNull(ArrowSpecReader.read(changed.body()).batches().get(0).metadata().get("file_changed"));
-    } finally {
-      Files.setLastModifiedTime(match, was);
-    }
+    var was = Files.getLastModifiedTime(copy);
+    Files.setLastModifiedTime(copy, FileTime.fromMillis(was.toMillis() + 5000));
+    var changed = get(p, "If-None-Match", etag);
+    assertEquals(200, changed.statusCode());
+    assertNotEquals(etag, changed.headers().firstValue("ETag").orElseThrow());
+    assertNull(ArrowSpecReader.read(changed.body()).batches().get(0).metadata().get("file_changed"));
   }
 
   @Test
