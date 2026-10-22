@@ -133,3 +133,7 @@ architectural decisions.
 | 2026-10-21 | standing | The MCP tools and the data endpoint compute windows, buckets and statistics through one code path | [Record](COLUMN_CACHE_PLAN.md#decisions-on-the-read-path) |
 | 2026-10-21 | standing | One summary statistics implementation serves every tool, `compare_sessions` included | [Record](COLUMN_CACHE_PLAN.md#decisions-on-the-read-path) |
 | 2026-10-21 | standing | Every numeric reader works on one series of numbers by position, from a column file or the decode alike, not on one object per sample | [Record](COLUMN_CACHE_PLAN.md#decisions-on-the-read-path) |
+| 2026-10-22 | standing | While recording, struct fields are read by decoding a window's records; the writer's thread keeps columns only for numbers it already holds | [Record](COLUMN_CACHE_PLAN.md#the-recording-phase-design) |
+| 2026-10-22 | standing | An open capture's column blocks are packed, as format 2 packs a finished file's positions | [Record](COLUMN_CACHE_PLAN.md#the-recording-phase-design) |
+| 2026-10-22 | standing | When the disk cannot take an open capture's column file, its blocks stay in the heap, packed | [Record](COLUMN_CACHE_PLAN.md#the-recording-phase-design) |
+| 2026-10-22 | standing | Numbers leave the capture's hot window, which keeps only strings, raw values and structs | [Record](COLUMN_CACHE_PLAN.md#the-recording-phase-design) |

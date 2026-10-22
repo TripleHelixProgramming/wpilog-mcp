@@ -6,9 +6,10 @@ synthetic logs and, read-only, on three local team logs. The same day, the first
 was built: the file format, its writer and reader, and their tests; then the files were placed
 in the disk cache, built in the background and given each record's facts. On 2026-10-22 the
 readers moved onto them: [reading through column files](#reading-through-column-files) says
-which reads do and which still read the log. [The first build](#the-first-build) says what it
-changed, and the maintainer [decided](#decisions-from-the-first-build) what it asked the same
-day.
+which reads do and which still read the log. [The recording phase's
+design](#the-recording-phase-design) is agreed, with its four questions answered. [The first
+build](#the-first-build) says what it changed, and the maintainer
+[decided](#decisions-from-the-first-build) what it asked the same day.
 
 The log store is now asked for reads a database would serve: Grafana panels at any zoom, live
 panels on the recording in progress, the Explorer, and comparisons across a season. Each of
@@ -329,14 +330,17 @@ once it is built.
   reading files on its own machine never opens the server's cache, so it reads the log; its
   reads through a server use the server's files.
 
-The resolver gives every held path of every fixture and of a log of edge cases the decode's
-samples to the bit, value bits included, and the data endpoint's series keep the decode's types
+The resolver gives every held and pooled path of every fixture and of a log of edge cases the
+decode's samples to the bit, value bits included, and the data endpoint's series keep the decode's types
 and decode problems. The five presentation routes answer their 39 cases from the file as from
 the log, against the same oracle. The conformance sweep calls every tool on every fixture again
 with a column file and requires the same result. Native reads match the log's batch by batch,
 every sample's record facts and the problems included, in sixteen ways on a log of edge cases
 and on every fixture, and a test names the reads a file must serve and those it must leave to
-the log. Thirty-four planted mistakes, from a float read as a double to a record's index reported as its position, each failed them; thirteen first passed, and each now has a test of its own, among them a decode problem lost when a file answers, an integer past 2^53 taken for its neighbor, an infinite sample counted as a value, and a rate's last point.
+the log. Thirty-four planted mistakes, from a float read as a double to a record's index
+reported as its position, each failed them; thirteen first passed, and each now has a test of
+its own, among them a decode problem lost when a file answers, an integer past 2^53 taken for
+its neighbor, an infinite sample counted as a value, and a rate's last point.
 
 Measured on the three team logs, read-only, through the tools themselves: twelve whole-log
 overviews by `read_entry` at 1,000 points took 10 to 33 ms from the files against 24 to 87 ms on
@@ -361,6 +365,124 @@ The maintainer decided these on 2026-10-21.
 3. **The deep switch.** Every numeric reader works on the series directly, in place of reading a
    file and turning its samples back into one object per sample, which would have saved the
    decode but kept the per-sample work.
+
+## The recording phase: design
+
+Proposed on 2026-10-22 for the maintainer's review, and its
+[questions](#questions-for-the-maintainer) answered the same day, each as proposed.
+
+### What the open file costs today
+
+The capture's index keeps one object on the heap for every record it writes, with the record's
+position, size and time, and, for ten minutes by default, the value itself as the robot sent it
+(`capture.hot_window_sec`), so that a recent record can be read without mapping the file again.
+The index stays until the file closes, and the open log cannot be unloaded when memory runs
+short. Every read of the open file decodes each entry it asks for from the first record.
+
+A throwaway prototype, outside the product code, measured today's index against the design
+below, on 100 numeric topics at 50 Hz, the soak's 5,000 values a second, for 30 minutes (9
+million values), with the files already in the operating system's cache:
+
+| Question | Today's index | Columns, packed |
+|---|---|---|
+| Heap kept per value | 52 bytes, 62 with the ten-minute hot window | 0.24 bytes |
+| Heap after two hours at the soak's rate | about 1.9 GB, 2.0 GB with the hot window | about 3 MB |
+| Writer's thread, per value | 60 to 75 ns | 31 ns |
+| Disk per value | none | 13 bytes |
+| Twelve panels, the last five minutes at 1,000 points, after 30 minutes | 122 to 153 ms | 2.1 ms |
+
+Writing the record to the WPILOG takes about 4.1 µs a value, so the index is a small part of
+the writer's work either way. The Grafana plan's figure was 82 bytes a value; these synthetic
+topics are all numbers. Unpacked blocks took 28 bytes a value on disk, 27 ns on the writer's
+thread and 0.35 ms for the twelve panels. The tail's heap is its entries' arrays, 1.4 MB for these
+100 topics, and 16 bytes for each block written.
+
+### The design
+
+1. **What the open file's columns hold** (question 1). For every entry, each record's time,
+   byte position and payload size: what native reads, follows and windows need, for strings and
+   structs too. For every numeric entry, a double, float, integer or boolean, the value as well.
+   Records keep the order the writer wrote them; a read in time order sorts an entry logged out
+   of order, as it does today.
+2. **Blocks, and the tail** (question 2). The writer's thread appends each record's facts and
+   value to its entry's tail, a few primitive arrays of at most 512 records, and writes a full
+   tail as one block. A block packs times and positions as differences from the record before,
+   keeps a payload size once when the block's sizes agree, and keeps values whole. A tail grows
+   from a few records as its entry does, so an entry logged once a minute holds a few bytes, not
+   a block.
+3. **Where the file lives.** A scratch file in the disk cache's directory, named by the capture's
+   identity, written as blocks fill and never forced to disk. The operating system keeps it in
+   its cache and writes it out as memory requires, so neither the heap nor the process's memory
+   grows with the session. The file counts against the cache's limit and is never trimmed while
+   its capture is open. It is deleted when the capture's index retires, after its last reader,
+   and by the startup sweep after a crash; it is never read after a restart. The WPILOG stays
+   the record, and the finished file's column file is built from it after close, as now.
+4. **What a reader sees.** A view's prefix stays fixed as today: each entry's records up to the
+   publication boundary. A block stays readable in the heap until the next flush tick maps the
+   file past it, so the file is mapped again at most four times a second, as the WPILOG's
+   mapping is today; blocks below the mapping are read from it.
+5. **The hot window keeps only what has no column** (question 4). A number is read from its
+   column, so a numeric record keeps no object. Strings, raw values, structs and arrays keep
+   their recent wire values for the hot window, since their bytes are read from the WPILOG's
+   mapping.
+6. **The same readers as a finished file.** The open log answers numeric reads from its columns
+   through the series the readers already take from finished files, so `read_entry`, the data
+   endpoint, the statistics tools and Grafana's live windows on a recording cost what their
+   window holds. Native reads and follows take each record's facts from the columns, and its
+   value from a column or from the WPILOG as before.
+7. **When the disk cannot take the file** (question 3). When the disk cache is off, a block
+   cannot be written, or the cache's filesystem is down to the recording's reserve, the blocks
+   stay in the heap, packed: 13 bytes a value, a quarter of today's index. The capture's status
+   says so.
+
+At close, the open log goes on serving its prefix from the columns until it is unloaded, while
+the finished file's column file is built in the background as now. A capture resumed after a
+gap in the same process keeps its columns; a rollover starts a new file with new columns.
+
+### Questions for the maintainer
+
+1. **Struct fields while recording.** For: whether a live panel of a pose or a module state reads
+   a column, as a number does, or decodes the records in its window. Decoding a pose and taking
+   its four numbers costs 151 ns on the writer's thread, and four module states with eight
+   numbers 284 ns, against about 4.1 µs to write the record: 4 to 7% more work on each struct
+   record, on the thread a recording comes first on. Decoding a window instead costs a reader
+   about 2.3 ms for the last five minutes of a 50 Hz pose, 15,000 records, so twelve such panels
+   take about 30 ms of the gate's 250. A struct value that arrives before its schema would also
+   have no columns. Proposed: struct fields decode their window; the writer's thread takes only
+   numbers it already holds.
+2. **Packed or whole blocks.** For: the open file's size on disk. Whole values take 28 bytes a
+   value: two hours at the soak's rate is about 1 GB, and a file at its 1 GiB rollover, about 70
+   million values, brings 2 GB. Packed, 13 bytes: about 470 MB for two hours and 0.9 GB at
+   rollover, for 4 ns more a value on the writer's thread and 2.1 ms against 0.35 ms for twelve
+   panels. Proposed: packed, as format 2 packs a finished file's positions.
+3. **When the disk cannot take the file.** For: live reads of a recording whose cache disk is
+   full, or whose server runs with the disk cache off. Proposed: the blocks stay in the heap,
+   packed, at 13 bytes a value: two hours at the soak's rate is about 470 MB, against 1.9 GB for
+   today's index. The alternative stops indexing the recording until it closes: the WPILOG is
+   still written, but its open file answers no reads.
+4. **Numbers leave the hot window.** For: the memory the last ten minutes hold. At the soak's
+   rate the hot window keeps 3 million values as objects, about 30 bytes each on top of the
+   index, about 90 MB. With the numbers in columns, a numeric record keeps none, and
+   `capture.hot_window_sec` then holds recent strings, raw values and structs only. Proposed:
+   yes, with the setting's documentation changed to say so.
+
+The maintainer answered all four on 2026-10-22: as proposed. Struct fields decode their window,
+blocks are packed, blocks stay in the heap when the disk cannot take them, and numbers leave the
+hot window.
+
+### Tests that must fail first
+
+- At sampled publication boundaries of a recorded capture, every view's records, facts and
+  values from the columns equal those a fresh scan of the same WPILOG prefix gives, for every
+  entry type, bit for bit.
+- The heap after a full collection does not grow with the session: after ten million recorded
+  values it is within 16 MB of where it started, counted rather than timed.
+- A ten-second window on a two-hour capture reads only the blocks that hold it, counted.
+- A leftover open file is removed at startup and never read; a block that cannot be written
+  moves the capture's columns to the heap, and every read before and after gives the same
+  answers.
+- Grafana's gate, opt-in like the soak test, passes after the change and fails on today's code
+  at two hours.
 
 ## Costs and risks
 
@@ -389,7 +511,8 @@ The maintainer decided these on 2026-10-21.
    behind the differential tests. Built: the format, writer and reader; the files placed in the
    disk cache and built in the background; and the readers moved onto them.
 2. **The recording.** The capture writes the open file's columns as it records, replacing the
-   per-value index. This comes before the Grafana plan's stage 1, whose gate runs on it.
+   per-value index. This comes before the Grafana plan's stage 1, whose gate runs on it. Its
+   [design](#the-recording-phase-design) is agreed.
 3. **Across sessions.** The Grafana plan's stage 3 reads column files across sessions, and the
    columnar store's revisit measures this against its targets: one entry across an event in
    under 2 s after a restart, and across a season in under 10 s. If reading every sample misses

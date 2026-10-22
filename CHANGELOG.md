@@ -747,6 +747,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- `doc/COLUMN_CACHE_PLAN.md` proposes the recording phase's design: the open capture's columns
+  written as it records, to a scratch file in the disk cache that is never forced to disk, so
+  the open file's index no longer grows the heap. A throwaway prototype on synthetic values at
+  the soak's rate measured 0.24 bytes of heap kept per value against 52 for today's index, 31 ns
+  a value on the writer's thread against 60 to 75, 13 bytes a value on disk, and twelve
+  five-minute panels in 2.1 ms against 122 to 153 ms after 30 minutes. The maintainer answered
+  its four questions as proposed: struct fields decode their window while recording, blocks are
+  packed, blocks stay in the heap when the disk cannot take them, and numbers leave the hot
+  window. Previously the plan described the phase in one paragraph, with nothing measured.
+
 - `doc/COLUMN_CACHE_PLAN.md` proposes column files: each log's numeric entries kept as
   columns beside it in the disk cache, read by memory-mapping with no engine. A throwaway prototype on synthetic logs answered one entry across a season's
   128 logs in about 13 ms against 1.45 s for today's path after a restart, and needed 16.6
@@ -757,7 +767,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value matched today's decode, and a column file answered an overview in under a millisecond
   after a restart, against 0.1 to 0.9 s. Previously the plans weighed only summaries and an
   engine-backed columnar store. The plan also records the first build of the format, its writer
-  and its reader, which no reader uses yet: an overview reads every sample, since block
+  and its reader: an overview reads every sample, since block
   summaries would change the endpoint's means in their last bits; a struct array of more than
   64 elements is left to the log; and a build decodes each entry outside the cache of decoded
   values, after the first build ran a 4 GB heap out of memory on a 2 GiB team log. The
