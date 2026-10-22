@@ -270,7 +270,7 @@ Each step is explained in the sections that follow.
 2. The tool runs inside a wrapper that every tool shares, which turns an exception or an out-of-memory condition into an explained result.
 3. A tool that reads a log asks the log manager for the log at `path`. The path is checked against permanent directories and live session leases. A log already in memory is returned at once, once a look at the file's attributes shows it is still the file the log was read from; a file that changed is loaded again. Otherwise the file is mapped into memory and scanned once.
 4. The tool finds the signals it needs through the signal resolver. A tool that takes a scope or windows turns them into time windows through the shared scope handling.
-5. It reads the values it needs. An entry's values are decoded the first time any call asks for them, and then cached.
+5. It reads the values it needs. Numbers come from the log's column file once one is built; otherwise an entry's values are decoded the first time any call asks for them, and then cached.
 6. It computes its result and, in most tools, builds it with the result builder: the status, the inputs, what was skipped or shortened, and data quality where the result rests on statistics.
 7. The base that log-reading tools share looks at the file again, and discards the result with an explained error if the file changed while the tool read it. Otherwise it adds a report of any records that failed to decode, a note when the log was not read to its end, and, to a success, the entries the tool read. A session that used the log before its file changed is told once that it was reloaded. The wrapper then enforces the result contract.
 8. The protocol handler adds the execution time and returns the result as the text of the reply.
@@ -857,6 +857,28 @@ Values are decoded the first time a tool asks for an entry, all of that entry's 
 
 Structs are decoded from the schemas the log records, using WPILib's schema parser. That covers any struct, including nested structs, enums, bit-fields, and a team's or a vendor's own types. For a struct whose schema the log does not record, WPILib's geometry and kinematics schemas are used, and a few types from common team templates are decoded with an assumed layout and marked as assumed. Each struct type's decoding plan is compiled on first use and cached. [TOOLS.md](TOOLS.md#data-types) shows what decoded values look like.
 
+### Numeric reads
+
+Every numeric reader works on one series: a path's samples as numbers by position, each with
+its logged microsecond, read from the log's column file once one is built and otherwise from
+the decode. Windows, angle unwrapping, buckets, data quality, summary statistics,
+interpolation and exact pages are computed on the series, so both sources give the same
+answers through the same code, and a read from a file makes no object per sample. The signal
+resolver, `read_entry`, the data endpoint, `render_chart`, the statistics and query tools and
+the visualization's charts read this way. Tools that read whole struct records, strings and
+REV signals use the decoded values.
+
+A native read of one numeric leaf takes its samples and their record facts from the file,
+through the same record selection as the log's records, when the file holds the answer
+exactly: every record of the entry decoded and holds the leaf, the leaf is neither an enum,
+whose label the file does not keep, nor a uint64 field, which native reads keep unsigned, and
+a read in file order or from a first record index needs every record's index to be its
+position. Any other read takes the log's records. A loaded log opens its content's file the
+first time a read needs it and closes it with its own mapping, after its last reader, since
+unmapping a file while a thread reads it crashes the process. A file found damaged is read no
+more, removed and built again. The local reader never opens the server's cache, so it reads the
+log.
+
 ## Foreground and supervisor ownership
 
 A named foreground HTTP `run` may use port zero: the listener chooses its own available port
@@ -999,7 +1021,8 @@ store's session manifest records; asking touches only memory, since a store asks
 thread. A closed capture still served from memory is read again from its file for its build,
 privately, so the copy in memory goes on serving reads. A build waits while the heap is short or while a store would refuse a copy for want of
 recording's reserve, publishes nothing if the file changed while it was read, and trims the
-cache to its limit afterwards, keeping the files readers hold. Nothing reads them yet;
+cache to its limit afterwards, keeping the files readers hold. Numeric reads take their
+numbers from them ([Numeric reads](#numeric-reads));
 [the column file plan](COLUMN_CACHE_PLAN.md) gives the design and the measurements, and a
 guard test, like the scan index's, fails when a source that shapes a file changes until the
 change is decided.

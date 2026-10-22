@@ -197,6 +197,7 @@ class ToolConformanceTest {
   void conformance() throws Exception {
     var logManager = LogManager.getInstance();
     var calls = new ArrayList<Call>();
+    int withColumnFiles = 0;
 
     for (var tool : tools) if (!ToolArguments.takesPath(tool)) {
       for (var variant : ToolArguments.variants(tool, null, null, fixtures, exportDir)) {
@@ -260,7 +261,27 @@ class ToolConformanceTest {
           }
         }
       } finally { logManager.unloadLog(path); }
+      // The same answers when the tools read the log's numbers from its column file.
+      logManager.testReadColumnFiles(true);
+      try {
+        org.triplehelix.wpilogmcp.log.ColumnFixtures.build(logManager, fixture.path());
+        withColumnFiles++;
+        for (var expected : baseline) {
+          var fromColumns = run(expected.tool(), expected.variant().args());
+          var a = ConformanceChecks.normalize(expected.call().result());
+          var b = ConformanceChecks.normalize(fromColumns);
+          if (a == null || !a.equals(b)) calls.add(new Call(expected.tool().name(), fixture.id(),
+              expected.variant().label(), fromColumns, List.of(Check.COLUMN_FILE)));
+        }
+      } catch (IllegalStateException unproven) {
+        // A log whose content its scan index does not prove has no column file to read.
+      } finally {
+        logManager.testReadColumnFiles(false);
+        logManager.unloadLog(path);
+      }
     }
+    assertTrue(withColumnFiles * 5 >= fixtures.size() * 4,
+        "fixtures read from column files: " + withColumnFiles + " of " + fixtures.size());
 
     calls.addAll(VisualizationConformance.exercise(FixtureLogs.defaultDirectory().resolve("visualization-state"), fixtures.get(0).path()));
     calls.addAll(CompareSessionsConformance.exercise(FixtureLogs.defaultDirectory().resolve("compare-sessions"),

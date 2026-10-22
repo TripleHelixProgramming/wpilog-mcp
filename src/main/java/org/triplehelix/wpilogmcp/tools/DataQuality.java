@@ -128,6 +128,26 @@ public record DataQuality(
       return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isBoolean() && value.getAsBoolean();
     } catch (RuntimeException invalid) { return false; }
   }
+  /**
+   * As {@link #fromSegments(org.triplehelix.wpilogmcp.log.LogData, String, List)}, over samples by
+   * position, so a column file's samples are scored without making a value of each; equal values
+   * are told by their bits, which compare as the values' own {@code equals} does.
+   */
+  public static DataQuality fromSamples(org.triplehelix.wpilogmcp.log.LogData log, String entry,
+      List<org.triplehelix.wpilogmcp.read.NumericSamples> segments) {
+    var info = log.entries().get(entry);
+    return fromSamples(segments, info != null && sampled(info.metadata()));
+  }
+
+  static DataQuality fromSamples(List<org.triplehelix.wpilogmcp.read.NumericSamples> segments, boolean sampled) {
+    var accumulator = new Accumulator(sampled);
+    for (var samples : segments) {
+      accumulator.segment();
+      for (int i = 0; i < samples.size(); i++) accumulator.add(samples.seconds(i), samples.number(i), samples.valueBits(i));
+    }
+    return accumulator.result();
+  }
+
   static DataQuality fromSegments(List<List<TimestampedValue>> segments, boolean sampled) {
     var accumulator = new Accumulator(sampled);
     for (var values : segments) {
@@ -153,6 +173,8 @@ public record DataQuality(
     private double first;
     private double last;
     private Object previous;
+    private long previousBits;
+    private boolean previousNumber;
     private boolean inSegment;
     private double[] intervals = new double[16];
 
@@ -184,12 +206,33 @@ public record DataQuality(
       }
       last = timestamp;
       previous = value;
+      previousNumber = false;
+    }
+
+    /** As {@link #add(double, Object)}, for a number whose equality its bits tell. */
+    void add(double timestamp, double number, long bits) {
+      n++;
+      if (!Double.isFinite(number)) nanCount++;
+      if (!inSegment) {
+        inSegment = true;
+        first = timestamp;
+      } else if (timestamp > last) {
+        if (count == intervals.length) intervals = Arrays.copyOf(intervals, count * 2);
+        intervals[count++] = timestamp - last;
+        pairs++;
+        if (previousNumber && bits == previousBits) equalPairs++;
+      }
+      last = timestamp;
+      previous = null;
+      previousBits = bits;
+      previousNumber = true;
     }
 
     private void close() {
       if (inSegment) timeSpan += last - first;
       inSegment = false;
       previous = null;
+      previousNumber = false;
     }
 
     DataQuality result() {

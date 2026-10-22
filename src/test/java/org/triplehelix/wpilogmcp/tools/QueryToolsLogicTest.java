@@ -204,6 +204,20 @@ class QueryToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("a non-finite sample holds the previous value instead of deciding the condition")
+    void nonFiniteSamplesHoldThePreviousValue() throws Exception {
+      var log = buildNumericLog("/Speed", new double[]{0, 1, 2, 3},
+          new double[]{5, Double.POSITIVE_INFINITY, 15, Double.NEGATIVE_INFINITY});
+      putLogInCache(log);
+      var result = tool.execute(makeArgs("/Speed", "gt", 10)).getAsJsonObject();
+      assertEquals(1, result.get("transition_count").getAsInt(), result::toString);
+      var transition = result.getAsJsonArray("transitions").get(0).getAsJsonObject();
+      assertEquals(2.0, transition.get("timestamp_sec").getAsDouble(), 1e-12);
+      assertEquals(15.0, transition.get("value").getAsDouble(), 1e-12);
+      assertEquals(1.0, result.get("total_true_sec").getAsDouble(), 1e-12, "true from 2 s to the log's end at 3 s");
+    }
+
+    @Test
     @DisplayName("< symbol operator works same as lt")
     void lessThanSymbol() throws Exception {
       var log = buildNumericLog("/Voltage",

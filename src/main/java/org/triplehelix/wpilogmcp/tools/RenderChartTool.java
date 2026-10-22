@@ -69,7 +69,7 @@ public final class RenderChartTool extends LogRequiringTool {
     spec.add("phases", phases(timeline, scope));
     spec.addProperty("phase_basis", timeline.hasEnabledData() ? "logged Driver Station state through the signal resolver" : "no conventional Driver Station state; no phases drawn");
     spec.addProperty("open_url", openUrl(log.path().toString(), names, scope, kind));
-    var series = new JsonArray(); var summaries = new JsonArray(); var measured = new ArrayList<List<TimestampedValue>>();
+    var series = new JsonArray(); var summaries = new JsonArray(); var measured = new ArrayList<org.triplehelix.wpilogmcp.read.NumericSamples>();
     var builder = ResponseBuilder.success().addInputScope(scope);
     DataQuality worst = null;
     var labels = new ArrayList<String>();
@@ -94,11 +94,11 @@ public final class RenderChartTool extends LogRequiringTool {
         int bucketCount = maxPoints != null ? maxPoints : width - 76; // Plot margins: 58 left, 18 right.
         if (kind.equals("time_series") && values.size() > (maxPoints != null ? maxPoints : limit) && (maxPoints != null || !paged)) {
           var buckets = new JsonArray();
-          for (var part : parts) if (!part.isEmpty()) {
+          for (var part : parts) if (part.size() > 0) {
             var reduced = Buckets.of(part, null, null, bucketCount);
             for (var bucket : reduced.buckets()) {
               var json = new Gson().toJsonTree(bucket).getAsJsonObject();
-              json.addProperty("end", Math.min(part.get(part.size() - 1).timestamp(), bucket.start() + reduced.bucketSec()));
+              json.addProperty("end", Math.min(part.seconds(part.size() - 1), bucket.start() + reduced.bucketSec()));
               buckets.add(json);
             }
           }
@@ -108,16 +108,16 @@ public final class RenderChartTool extends LogRequiringTool {
           drawn(item, paged ? "page" : "buckets", bucketPage.size());
           item.addProperty("bucket_rule", "equal duration within each scope window; extrema and first/last retained");
         } else {
-          var page = values.stream().skip(offset).limit(paged ? limit : Integer.MAX_VALUE).toList();
+          int end = (int) Math.min(values.size(), (long) offset + (paged ? limit : Integer.MAX_VALUE));
           var points = new JsonArray();
-          for (var tv : page) { var point = new JsonArray(); point.add(tv.timestamp()); point.add(toDouble(tv.value())); points.add(point); }
+          for (int i = offset; i < end; i++) { var point = new JsonArray(); point.add(values.seconds(i)); point.add(values.number(i)); points.add(point); }
           ResultContract.addLimitedList(item, "points", points, Math.max(0, values.size() - offset), paged ? limit : Integer.MAX_VALUE);
           drawn(item, paged ? "page" : "all samples", points.size());
         }
       }
       series.add(item); builder.addInputSignal("series" + series.size(), signal);
     }
-    if (measured.stream().allMatch(List::isEmpty)) return ResponseBuilder.noMatch("No finite samples in the requested window")
+    if (measured.stream().allMatch(values -> values.size() == 0)) return ResponseBuilder.noMatch("No finite samples in the requested window")
         .addData("looked_for", new Gson().toJsonTree(names)).addProperty("hint", "Widen the time window or name an entry with samples").addInputScope(scope).build();
     spec.add("series", series);
     if (kind.equals("histogram")) spec.addProperty("histogram_rule", "equal-width ceil(sqrt(n)) bins, capped at 64; [low,high), last includes max; constant data one unit-wide bin");
@@ -170,8 +170,9 @@ public final class RenderChartTool extends LogRequiringTool {
     if (result.isEmpty() || result.size() > 16) throw new IllegalArgumentException("Supply name or entries with 1..16 series");
     return List.copyOf(new LinkedHashSet<>(result));
   }
-  static JsonArray histogram(List<TimestampedValue> values) { return ChartData.histogram(values); }
-  private static JsonObject pairs(List<TimestampedValue> x, List<TimestampedValue> y, int offset, int limit) {
+  static JsonArray histogram(org.triplehelix.wpilogmcp.read.NumericSamples values) { return ChartData.histogram(values); }
+  private static JsonObject pairs(org.triplehelix.wpilogmcp.read.NumericSamples x, org.triplehelix.wpilogmcp.read.NumericSamples y,
+      int offset, int limit) {
     return ChartData.pairs(x, y, offset, limit);
   }
   private static JsonArray phases(MatchTimeline timeline, TimeScope scope) {

@@ -138,6 +138,30 @@ class PresentationReductionDifferentialTest {
     verifyAll(path, spec, points);
   }
 
+  /**
+   * The same answers, against the same oracle, when the log's numbers come from its column file:
+   * every shape but the plain array, which a column file does not hold, is read from it.
+   */
+  @ParameterizedTest(name = "{0}, max_points={1}, from the column file")
+  @MethodSource("matrix")
+  void fiveRoutesAnswerTheSameFromTheColumnFile(Spec spec, int points) throws Exception {
+    var path = write(spec);
+    logs.testReadColumnFiles(true);
+    try {
+      org.triplehelix.wpilogmcp.log.ColumnFixtures.build(logs, path);
+      if (spec.shape() != Shape.ARRAY) {
+        try (var use = logs.acquire(path.toString())) {
+          var field = spec.shape().field == null ? org.triplehelix.wpilogmcp.read.FieldPath.ROOT
+              : org.triplehelix.wpilogmcp.read.FieldPath.parse(spec.shape().field);
+          assertTrue(use.log().numericColumn(ENTRY, field).isPresent(), "read from the column file");
+        }
+      }
+      verifyAll(path, spec, points);
+    } finally {
+      logs.testReadColumnFiles(false);
+    }
+  }
+
   @Test void theIntegerOracleHasLiteralBoundaryAndAdjacentTimeWitnesses() {
     var points = List.of(new Point(0, 10), new Point(0, 11), new Point(1, 20),
         new Point(1, 21), new Point(5, 30), new Point(5, 31));

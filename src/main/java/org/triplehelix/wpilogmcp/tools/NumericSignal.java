@@ -6,6 +6,7 @@ package org.triplehelix.wpilogmcp.tools;
 
 import org.triplehelix.wpilogmcp.read.FieldPath;
 import org.triplehelix.wpilogmcp.read.AngleUnwrapper;
+import org.triplehelix.wpilogmcp.read.NumericSamples;
 
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
@@ -82,19 +83,34 @@ final class NumericSignal {
   private final FieldPath path;
   private final String type;
   private final AngleUnit angle;
+  private final NumericSamples samples;
   private final List<TimestampedValue> values;
   private final int recordCount;
   private final int recordsWithoutValue;
 
   private NumericSignal(String entry, FieldPath path, String type, AngleUnit angle,
-      List<TimestampedValue> values, int recordCount, int recordsWithoutValue) {
+      NumericSamples samples, List<TimestampedValue> values, int recordCount, int recordsWithoutValue) {
     this.entry = entry;
     this.path = path;
     this.type = type;
     this.angle = angle;
+    this.samples = samples;
     this.values = values;
     this.recordCount = recordCount;
     this.recordsWithoutValue = recordsWithoutValue;
+  }
+
+  /**
+   * A column's samples as a signal's values are: Doubles, compared as doubles, whatever kind the
+   * column keeps, since the projection below converts every leaf to a Double.
+   */
+  private static NumericSamples asDoubles(NumericSamples samples) {
+    return new NumericSamples() {
+      @Override public int size() { return samples.size(); }
+      @Override public long timeUs(int index) { return samples.timeUs(index); }
+      @Override public double seconds(int index) { return samples.seconds(index); }
+      @Override public double number(int index) { return samples.number(index); }
+    };
   }
 
   /** The entry the values come from. */
@@ -123,7 +139,7 @@ final class NumericSignal {
 
   /** This signal with its values declared an angle in {@code unit}. */
   NumericSignal asAngle(AngleUnit unit) {
-    return new NumericSignal(entry, path, type, unit, values, recordCount, recordsWithoutValue);
+    return new NumericSignal(entry, path, type, unit, samples, values, recordCount, recordsWithoutValue);
   }
 
   /**
@@ -162,6 +178,15 @@ final class NumericSignal {
    */
   List<TimestampedValue> values() {
     return values;
+  }
+
+  /**
+   * The same values as samples by position, read from the log's column file when it holds the
+   * entry and otherwise from the decoded values: what the numeric steps read, so that a column
+   * file's samples are never made into objects. They belong to the current call, on one thread.
+   */
+  NumericSamples samples() {
+    return samples;
   }
 
   /** Records of the entry. */
@@ -204,31 +229,36 @@ final class NumericSignal {
     return o;
   }
 
+  /** The samples a seconds window keeps, found by position, as filtering the values keeps them. */
+  NumericSamples inWindow(org.triplehelix.wpilogmcp.read.SecondsWindow window) {
+    return NumericSamples.range(samples, window.from(samples), window.to(samples));
+  }
+
   /**
-   * Values of this signal (e.g. a window of {@link #values()}) made continuous when it is an
+   * Samples of this signal (e.g. a window of {@link #samples()}) made continuous when it is an
    * angle: each step is taken as the shortest turn, so crossing +-180 degrees does not jump by a
    * full turn; the first value is kept as logged. Other signals are returned unchanged. NaN
    * values stay NaN and do not break continuity.
    */
-  List<TimestampedValue> unwrap(List<TimestampedValue> values) {
-    if (!isAngle() || values.isEmpty()) return values;
-    var out = new ArrayList<TimestampedValue>(values.size());
+  NumericSamples unwrap(NumericSamples window) {
+    if (!isAngle() || window.size() == 0) return window;
+    var numbers = new double[window.size()];
     var unwrapper = new AngleUnwrapper(angle.period);
-    for (var tv : values) {
-      double v = (Double) tv.value();
+    for (int i = 0; i < numbers.length; i++) {
+      double v = window.number(i);
       double unwrapped = unwrapper.apply(v);
-      out.add(!Double.isFinite(v) || unwrapped == v ? tv : tv.withValue(unwrapped));
+      numbers[i] = !Double.isFinite(v) || unwrapped == v ? v : unwrapped;
     }
-    return out;
+    return NumericSamples.withNumbers(window, numbers);
   }
 
   /** How many steps between consecutive finite values jump by more than a half turn. */
-  int wrapCount(List<TimestampedValue> values) {
+  int wrapCount(NumericSamples values) {
     if (!isAngle()) return 0;
     int wraps = 0;
     double previous = Double.NaN;
-    for (var tv : values) {
-      double v = (Double) tv.value();
+    for (int i = 0; i < values.size(); i++) {
+      double v = values.number(i);
       if (!Double.isFinite(v)) continue;
       if (!Double.isNaN(previous) && Math.abs(v - previous) > angle.period / 2) wraps++;
       previous = v;
@@ -292,6 +322,17 @@ final class NumericSignal {
     var type = log.entries().get(entryName).type();
     var structName = StructSchemas.structName(type);
     validateProjectionType(log, entryName, type, structName, path);
+    var angle = structName != null
+        ? angleUnit(log.structSchemas(), structName, path) : AngleUnit.NONE;
+
+    // The column file holds exactly what the projection below would give, without decoding.
+    var column = log.numericColumn(entryName, path);
+    if (column.isPresent()) {
+      var held = column.get();
+      var samples = asDoubles(held.samples());
+      return new NumericSignal(entryName, path, type, angle, samples, NumericSamples.asValues(samples),
+          held.decoded(), held.recordsWithoutValue());
+    }
 
     var raw = log.values().get(entryName);
     if (raw == null) raw = List.of();
@@ -317,9 +358,7 @@ final class NumericSignal {
     if (!path.isRoot() && out.isEmpty() && !raw.isEmpty()) {
       throw fieldNotNumeric(log, entryName, type, structName, path, raw);
     }
-    var angle = structName != null
-        ? angleUnit(log.structSchemas(), structName, path) : AngleUnit.NONE;
-    return new NumericSignal(entryName, path, type, angle, out, raw.size(), without);
+    return new NumericSignal(entryName, path, type, angle, NumericSamples.of(out), out, raw.size(), without);
   }
 
   static void validateProjectionType(LogData log, String entry, String type, String structName, FieldPath path) {

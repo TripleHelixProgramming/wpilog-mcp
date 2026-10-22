@@ -307,12 +307,21 @@ final class DataEndpoint {
                 + series.type(), "Ask for a numeric field inside it (get_entry_info lists them), "
                 + "or leave max_points out to read every sample");
           }
-          var numeric = series.numeric() ? values : asNumbers(values);
-          buckets = numeric.size() > request.maxPoints()
-              ? Buckets.of(numeric, request.startTime(), request.endTime(), request.maxPoints())
-              : null;
+          var numbers = presentation.samples();
+          if (numbers != null) {
+            // By position: the window's numbers are bucketed where they lie.
+            buckets = numbers.size() > request.maxPoints()
+                ? Buckets.of(numbers, request.startTime(), request.endTime(), request.maxPoints())
+                : null;
+            if (!series.numeric()) values = org.triplehelix.wpilogmcp.read.NumericSamples.asValues(numbers);
+          } else {
+            var numeric = series.numeric() ? values : asNumbers(values);
+            buckets = numeric.size() > request.maxPoints()
+                ? Buckets.of(numeric, request.startTime(), request.endTime(), request.maxPoints())
+                : null;
+            if (!series.numeric()) values = numeric;
+          }
           valueType = series.numeric() ? EntryData.arrowType(log, series) : new ArrowType.Float64();
-          if (!series.numeric()) values = numeric;
         } else {
           valueType = EntryData.arrowType(log, series);
         }

@@ -122,6 +122,15 @@ final class AccessTrackingLogData implements LogData {
     }
   }
 
+  /** A column read is a read of its entry, as a read of the entry's values is. */
+  @Override
+  public java.util.Optional<org.triplehelix.wpilogmcp.log.NumericColumn> numericColumn(String entryName,
+      org.triplehelix.wpilogmcp.read.FieldPath path) {
+    var column = delegate.numericColumn(entryName, path);
+    if (column.isPresent()) read.add(entryName);
+    return column;
+  }
+
   /** Most entry names {@link #recordInputs} lists before giving only the total. */
   static final int MAX_LISTED_INPUTS = 10;
 

@@ -186,7 +186,7 @@ The store checks also distinguish a new named robot with a logged serial from a 
 - a note on every result computed from a log that was not read to its end;
 - every output the tool's description names.
 
-The output must also be deterministic: each call on a log is repeated with the log's entries reversed and twice shuffled, and must give the same result. The REV log tools are exempt, because they depend on the synchronization done when the log was loaded. Tools whose needed parameters are optional in their schema get argument variants that reach their real analysis. `compare_sessions` reads only catalogued stores, which the fixture directories are not, so the sweep also compares two sessions of a synthetic store with every signal role and pooling. `src/test/resources/conformance/known-failures.txt` is a ratchet: a violation not listed there fails the build, and so does a listed one that no longer occurs. It should stay empty. The report of every call is `build/reports/conformance/report.txt`.
+The output must also be deterministic: each call on a log is repeated with the log's entries reversed and twice shuffled, and must give the same result. Each fixture is then given a column file, built as the server builds one, and every call must give the same result again when its numbers come from the file (`COLUMN_FILE` in the report). The REV log tools are exempt, because they depend on the synchronization done when the log was loaded. Tools whose needed parameters are optional in their schema get argument variants that reach their real analysis. `compare_sessions` reads only catalogued stores, which the fixture directories are not, so the sweep also compares two sessions of a synthetic store with every signal role and pooling. `src/test/resources/conformance/known-failures.txt` is a ratchet: a violation not listed there fails the build, and so does a listed one that no longer occurs. It should stay empty. The report of every call is `build/reports/conformance/report.txt`.
 
 `RenderChartTest` checks requested PNG dimensions, full-window summaries against independent
 fixture arithmetic and `get_statistics`, histogram bins, step holds, resolver-only phases,
@@ -256,6 +256,20 @@ lazy log's record reads, the scan and its offsets, the mapped reader, the field 
 the record cursors, and the WPILib access adapter. A change that alters a file's bytes or
 their meaning raises the format or recipe version, and files of another version are removed
 by the startup sweep; unchanged answers require a recorded explanation.
+
+**Column files.** The format's tests compare every column of every fixture with the tools' own
+reads and refuse damaged, crafted and truncated files. With a file built, the signal resolver
+must give every held and pooled path of every fixture and of a log of edge cases the decode's
+samples to the bit, including the bits that tell repeated values apart, and the data endpoint's
+series must keep the decode's value types and decode problems. The five presentation routes
+(`read_entry`, the data endpoint's Arrow and CSV, native reductions, the preview and the chart)
+must give the oracle's answers from the file as from the log, and native reads must give the
+log's batches, samples, record facts, problems and counts in sixteen ways: time and file order,
+windows, small batches and byte budgets, first record indexes, record limits and reductions.
+They are read every way on a log of edge cases and on each fixture entry's first held path. A
+test names the reads a file must serve and those it must leave to the log, and another checks
+that a file a loaded log holds counts as in use, which the cache's trim keeps, and that it closes
+with the log's mapping.
 
 **Runtime-native guard.** `./gradlew build` reaches `verifyRuntimeNativeLibraries` through
 `check`. The guard inspects the main application runtime classpath, including resource directories and

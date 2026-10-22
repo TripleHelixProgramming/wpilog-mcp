@@ -1288,18 +1288,18 @@ public final class RobotAnalysisTools {
             continue;
           }
           if (!scope.isAll()) stats.add("scope", scope.toJson());
-          var windows = StatisticsTools.finiteWindows(signal, scope,
+          var segments = scope.split(signal.samples());
+          var windows = SampleWindows.finiteWindows(signal, segments,
               signal.isAngle() && !signal.multiValued());
-          var values = StatisticsTools.flatten(windows);
+          var values = SampleWindows.concat(windows);
           stats.addProperty("sample_count", values.size());
-          if (values.isEmpty()) {
+          if (values.size() == 0) {
             warnings.add(filename + ": no finite values of " + signal.label()
                 + StatisticsTools.scopeText(scope) + ".");
             comparisons.add(stats);
             continue;
           }
-          var data = values.stream().mapToDouble(tv -> ((Number) tv.value()).doubleValue())
-              .toArray();
+          var data = SampleWindows.numbers(windows);
           var sorted = data.clone();
           java.util.Arrays.sort(sorted);
           int maxIndex = 0;
@@ -1311,9 +1311,9 @@ public final class RobotAnalysisTools {
           var summary = SummaryStatistics.of(data);
           var sObj = new JsonObject();
           sObj.addProperty("min", summary.min());
-          sObj.addProperty("min_at_sec", values.get(minIndex).timestamp());
+          sObj.addProperty("min_at_sec", values.seconds(minIndex));
           sObj.addProperty("max", summary.max());
-          sObj.addProperty("max_at_sec", values.get(maxIndex).timestamp());
+          sObj.addProperty("max_at_sec", values.seconds(maxIndex));
           sObj.addProperty("mean", summary.mean());
           sObj.addProperty("std_dev", summary.stdDev());
           sObj.addProperty("median", SummaryStatistics.median(sorted));
@@ -1332,7 +1332,7 @@ public final class RobotAnalysisTools {
                   + "start of the log (likely a boot transient); compare scope 'enabled' instead.");
             }
           }
-          var quality = DataQuality.fromSegments(log, signal.entry(), scope.split(signal.values()));
+          var quality = DataQuality.fromSamples(log, signal.entry(), segments);
           stats.add("data_quality", quality.toJson());
           if (worst == null || quality.qualityScore() < worst.qualityScore()) worst = quality;
           found.add(sObj);

@@ -190,6 +190,31 @@ class AlignEntriesTest extends FixtureToolTestBase {
       assertEquals(Math.PI, row.get(1).getAsDouble(), 1e-3);
     }
 
+    @Test
+    @DisplayName("previous and nearest give an angle's samples as logged, not unwrapped")
+    void anglesHeldAsLogged() throws Exception {
+      var rotations = new ArrayList<Map<String, Object>>();
+      for (double v : new double[] {3.1, -3.1, -3.0}) {
+        var m = new LinkedHashMap<String, Object>();
+        m.put("value", v);
+        rotations.add(m);
+      }
+      putLogInCache(new MockLogBuilder().setPath("/test/align.wpilog")
+          .addStructEntry("/Gyro", "struct:Rotation2d", new double[] {0, 1, 2}, rotations)
+          .addNumericEntry("/Times", new double[] {1.2, 1.9}, new double[] {0, 0})
+          .build());
+      for (var mode : List.of("previous", "nearest")) {
+        var args = new JsonObject();
+        args.add("names", names("/Gyro.value"));
+        args.addProperty("at", "/Times");
+        args.addProperty("interpolation", mode);
+        var rows = run("align_entries", args).getAsJsonArray("rows");
+        var values = new ArrayList<Double>();
+        rows.forEach(r -> values.add(r.getAsJsonArray().get(1).getAsDouble()));
+        assertEquals(mode.equals("previous") ? List.of(-3.1, -3.1) : List.of(-3.1, -3.0), values, mode);
+      }
+    }
+
     /** y(t) = x(t - 0.1): the second signal follows the first by 100 ms. */
     void putLagged() {
       putLagged(1.0);

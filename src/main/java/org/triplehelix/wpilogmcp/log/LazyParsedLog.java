@@ -28,6 +28,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.cache.DiskCache;
 import org.triplehelix.wpilogmcp.cache.ScanIndexSerializer;
+import org.triplehelix.wpilogmcp.columns.ColumnFile;
+import org.triplehelix.wpilogmcp.columns.ColumnFiles;
 import org.triplehelix.wpilogmcp.log.struct.EnumValue;
 import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
 import org.triplehelix.wpilogmcp.log.struct.StructMap;
@@ -82,6 +84,13 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   private int holders;
   private boolean unmapping;
   private volatile boolean unmapped;
+  /** The server's column files, once its manager builds them; null for a log read alone. */
+  private volatile ColumnFiles columnFiles;
+  /** This log's column file once opened; it closes with the mapping, since its readers hold the log. */
+  private volatile ColumnFile columnFile;
+  /** Set once the file proved damaged, or the mapping closed: this log reads its records then. */
+  private volatile boolean columnFileRefused;
+  private final Object columnLock = new Object();
 
   /**
    * The manager owns this mapping until eviction and the last in-flight use have both ended.
@@ -324,6 +333,19 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
   private void unmap() {
     unmapped = true;
+    ColumnFile file;
+    synchronized (columnLock) {
+      file = columnFile;
+      columnFile = null;
+      columnFileRefused = true;
+    }
+    if (file != null) {
+      try {
+        file.close();
+      } catch (IOException e) {
+        logger.warn("Could not release the column file of {}: {}", path, e.getMessage());
+      }
+    }
     try {
       ownedReader.close();
     } catch (IOException e) {
@@ -519,8 +541,106 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   public Optional<DecodeProblem> decodeProblem(String entryName) {
     if (!entries.containsKey(entryName)) return Optional.empty();
     // Known once decoded (even if the values were evicted since): never decode twice to ask
-    if (!decodedOnce.contains(entryName)) valuesView.get(entryName);
+    if (!decodedOnce.contains(entryName)) {
+      // A column file records the entry's problem as the same decode found it.
+      var file = columnFile();
+      var held = file == null ? null : file.entry(entryName).orElse(null);
+      if (held != null) return held.decodeProblem();
+      valuesView.get(entryName);
+    }
     return Optional.ofNullable(decodeProblems.get(entryName));
+  }
+
+  /** Lets this log read numbers from the column file of its content, once one is built. */
+  public void attachColumnFiles(ColumnFiles files) {
+    columnFiles = files;
+  }
+
+  /** Where the column file this log holds open is, when it holds one. */
+  public Optional<Path> openColumnFile() {
+    var files = columnFiles;
+    var hash = contentSha256;
+    return columnFile == null || files == null || hash == null ? Optional.empty() : files.path(hash);
+  }
+
+  @Override
+  public Optional<NumericColumn> numericColumn(String entryName, org.triplehelix.wpilogmcp.read.FieldPath path) {
+    var file = columnFile();
+    if (file == null) return Optional.empty();
+    var selection = file.select(entryName, path);
+    if (selection.isEmpty()) {
+      if (file.damage().isPresent()) refuse(file);
+      return Optional.empty();
+    }
+    var held = selection.get();
+    var typed = path.isRoot() && held.kind().filter(kind -> kind != org.triplehelix.wpilogmcp.columns.ColumnFileFormat.Kind.ENUM).isPresent()
+        ? held.values(held.all()) : null;
+    return Optional.of(new NumericColumn(held.samples(held.all()), held.entry().decoded(), held.recordsWithoutValue(), typed));
+  }
+
+  /**
+   * The records of a numeric leaf from the column file, as {@link #records(String, boolean)}
+   * gives them with recorded values and the leaf picked out; empty when the file does not hold
+   * them exactly, and the caller reads the log. A uint64 field is not served from it: native
+   * reads keep such a field unsigned, as a BigInteger, while its column holds the tools' Long.
+   */
+  public Optional<ColumnFile.HeldRecords> heldRecords(String entryName, org.triplehelix.wpilogmcp.read.FieldPath path) {
+    var file = columnFile();
+    if (file == null) return Optional.empty();
+    var held = file.records(entryName, path).orElse(null);
+    if (held == null) {
+      if (file.damage().isPresent()) refuse(file);
+      return Optional.empty();
+    }
+    // The two decodes differ only in a uint64 field's type, which one record shows.
+    Object leaf;
+    try {
+      leaf = path.resolveOne(records(entryName, true).decode(0));
+    } catch (RuntimeException unreadable) {
+      return Optional.empty();
+    }
+    return leaf != null && leaf.getClass() == held.decode(0).getClass() ? Optional.of(held) : Optional.empty();
+  }
+
+  /**
+   * The column file of this log's content, opened on first use, outside any lock; null when none
+   * is built yet, when it proved damaged, or once the mapping has closed.
+   */
+  private ColumnFile columnFile() {
+    if (columnFileRefused) return null;
+    var open = columnFile;
+    if (open != null) return open;
+    var files = columnFiles;
+    var hash = contentSha256;
+    if (files == null || hash == null || unmapped) return null;
+    var opened = files.open(hash, this.path).orElse(null);
+    if (opened == null) return null;
+    boolean kept;
+    synchronized (columnLock) {
+      kept = columnFile == null && !columnFileRefused && !unmapped;
+      if (kept) columnFile = opened;
+    }
+    if (kept) return opened;
+    try {
+      opened.close();
+    } catch (IOException e) {
+      logger.debug("Could not release a column file opened twice for {}: {}", this.path, e.getMessage());
+    }
+    return columnFileRefused ? null : columnFile;
+  }
+
+  /**
+   * A damaged file is read no more by this log, and is removed and built again. It stays open
+   * until the mapping closes, since another reader of this log may still hold its samples.
+   */
+  private void refuse(ColumnFile file) {
+    synchronized (columnLock) {
+      if (columnFile != file || columnFileRefused) return;
+      columnFileRefused = true;
+    }
+    var files = columnFiles;
+    var hash = contentSha256;
+    if (files != null && hash != null) files.damaged(hash, this.path);
   }
 
   /** The number of entries whose decoded values are cached (for tests). */

@@ -522,6 +522,30 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("compare_matches reports when each log's extremes occurred, past a NaN")
+    void compareMatchesReportsWhenExtremesOccurred() throws Exception {
+      var one = new MockLogBuilder().setPath("/test/cmp_when_one.wpilog")
+          .addNumericEntry("/V", new double[]{0, 5, 10, 20, 30, 40}, new double[]{5, Double.NaN, 9, 1, 7, 3}).build();
+      var two = new MockLogBuilder().setPath("/test/cmp_when_two.wpilog")
+          .addNumericEntry("/V", new double[]{0, 5, 15}, new double[]{2, 0, 8}).build();
+      putLogInCache(one);
+      putLogInCache(two);
+      var args = new JsonObject();
+      args.addProperty("path", one.path());
+      args.addProperty("compare_path", two.path());
+      args.addProperty("name", "/V");
+      var comparisons = findTool("compare_matches").execute(args).getAsJsonObject().getAsJsonArray("comparisons");
+      var first = comparisons.get(0).getAsJsonObject().getAsJsonObject("statistics");
+      assertEquals(1.0, first.get("min").getAsDouble());
+      assertEquals(20.0, first.get("min_at_sec").getAsDouble());
+      assertEquals(9.0, first.get("max").getAsDouble());
+      assertEquals(10.0, first.get("max_at_sec").getAsDouble());
+      var second = comparisons.get(1).getAsJsonObject().getAsJsonObject("statistics");
+      assertEquals(5.0, second.get("min_at_sec").getAsDouble());
+      assertEquals(15.0, second.get("max_at_sec").getAsDouble());
+    }
+
+    @Test
     @DisplayName("compare_matches reports per-log presence, sample counts, and warnings")
     void compareMatchesPerLogFields() throws Exception {
       var log1 = new MockLogBuilder()

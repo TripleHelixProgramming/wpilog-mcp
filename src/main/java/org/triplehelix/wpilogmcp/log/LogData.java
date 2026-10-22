@@ -121,6 +121,15 @@ public interface LogData {
     return Optional.empty();
   }
 
+  /**
+   * The entry's numbers at {@code path} from the log's column file, when one holds them exactly;
+   * empty otherwise, and the caller decodes the log as before. The samples belong to the
+   * caller's use of this log, on one thread.
+   */
+  default Optional<NumericColumn> numericColumn(String entryName, org.triplehelix.wpilogmcp.read.FieldPath path) {
+    return Optional.empty();
+  }
+
   /** Number of entries in the log. */
   default int entryCount() {
     return entries().size();

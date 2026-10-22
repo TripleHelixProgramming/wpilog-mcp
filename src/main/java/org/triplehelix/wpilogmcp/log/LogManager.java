@@ -38,6 +38,7 @@ import org.triplehelix.wpilogmcp.cache.ContentFingerprint;
 import org.triplehelix.wpilogmcp.cache.DiskCache;
 import org.triplehelix.wpilogmcp.cache.SyncDiskCache;
 import org.triplehelix.wpilogmcp.columns.ColumnBuilds;
+import org.triplehelix.wpilogmcp.columns.ColumnFiles;
 import org.triplehelix.wpilogmcp.config.ClientLeases;
 import org.triplehelix.wpilogmcp.log.LogDirectory.RevLogFileInfo;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
@@ -116,6 +117,7 @@ public class LogManager {
   private final java.util.Set<LogData> nativeSyncPending = ConcurrentHashMap.newKeySet();
   private final Object columnBuildsLock = new Object();
   private volatile ColumnBuilds columnBuilds;
+  private volatile ColumnFiles columnFiles;
   private volatile boolean columnBuildsStopped;
 
   /** Only the claim is atomic: file I/O, cache callbacks and waiter completion stay outside it. */
@@ -363,9 +365,8 @@ public class LogManager {
    * they stay stopped, as REV synchronization does.
    */
   public void startColumnBuilds() {
-    // Nothing reads column files yet, so trimming keeps none for a reader.
     startColumnBuilds(() -> new ColumnBuilds(diskCache, ColumnBuilds.from(this), this::recordingReserveShort,
-        file -> false));
+        this::columnFileInUse));
   }
 
   /**
@@ -374,13 +375,40 @@ public class LogManager {
    */
   void startColumnBuilds(java.util.function.LongSupplier freeHeap, long retryMs) {
     startColumnBuilds(() -> new ColumnBuilds(diskCache, ColumnBuilds.from(this), freeHeap,
-        this::recordingReserveShort, file -> false, retryMs));
+        this::recordingReserveShort, this::columnFileInUse, retryMs));
   }
 
   private void startColumnBuilds(java.util.function.Supplier<ColumnBuilds> builds) {
     synchronized (columnBuildsLock) {
-      if (columnBuilds == null && !columnBuildsStopped) columnBuilds = builds.get();
+      if (columnBuilds == null && !columnBuildsStopped) {
+        columnBuilds = builds.get();
+        var started = columnBuilds;
+        columnFiles = new ColumnFiles(diskCache, started::request);
+      }
     }
+  }
+
+  /**
+   * For tests: reads numbers from the column files this manager's disk cache holds, as the server
+   * does once it builds them, or stops. Nothing is built by this, and a file found damaged is not
+   * built again; a test writes the files it reads. Loaded logs are unloaded either way, so each
+   * next load reads as asked.
+   */
+  public void testReadColumnFiles(boolean reads) {
+    synchronized (columnBuildsLock) {
+      if (!reads) columnFiles = null;
+      else if (columnFiles == null) columnFiles = new ColumnFiles(diskCache, (path, hash) -> {});
+    }
+    unloadAllLogs();
+  }
+
+  /**
+   * Whether a loaded log holds the column file at {@code file} open, which trimming then keeps. A
+   * log already unloaded may still hold one for a call in progress; deleting that file is safe
+   * where mappings outlive their names, and refused on Windows, which keeps it.
+   */
+  boolean columnFileInUse(Path file) {
+    return lazyLogs().stream().anyMatch(log -> log.openColumnFile().filter(file::equals).isPresent());
   }
 
   /** Stopping waits for a build in progress, so it waits outside the lock. */
@@ -815,6 +843,8 @@ public class LogManager {
             log.entryCount(), String.format("%.2f", log.duration()));
 
         if (synchronize && autoSyncEnabled) startAutoSync(log);
+        var files = columnFiles;
+        if (files != null && log instanceof LazyParsedLog lazy) lazy.attachColumnFiles(files);
         var builds = columnBuilds;
         if (builds != null) builds.request(normalizedPath, log);
 

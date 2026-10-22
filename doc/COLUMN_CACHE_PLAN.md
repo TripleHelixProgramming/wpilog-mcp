@@ -3,9 +3,12 @@
 Status: proposed on 2026-10-21 at the maintainer's request, and its [decisions](#decisions)
 answered the same day. A throwaway prototype, outside the product code, measured the design on
 synthetic logs and, read-only, on three local team logs. The same day, the first part of phase 1
-was built: the file format, its writer and reader, and their tests. No reader uses it yet.
-[The first build](#the-first-build) says what it changed, and the maintainer
-[decided](#decisions-from-the-first-build) what it asked the same day.
+was built: the file format, its writer and reader, and their tests; then the files were placed
+in the disk cache, built in the background and given each record's facts. On 2026-10-22 the
+readers moved onto them: [reading through column files](#reading-through-column-files) says
+which reads do and which still read the log. [The first build](#the-first-build) says what it
+changed, and the maintainer [decided](#decisions-from-the-first-build) what it asked the same
+day.
 
 The log store is now asked for reads a database would serve: Grafana panels at any zoom, live
 panels on the recording in progress, the Explorer, and comparisons across a season. Each of
@@ -289,6 +292,76 @@ whole positions with derived indexes and sizes, these packed positions, or nativ
 the log's path. The read cost was to be measured before relying on it, with whole positions as
 the fallback; it was, and packed positions stay.
 
+## Reading through column files
+
+The third step moved the readers onto the files. Numbers reached the tools two ways before: a
+resolver decoded an entry into one object per sample for `read_entry`, `render_chart`, the data
+endpoint and the statistics tools, and a record cursor decoded records for native reads, the
+visualization preview and `compare_sessions`. Both now take a held path's numbers from the file
+once it is built.
+
+- **One series, two sources.** The resolver returns a path's samples as numbers by position,
+  read from the file or from the log's decode, and every numeric step works on that series
+  whichever source it came from: windows, angle unwrapping, buckets, data quality, summary
+  statistics, interpolation, lags and exact pages. A read from a file makes no object per
+  sample. `read_entry`, `render_chart`, the data endpoint, `get_statistics`, `compare_entries`,
+  `compare_matches`, `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`,
+  `align_entries`, `find_condition` and the visualization's charts read this way. A scalar
+  entry's values keep the decode's types, and repeated values are told apart by the bits the
+  decoded values' own comparison uses, so an integer past 2^53 is not mistaken for its
+  neighbor.
+- **Native reads.** A native read of one numeric leaf comes from the file's columns and record
+  facts through the same record selection as the log's records, so windows, file and time
+  order, batches, byte budgets, record limits and reductions behave as before. A file serves it
+  only where its answer is the log's to the bit: every record of the entry decoded and holds
+  the leaf, and the leaf is neither an enum, whose label the file does not keep, nor a uint64
+  field, which native reads keep unsigned while the file holds the tools' integers. One record
+  decoded the native way shows which a field is. A read in file order, or from a first record
+  index, also needs every record's index to be its position, which an entry logged out of order
+  breaks. Whole structs, pooled `[*]` reads and plain arrays read the log.
+- **Holding files.** A loaded log opens its content's file the first time a read needs it and
+  closes it when its own mapping closes, after its last reader, so a file is never unmapped
+  under a read. The cache's trim keeps the files loaded logs hold. A file found damaged is read
+  no more, removed and built again, and its readers read the log meanwhile.
+- **What still reads the log.** Strings, raw values, plain numeric arrays and REV signals;
+  `export_csv`; the domain tools, which read whole records, among them the power, CAN, swerve,
+  vision, pose and match tools; and any log whose file is not built yet. The reader library
+  reading files on its own machine never opens the server's cache, so it reads the log; its
+  reads through a server use the server's files.
+
+The resolver gives every held path of every fixture and of a log of edge cases the decode's
+samples to the bit, value bits included, and the data endpoint's series keep the decode's types
+and decode problems. The five presentation routes answer their 39 cases from the file as from
+the log, against the same oracle. The conformance sweep calls every tool on every fixture again
+with a column file and requires the same result. Native reads match the log's batch by batch,
+every sample's record facts and the problems included, in sixteen ways on a log of edge cases
+and on every fixture, and a test names the reads a file must serve and those it must leave to
+the log. Thirty-four planted mistakes, from a float read as a double to a record's index reported as its position, each failed them; thirteen first passed, and each now has a test of its own, among them a decode problem lost when a file answers, an integer past 2^53 taken for its neighbor, an infinite sample counted as a value, and a rate's last point.
+
+Measured on the three team logs, read-only, through the tools themselves: twelve whole-log
+overviews by `read_entry` at 1,000 points took 10 to 33 ms from the files against 24 to 87 ms on
+the log's path with the values already decoded, and allocated 33 to 36 MB against 68 to 197 MB;
+ten seconds of each took 1.5 to 3.3 ms against 11 to 52 ms. After a restart, loading the log's
+index took 35 to 547 ms either way, and the twelve reads after it 10 to 55 ms from the files
+against 45 to 223 ms with the decode. Native reductions of the twelve took 13 to 66 ms against
+65 to 301 ms. `get_statistics` gained least, 28 to 124 ms against 42 to 173 ms, since it sorts
+every sample for its percentiles. Reading the same samples from the files alone took 0.8 to
+3.4 ms in the first build's measurement, so most of an overview's time is now the tools' own
+work around the read.
+
+### Decisions on the read path
+
+The maintainer decided these on 2026-10-21.
+
+1. **One code path.** The MCP tools and the data endpoint compute windows, buckets and
+   statistics with the same code, so a number is computed one way wherever it is asked for,
+   rather than the tools keeping their own beside the endpoint's.
+2. **One summary statistics implementation.** Every tool that reports summary statistics uses
+   one implementation, `compare_sessions` included, rather than a streaming one of its own.
+3. **The deep switch.** Every numeric reader works on the series directly, in place of reading a
+   file and turning its samples back into one object per sample, which would have saved the
+   decode but kept the per-sample work.
+
 ## Costs and risks
 
 - **Disk.** About 16 bytes for each numeric value, roughly the size of the log itself, before
@@ -313,8 +386,8 @@ the fallback; it was, and packed positions stay.
 
 1. **Finished files.** Build column files in the background for numeric entries and the
    numeric fields of structs, and read them in the data endpoint and the statistics tools,
-   behind the differential tests. The format, writer and reader are built, and the files are
-   placed in the disk cache and built in the background; the readers come next.
+   behind the differential tests. Built: the format, writer and reader; the files placed in the
+   disk cache and built in the background; and the readers moved onto them.
 2. **The recording.** The capture writes the open file's columns as it records, replacing the
    per-value index. This comes before the Grafana plan's stage 1, whose gate runs on it.
 3. **Across sessions.** The Grafana plan's stage 3 reads column files across sessions, and the

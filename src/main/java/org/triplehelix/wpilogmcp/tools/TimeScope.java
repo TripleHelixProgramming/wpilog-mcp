@@ -295,6 +295,18 @@ public final class TimeScope {
     return out;
   }
 
+  /** As {@link #split(List)}, by position over samples in time order, with nothing copied. */
+  public List<org.triplehelix.wpilogmcp.read.NumericSamples> split(org.triplehelix.wpilogmcp.read.NumericSamples samples) {
+    var out = new ArrayList<org.triplehelix.wpilogmcp.read.NumericSamples>(windows.size());
+    for (var w : windows) {
+      int from = org.triplehelix.wpilogmcp.read.TimeWindows.bound(samples.size(), i -> samples.seconds(i) < w.start());
+      int to = from;
+      while (to < samples.size() && w.contains(samples.seconds(to))) to++;
+      out.add(org.triplehelix.wpilogmcp.read.NumericSamples.range(samples, from, to));
+    }
+    return out;
+  }
+
   /** The values in any window, in time order. */
   public List<TimestampedValue> filter(List<TimestampedValue> values) {
     if (windows.size() == 1) return split(values).get(0);

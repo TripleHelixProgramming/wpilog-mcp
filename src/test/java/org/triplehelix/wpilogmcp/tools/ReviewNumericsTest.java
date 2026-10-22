@@ -14,6 +14,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
+import org.triplehelix.wpilogmcp.read.NumericSamples;
 
 /** Small independent counterexamples from the release review, without robot telemetry. */
 class ReviewNumericsTest extends ToolTestBase {
@@ -132,9 +133,21 @@ class ReviewNumericsTest extends ToolTestBase {
     assertEquals(6, StatisticsTools.effectiveSampleSize(10, r, r), 1e-12);
   }
 
+  /** Positive intervals 0.25, 0.5, 0.5 and 1.25 s, and one repeated time: the median, not the shortest. */
+  @Test void theDefaultLagStepIsTheReferencesMedianInterval() {
+    var args = new JsonObject(); args.addProperty("max_lag_sec", 2);
+    var times = new double[] {0, 0.25, 0.75, 0.75, 1.25, 2.5};
+    var reference = new java.util.ArrayList<TimestampedValue>();
+    for (double t : times) reference.add(new TimestampedValue(t, 1));
+    var lags = StatisticsTools.lagGrid(args, NumericSamples.of(reference));
+    assertEquals(9, lags.length);
+    assertEquals(0.5, lags[1] - lags[0]);
+    assertEquals(-2, lags[0]); assertEquals(2, lags[8]);
+  }
+
   @Test void tinyLagStepStillHonorsTheSearchBudget() {
     var args = new JsonObject(); args.addProperty("max_lag_sec", 600); args.addProperty("lag_step_sec", 1e-9);
-    var lags = StatisticsTools.lagGrid(args, List.of(new TimestampedValue(0, 1)));
+    var lags = StatisticsTools.lagGrid(args, NumericSamples.of(List.of(new TimestampedValue(0, 1))));
     assertEquals(401, lags.length); assertEquals(-600, lags[0]); assertEquals(600, lags[400]);
   }
 

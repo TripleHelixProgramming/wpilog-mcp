@@ -99,6 +99,20 @@ public final class ColumnFileFormat {
         case BOOL -> bits != 0 ? 1.0 : 0.0;
       };
     }
+
+    /**
+     * The value as the decode gives a scalar entry's: a Double, Float, Long or Boolean. An enum
+     * field has no such value here, since its label is not kept.
+     */
+    public Object value(long bits) {
+      return switch (this) {
+        case F64 -> Double.longBitsToDouble(bits);
+        case F32 -> Float.intBitsToFloat((int) bits);
+        case I64 -> bits;
+        case BOOL -> bits != 0;
+        case ENUM -> throw new IllegalStateException("A column file keeps an enum's number, not its label");
+      };
+    }
   }
 
   /** The kind that holds a decoded leaf exactly, or null when no kind does. */

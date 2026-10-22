@@ -38,8 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The server builds a column file for each finished log in the background and keeps it in the
-  disk cache, named by the content's SHA-256 and the format and recipe versions; nothing reads
-  the files yet. A log gets one when the server reads it from its file, and when a store's
+  disk cache, named by the content's SHA-256 and the format and recipe versions, and numeric
+  reads take their numbers from it once it is built. A log gets one when the server reads it from its file, and when a store's
   session manifest records it, as an import, a pull, an upload and a capture's close do; a
   closed capture still served from memory is read again from its file for the build. Builds
   run one at a time on a low-priority thread, wait while the heap has less than 512 MB free or a
@@ -262,6 +262,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Loopback-only session registration leases directories and an in-memory TBA key to the shared server, revoking access when the session ends. Previously each client needed permanent configuration. The bridge accepts project/flag leases while taking daemon settings only from the home or explicit configuration, so one project cannot choose the shared server's settings.
 
 ### Changed
+
+- Numeric reads take their numbers from a log's column file once one is built: `read_entry`,
+  `render_chart`, the data endpoint, `get_statistics`, `compare_entries`, `compare_matches`,
+  `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `align_entries`,
+  `find_condition`, the visualization's charts, and native reads through `/read/v1`, the preview
+  and `compare_sessions`. Each works on a path's numbers by position, read from the file or from
+  the log's decode alike, so the answers are the same either way. Before, every read decoded the
+  log's records into one object per sample, even where a file was built. On three team logs,
+  twelve whole-log overviews by `read_entry` took 10 to 33 ms from the files against 24 to 87 ms
+  with the values already decoded, and ten seconds of each 1.5 to 3.3 ms against 11 to 52 ms. A
+  native read comes from a file only for a numeric leaf every record of its entry holds, and not
+  for an enum or uint64 field or, in file order or from a first record index, an entry logged out
+  of order. Whole structs, pooled `[*]` reads, strings, arrays, REV signals, `export_csv` and the
+  domain tools still read the log, and so does the reader library on its own machine, which
+  never opens the server's cache.
 
 - Every tool that reports summary statistics now computes them with one implementation:
   `get_statistics`, `compare_matches`, `compare_sessions`, `compare_poses`, `align_entries` and
@@ -598,6 +613,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI now defaults to `contents: read`; only dependency-submission jobs can write the dependency graph. Previously build jobs inherited the repository token defaults. This restriction concerns the build, not permissions in the server or extension.
 
 ### Testing
+
+- With a column file built, the conformance sweep calls every tool on every fixture again and
+  requires the same result; the five presentation routes answer their 39 cases against the same
+  oracle; the signal resolver and the data endpoint's series give every held path the decode's
+  samples, value types, value bits and decode problems; and native reads match the log's batch by
+  batch, record facts and problems included, in sixteen ways on an edge log and on every fixture.
+  A test pins which reads a file serves and which it leaves to the log, and another that a held
+  file closes with its log's mapping. Thirty-four planted mistakes each fail them. New tests also
+  pin a rate's first and last points, infinite samples in `find_condition` and
+  `detect_anomalies`, an angle held as logged in `align_entries`, when `compare_matches`'
+  extremes occurred, and the default lag step; previously a mistake in any of these passed every
+  test.
 
 - Every reduction now fills its buckets through one shared rule, which computes a sample's bucket
   only when the sample leaves the current one; it is checked against computing every sample's

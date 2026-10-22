@@ -812,7 +812,7 @@ public final class CoreTools {
         throw new IllegalArgumentException("Parameter 'offset' must be non-negative, got " + offset);
       }
       var window = new org.triplehelix.wpilogmcp.read.SecondsWindow(startTime, endTime);
-      var filtered = signal.values().stream().filter(tv -> window.contains(tv.timestamp())).toList();
+      var filtered = signal.inWindow(window);
       if (!signal.multiValued()) filtered = signal.unwrap(filtered);
       int totalInRange = filtered.size();
 
@@ -828,19 +828,20 @@ public final class CoreTools {
         if (limit <= 0) {
           throw new IllegalArgumentException("Parameter 'limit' must be positive, got " + limit);
         }
-        var paged = filtered.stream().skip(offset).limit(limit).toList();
+        int end = (int) Math.min(totalInRange, (long) offset + limit);
         var samples = new JsonArray();
-        for (var tv : paged) {
+        for (int i = offset; i < end; i++) {
           var sample = new JsonObject();
-          sample.addProperty("timestamp_sec", tv.timestamp());
-          sample.add("value", sampleToJson(tv.value()));
+          sample.addProperty("timestamp_sec", filtered.seconds(i));
+          sample.add("value", sampleToJson(filtered.number(i)));
           samples.add(sample);
         }
+        int returned = Math.max(0, end - offset);
         if (maxPoints != null) result.addProperty("bucketed", false);
-        result.addProperty("returned_count", paged.size());
+        result.addProperty("returned_count", returned);
         result.addProperty("offset", offset);
         result.addProperty("limit", limit);
-        result.addProperty("has_more", offset + paged.size() < totalInRange);
+        result.addProperty("has_more", offset + returned < totalInRange);
         ResultContract.addLimitedList(result, "samples", samples,
             Math.max(0, totalInRange - offset), limit);
         return result;

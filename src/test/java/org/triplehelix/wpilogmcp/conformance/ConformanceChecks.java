@@ -31,6 +31,8 @@ public final class ConformanceChecks {
     SILENT_EMPTY,
     /** The result differs when the log's entries iterate in a different order (rule B9). */
     NONDETERMINISTIC,
+    /** The result differs when the tools read the log's numbers from its column file. */
+    COLUMN_FILE,
     /**
      * {@code status} is missing or unknown, disagrees with {@code success}, or a
      * {@code not_applicable}/{@code no_match} result has no {@code reason} (rule R4).

@@ -25,9 +25,12 @@ import org.triplehelix.wpilogmcp.columns.ColumnFileFormat.Kind;
 import org.triplehelix.wpilogmcp.log.DecodeProblem;
 import org.triplehelix.wpilogmcp.log.LogBytes;
 import org.triplehelix.wpilogmcp.log.MappedLogBytes;
+import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.read.FieldPath;
 import org.triplehelix.wpilogmcp.read.NumericSamples;
+import org.triplehelix.wpilogmcp.read.RecordSeries;
+import org.triplehelix.wpilogmcp.read.SampleCursors;
 import org.triplehelix.wpilogmcp.read.SecondsWindow;
 
 /**
@@ -146,6 +149,25 @@ public final class ColumnFile implements AutoCloseable {
       return Optional.empty();
     }
     return Optional.of(new RecordFacts(bytes, held.facts));
+  }
+
+  /**
+   * The records of one numeric leaf as a native read reports them, in time order: each record's
+   * time and facts, and the leaf's value as the decode gives a scalar entry's (a Double, Float,
+   * Long or Boolean). Empty unless the file holds the leaf from every record of the entry, every
+   * record decoded, and the file keeps the entry's facts, so the caller reads the log instead. An
+   * enum field is never held this way, since its label is not kept. A series belongs to one
+   * reading thread.
+   */
+  public Optional<HeldRecords> records(String entry, FieldPath path) {
+    if (path.hasWildcard()) return Optional.empty();
+    var selection = select(entry, path).orElse(null);
+    if (selection == null) return Optional.empty();
+    var held = selection.entry;
+    var column = selection.columns.get(0);
+    if (held.problem != null || held.decoded != held.records || column.size != held.decoded
+        || column.kind == Kind.ENUM) return Optional.empty();
+    return facts(entry).map(facts -> new HeldRecords(new ColumnSamples(bytes, column, 0, column.size), facts));
   }
 
   @Override
@@ -311,6 +333,58 @@ public final class ColumnFile implements AutoCloseable {
     /** The record's index among the entry's records in file order. */
     public int ordinal(int position) {
       return ordinals == null ? position : (int) ordinals.get(position);
+    }
+
+    /**
+     * Whether every record's index is its position, as it is unless a record moved into time
+     * order or one before it failed to decode.
+     */
+    public boolean inFileOrder() {
+      return ordinals == null;
+    }
+  }
+
+  /**
+   * A held leaf's records for a native read; see {@link ColumnFile#records}. Positions follow
+   * time order, equal times in file order, as the log's records are sorted for a read in time
+   * order, and each sample reports its record's own index.
+   */
+  public static final class HeldRecords implements RecordSeries {
+    private final ColumnSamples column;
+    private final RecordFacts facts;
+
+    private HeldRecords(ColumnSamples column, RecordFacts facts) {
+      this.column = column;
+      this.facts = facts;
+    }
+
+    /** Whether each record's index among the entry's records is its position. */
+    public boolean inFileOrder() {
+      return facts.inFileOrder();
+    }
+
+    @Override public int size() { return column.size(); }
+    @Override public long timestampUs(int index) { return column.timeUs(index); }
+    @Override public long offset(int index) { return facts.offset(index); }
+    @Override public long payloadBytes(int index) { return facts.payloadBytes(index); }
+    /** The column keeps its records in time order. */
+    @Override public boolean monotonic() { return true; }
+    @Override public Object decode(int index) { return column.kind.value(column.values.get(column.from + index)); }
+
+    @Override
+    public void readRange(int start, int end, String entry, SampleCursors.Sink sink) {
+      for (int index = start; index < end; index++) {
+        sink.sample(timestampUs(index), offset(index), facts.ordinal(index), decode(index));
+      }
+    }
+
+    /**
+     * Every record of a held leaf decoded when the file was built, so a failure here is the
+     * file's, not a record's, and the read stops rather than report the record as malformed.
+     */
+    @Override
+    public String problemMessage(int index, Exception failure) {
+      throw new IllegalStateException("The column file failed at record position " + index, failure);
     }
   }
 
@@ -505,6 +579,29 @@ public final class ColumnFile implements AutoCloseable {
       };
     }
 
+    /**
+     * A one-column range's samples as the values the decode gives a scalar entry, each made when
+     * it is read, with its logged coordinate: a Double, Float, Long or Boolean.
+     */
+    public List<TimestampedValue> values(Range range) {
+      if (columns.size() != 1 || columns.get(0).kind == Kind.ENUM)
+        throw new IllegalStateException("Only one column of numbers has the values a scalar entry decodes to");
+      var column = new ColumnSamples(file.bytes, columns.get(0), range.from[0], range.to[0]);
+      final class View extends java.util.AbstractList<TimestampedValue> implements java.util.RandomAccess {
+        @Override
+        public TimestampedValue get(int index) {
+          java.util.Objects.checkIndex(index, column.size());
+          return TimestampedValue.atMicros(column.timeUs(index), column.kind.value(column.values.get(column.from + index)));
+        }
+
+        @Override
+        public int size() {
+          return column.size();
+        }
+      }
+      return new View();
+    }
+
     /** The first logged microsecond of a range's samples in read order, which is the earliest. */
     public long firstTimeUs(Range range) {
       long first = Long.MAX_VALUE;
@@ -558,6 +655,10 @@ public final class ColumnFile implements AutoCloseable {
     /** As {@code TimestampedValue.atMicros} computes a decoded value's seconds. */
     @Override public double seconds(int index) { return timeUs(index) / 1_000_000.0; }
     @Override public double number(int index) { return kind.number(values.get(from + index)); }
+    /** An integer's own bits, as {@code Long.equals} compares the decoded values. */
+    @Override public long valueBits(int index) {
+      return kind == Kind.I64 ? values.get(from + index) : Double.doubleToLongBits(number(index));
+    }
   }
 
   /** Index ranges into each column of a selection. */

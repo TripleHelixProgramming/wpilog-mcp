@@ -575,6 +575,20 @@ class ColumnFileTest {
     }), "checksum");
   }
 
+  /** A native read takes no record from an entry whose facts fail their check, and the file is damaged. */
+  @Test
+  void heldRecordsAreRefusedWithTheirFacts() throws IOException {
+    long first;
+    try (var file = ColumnFile.open(built, SOURCE)) {
+      first = file.facts("/b").orElseThrow().offset(0);
+      assertTrue(file.records("/b", FieldPath.ROOT).isPresent(), "an intact file holds /b's records");
+    }
+    try (var file = ColumnFile.open(craftedFacts("held.columns", s -> block(first, 0, 3, 16)), SOURCE)) {
+      assertTrue(file.records("/b", FieldPath.ROOT).isEmpty(), "no record is read from crafted facts");
+      assertTrue(file.damage().orElseThrow().contains("out of place"), "damaged for " + file.damage());
+    }
+  }
+
   /**
    * Each record's facts by its position in time order, worked out from the log as written: {@code
    * /d} was logged at 3.0, 1.0, 2.0, 2.0, 4.0 and 0.5 s; {@code /bad}'s second record fails to

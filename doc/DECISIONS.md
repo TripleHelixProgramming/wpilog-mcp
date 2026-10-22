@@ -130,3 +130,6 @@ architectural decisions.
 | 2026-10-21 | standing | For finished files, a struct array of more than 64 elements a record and an entry of more than about 16.8 million samples are left to the log | [Record](COLUMN_CACHE_PLAN.md#decisions-from-the-first-build) |
 | 2026-10-21 | standing | A log's derived columns are called column files, not companions, which already names the REV log paired with a WPILOG | [Record](COLUMN_CACHE_PLAN.md#decisions-from-the-first-build) |
 | 2026-10-21 | standing | Column files keep each record's byte position packed as differences, with payload sizes and indexes only where they cannot be derived, so native reads can use them | [Record](COLUMN_CACHE_PLAN.md#decision-on-the-record-facts) |
+| 2026-10-21 | standing | The MCP tools and the data endpoint compute windows, buckets and statistics through one code path | [Record](COLUMN_CACHE_PLAN.md#decisions-on-the-read-path) |
+| 2026-10-21 | standing | One summary statistics implementation serves every tool, `compare_sessions` included | [Record](COLUMN_CACHE_PLAN.md#decisions-on-the-read-path) |
+| 2026-10-21 | standing | Every numeric reader works on one series of numbers by position, from a column file or the decode alike, not on one object per sample | [Record](COLUMN_CACHE_PLAN.md#decisions-on-the-read-path) |

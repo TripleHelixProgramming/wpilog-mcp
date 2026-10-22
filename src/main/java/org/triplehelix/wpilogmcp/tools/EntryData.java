@@ -15,10 +15,12 @@ import org.triplehelix.wpilogmcp.data.ArrowType;
 import org.triplehelix.wpilogmcp.log.FileSnapshot;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.log.NumericColumn;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.read.AngleUnwrapper;
 import org.triplehelix.wpilogmcp.read.FieldPath;
+import org.triplehelix.wpilogmcp.read.NumericSamples;
 import org.triplehelix.wpilogmcp.sync.SyncMethod;
 
 /**
@@ -41,9 +43,17 @@ public final class EntryData {
    * @param type The entry's type as the log declares it
    * @param values The samples in time order: numbers for a field path, decoded values otherwise
    * @param numeric Whether every value is a number (a field path, or a numeric scalar entry)
+   * @param samples The same samples by position, booleans as 1 or 0, for a series known to be in
+   *     time order; null for any other, which its values alone describe
    */
   public record Series(String name, String entry, String field, String type,
-      List<TimestampedValue> values, boolean numeric) {
+      List<TimestampedValue> values, boolean numeric, NumericSamples samples) {
+
+    /** A series its values alone describe, such as a REV signal's. */
+    public Series(String name, String entry, String field, String type, List<TimestampedValue> values,
+        boolean numeric) {
+      this(name, entry, field, type, values, numeric, null);
+    }
 
     /** The samples within the window; a null bound is open. */
     public List<TimestampedValue> inWindow(Double startTime, Double endTime) {
@@ -53,8 +63,11 @@ public final class EntryData {
     }
   }
 
-  /** Prepared presentation values and whether Arrow must represent them as floating point. */
-  public record Prepared(List<TimestampedValue> values, boolean angle) {}
+  /**
+   * Prepared presentation values and whether Arrow must represent them as floating point, with
+   * their numbers by position when the series has them.
+   */
+  public record Prepared(List<TimestampedValue> values, boolean angle, NumericSamples samples) {}
 
   /** Invalid explicit units are refused even when the selected interval contains no records. */
   public static void validateAngle(String angle) {
@@ -80,12 +93,13 @@ public final class EntryData {
     if (explicit != null && !numeric)
       throw new IllegalArgumentException("Entry " + series.name() + " is " + series.type()
           + "; angle requires a numeric scalar or selected numeric field");
+    boolean wildcard = series.field() != null && FieldPath.parse(series.field()).hasWildcard();
+    if (series.samples() != null) return prepare(log, series, start, end, explicit, wildcard);
     var values = series.inWindow(start, end);
-    if (series.field() != null && FieldPath.parse(series.field()).hasWildcard())
-      return new Prepared(values, false);
+    if (wildcard) return new Prepared(values, false, null);
     double period = explicit == null
         ? VisualizationBindings.anglePeriod(log, series.entry(), series.field()) : explicit.period;
-    if (period == 0) return new Prepared(values, false);
+    if (period == 0) return new Prepared(values, false, null);
     var unwrapper = new AngleUnwrapper(period);
     var prepared = new ArrayList<TimestampedValue>(values.size());
     for (var value : values) {
@@ -94,7 +108,29 @@ public final class EntryData {
         throw new IllegalArgumentException("Entry " + series.name() + " has a non-numeric angle value");
       prepared.add(value.withValue(unwrapper.apply(number)));
     }
-    return new Prepared(prepared, true);
+    return new Prepared(prepared, true, null);
+  }
+
+  /**
+   * The same presentation by position, for a series in time order: the window is found by
+   * search, as the filter above keeps it, and an angle is unwrapped into one array of numbers.
+   */
+  private static Prepared prepare(LogData log, Series series, Double start, Double end,
+      NumericSignal.AngleUnit explicit, boolean wildcard) {
+    var samples = series.samples();
+    var window = new org.triplehelix.wpilogmcp.read.SecondsWindow(start, end);
+    int from = window.from(samples), to = window.to(samples);
+    var values = series.values().subList(from, to);
+    var windowed = NumericSamples.range(samples, from, to);
+    if (wildcard) return new Prepared(values, false, windowed);
+    double period = explicit == null
+        ? VisualizationBindings.anglePeriod(log, series.entry(), series.field()) : explicit.period;
+    if (period == 0) return new Prepared(values, false, windowed);
+    var unwrapper = new AngleUnwrapper(period);
+    var numbers = new double[windowed.size()];
+    for (int i = 0; i < numbers.length; i++) numbers[i] = unwrapper.apply(windowed.number(i));
+    var unwrapped = NumericSamples.withNumbers(windowed, numbers);
+    return new Prepared(NumericSamples.asValues(unwrapped), true, unwrapped);
   }
 
   /**
@@ -106,14 +142,19 @@ public final class EntryData {
   public static Series resolve(LogData log, String name) {
     var info = log.entries().get(name);
     if (info != null) {
+      boolean numeric = ToolUtils.isNumericType(info.type());
+      boolean numbers = numeric || "boolean".equals(info.type());
+      // A column file gives the typed values the decode would, without decoding.
+      var column = numbers ? log.numericColumn(name, FieldPath.ROOT) : java.util.Optional.<NumericColumn>empty();
+      if (column.isPresent() && column.get().values() != null)
+        return new Series(name, name, null, info.type(), column.get().values(), numeric, column.get().samples());
       var values = log.values().get(name);
       if (values == null) values = List.of();
-      boolean numeric = ToolUtils.isNumericType(info.type());
-      return new Series(name, name, null, info.type(), values, numeric);
+      return new Series(name, name, null, info.type(), values, numeric, numbers ? NumericSamples.of(values) : null);
     }
     var signal = NumericSignal.resolve(log, name, null);
     return new Series(name, signal.entry(), signal.path().toString(), signal.type(),
-        signal.values(), true);
+        signal.values(), true, signal.samples());
   }
 
   /** The stream must disclose records lost in decoding just as a tool using the same entry does. */
@@ -230,7 +271,10 @@ public final class EntryData {
   }
 
   public static String sampling(LogData log, Series series) {
-    return DataQuality.fromSegments(log, series.entry(), List.of(series.values())).sampling().name().toLowerCase(java.util.Locale.ROOT);
+    var quality = series.samples() != null
+        ? DataQuality.fromSamples(log, series.entry(), List.of(series.samples()))
+        : DataQuality.fromSegments(log, series.entry(), List.of(series.values()));
+    return quality.sampling().name().toLowerCase(java.util.Locale.ROOT);
   }
 
   /** Suffixes a name may end with, and the unit each states. */

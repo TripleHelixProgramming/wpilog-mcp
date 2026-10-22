@@ -14,6 +14,7 @@ import org.triplehelix.wpilogmcp.log.LiveLog;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
+import org.triplehelix.wpilogmcp.read.FieldPath;
 import org.triplehelix.wpilogmcp.read.GuardedSampleCursor;
 import org.triplehelix.wpilogmcp.read.ReadException;
 import org.triplehelix.wpilogmcp.read.ReadProblem;
@@ -76,6 +77,22 @@ public final class ManagedReadSnapshot implements ReadSnapshot {
     throw new IOException("Exact record access requires an indexed WPILOG: " + path());
   }
 
+  /**
+   * The column file's records of the leaf a query reads, when they answer it exactly as the log's
+   * records would; null otherwise, and the log is read. A column keeps its records in time order,
+   * so a read by record index, in file order or from a first index, also needs every record's
+   * index to be its position.
+   */
+  RecordSeries held(ReadQuery query) {
+    if (!(log() instanceof LazyParsedLog lazy)) return null;
+    var path = FieldPath.parse(query.field());
+    if (path.hasWildcard()) return null;
+    var held = lazy.heldRecords(query.entry(), path).orElse(null);
+    if (held == null) return null;
+    boolean byIndex = query.order() == ReadQuery.Order.FILE || query.firstOrdinal() > 0;
+    return byIndex && !held.inFileOrder() ? null : held;
+  }
+
   private void checkUnchanged() throws IOException {
     var boundary = boundary();
     if (boundary == null) return;
@@ -94,10 +111,17 @@ public final class ManagedReadSnapshot implements ReadSnapshot {
       checkUnchanged();
       if (!entries().containsKey(query.entry()))
         throw new IllegalArgumentException("No entry named '" + query.entry() + "' in " + path());
-      var source = records(query.entry());
-      int[] order = query.order() == ReadQuery.Order.TIME && !source.monotonic()
-          ? orders().order(query.entry(), source.size(), source::timestampUs) : null;
-      var cursor = SampleCursors.open(source, query, order, 64 << 20);
+      var held = held(query);
+      SampleCursor cursor;
+      if (held != null) {
+        // The held records carry the leaf already, so the query reads them whole.
+        cursor = SampleCursors.open(held, query.project(null), null, 64 << 20);
+      } else {
+        var source = records(query.entry());
+        int[] order = query.order() == ReadQuery.Order.TIME && !source.monotonic()
+            ? orders().order(query.entry(), source.size(), source::timestampUs) : null;
+        cursor = SampleCursors.open(source, query, order, 64 << 20);
+      }
       checkUnchanged();
       return new GuardedSampleCursor(cursor, this::checkUnchanged, this::releaseCursor, path().toString());
     } catch (Throwable failure) {

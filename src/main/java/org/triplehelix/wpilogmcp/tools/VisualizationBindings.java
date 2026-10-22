@@ -97,7 +97,7 @@ public final class VisualizationBindings {
    * schema registry. Explicit fields never become ambiguous concatenated entry names. */
   public static JsonObject chart(List<LogData> histories, List<ChartSelection> selections,
       JsonObject arguments, boolean scatter, int offset, int limit) {
-    var measured = new ArrayList<List<org.triplehelix.wpilogmcp.log.TimestampedValue>>();
+    var measured = new ArrayList<org.triplehelix.wpilogmcp.read.NumericSamples>();
     var summaries = new JsonArray(); var inputs = new JsonObject(); var inputSignals = new JsonArray();
     DataQuality worst = null;
     for (int i = 0; i < selections.size(); i++) {
