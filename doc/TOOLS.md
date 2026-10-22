@@ -1152,7 +1152,7 @@ Statistics of a numeric entry or field over the finite samples in scope, with da
 - `end_time` (number, optional): End timestamp in seconds
 - `scope`, `windows` (optional): [Scopes and windows](#scopes-and-windows)
 
-**Returns:** `name`, `field` (when one was given), `count`, `min`, `max`, `mean`, `median`, `std_dev` (sample, n − 1), `q1`, `q3`, `iqr`, `p5`, `p95`, `inputs`, `data_quality`, and `server_analysis_directives`. With a `[*]` path, `count` is values and `records_in_window` is records; `records_without_value` counts records where the path held no number. For an angle, the linear statistics are of the angle unwrapped within each window (so `max - min` is how far it turned), and `angle` gives `unit`, `unwrapped`, `wraps` (steps of more than half a turn), `circular_mean`, `circular_std` (√(−2 ln R), same unit), and `resultant_length` R. A `[*]` pool has no order to unwrap, so it reports the circular statistics without `wraps`.
+**Returns:** `name`, `field` (when one was given), `count`, `min`, `max`, `mean`, `median`, `std_dev` (sample, n − 1; null for a single value), `q1`, `q3`, `iqr`, `p5`, `p95`, `inputs`, `data_quality`, and `server_analysis_directives`. With a `[*]` path, `count` is values and `records_in_window` is records; `records_without_value` counts records where the path held no number. For an angle, the linear statistics are of the angle unwrapped within each window (so `max - min` is how far it turned), and `angle` gives `unit`, `unwrapped`, `wraps` (steps of more than half a turn), `circular_mean`, `circular_std` (√(−2 ln R), same unit), and `resultant_length` R. A `[*]` pool has no order to unwrap, so it reports the circular statistics without `wraps`.
 
 **Example Response:**
 ```json
@@ -1377,7 +1377,7 @@ Sample several numeric signals at common times, to read them side by side or to 
 - `start_time`, `end_time`, `scope`, `windows` (optional): Which sample times to use ([Scopes and windows](#scopes-and-windows))
 - `offset`, `limit` (optional): Row paging (default limit 100, max 2000)
 
-**Returns:** `interpolation`, `time_source`, `columns` (`timestamp_sec` and each signal's name), `total_rows`, `rows` (`[t, v1, v2, ...]`, with `null` where a signal had no value), `limits.rows`, `unaligned` (per signal, how many sample times had no value), and `inputs` (signals and scope). With `difference`: `difference_statistics` (`count`, `mean`, `std_dev`, `min`, `max`, `median`, `p5`, `p95`, `mean_abs`, `rmse`, and `angle_unit` for angles), with `data_quality` and `server_analysis_directives` of the difference series.
+**Returns:** `interpolation`, `time_source`, `columns` (`timestamp_sec` and each signal's name), `total_rows`, `rows` (`[t, v1, v2, ...]`, with `null` where a signal had no value), `limits.rows`, `unaligned` (per signal, how many sample times had no value), and `inputs` (signals and scope). With `difference`: `difference_statistics` (`count`, `mean`, `std_dev` (null for a single difference), `min`, `max`, `median`, `p5`, `p95`, `mean_abs`, `rmse`, and `angle_unit` for angles), with `data_quality` and `server_analysis_directives` of the difference series.
 
 **Example request**, how far the pose heading and the gyro differ while enabled:
 ```json
@@ -1691,7 +1691,7 @@ Compare one numeric signal across two log files, over the same phase of each.
 
 **Returns:**
 - `entry`, `inputs` (`logs`, `entry`), `logs_compared`
-- `comparisons[]`, one per log in argument order: `{log_path, log_filename, log_truncation?, entry_found, signal, scope?, sample_count, statistics: {min, min_at_sec, max, max_at_sec, mean, std_dev, median, p5, p25, p75, p95, angle_unit?}, max_likely_boot_transient?, min_likely_boot_transient?, data_quality}`. When the signal cannot be read, `reason` says why (for example an array entry named without an index, with the element form to use)
+- `comparisons[]`, one per log in argument order: `{log_path, log_filename, log_truncation?, entry_found, signal, scope?, sample_count, statistics: {min, min_at_sec, max, max_at_sec, mean, std_dev, median, p5, p25, p75, p95, angle_unit?}, max_likely_boot_transient?, min_likely_boot_transient?, data_quality}`. `std_dev` is null for a single value. When the signal cannot be read, `reason` says why (for example an array entry named without an index, with the element form to use)
 - `differences`: second log minus first, for `mean`, `median`, and `p95`, with a note. Two logs are two samples, and samples within a log are autocorrelated, so no significance test is made
 - `warnings`: a missing entry, no finite values, or an extreme within 5 s of a log's start (likely a boot transient: compare `scope: "enabled"`)
 - `status`: `partial` when only one log has values (`skipped: differences`), `no_match` when neither does
@@ -2125,7 +2125,7 @@ The difference between two pose streams (`struct:Pose2d` or `Pose3d`, the latter
 - `last_seconds` (optional): Last N positive seconds; current robot time for an open capture, log end for a closed file. Replaces start/end bounds; `inputs.window` records the resolved bounds.
 - `start_time`, `end_time`, `scope`, `windows` (optional): Time scope, as for the statistics tools
 
-**Returns:** `pose_entry`, `reference_entry`, `frame`, `interpolation`, `count`, `unaligned`; `distance_m` (count, mean, median, p95, max, rmse); `heading_difference_rad` (median, p95, and max of its size, and `mean_signed`); the two components (count, mean, std_dev, p5, p95); `largest` (the times of the five largest distances, with `limits.largest`); `inputs`; `data_quality` of the pose entry and `server_analysis_directives`. When `pose_entry` was not passed, `robot_pose` shows how it was chosen. `no_match` when no record in scope has a reference value. To measure each camera observation at its own timestamp, use `analyze_vision` (`residual_vs_robot_pose`).
+**Returns:** `pose_entry`, `reference_entry`, `frame`, `interpolation`, `count`, `unaligned`; `distance_m` (count, mean, median, p95, max, rmse); `heading_difference_rad` (median, p95, and max of its size, and `mean_signed`); the two components (count, mean, std_dev, p5, p95; std_dev is null for a single pose); `largest` (the times of the five largest distances, with `limits.largest`); `inputs`; `data_quality` of the pose entry and `server_analysis_directives`. When `pose_entry` was not passed, `robot_pose` shows how it was chosen. `no_match` when no record in scope has a reference value. To measure each camera observation at its own timestamp, use `analyze_vision` (`residual_vs_robot_pose`).
 
 **Example** (the turret's pose in the robot's frame, VACHE q10, enabled; abridged). The turret sits 0.058 m behind and 0.126 m to the right of the robot's center (p5 and p95 are equal). The exception is around an odometry reset at the start of autonomous, where the largest distances fall:
 ```json

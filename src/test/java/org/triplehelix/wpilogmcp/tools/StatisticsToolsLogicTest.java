@@ -161,7 +161,7 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       assertEquals(42.0, resultObj.get("mean").getAsDouble(), 0.001);
       assertEquals(42.0, resultObj.get("min").getAsDouble(), 0.001);
       assertEquals(42.0, resultObj.get("max").getAsDouble(), 0.001);
-      assertEquals(0.0, resultObj.get("std_dev").getAsDouble(), 0.001);
+      assertTrue(resultObj.get("std_dev").isJsonNull(), "one value has no sample standard deviation");
     }
 
     @Test

@@ -321,6 +321,21 @@ class PoseToolsTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("one matched pose has errors and no standard deviation")
+    void onePoseHasNoDeviation() throws Exception {
+      putLogInCache(new MockLogBuilder().setPath(PATH)
+          .addStructEntry("/RealOutputs/Drive/Pose", "struct:Pose2d", new double[] {1.0}, List.of(pose(0.25, 0, 0)))
+          .addStructEntry("/PathPlanner/targetPose", "struct:Pose2d", new double[] {1.0}, List.of(pose(0, 0, 0)))
+          .build());
+      // A role is chosen by convention only from two samples or more, so the pose is named
+      var r = run("compare_poses", "pose_entry", "/RealOutputs/Drive/Pose", "reference_entry",
+          "/PathPlanner/targetPose", "frame", "reference", "interpolation", "previous");
+      assertEquals(1, r.get("count").getAsInt(), r.toString());
+      assertEquals(0.25, r.getAsJsonObject("along_m").get("mean").getAsDouble(), 1e-12);
+      assertTrue(r.getAsJsonObject("along_m").get("std_dev").isJsonNull(), "one value has no sample standard deviation");
+    }
+
+    @Test
     @DisplayName("in the reference's frame: along and cross errors of a path follower")
     void referenceFrame() throws Exception {
       log();

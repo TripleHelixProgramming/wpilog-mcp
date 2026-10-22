@@ -139,11 +139,12 @@ public final class PoseTools {
     if (values.length == 0) return o;
     var sorted = values.clone();
     Arrays.sort(sorted);
-    o.addProperty("mean", Arrays.stream(values).average().orElse(0));
-    o.addProperty("median", percentile(sorted, 0.5));
+    var summary = SummaryStatistics.of(values);
+    o.addProperty("mean", summary.mean());
+    o.addProperty("median", SummaryStatistics.median(sorted));
     o.addProperty("p95", percentile(sorted, 0.95));
     if (withP99) o.addProperty("p99", percentile(sorted, 0.99));
-    o.addProperty("max", sorted[sorted.length - 1]);
+    o.addProperty("max", summary.max());
     return o;
   }
 
@@ -154,10 +155,9 @@ public final class PoseTools {
     if (values.length == 0) return o;
     var sorted = values.clone();
     Arrays.sort(sorted);
-    double mean = Arrays.stream(values).average().orElse(0);
-    double ss = Arrays.stream(values).map(v -> (v - mean) * (v - mean)).sum();
-    o.addProperty("mean", mean);
-    o.addProperty("std_dev", values.length > 1 ? Math.sqrt(ss / (values.length - 1)) : 0.0);
+    var summary = SummaryStatistics.of(values);
+    o.addProperty("mean", summary.mean());
+    o.addProperty("std_dev", summary.stdDev());
     o.addProperty("p5", percentile(sorted, 0.05));
     o.addProperty("p95", percentile(sorted, 0.95));
     return o;

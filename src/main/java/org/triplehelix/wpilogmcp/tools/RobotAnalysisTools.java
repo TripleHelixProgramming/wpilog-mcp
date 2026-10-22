@@ -1190,7 +1190,8 @@ public final class RobotAnalysisTools {
     @Override
     public String description() {
       return "Compare one numeric signal across two logs: per log, sample_count, min and max "
-          + "(with min_at_sec and max_at_sec), mean, std_dev, median, p5, p25, p75, p95, and "
+          + "(with min_at_sec and max_at_sec), mean, std_dev (null for one value), median, p5, "
+          + "p25, p75, p95, and "
           + "data_quality; and the differences "
           + "(second minus first) of mean, median, and p95. scope ('enabled', 'teleop', "
           + "'segment:<i>', ...) is resolved in each log's own timeline, so the same phase is "
@@ -1307,16 +1308,15 @@ public final class RobotAnalysisTools {
             if (data[i] > data[maxIndex]) maxIndex = i;
             if (data[i] < data[minIndex]) minIndex = i;
           }
-          double mean = java.util.Arrays.stream(data).average().orElse(0);
-          double ss = java.util.Arrays.stream(data).map(v -> (v - mean) * (v - mean)).sum();
+          var summary = SummaryStatistics.of(data);
           var sObj = new JsonObject();
-          sObj.addProperty("min", sorted[0]);
+          sObj.addProperty("min", summary.min());
           sObj.addProperty("min_at_sec", values.get(minIndex).timestamp());
-          sObj.addProperty("max", sorted[sorted.length - 1]);
+          sObj.addProperty("max", summary.max());
           sObj.addProperty("max_at_sec", values.get(maxIndex).timestamp());
-          sObj.addProperty("mean", mean);
-          sObj.addProperty("std_dev", data.length > 1 ? Math.sqrt(ss / (data.length - 1)) : 0.0);
-          sObj.addProperty("median", percentile(sorted, 0.5));
+          sObj.addProperty("mean", summary.mean());
+          sObj.addProperty("std_dev", summary.stdDev());
+          sObj.addProperty("median", SummaryStatistics.median(sorted));
           sObj.addProperty("p5", percentile(sorted, 0.05));
           sObj.addProperty("p25", percentile(sorted, 0.25));
           sObj.addProperty("p75", percentile(sorted, 0.75));

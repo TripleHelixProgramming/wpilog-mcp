@@ -63,7 +63,7 @@ class MigratedToolsEdgeCaseTest {
       assertEquals(42.0, obj.get("max").getAsDouble());
       assertEquals(42.0, obj.get("mean").getAsDouble());
       assertEquals(42.0, obj.get("median").getAsDouble());
-      assertEquals(0.0, obj.get("std_dev").getAsDouble()); // Variance is 0 for single point
+      assertTrue(obj.get("std_dev").isJsonNull()); // one value has no sample standard deviation
     }
 
     @Test

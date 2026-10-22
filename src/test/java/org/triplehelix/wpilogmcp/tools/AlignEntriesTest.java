@@ -154,6 +154,22 @@ class AlignEntriesTest extends FixtureToolTestBase {
     }
 
     @Test
+    @DisplayName("one difference has a mean and no standard deviation")
+    void oneDifferenceHasNoDeviation() throws Exception {
+      putLogInCache(new MockLogBuilder().setPath("/test/align.wpilog")
+          .addNumericEntry("/A", new double[] {1}, new double[] {5})
+          .addNumericEntry("/B", new double[] {1}, new double[] {3})
+          .build());
+      var args = new JsonObject();
+      args.add("names", names("/A", "/B"));
+      args.addProperty("difference", true);
+      var stats = run("align_entries", args).getAsJsonObject("difference_statistics");
+      assertEquals(1, stats.get("count").getAsInt());
+      assertEquals(2.0, stats.get("mean").getAsDouble());
+      assertTrue(stats.get("std_dev").isJsonNull(), "one value has no sample standard deviation");
+    }
+
+    @Test
     @DisplayName("an angle interpolates along the shortest arc across +-pi")
     void angleInterpolation() throws Exception {
       var rotations = new ArrayList<Map<String, Object>>();

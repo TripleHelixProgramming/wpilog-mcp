@@ -500,6 +500,28 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("compare_matches reports no standard deviation for one value, and sqrt(2) for 11 and 13")
+    void compareMatchesOneValueHasNoDeviation() throws Exception {
+      var one = new MockLogBuilder().setPath("/test/cmp_one.wpilog")
+          .addNumericEntry("/V", new double[]{0}, new double[]{12.0}).build();
+      var two = new MockLogBuilder().setPath("/test/cmp_two.wpilog")
+          .addNumericEntry("/V", new double[]{0, 1}, new double[]{11.0, 13.0}).build();
+      putLogInCache(one);
+      putLogInCache(two);
+      var args = new JsonObject();
+      args.addProperty("path", one.path());
+      args.addProperty("compare_path", two.path());
+      args.addProperty("name", "/V");
+      var comparisons = findTool("compare_matches").execute(args).getAsJsonObject().getAsJsonArray("comparisons");
+      var single = comparisons.get(0).getAsJsonObject().getAsJsonObject("statistics");
+      assertEquals(12.0, single.get("mean").getAsDouble());
+      assertTrue(single.get("std_dev").isJsonNull(), "one value has no sample standard deviation");
+      var pair = comparisons.get(1).getAsJsonObject().getAsJsonObject("statistics");
+      assertEquals(12.0, pair.get("mean").getAsDouble());
+      assertEquals(Math.sqrt(2), pair.get("std_dev").getAsDouble());
+    }
+
+    @Test
     @DisplayName("compare_matches reports per-log presence, sample counts, and warnings")
     void compareMatchesPerLogFields() throws Exception {
       var log1 = new MockLogBuilder()

@@ -523,18 +523,12 @@ final class CompareSessionsTool extends ToolBase implements BoundedReply {
     final NumericSignal.AngleUnit angle;
     final DataQuality.Accumulator quality;
     final boolean keep;
-    long finite;
     long nonFinite;
     long without;
     long problems;
-    private double sum;
-    private double compensation;
-    private double welfordMean;
-    private double m2;
-    double min = Double.POSITIVE_INFINITY;
-    double max = Double.NEGATIVE_INFINITY;
-    double sin;
-    double cos;
+    /** The summary statistics every tool shares; the circular ones for an angle. */
+    final SummaryStatistics summary = new SummaryStatistics();
+    final SummaryStatistics.Circular circular;
     double[] kept = new double[0];
     int keptCount;
 
@@ -542,6 +536,7 @@ final class CompareSessionsTool extends ToolBase implements BoundedReply {
       this.keep = keep;
       this.angle = angle;
       this.quality = new DataQuality.Accumulator(sampled);
+      circular = angle == NumericSignal.AngleUnit.NONE ? null : new SummaryStatistics.Circular(angle.period);
     }
 
     /** False when keeping this value would pass the kept-value cap. */
@@ -556,26 +551,13 @@ final class CompareSessionsTool extends ToolBase implements BoundedReply {
         if (keptCount == kept.length) kept = Arrays.copyOf(kept, Math.max(16, Math.min(keptCap, keptCount * 2)));
         kept[keptCount++] = value;
       }
-      finite++;
-      double y = value - compensation;
-      double t = sum + y;
-      compensation = (t - sum) - y;
-      sum = t;
-      double delta = value - welfordMean;
-      welfordMean += delta / finite;
-      m2 += delta * (value - welfordMean);
-      min = Math.min(min, value);
-      max = Math.max(max, value);
-      if (angle != NumericSignal.AngleUnit.NONE) {
-        double radians = value * (2 * Math.PI / angle.period);
-        cos += Math.cos(radians);
-        sin += Math.sin(radians);
-      }
+      summary.add(value);
+      if (circular != null) circular.add(value);
       return true;
     }
 
-    double mean() {
-      return sum / finite;
+    long finite() {
+      return summary.count();
     }
 
     double[] sorted() {
@@ -587,85 +569,60 @@ final class CompareSessionsTool extends ToolBase implements BoundedReply {
 
   /** The samples of every contributing session together, for pool_samples. */
   private static final class Pool {
-    long finite;
     int sessions;
-    private double sum;
-    private double compensation;
-    private double welfordMean;
-    private double m2;
-    double min = Double.POSITIVE_INFINITY;
-    double max = Double.NEGATIVE_INFINITY;
-    double sin;
-    double cos;
+    final SummaryStatistics summary = new SummaryStatistics();
+    SummaryStatistics.Circular circular;
     double[] kept = new double[0];
     int keptCount;
 
     void add(Series series) {
-      if (series.finite == 0) return;
+      if (series.finite() == 0) return;
       sessions++;
-      long n = finite + series.finite;
-      double delta = series.welfordMean - welfordMean;
-      m2 += series.m2 + delta * delta * finite * series.finite / n;
-      welfordMean += delta * series.finite / n;
-      finite = n;
-      double y = series.sum - compensation;
-      double t = sum + y;
-      compensation = (t - sum) - y;
-      sum = t;
-      min = Math.min(min, series.min);
-      max = Math.max(max, series.max);
-      sin += series.sin;
-      cos += series.cos;
+      summary.combine(series.summary);
+      if (series.circular != null) {
+        if (circular == null) circular = new SummaryStatistics.Circular(series.angle.period);
+        circular.combine(series.circular);
+      }
       if (series.keptCount > 0) {
         if (keptCount + series.keptCount > kept.length) kept = Arrays.copyOf(kept, keptCount + series.keptCount);
         System.arraycopy(series.kept, 0, kept, keptCount, series.keptCount);
         keptCount += series.keptCount;
       }
     }
+
+    long finite() {
+      return summary.count();
+    }
   }
 
   private record Value(Double value, String nullReason) {}
 
-  private static double median(double[] sorted) {
-    int n = sorted.length;
-    return n % 2 == 1 ? sorted[n / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0;
-  }
-
-  /** get_statistics' rules: n-1 deviation, its median, the shared type-7 percentile. */
-  private static Value linear(Statistic statistic, long finite, double mean, double m2, double min,
-      double max, double[] sorted, String what) {
-    if (finite == 0) return new Value(null, "no finite value " + what);
+  /** The summary statistics every tool shares, with the reason when one cannot be computed. */
+  private static Value linear(Statistic statistic, SummaryStatistics summary, double[] sorted, String what) {
+    if (summary.count() == 0) return new Value(null, "no finite value " + what);
     return switch (statistic) {
-      case MEAN -> new Value(mean, null);
-      case STD_DEV -> finite < 2 ? new Value(null, "a standard deviation needs at least two finite values, "
-          + "and there is 1 " + what) : new Value(Math.sqrt(m2 / (finite - 1)), null);
-      case MIN -> new Value(min, null);
-      case MAX -> new Value(max, null);
-      case MEDIAN -> new Value(median(sorted), null);
+      case MEAN -> new Value(summary.mean(), null);
+      case STD_DEV -> summary.count() < 2 ? new Value(null, "a standard deviation needs at least two finite values, "
+          + "and there is 1 " + what) : new Value(summary.stdDev(), null);
+      case MIN -> new Value(summary.min(), null);
+      case MAX -> new Value(summary.max(), null);
+      case MEDIAN -> new Value(SummaryStatistics.median(sorted), null);
       case P5 -> new Value(percentile(sorted, 0.05), null);
       case P95 -> new Value(percentile(sorted, 0.95), null);
     };
   }
 
-  /** NumericSignal.circularStatistics' rule, from running sums: mean direction or sqrt(-2 ln R). */
-  private static Value circular(Statistic statistic, long finite, double sin, double cos,
-      NumericSignal.AngleUnit angle, String what) {
-    if (finite == 0) return new Value(null, "no finite value " + what);
-    double c = cos / finite;
-    double s = sin / finite;
-    double r = Math.min(1.0, Math.hypot(c, s));
-    double toRadians = 2 * Math.PI / angle.period;
-    if (r <= 1e-12) return new Value(null, "the angles " + what + " have no mean direction (resultant length 0)");
-    return statistic == Statistic.MEAN ? new Value(Math.atan2(s, c) / toRadians, null)
-        : new Value(Math.sqrt(-2 * Math.log(r)) / toRadians, null);
+  /** The circular statistics every tool shares: mean direction or sqrt(-2 ln R), with the reason
+   * when the angles have none. */
+  private static Value circular(Statistic statistic, SummaryStatistics.Circular directions, String what) {
+    if (directions == null || directions.count() == 0) return new Value(null, "no finite value " + what);
+    if (!directions.directed()) return new Value(null, "the angles " + what + " have no mean direction (resultant length 0)");
+    return statistic == Statistic.MEAN ? new Value(directions.mean(), null) : new Value(directions.stdDev(), null);
   }
 
   private static Value value(Series series, Statistic statistic) {
-    if (series.angle != NumericSignal.AngleUnit.NONE) {
-      return circular(statistic, series.finite, series.sin, series.cos, series.angle, "in this session's scope");
-    }
-    return linear(statistic, series.finite, series.finite == 0 ? 0 : series.mean(), series.m2, series.min,
-        series.max, statistic.keepsValues() ? series.sorted() : null, "in this session's scope");
+    if (series.angle != NumericSignal.AngleUnit.NONE) return circular(statistic, series.circular, "in this session's scope");
+    return linear(statistic, series.summary, statistic.keepsValues() ? series.sorted() : null, "in this session's scope");
   }
 
   private record Key(String entry, String field, boolean derived, NumericSignal.AngleUnit angle) {}
@@ -1007,7 +964,7 @@ final class CompareSessionsTool extends ToolBase implements BoundedReply {
           var metric = resolved.metric();
           var series = resolved.key() == null ? null : bySeries.get(resolved.key());
           var value = series == null ? new Value(null, resolved.nullReason())
-              : series.finite == 0 ? new Value(null, empty(series, resolved.key()))
+              : series.finite() == 0 ? new Value(null, empty(series, resolved.key()))
               : value(series, metric.statistic());
           selection.values.put(metric.id(), value);
           if (series != null) selection.series.put(metric.id(), series);
@@ -1260,7 +1217,7 @@ final class CompareSessionsTool extends ToolBase implements BoundedReply {
       if (resolved.key() != null && resolved.key().angle() != NumericSignal.AngleUnit.NONE) {
         row.addProperty("angle", resolved.key().angle().wire());
       }
-      row.addProperty("sample_count", series == null ? 0 : series.finite);
+      row.addProperty("sample_count", series == null ? 0 : series.finite());
       row.addProperty("non_finite_count", series == null ? 0 : series.nonFinite);
       row.addProperty("records_without_value", series == null ? 0 : series.without);
       if (series != null && series.problems > 0) row.addProperty("unreadable_records", series.problems);
@@ -1268,7 +1225,7 @@ final class CompareSessionsTool extends ToolBase implements BoundedReply {
       if (series != null) {
         var quality = series.quality.result();
         row.add("data_quality", quality.toJson());
-        if (series.finite > 0) worst = worst == null || quality.qualityScore() < worst.qualityScore() ? quality : worst;
+        if (series.finite() > 0) worst = worst == null || quality.qualityScore() < worst.qualityScore() ? quality : worst;
       }
       return row;
     }
@@ -1597,15 +1554,10 @@ final class CompareSessionsTool extends ToolBase implements BoundedReply {
           item.addProperty("null_reason", "no selected session contributed a value; excluded_sessions gives each reason");
         } else if (angle != NumericSignal.AngleUnit.NONE && metric.statistic() == Statistic.MEAN) {
           // Session means of an angle are directions: summarized on the circle, not by order.
-          double sin = 0;
-          double cos = 0;
-          double toRadians = 2 * Math.PI / angle.period;
-          for (double value : data) {
-            sin += Math.sin(value * toRadians);
-            cos += Math.cos(value * toRadians);
-          }
-          var mean = circular(Statistic.MEAN, data.length, sin, cos, angle, what);
-          var spread = circular(Statistic.STD_DEV, data.length, sin, cos, angle, what);
+          var directions = new SummaryStatistics.Circular(angle.period);
+          for (double value : data) directions.add(value);
+          var mean = circular(Statistic.MEAN, directions, what);
+          var spread = circular(Statistic.STD_DEV, directions, what);
           item.addProperty("mean", mean.value());
           item.addProperty("std_dev", spread.value());
           item.addProperty("circular", true);
@@ -1615,18 +1567,10 @@ final class CompareSessionsTool extends ToolBase implements BoundedReply {
         } else {
           var sorted = data.clone();
           Arrays.sort(sorted);
-          double mean = 0;
-          double m2 = 0;
-          for (int i = 0; i < data.length; i++) {
-            double delta = data[i] - mean;
-            mean += delta / (i + 1);
-            m2 += delta * (data[i] - mean);
-          }
-          double plainMean = data.length == 0 ? 0 : Arrays.stream(data).sum() / data.length;
+          var summary = SummaryStatistics.of(data);
           var reasons = new JsonObject();
           for (var statistic : Statistic.values()) {
-            var value = linear(statistic, data.length, plainMean, m2, data.length == 0 ? 0 : sorted[0],
-                data.length == 0 ? 0 : sorted[sorted.length - 1], sorted, what);
+            var value = linear(statistic, summary, sorted, what);
             item.addProperty(statistic.wire(), value.value());
             if (value.value() == null) reasons.addProperty(statistic.wire(), value.nullReason());
           }
@@ -1661,20 +1605,19 @@ final class CompareSessionsTool extends ToolBase implements BoundedReply {
         item.addProperty("statistic", metric.statistic().wire());
         item.addProperty("weighting", "sample_weighted");
         item.addProperty("session_count", pool.sessions);
-        item.addProperty("sample_count", pool.finite);
+        item.addProperty("sample_count", pool.finite());
         item.addProperty("unit", unit);
         String what = "in the pooled samples";
         Value value;
         if (angle != NumericSignal.AngleUnit.NONE) {
-          value = circular(metric.statistic(), pool.finite, pool.sin, pool.cos, angle, what);
+          value = circular(metric.statistic(), pool.circular, what);
         } else {
           double[] sorted = null;
           if (metric.statistic().keepsValues()) {
             sorted = Arrays.copyOf(pool.kept, pool.keptCount);
             Arrays.sort(sorted);
           }
-          value = linear(metric.statistic(), pool.finite, pool.finite == 0 ? 0 : pool.sum / pool.finite,
-              pool.m2, pool.min, pool.max, sorted, what);
+          value = linear(metric.statistic(), pool.summary, sorted, what);
         }
         item.addProperty("value", value.value());
         if (value.value() == null) item.addProperty("null_reason", value.nullReason());

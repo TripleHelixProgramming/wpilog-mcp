@@ -250,6 +250,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Every tool that reports summary statistics now computes them with one implementation:
+  `get_statistics`, `compare_matches`, `compare_sessions`, `compare_poses`, `align_entries` and
+  `analyze_vision`. A single value's standard deviation is now null, where `get_statistics`,
+  `compare_matches`, `compare_poses` and `align_entries` reported 0, which read as no spread;
+  `compare_sessions` already gave null with the reason. The deviation is computed in one pass on
+  each value less the first, with compensated sums, so it streams as `compare_sessions` needs and
+  stays exact where values sit far from zero relative to their spread. `compare_sessions`'
+  plain one-pass deviation lost digits there: on the fixtures it was off by up to 4,177 units in
+  the last place. Across the fixtures' 237 numeric series, `get_statistics`' means are unchanged
+  and its deviations change by at most one unit in the last place, except that series of equal
+  values now read exactly 0 instead of a remainder such as 1.8e-15.
+
 - The unreleased source-scope discovery now reuses rechecked directory listings;
   previously every scoped request reopened each loose-tree directory listing. New store
   headers in known directories remain visible at the next request; delayed parent metadata

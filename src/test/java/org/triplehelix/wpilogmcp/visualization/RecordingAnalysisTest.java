@@ -180,7 +180,7 @@ class RecordingAnalysisTest {
     });
     var r = request("/n"); r.addProperty("start_time", .000002); r.addProperty("end_time", .000002);
     var result = workspace.statistics(r); assertEquals(1, result.get("count").getAsInt());
-    assertEquals(0, result.get("std_dev").getAsDouble()); assertEquals(2, result.get("records_visited").getAsLong());
+    assertTrue(result.get("std_dev").isJsonNull()); assertEquals(2, result.get("records_visited").getAsLong());
     assertEquals(0, result.get("problem_count").getAsInt());
   }
   @Test void missingScalarValuesAndNonNumericOrEmptyStatisticsNeverBecomeZero() throws Exception {

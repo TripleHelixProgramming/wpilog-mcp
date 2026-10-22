@@ -975,7 +975,7 @@ public final class FrcDomainTools {
       var sorted = values.stream().mapToDouble(Double::doubleValue).sorted().toArray();
       var o = new JsonObject();
       o.addProperty("n", sorted.length);
-      o.addProperty("median" + unit, percentile(sorted, 0.5));
+      o.addProperty("median" + unit, SummaryStatistics.median(sorted));
       o.addProperty("p95" + unit, percentile(sorted, 0.95));
       o.addProperty("max" + unit, sorted[sorted.length - 1]);
       return o;

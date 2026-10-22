@@ -248,25 +248,14 @@ final class NumericSignal {
    * The standard deviation is null when R is 0 (no mean direction).
    */
   static JsonObject circularStatistics(double[] angles, AngleUnit unit) {
-    double toRadians = 2 * Math.PI / unit.period;
-    double c = 0;
-    double s = 0;
-    int n = 0;
-    for (double a : angles) {
-      if (!Double.isFinite(a)) continue;
-      c += Math.cos(a * toRadians);
-      s += Math.sin(a * toRadians);
-      n++;
-    }
+    var circular = new SummaryStatistics.Circular(unit.period);
+    for (double a : angles) circular.add(a);
     var o = new JsonObject();
-    if (n == 0) return o;
-    c /= n;
-    s /= n;
-    double r = Math.min(1.0, Math.hypot(c, s));
-    o.addProperty("resultant_length", r);
-    if (r > 1e-12) {
-      o.addProperty("circular_mean", Math.atan2(s, c) / toRadians);
-      o.addProperty("circular_std", Math.sqrt(-2 * Math.log(r)) / toRadians);
+    if (circular.count() == 0) return o;
+    o.addProperty("resultant_length", circular.resultantLength());
+    if (circular.directed()) {
+      o.addProperty("circular_mean", circular.mean());
+      o.addProperty("circular_std", circular.stdDev());
     } else {
       o.add("circular_mean", com.google.gson.JsonNull.INSTANCE);
       o.add("circular_std", com.google.gson.JsonNull.INSTANCE);

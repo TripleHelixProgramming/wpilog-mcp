@@ -192,6 +192,9 @@ The output must also be deterministic: each call on a log is repeated with the l
 fixture arithmetic and `get_statistics`, histogram bins, step holds, resolver-only phases,
 exact scatter alignment, field geometry, pagination and unavailable imaging. `ChartDifferentialTest`
 recomputes summaries from the independent reader using the entries/windows reported in inputs.
+The shared summary statistics are checked against exact decimal arithmetic on telemetry-like
+series, values far from zero relative to their spread among them, and on combined summaries, a
+mean that needs the compensated sum's final correction, and the median of the largest doubles.
 The schema-driven conformance variants cover every kind and decode every returned PNG. Node
 checks cover the pure data-table adapter, notebook cells, URI admission and selection prompts;
 CI's editor smoke also checks actual Perspective rows before and after append. Tool-only

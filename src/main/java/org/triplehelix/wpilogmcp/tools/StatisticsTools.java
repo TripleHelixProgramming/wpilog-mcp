@@ -67,7 +67,8 @@ public final class StatisticsTools {
     @Override
     public String description() {
       return "BUILT-IN statistics: Get min, max, mean, median, std_dev, percentiles for a numeric entry "
-          + "or field. NEVER compute these manually—always use this tool! "
+          + "or field. NEVER compute these manually—always use this tool! std_dev is the sample "
+          + "deviation (n-1), null for a single value. "
           + "Supports optional time range filtering (start_time, end_time). "
           + "No finite samples in the selected scope returns no_match with count 0 and a hint. "
           + "Includes data quality metrics and sample size for confidence assessment."
@@ -129,18 +130,9 @@ public final class StatisticsTools {
             .addInputSignal("entry", signal).addInputScope(scope).addDataQuality(quality).build();
       }
 
-      var stats = java.util.Arrays.stream(data).summaryStatistics();
+      // In time order, then sorted for the median and percentiles
+      var summary = SummaryStatistics.of(data);
       java.util.Arrays.sort(data);
-      double median = data.length % 2 == 1
-          ? data[data.length / 2]
-          : (data[data.length / 2 - 1] + data[data.length / 2]) / 2.0;
-
-      double mean = stats.getAverage();
-      // Use sample standard deviation (Bessel's correction: n-1) for more accurate estimates
-      // from sample data. For n=1, return 0 to avoid division by zero.
-      double sumSquaredDiff = java.util.Arrays.stream(data).map(v -> (v - mean) * (v - mean)).sum();
-      double variance = data.length > 1 ? sumSquaredDiff / (data.length - 1) : 0.0;
-      double stdDev = Math.sqrt(variance);
 
       var directives = AnalysisDirectives.fromQuality(quality)
           .addSingleMatchCaveat()
@@ -172,12 +164,12 @@ public final class StatisticsTools {
         builder.addData("angle", angle);
       }
       return builder
-          .addProperty("count", stats.getCount())
-          .addProperty("min", stats.getMin())
-          .addProperty("max", stats.getMax())
-          .addProperty("mean", mean)
-          .addProperty("median", median)
-          .addProperty("std_dev", stdDev)
+          .addProperty("count", summary.count())
+          .addProperty("min", summary.min())
+          .addProperty("max", summary.max())
+          .addProperty("mean", summary.mean())
+          .addProperty("median", SummaryStatistics.median(data))
+          .addProperty("std_dev", summary.stdDev())
           .addProperty("q1", q1)
           .addProperty("q3", q3)
           .addProperty("iqr", q3 - q1)
@@ -1093,13 +1085,12 @@ public final class StatisticsTools {
     if (d.length == 0) return o;
     var sorted = d.clone();
     java.util.Arrays.sort(sorted);
-    double mean = java.util.Arrays.stream(d).average().orElse(0);
-    double ss = java.util.Arrays.stream(d).map(v -> (v - mean) * (v - mean)).sum();
-    o.addProperty("mean", mean);
-    o.addProperty("std_dev", d.length > 1 ? Math.sqrt(ss / (d.length - 1)) : 0.0);
-    o.addProperty("min", sorted[0]);
-    o.addProperty("max", sorted[sorted.length - 1]);
-    o.addProperty("median", percentile(sorted, 0.5));
+    var summary = SummaryStatistics.of(d);
+    o.addProperty("mean", summary.mean());
+    o.addProperty("std_dev", summary.stdDev());
+    o.addProperty("min", summary.min());
+    o.addProperty("max", summary.max());
+    o.addProperty("median", SummaryStatistics.median(sorted));
     o.addProperty("p5", percentile(sorted, 0.05));
     o.addProperty("p95", percentile(sorted, 0.95));
     o.addProperty("mean_abs", java.util.Arrays.stream(d).map(Math::abs).average().orElse(0));
@@ -1129,8 +1120,9 @@ public final class StatisticsTools {
           + "(offset/limit; limits.rows gives the total); a value is null where a signal had "
           + "none, and unaligned counts those per signal. With difference=true and two "
           + "signals, difference_statistics summarizes signal 1 minus signal 2 (two angles: "
-          + "their shortest difference): count, mean, std_dev, min, max, median, p5, p95, "
-          + "mean_abs, rmse. Returns no_match when no sample time falls in scope."
+          + "their shortest difference): count, mean, std_dev (null for one difference), min, "
+          + "max, median, p5, p95, mean_abs, rmse. Returns no_match when no sample time falls in "
+          + "scope."
           + NumericSignal.PATH_HELP + GUIDANCE_UNIVERSAL;
     }
 
