@@ -217,7 +217,10 @@ These are publication facts, not statistical inferences, so they carry no data-q
 
 Current and recent store sessions, newest first. `replica_publication_failure` reports a pending
 catalog publication for the current capture (otherwise null); recording continues and its local
-session receipt remains durable. Top-level `managed` is true only when the
+session receipt remains durable. `index_in_heap` says why the open capture's index keeps its
+blocks in the heap instead of its scratch file in the disk cache: the disk cache is off, the
+recording's disk reserve is short, or a block could not be written (otherwise null). The heap
+then grows by about 13 bytes for each recorded number. Top-level `managed` is true only when the
 server was started with `--managed`; a hand-written systemd unit must pass that flag.
 An inherited `INVOCATION_ID` does not set it. Use `systemctl`, not the daemon
 manager, to stop or update it. This field is present even when capture is disabled.

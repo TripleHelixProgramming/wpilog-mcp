@@ -615,9 +615,12 @@ view keeps the metadata it saw, as well as its value boundary.
 
 `LiveLogTest` checks fixed prefixes during a concurrent append, input ranges (including role-based
 inputs), array growth, all hot/cold value families and schemas, and actual mapped-read counts
-(including a plant that leaves every hot object intact). It also checks four-per-second expiry with
-a zero hot window, mapping retirement with a held reader, resume after eviction, and rename after
-release. The store rename tests now keep a live mapping beside the writer too. These run in the
+(including a plant that leaves every hot object intact). It also checks four-per-second expiry of
+strings with a zero hot window while numbers keep no hot values, mapping retirement with a held
+reader, resume after eviction, and rename after release. The index's columns are checked on their
+own and against an independent read of the same bytes at sampled publication boundaries, in a file
+and in the heap; ten million numbers leave the heap within 16 MB of where it started, and a
+ten-second window on two hours decodes only the blocks that hold it. The store rename tests now keep a live mapping beside the writer too. These run in the
 normal Linux and Windows suite.
 
 A sparse WPILOG beyond the mapping limit is refused by import without moving or placing its bytes;

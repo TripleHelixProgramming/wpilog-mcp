@@ -50,7 +50,7 @@ servers:
 | `capture.disk_reserve_bytes` | Reserve protected against admitted copying writers; default `2147483648` (2 GiB). Stores on one filesystem share the largest reserve. |
 | `capture.disk_floor_bytes` | Close capture cleanly at or below this measured usable space; default `268435456` (256 MiB). NT4 stays connected. |
 | `capture.disk_resume_margin_bytes` | Resume only above the floor plus this margin; default `536870912` (512 MiB). |
-| `capture.hot_window_sec` | Values retained in memory, default `600` seconds; expiry follows completion of the 250 ms asynchronous flush tick, at most four remaps per second. `0` reads flushed values from the capture file |
+| `capture.hot_window_sec` | Recent strings, raw values, arrays and structs retained in memory, default `600` seconds; expiry follows completion of the 250 ms asynchronous flush tick, at most four remaps per second. `0` reads flushed values from the capture file. Numbers are never held: the capture's index keeps them in its columns |
 | `capture.gateway` | Optional read-only NT4 gateway; omitted means disabled; `{}` enables its default port |
 | `capture.gateway.port` | Integer `0`–`65535`, default `5810` within the gateway block; `0` disables it. Binds to the same address as HTTP, on this separate port |
 | `capture.pull` | Optional robot log pulling block; capture alone needs no SSH |
@@ -507,7 +507,8 @@ power loss or a daemon ended before shutdown finished, and it never changes the 
 **Reading the open capture.** Every log tool accepts the open capture's path. Each call sees a
 fixed prefix, reported as `inputs.session_time_range`; a later call can include newer records.
 The hot window controls memory retention, not which records are available: older values are
-read from the file.
+read from the file, and numbers from the capture's index, which keeps them outside the heap in a
+scratch file in the disk cache.
 
 A local server reading a growing WPILOG that another process writes resumes its index on
 verified append anchors and a known unchanged file identity, and retries a partial final record

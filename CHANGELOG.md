@@ -263,6 +263,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A recording keeps its index in columns outside the heap. Each entry's records keep their
+  publication sequence, time, byte position and payload size, and a number its value, in blocks
+  of 512 records packed as a column file packs its positions and written to a scratch file in
+  the disk cache that is never forced to disk. Before, the open capture's index kept an object
+  on the heap for every record, pinned until the file closed: on 100 numeric topics at 50 Hz it
+  kept 62 bytes a value with the default hot window, about 2 GB over two hours, and the writer's
+  thread spent more on each value as the heap grew, 152 ns over the second 15 minutes. Now the
+  heap keeps 0.3 bytes a value, the writer's thread spends 40 to 47 ns a value however long the
+  session runs, and the file takes 14 bytes a value. Numbers are read from their columns, so
+  `capture.hot_window_sec` now keeps recent strings, raw values, arrays and structs only; a
+  number whose record holds anything but its type's value in its type's width, such as an
+  integer sent on a double topic, is read from the WPILOG as before. When the disk cache is
+  off, the recording's disk reserve is short or a block cannot be written, the blocks stay in
+  the heap, packed, at 14 bytes a value, and the current capture's row in `list_sessions` says
+  why in a new `index_in_heap`. The file counts toward `diskcachesize` but is never evicted; it
+  is deleted once the writer has moved on to another file and the index's last reader is done,
+  and by the next start after a crash.
 - Numeric reads take their numbers from a log's column file once one is built: `read_entry`,
   `render_chart`, the data endpoint, `get_statistics`, `compare_entries`, `compare_matches`,
   `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `align_entries`,
@@ -614,6 +631,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The open capture's columns are read back from a file and from the heap in every order, by a
+  reader that starts at the latest record too, and compared at sampled publication boundaries
+  with an independent read of the same WPILOG prefix: every record's position, time, size and
+  value, and a number's samples in time order, with the hot window on and off and with entries
+  logged out of order, off-type and malformed. Counted rather than timed, ten million recorded
+  numbers leave the heap within 16 MB of where it started, a ten-second window on two hours of
+  an entry decodes at most 40 of its 703 blocks, and the list of off-type records is copied a
+  few times a session, not once a record. Further tests pin a leftover file that is never read,
+  a file deleted under its writer, a short reserve and a failed write, the startup sweep and
+  eviction, the file's lifetime across retirement and discard, and `index_in_heap`. Nineteen
+  planted mistakes each fail them.
 - With a column file built, the conformance sweep calls every tool on every fixture again and
   requires the same result; the five presentation routes answer their 39 cases against the same
   oracle; the signal resolver and the data endpoint's series give every held path the decode's

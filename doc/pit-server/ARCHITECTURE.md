@@ -430,15 +430,24 @@ and repeatedly invalidate tool calls. Entries retain announcement order and WPIL
 names and types, forward clock jumps, struct schemas, and decode problems follow the finished
 reader's rules, so eviction and a normal file load preserve answers.
 
-Each entry has a chunked append-only array and a volatile length. The writer publishes complete
-slots, then a global boundary containing the record sequence and data time range. A call captures
+Each entry's records are columns outside the heap: each record's publication sequence, time,
+byte position and payload size, and a number's value. The writer appends to the entry's tail, a
+few primitive arrays, and writes each full tail of 512 records as one packed block to a scratch
+file in the disk cache that is never forced to disk; a reader reads a block with one positional
+read, so no mapping is released under it. When the disk cache is off, the recording's disk
+reserve is short, or a block cannot be written, blocks stay in the heap, packed, and
+`list_sessions` says why in `index_in_heap`. The writer publishes complete records, then a global
+boundary containing the record sequence and data time range. A call captures
 that boundary and takes each entry's length on first access, capped at the boundary. Its values,
 entry table, and schemas therefore come from one consistent prefix. `inputs.session_time_range`
 names that prefix in seconds, and `compare_matches` supplies a range per live input path. Data reads
 take no writer lock. Short lifetime transitions and the existing file leases protect retirement.
 
-The default ten-minute hot window keeps the client's decoded values, with array/struct conversion
-when a tool requests them. Expiry follows server time sync as well as new data, so idle topics age
+The default ten-minute hot window keeps the client's decoded values of strings, raw values, arrays
+and structs, with array/struct conversion when a tool requests them. A number keeps none: it is
+read from its column when its record holds it in its type's width, as every record the writer
+encodes does, and any other record is read from the WPILOG like a string, so a malformed record
+is still reported where it is. Expiry follows server time sync as well as new data, so idle topics age
 out too. Each 250 ms flush tick hands disk force to the writer's daemon thread, with only one force
 outstanding. Its completion time and index/manifest notification are published back on the ordered
 listener loop; close and rollover wait before closing the channel or replacing its file. Record
@@ -452,7 +461,9 @@ before unmapping it. The write channel remains open beside the mapping on Window
 The manager pins active captures outside its evictable cache and supplies a fresh prefix per call,
 without file-change checks or after-call discard. At close the same index enters the ordinary cache;
 eviction releases its mappings after in-flight uses. A later load uses `LazyParsedLog`. The writer
-keeps the last session's index available for clock-continuous resumption and remaps it if evicted.
+keeps the last session's index available for clock-continuous resumption and remaps it if evicted;
+its columns' file is deleted once the writer has moved on to another file and the index's last
+reader has finished, and the startup sweep removes the files an earlier process left.
 Cold reads use the same long-addressed windows as finished logs, including records past 2 GiB.
 Another process reading a growing capture uses the incremental scan described under Loading;
 it has no access to this writer-owned live index.

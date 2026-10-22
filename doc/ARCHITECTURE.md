@@ -942,6 +942,7 @@ If a call still runs out of memory, it returns an error that suggests a narrower
 | REV log sync results | Disk | Until the cache's format version changes, or the cache is trimmed to its size limit |
 | Ordinary eligible-file scan indexes | Disk | Reuse on unchanged attributes, CRC32C when only the time moved, a fresh proof otherwise; format and recipe versions in the key; shared cleanup size limit |
 | Column files of finished logs | Disk | Named by the content's SHA-256 and the format and recipe versions; trimmed with the rest to the shared size limit after each build |
+| The open capture's index | Disk | One scratch file per capture, named by the capture's identity; counted toward the shared size limit but never trimmed; deleted when the writer has moved on and the last reader is done, or by the next startup's sweep |
 | The Blue Alliance responses | Memory | 24 hours; "not found" for 5 minutes; failures are not cached; 200 entries of each kind |
 | Game data | Memory | The life of the server |
 
@@ -971,7 +972,8 @@ Other choices in the REV synchronization cache:
 Ordinary lazy opens persist their scan index as `*-scan.idx`, without decoded values.
 `DiskCache` owns the shared directory and startup cleanup budget for these indexes, legacy
 parsed artifacts and REV results. `diskcachedir` and `diskcachesize` remain active; the latter
-is enforced by the startup sweep and after each column file is built, not reserved per write. `health_check.scan_index_disk_cache`
+is enforced by the startup sweep and after each column file is built, not reserved per write; the
+open capture's index counts toward it and is never evicted. `health_check.scan_index_disk_cache`
 reports scan artifacts and process lookup counters.
 
 Index keys include both encoding and scan-recipe versions. A verified store member uses its
@@ -1026,6 +1028,16 @@ numbers from them ([Numeric reads](#numeric-reads));
 [the column file plan](COLUMN_CACHE_PLAN.md) gives the design and the measurements, and a
 guard test, like the scan index's, fails when a source that shapes a file changes until the
 change is decided.
+
+A recording keeps its index in columns too, in a scratch file in the same directory named for
+its capture: the heap holds under half a byte for each recorded number, however long the
+session runs. The file is written as the capture records and never forced to
+disk, since a crash loses nothing the WPILOG does not hold, and a server that starts again
+deletes the files an earlier process left. The file counts toward the size limit but is never
+evicted, as the recording depends on it; where the cache is off or cannot take it, the blocks
+stay in the heap, packed, and `list_sessions` says why.
+[The pit server's architecture](pit-server/ARCHITECTURE.md#live-log) gives its layout and
+lifetime.
 
 ## REV Logs and Synchronization
 

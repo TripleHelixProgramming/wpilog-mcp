@@ -80,7 +80,9 @@ public final class LiveTools {
           + "(captured value records over the last minute), event, match (type, number), cost[] "
           + "(ten highest bytes_per_sec topics: name, records, bytes, bytes_per_sec), thinned[] "
           + "(prefix, period_sec), excluded[], imports[] (path, method, offset_sec, reason), end_reason and "
-          + "counts_basis. replica_publication_failure explains deferred catalog publication while capture continues (otherwise null). providers[] reports name, state, reason (current activity, stand-down, partial-sample or "
+          + "counts_basis. replica_publication_failure explains deferred catalog publication while capture continues (otherwise null). "
+          + "index_in_heap says why the open capture's index keeps its blocks in the heap rather than its file in the disk cache "
+          + "(otherwise null). providers[] reports name, state, reason (current activity, stand-down, partial-sample or "
           + "sampling-budget explanation), period_sec, "
           + "last_round_trip_ms, robot_cpu_sec (processor time between samples, not provider-only CPU), lines_per_sec, "
           + "dropped_lines, dropped_before_sync, records, bytes (provider value records), sample_bytes (last reply), and program_pids (observed program identities for crash-file placement). "
@@ -99,11 +101,13 @@ public final class LiveTools {
       if (limit < 1 || limit > 100) throw new IllegalArgumentException("limit must be an integer from 1 to 100");
       if (live == null) return inactive(live, current).addProperty("managed", managed.getAsBoolean()).addData("gateway", org.triplehelix.wpilogmcp.nt4.server.GatewayStatus.DISABLED.json());
       var sessions = live.sessions(); var rows = new JsonArray();
-      for (var session : sessions.stream().limit(limit).toList()) rows.add(row(live, session, current));
+      String indexInHeap = current != null && current.open() && logManager != null
+          ? logManager.captureIndexInHeap(live.resolve(current.path())).orElse(null) : null;
+      for (var session : sessions.stream().limit(limit).toList()) rows.add(row(live, session, current, indexInHeap));
       return (sessions.isEmpty() ? ResponseBuilder.notApplicable("No capture or imported session has been recorded") : ResponseBuilder.success())
           .addLimitedList("sessions", rows, sessions.size(), limit).addProperty("managed", managed.getAsBoolean()).addData("gateway", live.gateway().json());
     }
-    private static JsonObject row(LiveCapture live, LiveCapture.SessionView view, CaptureStore.Status current) {
+    private static JsonObject row(LiveCapture live, LiveCapture.SessionView view, CaptureStore.Status current, String indexInHeap) {
       var session = view.session(); var row = new JsonObject();
       // An import can widen the session's calendar window and replace its clock basis.
       // The writer's path, including store move aliases, still identifies that same session.
@@ -133,6 +137,7 @@ public final class LiveTools {
       row.addProperty("counts_basis", stats == null ? "no complete recorder summary in this manifest" : "capture value records; excludes control records, context and copied schema seeds");
       row.addProperty("end_reason", thisCapture ? current.endReason() : session.endReason());
       row.addProperty("replica_publication_failure", thisCapture ? current.replicaPublicationFailure() : null);
+      row.addProperty("index_in_heap", open ? indexInHeap : null);
       row.addProperty("event", thisCapture && current.event() != null ? current.event() : session.event());
       var match = new JsonObject();
       match.addProperty("type", thisCapture && current.matchType() != null ? current.matchType() : session.matchType());

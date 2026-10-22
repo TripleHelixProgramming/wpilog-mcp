@@ -140,7 +140,7 @@ class LiveLogTest {
       connect(writer, 10_000_000, 0);
       for (int i = 0; i < 2200; i++) writer.value(X, new ValueFrame(1, 10_000_000L + i * 1_000_000L, 2, (long) i), i);
       loop.advance(250_000); loop.until(() -> writer.session().observedAtUs() == loop.nowUs());
-      assertEquals(2, index.live().hotRecordCount());
+      assertEquals(0, index.live().hotRecordCount(), "Numbers keep no hot values: their columns hold them");
       try (var use = manager.acquire(path.toString())) {
         assertInstanceOf(LiveLog.View.class, use.log()); assertNull(use.snapshot());
         assertEquals(2200, use.log().sampleCount("NT:/x"));
@@ -152,10 +152,10 @@ class LiveLogTest {
           assertNotNull(finished.snapshot()); assertEquals(2201, finished.log().sampleCount("NT:/x"));
         }
         assertTrue(manager.unloadLog(path.toString()));
-        // Decode for the first time after retirement, including across two array chunks and remaps.
+        // Decode for the first time after retirement, across several blocks of the columns.
         long reads = index.live().mappedReadCount();
         var values = use.log().values().get("NT:/x"); assertEquals(2200, values.size());
-        assertEquals(2198, index.live().mappedReadCount() - reads, "The expired values must come from the mapping");
+        assertEquals(0, index.live().mappedReadCount() - reads, "Numbers come from their columns after retirement too");
         for (int i = 0; i < values.size(); i++) { assertEquals((long) i, values.get(i).value()); assertEquals(10.0 + i, values.get(i).timestamp()); }
       }
       try (var loaded = manager.acquire(path.toString())) {
@@ -213,16 +213,19 @@ class LiveLogTest {
   }
 
 
+  /** Strings keep their wire values until a flush maps them; numbers, held by their columns, keep none. */
   @Test void zeroHotWindowExpiresOnlyOnQuarterSecondFlushes() throws Exception {
     var manager = new LogManager(); manager.addAllowedDirectory(directory);
     var path = directory.resolve("ticks.wpilog"); var index = index(manager, path, 0);
     var loop = new ManualScheduler();
+    var text = new Announce("/s", 2, "string", null, new JsonObject());
     try (var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, index)) {
-      connect(writer, 1_000_000, 0);
+      connect(writer, 1_000_000, 0); writer.announce(text);
       long mappings = index.live().mappingCount();
       for (int tick = 0; tick < 4; tick++) {
         for (int i = 0; i < 100; i++) {
           long n = tick * 100L + i;
+          writer.value(text, new ValueFrame(2, 1_000_000 + n, 4, "v" + n), loop.nowUs());
           writer.value(X, new ValueFrame(1, 1_000_000 + n, 2, n), loop.nowUs());
         }
         writer.timeSync(2_000_000 + tick, loop.nowUs());
@@ -236,14 +239,18 @@ class LiveLogTest {
       }
       long reads = index.live().mappedReadCount();
       try (var use = manager.acquire(path.toString())) {
-        var values = use.log().values().get("NT:/x");
-        assertEquals(400, values.size());
+        var strings = use.log().values().get("NT:/s");
+        var numbers = use.log().values().get("NT:/x");
+        assertEquals(400, strings.size());
+        assertEquals(400, numbers.size());
         for (int i = 0; i < 400; i++) {
-          assertEquals((long) i, values.get(i).value());
-          assertEquals((1_000_000 + i) / 1_000_000.0, values.get(i).timestamp());
+          assertEquals("v" + i, strings.get(i).value());
+          assertEquals((long) i, numbers.get(i).value());
+          assertEquals((1_000_000 + i) / 1_000_000.0, strings.get(i).timestamp());
+          assertEquals((1_000_000 + i) / 1_000_000.0, numbers.get(i).timestamp());
         }
       }
-      assertEquals(400, index.live().mappedReadCount() - reads);
+      assertEquals(400, index.live().mappedReadCount() - reads, "Only the strings are read from the mapping");
     } finally { manager.shutdown(); }
   }
 

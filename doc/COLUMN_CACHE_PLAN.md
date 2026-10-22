@@ -7,9 +7,9 @@ was built: the file format, its writer and reader, and their tests; then the fil
 in the disk cache, built in the background and given each record's facts. On 2026-10-22 the
 readers moved onto them: [reading through column files](#reading-through-column-files) says
 which reads do and which still read the log. [The recording phase's
-design](#the-recording-phase-design) is agreed, with its four questions answered. [The first
-build](#the-first-build) says what it changed, and the maintainer
-[decided](#decisions-from-the-first-build) what it asked the same day.
+design](#the-recording-phase-design) is agreed, with its four questions answered, and [was
+built](#the-recording-phase-built) the same day. [The first build](#the-first-build) says what it
+changed, and the maintainer [decided](#decisions-from-the-first-build) what it asked the same day.
 
 The log store is now asked for reads a database would serve: Grafana panels at any zoom, live
 panels on the recording in progress, the Explorer, and comparisons across a season. Each of
@@ -484,6 +484,55 @@ hot window.
 - Grafana's gate, opt-in like the soak test, passes after the change and fails on today's code
   at two hours.
 
+## The recording phase: built
+
+Built on 2026-10-22 to the design above. Building it settled three points. The first changed
+the design, and the maintainer kept the change on review the same day:
+
+- **A block is read with a positional read, not through a mapping.** A block is written once and
+  never changes, so a reader reads it from the scratch file with one positional read. No mapping
+  then has to be retired under its readers, which the WPILOG's mapping needs reference counts
+  for, since unmapping a buffer a thread still reads crashes the server; a block is readable as
+  soon as it is written, not after the next flush tick; and the file can be deleted, on Windows
+  too, as soon as its channel closes. The cost is a system call for each block a reader decodes:
+  twelve five-minute panels take 6.9 ms from the file, against 2.2 ms with the blocks in the
+  heap, well within the 250 ms of Grafana's gate.
+- **When the file is deleted.** The design said the file goes when the index retires. An index
+  retires when it is evicted from memory, and the writer may resume it after a gap, so the file
+  is deleted only once the writer has moved on to another file and the index's last reader is
+  done. The startup sweep removes the files a stopped or crashed server left.
+- **Which records a column holds.** A number's column holds a record's value when the record's
+  payload has its type's width and the writer's frame carried the type's own value, as every
+  record the writer encodes for its entry's type does. Any other record, such as an integer a
+  client sent on a double topic or a malformed payload, keeps its wire value in the hot window
+  and is read from the WPILOG after, as before. While an entry has such a record, its numeric
+  reads come from the decode, so they keep its answers and decode problems. The list of such
+  records doubles as it fills, since a client that sends integers on a double topic makes every
+  record of the session one of them.
+
+Measured on the prototype's load, 100 numeric topics at 50 Hz for 30 minutes (9 million
+values). One benchmark, compiled against the index before this change and after it, appends
+with made-up record positions and times the loop whole; the panels come from the probe that
+measured the design:
+
+| Question | Before | Blocks in the scratch file | Blocks in the heap |
+|---|---|---|---|
+| Heap kept per value | 62 bytes | 0.3 bytes | 14 bytes |
+| Writer's thread, per value | 46 ns, and 83 ns more to expire hot values | 47 ns | 40 ns |
+| Writer's thread over the second 15 minutes | 152 ns, rising as the heap grows | 40 to 44 ns | 36 to 39 ns |
+| Disk per value | none | 14 bytes | none |
+| Twelve panels, the last five minutes | 122 to 153 ms | 6.9 ms | 2.2 ms |
+
+The design's figures for the writer's thread were timed call by call between WPILOG writes,
+which adds a timer call and the write's cache misses to each append; the benchmark times the
+loop whole, so its figures are lower for both indexes.
+
+The tests the design names are built, except Grafana's gate, which comes with the Grafana
+plan's stage 1, whose panels it measures. [The pit server's capture
+tests](pit-server/DEVELOPMENT.md#capture-tests) describe them; nineteen planted mistakes each
+fail them. `list_sessions` reports the open capture's `index_in_heap`, null while the file takes
+its blocks.
+
 ## Costs and risks
 
 - **Disk.** About 16 bytes for each numeric value, roughly the size of the log itself, before
@@ -512,7 +561,8 @@ hot window.
    disk cache and built in the background; and the readers moved onto them.
 2. **The recording.** The capture writes the open file's columns as it records, replacing the
    per-value index. This comes before the Grafana plan's stage 1, whose gate runs on it. Its
-   [design](#the-recording-phase-design) is agreed.
+   [design](#the-recording-phase-design) is agreed, and it was
+   [built](#the-recording-phase-built) on 2026-10-22.
 3. **Across sessions.** The Grafana plan's stage 3 reads column files across sessions, and the
    columnar store's revisit measures this against its targets: one entry across an event in
    under 2 s after a restart, and across a season in under 10 s. If reading every sample misses

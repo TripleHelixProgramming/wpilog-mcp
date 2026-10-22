@@ -269,7 +269,9 @@ windows, small batches and byte budgets, first record indexes, record limits and
 They are read every way on a log of edge cases and on each fixture entry's first held path. A
 test names the reads a file must serve and those it must leave to the log, and another checks
 that a file a loaded log holds counts as in use, which the cache's trim keeps, and that it closes
-with the log's mapping.
+with the log's mapping. The open capture's columns are checked with the live log, in [the pit server's
+capture tests](pit-server/DEVELOPMENT.md#capture-tests); here the startup sweep must remove a
+scratch file only when an earlier process left it, and the trim must never evict one.
 
 **Runtime-native guard.** `./gradlew build` reaches `verifyRuntimeNativeLibraries` through
 `check`. The guard inspects the main application runtime classpath, including resource directories and

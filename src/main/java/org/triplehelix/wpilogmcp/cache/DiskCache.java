@@ -125,6 +125,27 @@ public class DiskCache {
     return columnPrefix() + contentSha256 + COLUMN_SUFFIX;
   }
 
+  /** The suffix of a recording's open column file, which lives only as long as its capture's index. */
+  public static final String OPEN_COLUMN_SUFFIX = "-open.col";
+
+  /**
+   * Where a recording's open column file goes, named by the capture's identity; empty when the
+   * cache is off or unavailable, or when the identity is not a UUID, so a name is never built
+   * from anything else.
+   */
+  public Optional<Path> openColumnPath(String captureIdentity) {
+    if (!enabled || captureIdentity == null
+        || !captureIdentity.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")) return Optional.empty();
+    try {
+      var directory = cacheDirectory.getPath();
+      Files.createDirectories(directory);
+      return Optional.of(directory.resolve(captureIdentity + OPEN_COLUMN_SUFFIX));
+    } catch (IOException unavailable) {
+      logger.debug("Open column directory unavailable: {}", unavailable.getClass().getSimpleName());
+      return Optional.empty();
+    }
+  }
+
   /** Whether a value is a SHA-256 in lowercase hex, which is how manifests and indexes write it. */
   public static boolean isContentHash(String value) {
     return value != null && value.matches("[0-9a-f]{64}");
@@ -553,6 +574,28 @@ public class DiskCache {
         }
       }
 
+      // An open column file is never read after its process, so one last written before this
+      // process started goes: a server that stopped or crashed left it. A running server sharing
+      // the cache may have last written one before then too, an idle index kept for resumption;
+      // deleting it removes only the name, since that server's open channel goes on reading and
+      // writing the file, and its bytes are left uncounted here. The newer ones count toward the
+      // limit.
+      long started = java.lang.management.ManagementFactory.getRuntimeMXBean().getStartTime();
+      try (var open = Files.newDirectoryStream(cacheDir, "*" + OPEN_COLUMN_SUFFIX)) {
+        for (var file : open) {
+          try {
+            if (Files.getLastModifiedTime(file).toMillis() < started) {
+              deleteQuietly(file);
+              deleted++;
+            } else {
+              totalSize += Files.size(file);
+            }
+          } catch (IOException gone) {
+            // Deleted by its owner meanwhile.
+          }
+        }
+      }
+
       // If still over size limit, delete oldest files until under limit
       evictOldest(cacheDir, totalSize, file -> false);
 
@@ -593,10 +636,18 @@ public class DiskCache {
     }
   }
 
-  /** The files the size limit counts: parsed logs, REV results, scan indexes and column files. */
+  /**
+   * The files the size limit counts: parsed logs, REV results, scan indexes and column files, and
+   * recordings' open column files, which are never evicted, since a capture is writing them.
+   */
   private static boolean counted(Path file) {
     var name = file.getFileName().toString();
-    return name.endsWith(".msgpack") || name.endsWith("-scan.idx") || name.endsWith(COLUMN_SUFFIX);
+    return name.endsWith(".msgpack") || name.endsWith("-scan.idx") || name.endsWith(COLUMN_SUFFIX)
+        || name.endsWith(OPEN_COLUMN_SUFFIX);
+  }
+
+  private static boolean evictable(Path file) {
+    return counted(file) && !file.getFileName().toString().endsWith(OPEN_COLUMN_SUFFIX);
   }
 
   /** Deletes the oldest counted files, by modification time, until the total is under the limit. */
@@ -608,7 +659,7 @@ public class DiskCache {
     try (var files = Files.list(cacheDir)) {
       long[] runningSize = {totalSize};
       files
-          .filter(DiskCache::counted)
+          .filter(DiskCache::evictable)
           .filter(f -> !inUse.test(f))
           .sorted((a, b) -> {
             try {

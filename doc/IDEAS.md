@@ -23,9 +23,9 @@ that shows the live metrics, on server installs, after live panels on the open c
 (section 9.5 below). Its decisions are recorded; nothing in it is built yet.
 [The column file plan](COLUMN_CACHE_PLAN.md) proposes keeping each log's numeric entries as
 columns beside it, so reads at any zoom and across sessions skip the per-sample cost. Its file
-format, writer and reader are built, the server builds the files in the background, and the
-numeric reads of finished logs take their numbers from them; the recording's columns come
-next.
+format, writer and reader are built, the server builds the files in the background, the
+numeric reads of finished logs take their numbers from them, and a recording keeps its index
+in columns as it records.
 
 ---
 

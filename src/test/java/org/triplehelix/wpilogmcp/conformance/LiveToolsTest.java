@@ -193,6 +193,26 @@ class LiveToolsTest {
     }
   }
 
+  /** The open capture's row says when its index keeps its blocks in the heap: here because the disk cache is off. */
+  @Test void theOpenIndexSaysWhenItsBlocksStayInTheHeap() throws Exception {
+    var cache = org.triplehelix.wpilogmcp.log.LogManager.getInstance().getDiskCache();
+    boolean enabled = cache.isEnabled();
+    try {
+      cache.setEnabled(false);
+      try (var rig = rig(CapturePolicy.ALL)) {
+        rig.announce("/x", "int"); rig.value("/x", 10_000_000, 2, 1L); rig.flush();
+        assertEquals("the disk cache is off or unavailable", rig.session().get("index_in_heap").getAsString());
+      }
+      cache.setEnabled(true);
+      try (var rig = rig(CapturePolicy.ALL)) {
+        rig.announce("/x", "int"); rig.value("/x", 10_000_000, 2, 1L); rig.flush();
+        assertTrue(rig.session().get("index_in_heap").isJsonNull(), "the index lives in its file in the disk cache");
+      }
+    } finally {
+      cache.setEnabled(enabled);
+    }
+  }
+
   @Test void aBlockedStoreCannotDelayLiveQueriesOrCostPublicationAndImportsAppearAfterward() throws Exception {
     try (var rig = rig(CapturePolicy.ALL)) {
       rig.announce("/SystemStats/SerialNumber", "string"); rig.announce("/x", "int");

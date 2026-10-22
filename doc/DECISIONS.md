@@ -137,3 +137,4 @@ architectural decisions.
 | 2026-10-22 | standing | An open capture's column blocks are packed, as format 2 packs a finished file's positions | [Record](COLUMN_CACHE_PLAN.md#the-recording-phase-design) |
 | 2026-10-22 | standing | When the disk cannot take an open capture's column file, its blocks stay in the heap, packed | [Record](COLUMN_CACHE_PLAN.md#the-recording-phase-design) |
 | 2026-10-22 | standing | Numbers leave the capture's hot window, which keeps only strings, raw values and structs | [Record](COLUMN_CACHE_PLAN.md#the-recording-phase-design) |
+| 2026-10-22 | standing | An open capture's column blocks are read with a positional read, not through a mapping the flush tick moves | [Record](COLUMN_CACHE_PLAN.md#the-recording-phase-built) |

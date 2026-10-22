@@ -186,6 +186,12 @@ public class LogManager {
     return capture == null ? null : capture.publication();
   }
 
+  /** Why the capture recording at {@code path} keeps its index's blocks in the heap, when it does. */
+  public java.util.Optional<String> captureIndexInHeap(Path path) {
+    var capture = captures.get(path.toAbsolutePath().normalize().toString());
+    return capture == null ? java.util.Optional.empty() : capture.columnsInHeap();
+  }
+
   /** Active captures are pinned outside the evictable cache; their writer owns their index. */
   public void beginCapture(LiveLog log) throws IOException {
     securityValidator.validate(Path.of(log.path()));
@@ -353,7 +359,7 @@ public class LogManager {
       Thread.currentThread().interrupt();
     }
     diskCache.shutdown();
-    captures.values().forEach(log -> { log.finish(); log.close(); });
+    captures.values().forEach(log -> { log.finish(); log.close(); log.discard(); });
     captures.clear();
     logCache.clear();
   }
@@ -419,6 +425,17 @@ public class LogManager {
       running = columnBuilds;
     }
     if (running != null) running.close();
+  }
+
+  /**
+   * Where a recording's open column file goes: the disk cache, while the recording's disk reserve
+   * allows; its blocks stay in the heap otherwise.
+   */
+  public OpenColumns.Placement openColumnPlacement() {
+    return new OpenColumns.Placement() {
+      @Override public java.util.Optional<Path> file(String captureIdentity) { return diskCache.openColumnPath(captureIdentity); }
+      @Override public boolean reserveShort() { return recordingReserveShort(); }
+    };
   }
 
   /**

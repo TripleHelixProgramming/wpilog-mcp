@@ -85,15 +85,25 @@ class WindowedMappingTest {
     Files.move(file, temp.resolve("moved.wpilog"));
     assertThrows(IllegalStateException.class, () -> bytes.get(0)); bytes.close();
   }
+  /** A number is read from its column and anything else from the mapping, each at the same long address. */
   @Test void aColdLiveValuePastTwoGiBUsesTheSameLongAddressedSource() throws Exception {
     wideOffsetsStayLongThroughIndexAndRandomAccess();
     var file = temp.resolve("sparse.wpilog"); long offset = (1L << 31) + 4093;
-    var live = new LiveLog(file, 0); var entry = new EntryInfo(1, "/x", "double", ""); live.announce(entry);
+    var live = new LiveLog(file, 0);
+    var number = new EntryInfo(1, "/x", "double", ""); live.announce(number);
+    var raw = new EntryInfo(2, "/raw", "raw", ""); live.announce(raw);
+    var written = new org.triplehelix.wpilogmcp.capture.WpilogOutput.Written(offset, 12, offset + 4, 8);
+    var bytes = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putDouble(42).array();
     try {
-      live.append(entry, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 2, 1, 42.),
-          new org.triplehelix.wpilogmcp.capture.WpilogOutput.Written(offset, 12, offset + 4, 8));
+      live.append(number, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 2, 1, 42.), written);
+      live.append(raw, new org.triplehelix.wpilogmcp.nt4.ValueFrame(2, 2, 5, bytes), written);
       live.expire(); assertEquals(0, live.hotRecordCount());
-      assertEquals(42., live.values().get("/x").get(0).value()); assertEquals(1, live.mappedReadCount());
+      assertEquals(42., live.values().get("/x").get(0).value()); assertEquals(0, live.mappedReadCount());
+      assertArrayEquals(bytes, (byte[]) live.values().get("/raw").get(0).value()); assertEquals(1, live.mappedReadCount());
+      try (var view = live.retainView()) {
+        assertEquals(offset, view.records("/x", true).offset(0));
+        assertEquals(offset, view.records("/raw", true).offset(0));
+      }
     } finally { live.finish(); live.close(); }
   }
 }

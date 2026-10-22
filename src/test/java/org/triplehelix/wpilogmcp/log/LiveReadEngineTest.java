@@ -62,8 +62,8 @@ class LiveReadEngineTest {
           var newRecords = after.records("/x", false);
           assertEquals(2, oldRecords.size());
           assertEquals(3, newRecords.size());
-          assertEquals(16, before.indexBytes());
-          assertEquals(24, after.indexBytes());
+          assertEquals(before.indexBytes(), after.indexBytes(), "Both prefixes lie in one filling tail");
+          assertTrue(before.indexBytes() > 0 && before.indexBytes() < 1024, "only the tail is in the heap: " + before.indexBytes());
           assertThrows(IndexOutOfBoundsException.class, () -> oldRecords.timestampUs(2),
               "A record beyond this view must stay inaccessible after the writer fills its slot");
           assertTrue(oldRecords.monotonic(), "An inversion beyond a fixed boundary belongs only to later views");
@@ -77,7 +77,7 @@ class LiveReadEngineTest {
           assertEquals("changed", after.entries().get("/x").metadata());
           long reads = live.mappedReadCount();
           assertEquals(List.of(1L, 2L), values(before));
-          assertEquals(2, live.mappedReadCount() - reads, "The shared materializer reads each admitted cold record once");
+          assertEquals(0, live.mappedReadCount() - reads, "Numbers are read from their columns, never from the mapping");
           assertEquals(List.of(1L, 3L, 2L), values(after));
           assertEquals(List.of(1L, 2L), values(before));
         }
@@ -85,23 +85,25 @@ class LiveReadEngineTest {
     } finally { live.finish(); live.close(); }
   }
 
-  @Test void indexedAddressBytesKeepTheOldPrefixCompactAfterTheFirstWideRecord() throws Exception {
+  /** Addresses past 2 GiB stay whole in the columns, and the heap holds only an entry's filling tail. */
+  @Test void wideAddressesStayWholeAndTheTailIsTheIndexsOnlyHeap() throws Exception {
     var path = temp.resolve("address-width.wpilog");
     java.nio.file.Files.write(path, new byte[12]);
     var live = new LiveLog(path, 100);
     var entry = new EntryInfo(1, "/x", "int64", "");
     live.announce(entry);
     try {
-      // Address accounting needs no giant file: these records remain hot and are never mapped.
+      // No giant file is needed: numbers are read from their columns, never from the mapping.
       live.append(entry, new ValueFrame(1, 10, 2, 1L), new WpilogOutput.Written(32, 12, 36, 8));
       try (var compact = live.retainView()) {
         long wide = (1L << 31) + 32;
         live.append(entry, new ValueFrame(1, 20, 2, 2L), new WpilogOutput.Written(wide, 12, wide + 4, 8));
         try (var mixed = live.retainView()) {
-          assertEquals(8, compact.indexBytes());
-          assertEquals(8 + 24, mixed.indexBytes());
+          assertEquals(compact.indexBytes(), mixed.indexBytes(), "A wide address costs no more heap");
+          assertEquals(0, live.hotRecordCount(), "Numbers keep no hot values");
           assertEquals(wide, mixed.records("/x", true).offset(1));
           assertEquals(8, mixed.records("/x", true).payloadBytes(1));
+          assertEquals(List.of(1L, 2L), mixed.values().get("/x").stream().map(v -> v.value()).toList());
         }
       }
     } finally { live.finish(); live.close(); }

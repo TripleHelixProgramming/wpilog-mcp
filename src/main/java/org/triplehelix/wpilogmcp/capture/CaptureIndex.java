@@ -60,7 +60,11 @@ public final class CaptureIndex implements CaptureWriter.Observer {
   }
   @Override public void identity(CaptureWriter.Session session) throws IOException { placement.identity(session); }
   @Override public void opened(CaptureWriter.Session session, boolean resumed) throws IOException {
-    if (!resumed) live = new LiveLog(session.path(), hotWindowUs, robotNowUs, session.writerIdentity());
+    if (!resumed) {
+      // The previous file's index is never resumed once the writer has moved on.
+      if (live != null) live.discard();
+      live = new LiveLog(session.path(), hotWindowUs, robotNowUs, session.writerIdentity(), manager.openColumnPlacement());
+    }
     manager.beginCapture(live);
     placement.opened(session, resumed);
   }

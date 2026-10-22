@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import org.triplehelix.wpilogmcp.capture.WpilogOutput;
 import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
@@ -37,67 +38,122 @@ import org.triplehelix.wpilogmcp.read.SampleCursors;
  * publication boundary. Readers take each entry's length on first use, bounded by that boundary,
  * so a call's values, schemas, and time range describe one fixed prefix. Data reads take no locks.
  *
- * <p>The hot window holds wire values. Older records use offsets into read-only mappings beside
- * the write channel. Mappings have atomic reader references: replacing one never unmaps bytes a
- * decoder is using. Eviction retires the mapping after in-flight calls; resumption reuses the
- * writer's index and opens a new mapping, without a scan.
+ * <p>The index keeps each entry's records as columns outside the heap ({@link OpenColumns}): every
+ * record's facts, and a number's value, so the heap no longer grows with the session. A number is
+ * read from its column when its record's payload has its type's width, as every record the writer
+ * encodes has; any other record keeps its wire value while it is hot, and older ones are read from
+ * read-only mappings beside the write channel, so a malformed record is still reported where it
+ * is. Mappings have atomic reader references: replacing one never unmaps bytes a decoder is using.
+ * Eviction retires the mapping after in-flight calls; resumption reuses the writer's index and
+ * opens a new mapping, without a scan. The columns' scratch file is deleted once the writer has
+ * moved on and the last reader has finished.
  */
 public final class LiveLog implements LogData, AutoCloseable {
-  private static final int CHUNK = 1024;
-  private static class Record {
-    final long sequence, timestampUs;
-    final int offset, end;
-    // WPILOG framing uses at most 17 header bytes; avoid mapping or re-encoding a hot value
-    // merely to charge its payload to a bounded read batch.
-    final byte headerBytes;
-    volatile Object hot;
-    Record(long sequence, long timestampUs, WpilogOutput.Written written, Object hot) {
-      this.sequence = sequence; this.timestampUs = timestampUs;
-      this.offset = (int) written.offset(); this.end = (int) (written.offset() + written.size());
-      this.headerBytes = (byte) (written.payloadOffset() - written.offset());
-      this.hot = hot;
-    }
-    long offset() { return offset; }
-    long end() { return end; }
-    long payloadBytes() { return end() - offset() - Byte.toUnsignedInt(headerBytes); }
-  }
-  private static final class WideRecord extends Record {
-    final long wideOffset, wideEnd;
-    WideRecord(long sequence, long timestampUs, WpilogOutput.Written written, Object hot) {
-      super(sequence, timestampUs, written, hot); wideOffset = written.offset(); wideEnd = wideOffset + written.size();
-    }
-    @Override long offset() { return wideOffset; }
-    @Override long end() { return wideEnd; }
-  }
-  private static final class Series {
-    final EntryInfo info;
-    volatile Record[][] chunks = new Record[1][];
-    volatile int length;
-    volatile int firstInversion = Integer.MAX_VALUE;
-    // A writer's byte offsets only increase, so every record after this one is wide too.
-    volatile int firstWide = Integer.MAX_VALUE;
-    Series(EntryInfo info) { this.info = info; }
-    void append(Record record) {
-      int index = length, chunk = index / CHUNK;
-      if (firstWide == Integer.MAX_VALUE && record instanceof WideRecord) firstWide = index;
-      if (firstInversion == Integer.MAX_VALUE && index > 0 && record.timestampUs < at(index - 1).timestampUs)
-        firstInversion = index;
-      if (chunk == chunks.length) chunks = java.util.Arrays.copyOf(chunks, chunks.length * 2);
-      if (chunks[chunk] == null) chunks[chunk] = new Record[CHUNK];
-      chunks[chunk][index % CHUNK] = record;
-      length = index + 1;
-    }
-    Record at(int index) { return chunks[index / CHUNK][index % CHUNK]; }
-    int bound(long sequence) {
-      int low = 0, high = length;
-      while (low < high) {
-        int mid = (low + high) >>> 1;
-        if (at(mid).sequence <= sequence) low = mid + 1; else high = mid;
+  private static final int HOT_CHUNK = 1024;
+
+  /**
+   * The wire values of an entry's records that are read from the WPILOG, while they are hot. A
+   * chunk none of whose values is still hot is dropped, so the heap holds only the hot window.
+   */
+  private static final class HotValues {
+    private volatile AtomicReferenceArray<AtomicReferenceArray<Object>> chunks = new AtomicReferenceArray<>(4);
+    private int[] held = new int[4];
+
+    /** Writer thread only. */
+    void put(int index, Object value) {
+      int c = index / HOT_CHUNK;
+      var outer = chunks;
+      if (c >= outer.length()) {
+        var grown = new AtomicReferenceArray<AtomicReferenceArray<Object>>(Math.max(c + 1, outer.length() * 2));
+        for (int i = 0; i < outer.length(); i++) grown.set(i, outer.get(i));
+        chunks = outer = grown;
+        held = java.util.Arrays.copyOf(held, grown.length());
       }
-      return low;
+      var chunk = outer.get(c);
+      if (chunk == null) {
+        chunk = new AtomicReferenceArray<>(HOT_CHUNK);
+        outer.set(c, chunk);
+      }
+      chunk.set(index % HOT_CHUNK, value);
+      held[c]++;
+    }
+
+    Object get(int index) {
+      int c = index / HOT_CHUNK;
+      var outer = chunks;
+      if (c >= outer.length()) return null;
+      var chunk = outer.get(c);
+      return chunk == null ? null : chunk.get(index % HOT_CHUNK);
+    }
+
+    /** Writer thread only, once the mapping covers the record: its value is read from there. */
+    void clear(int index) {
+      int c = index / HOT_CHUNK;
+      var outer = chunks;
+      var chunk = outer.get(c);
+      chunk.set(index % HOT_CHUNK, null);
+      if (--held[c] == 0) outer.set(c, null);
     }
   }
-  private record State(Map<String, Series> entries, Map<String, EntryInfo> infos, long sequence, double min, double max,
+
+  /** One entry: its columns, and the hot values of its records that are read from the WPILOG. */
+  private static final class Entry {
+    final OpenColumns.Series columns;
+    final HotValues hot = new HotValues();
+    /** The payload size of a number its column holds, or -1 when it holds none. */
+    final int width;
+    /** The first record whose value is not its column's; written by the writer. */
+    volatile int firstOther = Integer.MAX_VALUE;
+    /**
+     * Every such record, in order, below {@code otherCount}. The list doubles as it fills, since a
+     * client that sends integers on a double topic makes every record of a session one of them.
+     */
+    private volatile int[] others = new int[0];
+    private volatile int otherCount;
+    /** How many times the writer copied the list to grow it, which a test counts. */
+    int otherGrowths;
+
+    Entry(OpenColumns.Series columns) {
+      this.columns = columns;
+      width = columns.kind == null ? -1 : switch (columns.kind) {
+        case F64, I64 -> 8;
+        case F32 -> 4;
+        case BOOL -> 1;
+        case ENUM -> -1;
+      };
+    }
+
+    EntryInfo info() { return columns.info; }
+
+    /** Writer thread only, before the record is published: its value is read from the WPILOG. */
+    void other(int index) {
+      var list = others;
+      int count = otherCount;
+      if (count == list.length) {
+        list = java.util.Arrays.copyOf(list, Math.max(8, 2 * list.length));
+        otherGrowths++;
+        others = list;
+      }
+      list[count] = index;
+      // Published after the index is in the list a reader then reads.
+      otherCount = count + 1;
+      if (firstOther == Integer.MAX_VALUE) firstOther = index;
+    }
+
+    /** Whether a record's value is its column's: a number the writer recorded in its type's width. */
+    boolean held(int index) {
+      if (width < 0) return false;
+      if (index < firstOther) return true;
+      // The count first: a list read after it holds every index the count covers.
+      int count = otherCount;
+      return java.util.Arrays.binarySearch(others, 0, count, index) < 0;
+    }
+  }
+
+  /** A record read from the WPILOG, while its wire value is hot; {@code end} is where it ends. */
+  private record Hot(Entry entry, int index, long timestampUs, long end) {}
+
+  private record State(Map<String, Entry> entries, Map<String, EntryInfo> infos, long sequence, double min, double max,
       int jumps, long firstJump, boolean open, long revision) {}
   public record Publication(String writerId, long revision) {}
   private static final class Mapping {
@@ -125,7 +181,10 @@ public final class LiveLog implements LogData, AutoCloseable {
   private final long hotWindowUs;
   private final java.util.function.Supplier<Double> robotNowUs;
   private volatile State state = new State(Map.of(), Map.of(), 0, 0, 0, 0, -1, true, 0);
-  private final PriorityQueue<Record> hot = new PriorityQueue<>(Comparator.comparingLong(r -> r.timestampUs));
+  private final PriorityQueue<Hot> hot = new PriorityQueue<>(Comparator.comparingLong(Hot::timestampUs));
+  private final OpenColumns columns;
+  private volatile boolean discarded;
+  private final AtomicBoolean columnsClosed = new AtomicBoolean();
   private final AtomicReference<Mapping> mapping = new AtomicReference<>();
   private final AtomicLong mappedReads = new AtomicLong();
   private final AtomicLong mappings = new AtomicLong();
@@ -146,17 +205,28 @@ public final class LiveLog implements LogData, AutoCloseable {
   }
   /** CaptureWriter supplies the same incarnation to this index and its durable provenance. */
   public LiveLog(Path path, long hotWindowUs, java.util.function.Supplier<Double> robotNowUs, String captureIdentity) {
+    this(path, hotWindowUs, robotNowUs, captureIdentity, OpenColumns.Placement.HEAP);
+  }
+  /** As above, with the columns' blocks written where {@code placement} says. */
+  public LiveLog(Path path, long hotWindowUs, java.util.function.Supplier<Double> robotNowUs, String captureIdentity,
+      OpenColumns.Placement placement) {
     this.captureIdentity = java.util.Objects.requireNonNull(captureIdentity);
     this.robotNowUs = robotNowUs;
     if (hotWindowUs < 0) throw new IllegalArgumentException("Negative hot window");
     this.path = path.toAbsolutePath().normalize(); this.hotWindowUs = hotWindowUs;
+    this.columns = new OpenColumns(placement, captureIdentity);
+  }
+
+  /** Why the columns' blocks stay in the heap, when they do. */
+  public Optional<String> columnsInHeap() {
+    return Optional.ofNullable(columns.heapReason());
   }
 
   /** Writer thread only. Repeated names follow LogScan's first-declaration/type rule. */
   public void announce(EntryInfo info) {
     var before = state;
     if (before.entries().containsKey(info.name())) return;
-    var entries = new LinkedHashMap<>(before.entries()); entries.put(info.name(), new Series(info));
+    var entries = new LinkedHashMap<>(before.entries()); entries.put(info.name(), new Entry(columns.new Series(info)));
     var infos = new LinkedHashMap<>(before.infos()); infos.put(info.name(), info);
     state = new State(Collections.unmodifiableMap(entries), Collections.unmodifiableMap(infos), before.sequence(), before.min(), before.max(), before.jumps(), before.firstJump(), true, before.revision() + 1);
   }
@@ -174,8 +244,8 @@ public final class LiveLog implements LogData, AutoCloseable {
 
   /** Called only after WpilogOutput has written the entire record. */
   public void append(EntryInfo info, ValueFrame frame, WpilogOutput.Written written) throws IOException {
-    var before = state; var series = before.entries().get(info.name());
-    if (series == null || !series.info.type().equals(info.type())) return;
+    var before = state; var entry = before.entries().get(info.name());
+    if (entry == null || !entry.info().type().equals(info.type())) return;
     double time = frame.timestampUs() / 1_000_000.0;
     if (before.sequence() > 0 && time > before.max() + LogScan.MAX_FORWARD_JUMP_SEC) {
       state = new State(before.entries(), before.infos(), before.sequence(), before.min(), before.max(), before.jumps() + 1,
@@ -183,10 +253,18 @@ public final class LiveLog implements LogData, AutoCloseable {
       return;
     }
     long sequence = before.sequence() + 1;
-    var record = written.offset() + written.size() <= Integer.MAX_VALUE
-        ? new Record(sequence, frame.timestampUs(), written, frame.value())
-        : new WideRecord(sequence, frame.timestampUs(), written, frame.value());
-    series.append(record); hot.add(record);
+    var kind = entry.columns.kind;
+    // A number keeps its value in the column only when the record holds it in its type's width,
+    // as every record the capture encodes does; any other record is read from the WPILOG.
+    boolean held = entry.width >= 0 && written.payloadSize() == entry.width && OpenColumns.holds(kind, frame.value());
+    int index = entry.columns.length();
+    if (!held) {
+      if (entry.width >= 0) entry.other(index);
+      entry.hot.put(index, frame.value());
+      hot.add(new Hot(entry, index, frame.timestampUs(), written.offset() + written.size()));
+    }
+    entry.columns.append(sequence, frame.timestampUs(), written.offset(), written.payloadSize(),
+        held ? OpenColumns.bitsOf(kind, frame.value()) : 0);
     double min = sequence == 1 ? time : Math.min(before.min(), time);
     double max = sequence == 1 ? time : Math.max(before.max(), time);
     // Readers can only see complete record slots after this volatile publication.
@@ -201,9 +279,9 @@ public final class LiveLog implements LogData, AutoCloseable {
 
   /** One mapping can cover the entire expired batch, even for a zero-length hot window. */
   public void expire() throws IOException {
-    while (!hot.isEmpty() && hot.peek().timestampUs <= coldBefore) {
+    while (!hot.isEmpty() && hot.peek().timestampUs() <= coldBefore) {
       var cold = hot.peek(); ensureMapped(cold.end());
-      cold.hot = null; hot.remove();
+      cold.entry().hot.clear(cold.index()); hot.remove();
     }
   }
 
@@ -256,10 +334,23 @@ public final class LiveLog implements LogData, AutoCloseable {
   }
   private void retireMapping() {
     Mapping old = null;
+    boolean closeColumns;
     synchronized (lifetime) {
-      if (retired.get() && users.get() == 0) old = mapping.getAndSet(null);
+      boolean idle = retired.get() && users.get() == 0;
+      if (idle) old = mapping.getAndSet(null);
+      closeColumns = idle && discarded;
     }
     if (old != null) old.release(); // Never unmap or perform I/O while holding a lifetime lock.
+    if (closeColumns && columnsClosed.compareAndSet(false, true)) columns.close();
+  }
+
+  /**
+   * The writer has moved on to another index, so this one is never resumed: its columns' scratch
+   * file is deleted once it is retired and its last reader has finished.
+   */
+  public void discard() {
+    discarded = true;
+    retireMapping();
   }
   @Override public void close() {
     synchronized (lifetime) {
@@ -302,8 +393,9 @@ public final class LiveLog implements LogData, AutoCloseable {
       scopeEnd = now == null ? seen.max() : Math.max(seen.max(), now / 1_000_000.0);
       entries = seen.infos();
       schemas = StructSchemas.fromLog(entries, name -> {
-        var series = seen.entries().get(name);
-        return sampleCount(name) == 0 ? null : value(series.at(0), series.info.type(), StructSchemas.fallbackOnly());
+        var entry = seen.entries().get(name);
+        int length = sampleCount(name);
+        return length == 0 ? null : value(entry, entry.columns.reader(length), 0, StructSchemas.fallbackOnly(), false);
       });
     }
     @Override public String path() { return seenPath; }
@@ -322,8 +414,40 @@ public final class LiveLog implements LogData, AutoCloseable {
     }
     @Override public StructSchemas structSchemas() { return schemas; }
     @Override public int sampleCount(String name) {
-      var series = seen.entries().get(name);
-      return series == null ? 0 : lengths.computeIfAbsent(name, key -> series.bound(seen.sequence()));
+      var entry = seen.entries().get(name);
+      return entry == null ? 0 : lengths.computeIfAbsent(name, key -> entry.columns.bound(seen.sequence()));
+    }
+
+    /**
+     * A number's samples from its column, in time order, when every record of this prefix keeps
+     * its value there; empty otherwise, and the caller decodes the records, which sorts them.
+     */
+    @Override public Optional<NumericColumn> numericColumn(String name, org.triplehelix.wpilogmcp.read.FieldPath path) {
+      var entry = seen.entries().get(name);
+      if (entry == null || !path.isRoot() || entry.width < 0) return Optional.empty();
+      int length = sampleCount(name);
+      if (entry.firstOther < length || !entry.columns.monotonic(length)) return Optional.empty();
+      var kind = entry.columns.kind;
+      var reader = entry.columns.reader(length);
+      var samples = new org.triplehelix.wpilogmcp.read.NumericSamples() {
+        @Override public int size() { return length; }
+        @Override public long timeUs(int index) { return reader.timeUs(index); }
+        /** As {@code TimestampedValue.atMicros} computes a decoded value's seconds. */
+        @Override public double seconds(int index) { return reader.timeUs(index) / 1_000_000.0; }
+        @Override public double number(int index) { return kind.number(reader.bits(index)); }
+        /** An integer's own bits, as {@code Long.equals} compares the decoded values. */
+        @Override public long valueBits(int index) {
+          return kind == org.triplehelix.wpilogmcp.columns.ColumnFileFormat.Kind.I64 ? reader.bits(index)
+              : Double.doubleToLongBits(number(index));
+        }
+      };
+      final class Values extends java.util.AbstractList<TimestampedValue> implements java.util.RandomAccess {
+        @Override public TimestampedValue get(int index) {
+          return TimestampedValue.atMicros(reader.timeUs(index), kind.value(reader.bits(index)));
+        }
+        @Override public int size() { return length; }
+      }
+      return Optional.of(new NumericColumn(samples, length, 0, new Values()));
     }
     @Override public Optional<DecodeProblem> decodeProblem(String name) { values().get(name); return Optional.ofNullable(problems.get(name)); }
     @Override public Map<String, List<TimestampedValue>> values() {
@@ -348,44 +472,42 @@ public final class LiveLog implements LogData, AutoCloseable {
         }
       };
     }
-    /** Address fields in this view's prefix, excluding timestamps and hot value objects. */
+    /**
+     * The heap this view's prefix holds in the index, excluding hot value objects: each entry's
+     * filling tail, its blocks kept in the heap, and a reference to each block.
+     */
     public long indexBytes() {
       long bytes = 0;
-      for (var entry : seen.entries().entrySet()) {
-        int length = sampleCount(entry.getKey());
-        // WideRecord retains its two inherited int fields as well as its two long addresses.
-        bytes += 8L * length + 16L * Math.max(0, length - entry.getValue().firstWide);
-      }
+      for (var entry : seen.entries().entrySet()) bytes += entry.getValue().columns.heapBytes(sampleCount(entry.getKey()));
       return bytes;
     }
     /** File-order access to this immutable publication prefix; the caller retains this view.
      * Exact source values preserve opaque bytes; legacy materialization keeps its presentation. */
     public RecordSeries records(String name, boolean sourceValues) {
-      var series = seen.entries().get(name);
-      if (series == null) throw new IllegalArgumentException("Entry not found: " + name);
+      var held = seen.entries().get(name);
+      if (held == null) throw new IllegalArgumentException("Entry not found: " + name);
       int length = sampleCount(name);
+      var reader = held.columns.reader(length);
       return new RecordSeries() {
-        private Record at(int index) { return series.at(java.util.Objects.checkIndex(index, length)); }
         @Override public int size() { return length; }
-        @Override public long timestampUs(int index) { return at(index).timestampUs; }
-        @Override public long offset(int index) { return at(index).offset(); }
-        @Override public long payloadBytes(int index) { return at(index).payloadBytes(); }
-        @Override public boolean monotonic() { return series.firstInversion >= length; }
+        @Override public long timestampUs(int index) { return reader.timeUs(index); }
+        @Override public long offset(int index) { return reader.offset(index); }
+        @Override public long payloadBytes(int index) { return reader.payloadBytes(index); }
+        @Override public boolean monotonic() { return held.columns.monotonic(length); }
         @Override public Object decode(int index) {
-          return value(at(index), series.info.type(), schemas, sourceValues);
+          return value(held, reader, index, schemas, sourceValues);
         }
         @Override public void readRange(int start, int end, String entry, SampleCursors.Sink sink) {
-          var type = series.info.type();
           for (int index = start; index < end; index++) {
-            var record = at(index);
+            long offset = reader.offset(index);
             Object decoded;
             try {
-              decoded = value(record, type, schemas, sourceValues);
+              decoded = value(held, reader, index, schemas, sourceValues);
             } catch (RuntimeException failure) {
-              reportFailure(index, record.offset(), entry, failure, sink);
+              reportFailure(index, offset, entry, failure, sink);
               continue;
             }
-            sink.sample(record.timestampUs, record.offset(), index, decoded);
+            sink.sample(reader.timeUs(index), offset, index, decoded);
           }
         }
         @Override public String problemMessage(int index, Exception failure) {
@@ -408,25 +530,29 @@ public final class LiveLog implements LogData, AutoCloseable {
     }
   }
 
-  private Object value(Record record, String type, StructSchemas schemas) {
-    return value(record, type, schemas, false);
-  }
   /** Cold native reads report bad payload bytes at their ordinal. Wrapping only the decoder
    * preserves failures in mapping lifetime and invalid internal hot values as real exceptions. */
   private static final class RecordedDecodeFailure extends RuntimeException {
     RecordedDecodeFailure(String message, RuntimeException cause) { super(message, cause); }
   }
-  private Object value(Record record, String type, StructSchemas schemas, boolean sourceValues) {
-    var cached = record.hot;
+  /**
+   * A record's value: a number from its column, as the decode gives it; any other record from its
+   * hot wire value, or from the WPILOG once the mapping covers it.
+   */
+  private Object value(Entry entry, OpenColumns.Reader reader, int index, StructSchemas schemas, boolean sourceValues) {
+    if (entry.held(index)) return entry.columns.kind.value(reader.bits(index));
+    var type = entry.info().type();
+    var cached = entry.hot.get(index);
     if (cached != null) return sourceValues ? EntryDecoder.decodeNetworkRecordedValue(cached, type, schemas)
         : EntryDecoder.decodeNetworkValue(cached, type, schemas);
+    long offset = reader.offset(index);
     while (true) {
       var held = mapping.get();
       if (held == null) throw new IllegalStateException("Live log mapping is retired: " + path);
       if (!held.retain()) continue;
       try {
         mappedReads.incrementAndGet();
-        var data = DataLogAccess.getRecord(held.reader.reader(), record.offset());
+        var data = DataLogAccess.getRecord(held.reader.reader(), offset);
         if (!sourceValues) return EntryDecoder.decodeValue(data, type, schemas);
         try { return EntryDecoder.decodeRecordedValue(data, type, schemas); }
         catch (RuntimeException failure) {
@@ -444,8 +570,8 @@ public final class LiveLog implements LogData, AutoCloseable {
   @Override public double minTimestamp() { return state.min(); }
   @Override public double maxTimestamp() { return state.max(); }
   @Override public int sampleCount(String name) {
-    var seen = state; var series = seen.entries().get(name);
-    return series == null ? 0 : series.bound(seen.sequence());
+    var seen = state; var entry = seen.entries().get(name);
+    return entry == null ? 0 : entry.columns.bound(seen.sequence());
   }
   @Override public boolean truncated() { return state.jumps() > 0; }
   @Override public boolean damaged() { return truncated(); }
@@ -456,6 +582,11 @@ public final class LiveLog implements LogData, AutoCloseable {
   }
   @Override public StructSchemas structSchemas() { return current().structSchemas(); }
   long mappedReadCount() { return mappedReads.get(); }
+  long columnBlocksRead() { return columns.blocksRead(); }
+  int otherListGrowths(String name) {
+    var entry = state.entries().get(name);
+    return entry == null ? 0 : entry.otherGrowths;
+  }
   long mappingCount() { return mappings.get(); }
   public long hotRecordCount() { return hot.size(); } // Writer-thread diagnostic for deterministic tests.
 }

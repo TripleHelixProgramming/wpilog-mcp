@@ -239,8 +239,10 @@ two scrapes appears as a bucket's minimum.
 - A panel can find the open file in the catalog's `open_captures`, but its path changes at a
   rollover (every 1 GiB by default, as `capture-<n>.wpilog`) and when a robot reboot starts a new
   session.
-- The open file's index holds about 82 bytes of heap for each recorded value and is pinned until
-  the file closes; it cannot be unloaded when memory runs short.
+- The open file's index held about 82 bytes of heap for each recorded value, pinned until the
+  file closed, and could not be unloaded when memory ran short. Since 2026-10-22 it keeps its
+  records in columns outside the heap, under half a byte a value
+  ([the column file plan](COLUMN_CACHE_PLAN.md#the-recording-phase-built)).
 - The synthetic soak test never reads the open capture, keeps no recent values (production keeps
   600 s), and its heap bound is only "below the maximum".
 

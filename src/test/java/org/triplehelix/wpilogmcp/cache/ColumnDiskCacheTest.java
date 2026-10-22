@@ -60,6 +60,37 @@ class ColumnDiskCacheTest {
     }
   }
 
+  /**
+   * A recording's open column file is named by its capture, swept at startup only when it is older
+   * than this process, and counted toward the limit but never evicted while a capture writes it.
+   */
+  @Test
+  void openColumnFilesAreSweptOnlyFromAnEarlierProcessAndNeverEvicted() throws Exception {
+    var identity = "0123abcd-0000-4000-8000-00000000abcd";
+    var cache = cache();
+    try {
+      assertEquals(root.resolve(identity + DiskCache.OPEN_COLUMN_SUFFIX), cache.openColumnPath(identity).orElseThrow());
+      assertTrue(cache.openColumnPath("../escape").isEmpty(), "only a capture's identity names a file");
+      assertTrue(cache.openColumnPath(null).isEmpty());
+      long started = java.lang.management.ManagementFactory.getRuntimeMXBean().getStartTime();
+      var stale = sized("11111111-0000-4000-8000-000000000001" + DiskCache.OPEN_COLUMN_SUFFIX, 64, started - 60_000);
+      var writing = sized("22222222-0000-4000-8000-000000000002" + DiskCache.OPEN_COLUMN_SUFFIX, 4096, System.currentTimeMillis());
+      cache.cleanup();
+      assertFalse(Files.exists(stale), "a file left by an earlier process is removed");
+      assertTrue(Files.exists(writing), "a file this process or a running server writes is kept");
+      // Over the limit, the open file stays and the oldest evictable file goes.
+      var old = sized("old.msgpack", 4096, started - 120_000);
+      cache.setMaxTotalSizeMb(0);
+      cache.trim(file -> false);
+      assertFalse(Files.exists(old), "an ordinary cache file is evicted");
+      assertTrue(Files.exists(writing), "an open column file is never evicted");
+      cache.setEnabled(false);
+      assertTrue(cache.openColumnPath(identity).isEmpty(), "a disabled cache keeps no open column files");
+    } finally {
+      cache.shutdown();
+    }
+  }
+
   @Test
   void theStartupSweepKeepsCurrentColumnFilesAndRemovesTheRest() throws Exception {
     int format = ColumnFileFormat.FORMAT_VERSION, recipe = ColumnFileFormat.RECIPE_VERSION;
