@@ -27,6 +27,8 @@ import org.triplehelix.wpilogmcp.log.LogBytes;
 import org.triplehelix.wpilogmcp.log.MappedLogBytes;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.read.FieldPath;
+import org.triplehelix.wpilogmcp.read.NumericSamples;
+import org.triplehelix.wpilogmcp.read.SecondsWindow;
 
 /**
  * A log's column file, mapped as the log itself is, so its columns live in the operating
@@ -288,21 +290,45 @@ public final class ColumnFile implements AutoCloseable {
     }
 
     /**
-     * The samples a window keeps as the data endpoint keeps them: seconds, computed from the
-     * logged microseconds as the decoded value carries them, at or after {@code startTime} and
-     * at or before {@code endTime}; a null bound is open.
+     * The samples a window keeps, by the one seconds window {@code read_entry} and the data
+     * endpoint take; the seconds are computed from the logged microseconds as the decoded value
+     * carries them, so the window keeps the same samples as it does from the decoded log.
      */
     public Range window(Double startTime, Double endTime) {
+      var window = new SecondsWindow(startTime, endTime);
       var from = new int[columns.size()];
       var to = new int[columns.size()];
       for (int c = 0; c < columns.size(); c++) {
-        var times = new Longs(file.bytes, columns.get(c).times);
-        int size = columns.get(c).size;
-        from[c] = startTime == null ? 0 : first(times, size, t -> t / 1_000_000.0 >= startTime);
-        to[c] = endTime == null ? size : first(times, size, t -> !(t / 1_000_000.0 <= endTime));
-        if (to[c] < from[c]) to[c] = from[c];
+        var column = new ColumnSamples(file.bytes, columns.get(c), 0, columns.get(c).size);
+        from[c] = window.from(column);
+        to[c] = window.to(column);
       }
       return new Range(from, to);
+    }
+
+    /**
+     * A range's samples in read order as the numbers the tools read, for the overviews and
+     * windows every reader shares. A pooled range is put in read order once, when the view is
+     * made. A view belongs to one reading thread.
+     */
+    public NumericSamples samples(Range range) {
+      if (range.from.length != columns.size()) throw new IllegalArgumentException("The range belongs to another selection");
+      if (columns.size() == 1) return new ColumnSamples(file.bytes, columns.get(0), range.from[0], range.to[0]);
+      int size = range.size();
+      var column = new int[size];
+      var position = new int[size];
+      var cursor = cursor(range);
+      for (int i = 0; cursor.next(); i++) {
+        column[i] = cursor.current;
+        position[i] = cursor.index;
+      }
+      var views = columns.stream().map(c -> new ColumnSamples(file.bytes, c, 0, c.size)).toList();
+      return new NumericSamples() {
+        @Override public int size() { return size; }
+        @Override public long timeUs(int i) { return views.get(column[i]).timeUs(position[i]); }
+        @Override public double seconds(int i) { return views.get(column[i]).seconds(position[i]); }
+        @Override public double number(int i) { return views.get(column[i]).number(position[i]); }
+      };
     }
 
     /** The first logged microsecond of a range's samples in read order, which is the earliest. */
@@ -334,42 +360,30 @@ public final class ColumnFile implements AutoCloseable {
       return new Cursor(file.bytes, columns, range);
     }
 
-    /**
-     * Gives each sample of {@code range} to {@code sink} in read order, as a cursor would. One
-     * column is read straight from its mapped sections, a chunk at a time.
-     */
-    public void forEach(Range range, Sink sink) {
-      if (range.from.length != columns.size()) throw new IllegalArgumentException("The range belongs to another selection");
-      if (columns.size() > 1) {
-        var cursor = cursor(range);
-        while (cursor.next()) sink.accept(cursor.timeUs(), cursor.number());
-        return;
-      }
-      var column = columns.get(0);
-      var kind = column.kind;
-      for (int base = range.from[0]; base < range.to[0]; base += CHUNK) {
-        int count = Math.min(CHUNK, range.to[0] - base);
-        var times = file.bytes.view(column.times.offset + 8L * base, 8 * count);
-        var values = file.bytes.view(column.values.offset + 8L * base, 8 * count);
-        for (int i = 0; i < count; i++) sink.accept(times.getLong(8 * i), kind.number(values.getLong(8 * i)));
-      }
-    }
 
-    private static int first(Longs times, int size, java.util.function.LongPredicate after) {
-      int low = 0, high = size;
-      while (low < high) {
-        int middle = (low + high) >>> 1;
-        if (after.test(times.get(middle))) high = middle;
-        else low = middle + 1;
-      }
-      return low;
-    }
   }
 
-  /** Receives samples: the logged microsecond, and the value as the tools read it. */
-  @FunctionalInterface
-  public interface Sink {
-    void accept(long timeUs, double number);
+  /** One column's samples from {@code from} up to {@code to}, as numbers, by position. */
+  private static final class ColumnSamples implements NumericSamples {
+    private final Kind kind;
+    private final int from;
+    private final int size;
+    private final Longs times;
+    private final Longs values;
+
+    ColumnSamples(LogBytes bytes, Column column, int from, int to) {
+      this.kind = column.kind;
+      this.from = from;
+      this.size = to - from;
+      this.times = new Longs(bytes, column.times);
+      this.values = new Longs(bytes, column.values);
+    }
+
+    @Override public int size() { return size; }
+    @Override public long timeUs(int index) { return times.get(from + index); }
+    /** As {@code TimestampedValue.atMicros} computes a decoded value's seconds. */
+    @Override public double seconds(int index) { return timeUs(index) / 1_000_000.0; }
+    @Override public double number(int index) { return kind.number(values.get(from + index)); }
   }
 
   /** Index ranges into each column of a selection. */

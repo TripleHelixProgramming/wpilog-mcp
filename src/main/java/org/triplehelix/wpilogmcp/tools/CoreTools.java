@@ -811,10 +811,8 @@ public final class CoreTools {
       if (offset < 0) {
         throw new IllegalArgumentException("Parameter 'offset' must be non-negative, got " + offset);
       }
-      var filtered = signal.values().stream()
-          .filter(tv -> startTime == null || tv.timestamp() >= startTime)
-          .filter(tv -> endTime == null || tv.timestamp() <= endTime)
-          .toList();
+      var window = new org.triplehelix.wpilogmcp.read.SecondsWindow(startTime, endTime);
+      var filtered = signal.values().stream().filter(tv -> window.contains(tv.timestamp())).toList();
       if (!signal.multiValued()) filtered = signal.unwrap(filtered);
       int totalInRange = filtered.size();
 

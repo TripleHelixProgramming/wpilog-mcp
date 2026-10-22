@@ -834,7 +834,9 @@ software paths, not real-robot networking or filesystem behavior on an untested 
 a narrow session query asserts its visited-record count as well as hand-calculated values.
 `SessionCursorTest` checks the aggregate lookahead bound. `QueryOperationsTest` pins
 projection, exact bucket boundaries, non-finite counts and shared arithmetic; the legacy bucket and
-window tests retain their independently computed expectations. `LogFollowerTest` covers partial
+window tests retain their independently computed expectations. The shared bucket fill is checked
+against computing every sample's bucket afresh, in and out of time order, and its boundaries
+against exact big-integer arithmetic. `LogFollowerTest` covers partial
 tails, incremental scan positions, backward timestamps and a held older prefix.
 `RevReadCacheTest` checks concurrent decode sharing, active memory charges, replacement identity,
 and input/decoded expansion bounds, plus selective decoding for exact device/signal keys.

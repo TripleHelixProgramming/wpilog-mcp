@@ -704,9 +704,12 @@ ceiling. Store-reader tolerance is explicit and separate from writer inventory: 
 sessions may be skipped by either, but invalid robot/control manifests still stop writer inventory.
 
 A query selects one entry and explicit disjoint windows, with inclusive or exclusive right ends.
-`read.FieldPath` owns projection for native and legacy callers; `NumericBucket` owns arithmetic
-for their reductions. Native and legacy numeric reducers share `BucketCoordinates` for exact
-integer-microsecond membership and use original-microsecond order. Explicit second bounds use
+One field-path grammar projects values for native and legacy callers, and every reduction fills
+its buckets the same way: `read_entry`, charts, the data endpoint and native reads place each
+sample by exact integer-microsecond membership, in original-microsecond order, and sum it with
+the same arithmetic. A sample's bucket is computed only when the sample leaves the current one,
+which gives the buckets of computing it for every sample. `read_entry` and the data endpoint
+share one seconds window. Explicit second bounds use
 the data endpoint's existing nearest-microsecond conversion. Presentation reads use the same
 `AngleUnwrapper` rule as chart/statistics preparation: declared scalar angles follow shortest
 turns, retaining the first finite value and continuity across nonfinite gaps. `read_entry` and

@@ -7,6 +7,8 @@ package org.triplehelix.wpilogmcp.tools;
 import java.util.ArrayList;
 import java.util.List;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
+import org.triplehelix.wpilogmcp.read.BucketFill;
+import org.triplehelix.wpilogmcp.read.NumericSamples;
 
 /**
  * A numeric series reduced to at most {@code max_points} buckets of equal duration, for a reader
@@ -82,38 +84,38 @@ public final class Buckets {
    */
   public static Result of(List<TimestampedValue> values, Double startTime, Double endTime,
       int maxPoints) {
+    return of(NumericSamples.of(values), startTime, endTime, maxPoints);
+  }
+
+  /**
+   * Buckets samples from a decoded log or a column file alike, by the one bucket rule every
+   * overview shares; see {@link #of(List, Double, Double, int)}.
+   */
+  public static Result of(NumericSamples samples, Double startTime, Double endTime, int maxPoints) {
     if (maxPoints < 1) throw new IllegalArgumentException("max_points must be at least 1");
-    if (values.isEmpty()) return new Result(0, List.of());
+    if (samples.size() == 0) return new Result(0, List.of());
     if (startTime != null && endTime != null && endTime < startTime)
       throw new IllegalArgumentException("the window ends before it starts");
-    long start = startTime != null ? Math.round(startTime * 1e6) : values.get(0).timestampUs();
-    long end = endTime != null ? Math.round(endTime * 1e6) : values.get(values.size() - 1).timestampUs();
+    long start = startTime != null ? Math.round(startTime * 1e6) : samples.timeUs(0);
+    long end = endTime != null ? Math.round(endTime * 1e6) : samples.timeUs(samples.size() - 1);
     if (end < start) throw new IllegalArgumentException("the window ends before it starts");
     double spanUs = java.math.BigInteger.valueOf(end).subtract(java.math.BigInteger.valueOf(start)).doubleValue();
     double bucketSec = spanUs / 1e6 / maxPoints;
 
     var buckets = new ArrayList<Bucket>();
     var starts = new ArrayList<Long>();
-    int index = -1;
-    var accumulator = new org.triplehelix.wpilogmcp.read.NumericBucket();
-    for (var tv : values) {
-      int next = org.triplehelix.wpilogmcp.read.BucketCoordinates.index(start, end, maxPoints, tv.timestampUs());
-      if (next != index) {
-        if (index >= 0) addBucket(buckets, starts, start, end, maxPoints, index, accumulator);
-        index = next;
-        accumulator = new org.triplehelix.wpilogmcp.read.NumericBucket();
-      }
-      accumulator.add(((Number) tv.value()).doubleValue());
+    var fill = new BucketFill(start, end, maxPoints);
+    for (int i = 0; i < samples.size(); i++) {
+      var closed = fill.add(samples.timeUs(i), samples.number(i));
+      if (closed != null) addBucket(buckets, starts, closed);
     }
-    addBucket(buckets, starts, start, end, maxPoints, index, accumulator);
+    addBucket(buckets, starts, fill.finish());
     return new Result(bucketSec, buckets, starts.stream().mapToLong(Long::longValue).toArray());
   }
 
-  private static void addBucket(List<Bucket> buckets, List<Long> starts, long start, long end,
-      int points, int index, org.triplehelix.wpilogmcp.read.NumericBucket value) {
-    long coordinate = org.triplehelix.wpilogmcp.read.BucketCoordinates.boundary(start, end, points, index);
-    starts.add(coordinate);
-    buckets.add(bucket(coordinate / 1e6, value));
+  private static void addBucket(List<Bucket> buckets, List<Long> starts, BucketFill.Bucket closed) {
+    starts.add(closed.startUs());
+    buckets.add(bucket(closed.startUs() / 1e6, closed.values()));
   }
 
   private static Bucket bucket(double start, org.triplehelix.wpilogmcp.read.NumericBucket value) {

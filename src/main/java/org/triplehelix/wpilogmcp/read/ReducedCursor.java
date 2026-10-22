@@ -10,14 +10,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 
 /** Incremental min/max buckets never decode beyond one source batch in one next call.
- * Empty output batches preserve bounded work while a bucket spans many input batches. */
+ * Empty output batches preserve bounded work while a bucket spans many input batches. Each
+ * window's buckets are filled by the one bucket rule every overview shares. */
 final class ReducedCursor implements SampleCursor {
   private final SampleCursor source;
   private final List<ReadQuery.Window> windows;
   private final int points;
-  private NumericBucket bucket;
+  private BucketFill fill;
   private Sample first;
-  private int window = -1, index = -1;
+  private int window = -1;
   private Sample deferred;
   private boolean complete;
 
@@ -37,30 +38,28 @@ final class ReducedCursor implements SampleCursor {
         throw new ReadException(ReadProblem.Code.INVALID_REQUEST, "Reduction requires a scalar numeric value; select a numeric field first");
       int w = TimeWindows.containing(windows, sample.timestampUs());
       if (w < 0) throw new IOException("Source returned a sample outside the reduction windows");
-      int i = bucketIndex(windows.get(w), sample.timestampUs());
-      if (bucket == null || window != w || index != i) {
-        if (bucket != null) output.add(finish());
-        window = w; index = i; bucket = new NumericBucket(); first = sample;
+      if (fill == null || window != w) {
+        if (fill != null) output.add(finish(fill.finish()));
+        var bounds = windows.get(w);
+        window = w; fill = new BucketFill(bounds.startUs(), bounds.endUs(), points);
       }
-      bucket.add(number.doubleValue());
+      int before = fill.index();
+      var closed = fill.add(sample.timestampUs(), number.doubleValue());
+      if (closed != null) output.add(finish(closed));
+      if (fill.index() != before) first = sample;
     }
     if (input.complete()) {
-      if (bucket != null) { output.add(finish()); bucket = null; }
+      if (fill != null) { output.add(finish(fill.finish())); fill = null; }
       complete = true;
     }
     if (output.size() > 4096) deferred = output.remove(output.size() - 1);
     return new SampleBatch(output, input.problems(), input.recordsVisited(), input.payloadBytes(), complete && deferred == null);
   }
-  private int bucketIndex(ReadQuery.Window w, long time) {
-    return BucketCoordinates.index(w.startUs(), w.endUs(), points, time);
-  }
-  private long boundary(int i) {
-    var w = windows.get(window);
-    return BucketCoordinates.boundary(w.startUs(), w.endUs(), points, i);
-  }
-  private Sample finish() {
+  /** A closed bucket as a sample: its own coordinates, and its first contributing sample's offset. */
+  private Sample finish(BucketFill.Bucket closed) {
+    var bucket = closed.values();
     var value = new LinkedHashMap<String, Object>();
-    long start = boundary(index), end = boundary(index + 1);
+    long start = closed.startUs(), end = closed.endUs();
     value.put("start_us", start); value.put("end_us", end); value.put("count", bucket.count());
     value.put("finite_count", bucket.finite()); value.put("min", bucket.min()); value.put("max", bucket.max());
     value.put("mean", bucket.mean() != null && Double.isFinite(bucket.mean()) ? bucket.mean() : null); value.put("first", bucket.first()); value.put("last", bucket.last());

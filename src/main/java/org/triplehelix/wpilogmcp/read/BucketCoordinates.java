@@ -24,10 +24,21 @@ public final class BucketCoordinates {
     }
   }
 
-  /** Round starts upward: floor((time-start)*points/span) then assigns that integer to its bucket. */
+  /** Round starts upward: floor((time-start)*points/span) then assigns that integer to its bucket.
+   * Long arithmetic gives start + ceil(span*index/points) exactly wherever no step overflows, as
+   * every term is non-negative; the rest is computed exactly with big integers. */
   public static long boundary(long startUs, long endUs, int points, int index) {
     if (points < 1 || endUs < startUs || index < 0 || index > points)
       throw new IllegalArgumentException("Invalid bucket boundary");
+    try {
+      long scaled = Math.addExact(Math.multiplyExact(Math.subtractExact(endUs, startUs), index), points - 1);
+      return Math.addExact(startUs, scaled / points);
+    } catch (ArithmeticException overflow) {
+      return exactBoundary(startUs, endUs, points, index);
+    }
+  }
+
+  static long exactBoundary(long startUs, long endUs, int points, int index) {
     var span = BigInteger.valueOf(endUs).subtract(BigInteger.valueOf(startUs));
     return BigInteger.valueOf(startUs).add(span.multiply(BigInteger.valueOf(index))
         .add(BigInteger.valueOf(points - 1)).divide(BigInteger.valueOf(points))).longValueExact();

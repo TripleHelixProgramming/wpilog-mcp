@@ -43,6 +43,7 @@ import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.MappedLogBytes;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.read.FieldPath;
+import org.triplehelix.wpilogmcp.tools.Buckets;
 
 /**
  * Column files of a log written for their edge cases, with each answer worked out by hand, and
@@ -312,77 +313,37 @@ class ColumnFileTest {
   }
 
   /**
-   * Two buckets over 0.5 s to 4.0 s split at 2.25 s: the first holds 1e308, -0.0, +inf and 5.5,
-   * whose finite minimum is -0.0 (seen before any equal value), maximum 1e308, and mean
-   * (1e308 + -0.0 + 5.5) / 3; the second holds only NaN and -inf.
+   * Two buckets over 0.5 s to 4.0 s split at 2.25 s, by the shared bucket function reading the
+   * column file: the first holds 1e308, -0.0, +inf and 5.5, whose finite minimum is -0.0 (seen
+   * before any equal value), maximum 1e308, and mean (1e308 + -0.0 + 5.5) / 3; the second holds
+   * only NaN and -inf.
    */
   @Test
   void anOverviewMatchesBucketsWorkedOutByHand() throws IOException {
     try (var file = ColumnFile.open(built, SOURCE)) {
       var d = select(file, "/d", "");
-      var overview = ColumnOverview.of(d, d.window(0.5, 4.0), 0.5, 4.0, 2, null);
+      var overview = Buckets.of(d.samples(d.window(0.5, 4.0)), 0.5, 4.0, 2);
       assertEquals(1.75, overview.bucketSec());
       assertEquals(2, overview.buckets().size());
       var first = overview.buckets().get(0);
-      assertEquals(500_000, first.startUs());
+      assertEquals(500_000, overview.startUs(0));
+      assertEquals(0.5, first.start());
       assertEquals(4, first.count());
-      assertEquals(3, first.finite());
       assertEquals(Double.doubleToRawLongBits(-0.0), Double.doubleToRawLongBits(first.min()));
       assertEquals(LARGE, first.max());
       assertEquals((LARGE + -0.0 + 5.5) / 3, first.mean());
       assertEquals(LARGE, first.first());
       assertEquals(5.5, first.last());
       var second = overview.buckets().get(1);
-      assertEquals(2_250_000, second.startUs());
+      assertEquals(2_250_000, overview.startUs(1));
       assertEquals(2, second.count());
-      assertEquals(0, second.finite());
       assertNull(second.min());
       assertNull(second.mean());
       assertTrue(Double.isNaN(second.first()));
       assertEquals(Double.NEGATIVE_INFINITY, second.last());
-      assertTrue(ColumnOverview.of(d, d.window(5.0, 6.0), 5.0, 6.0, 2, null).buckets().isEmpty());
-      assertThrows(IllegalArgumentException.class, () -> ColumnOverview.of(d, d.all(), null, null, 0, null));
+      assertTrue(Buckets.of(d.samples(d.window(5.0, 6.0)), 5.0, 6.0, 2).buckets().isEmpty());
+      assertThrows(IllegalArgumentException.class, () -> Buckets.of(d.samples(d.all()), null, null, 0));
     }
-  }
-
-  /** The overview's boundaries in long arithmetic against the shared rule, overflow included. */
-  @Test
-  void boundariesInLongArithmeticEqualTheSharedRule() {
-    long[] starts = {Long.MIN_VALUE, -1_000_000_000_000L, -1, 0, 1, 1_000_000_000L, Long.MAX_VALUE - 10};
-    long[] spans = {0, 1, 7, 1_000_000, 3_500_000, 1L << 40, 1L << 62, Long.MAX_VALUE};
-    int[] points = {1, 2, 3, 7, 1000, 65_536, Integer.MAX_VALUE};
-    int compared = 0;
-    for (long start : starts) for (long span : spans) for (int count : points) {
-      long end;
-      try {
-        end = Math.addExact(start, span);
-      } catch (ArithmeticException beyond) {
-        continue;
-      }
-      for (int index : new int[] {0, 1, count / 2, count - 1, count}) {
-        if (index < 0 || index > count) continue;
-        assertEquals(org.triplehelix.wpilogmcp.read.BucketCoordinates.boundary(start, end, count, index),
-            ColumnOverview.boundary(start, end, count, index), start + " + " + span + " at " + index + "/" + count);
-        compared++;
-      }
-    }
-    var random = new java.util.Random(11);
-    for (int i = 0; i < 100_000; i++) {
-      long start = random.nextLong() >> random.nextInt(64);
-      long span = random.nextLong() >>> (1 + random.nextInt(63));
-      long end;
-      try {
-        end = Math.addExact(start, span);
-      } catch (ArithmeticException beyond) {
-        continue;
-      }
-      int count = 1 + random.nextInt(i % 2 == 0 ? 2000 : Integer.MAX_VALUE - 1);
-      int index = random.nextInt(count) + random.nextInt(2);
-      assertEquals(org.triplehelix.wpilogmcp.read.BucketCoordinates.boundary(start, end, count, index),
-          ColumnOverview.boundary(start, end, count, index), start + " + " + span + " at " + index + "/" + count);
-      compared++;
-    }
-    assertTrue(compared > 50_000, "compared " + compared);
   }
 
   @Test

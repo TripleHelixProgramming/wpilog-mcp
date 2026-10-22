@@ -96,6 +96,38 @@ class SampleCursorsTest {
     }
   }
 
+  /**
+   * A reduced bucket names its first contributing sample, as the read API says, across input
+   * batches and across windows. Ten records at 0 to 9 us make two buckets, 0 to 4 and 5 to 9,
+   * whose first samples are records 0 and 5; two windows of one bucket each start at records 0
+   * and 6. Record i sits at offset 12 + 16i.
+   */
+  @Test void aReducedBucketNamesItsFirstContributingSample() throws Exception {
+    var buckets = new ArrayList<Sample>();
+    var query = new ReadQuery("/x", List.of(), ReadQuery.Order.TIME, 3, 64).reduce(2);
+    try (var cursor = SampleCursors.open(new Series(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), query, null, 100)) {
+      for (var batch = cursor.next(); ; batch = cursor.next()) {
+        buckets.addAll(batch.samples());
+        if (batch.complete()) break;
+      }
+    }
+    assertEquals(List.of(0L, 5L), buckets.stream().map(Sample::timestampUs).toList());
+    assertEquals(List.of(0, 5), buckets.stream().map(Sample::ordinal).toList());
+    assertEquals(List.of(12L, 12L + 5 * 16L), buckets.stream().map(Sample::recordOffset).toList());
+
+    var windowed = new ArrayList<Sample>();
+    var twoWindows = new ReadQuery("/x", List.of(new ReadQuery.Window(0, 4, true),
+        new ReadQuery.Window(6, 9, true)), ReadQuery.Order.TIME, 3, 64).reduce(1);
+    try (var cursor = SampleCursors.open(new Series(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), twoWindows, null, 100)) {
+      for (var batch = cursor.next(); ; batch = cursor.next()) {
+        windowed.addAll(batch.samples());
+        if (batch.complete()) break;
+      }
+    }
+    assertEquals(List.of(0, 6), windowed.stream().map(Sample::ordinal).toList());
+    assertEquals(List.of(12L, 12L + 6 * 16L), windowed.stream().map(Sample::recordOffset).toList());
+  }
+
   @Test void malformedRecordsCountAsWorkWithoutErasingTheirOriginalPositions() throws Exception {
     var source = new Series(0, 1, 2);
     source.failed = 1;

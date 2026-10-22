@@ -574,6 +574,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Every reduction now fills its buckets through one shared rule, which computes a sample's bucket
+  only when the sample leaves the current one; it is checked against computing every sample's
+  bucket afresh, in and out of time order, and a native reduced bucket's first contributing
+  sample, which the read API documents, is now tested. Previously `read_entry`, charts and the
+  data endpoint shared one bucket loop and native reads repeated it, and no test checked which
+  sample a reduced bucket named. Answers are unchanged.
+
 - The capture writer's publication timing test now grants its own folder and restores the log
   manager's grants afterwards. Previously it relied on an empty grant list, which admits every
   path, so it failed whenever a test that uses the shared fixture folder ran before it in the

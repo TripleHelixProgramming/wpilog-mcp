@@ -23,6 +23,7 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.read.AngleUnwrapper;
 import org.triplehelix.wpilogmcp.read.FieldPath;
+import org.triplehelix.wpilogmcp.read.NumericSamples;
 import org.triplehelix.wpilogmcp.tools.Buckets;
 import org.triplehelix.wpilogmcp.tools.EntryData;
 import org.triplehelix.wpilogmcp.tools.NumericSignalAccess;
@@ -121,6 +122,7 @@ final class ColumnOracle {
     assertEquals(resolved.recordsWithoutValue(), selection.recordsWithoutValue(), where + ": records without a value");
     selection.kind().ifPresent(counts.kinds::add);
     assertSameSamples(expected, selection, selection.all(), where);
+    assertSameNumbers(expected, selection.samples(selection.all()), where);
     counts.samples += expected.size();
     var series = new EntryData.Series(info.name(), info.name(), path.toString(), info.type(), expected, true);
     for (var window : windows(expected)) {
@@ -128,6 +130,7 @@ final class ColumnOracle {
       var kept = series.inWindow(window.start(), window.end());
       var range = selection.window(window.start(), window.end());
       assertSameSamples(kept, selection, range, label);
+      assertSameNumbers(kept, selection.samples(range), label);
       counts.windows++;
       for (int points : POINTS) {
         assertSameBuckets(kept, window, points, selection, range, false, label);
@@ -154,37 +157,51 @@ final class ColumnOracle {
     assertFalse(cursor.next(), where + ": samples beyond the range");
   }
 
+  /** The shared numeric view of a range against the decoded values, position by position. */
+  static void assertSameNumbers(List<TimestampedValue> expected, NumericSamples samples, String where) {
+    var decoded = NumericSamples.of(expected);
+    assertEquals(decoded.size(), samples.size(), where + ": numeric samples");
+    for (int i = 0; i < decoded.size(); i++) {
+      assertEquals(decoded.timeUs(i), samples.timeUs(i), where + ": numeric microseconds " + i);
+      assertEquals(Double.doubleToRawLongBits(decoded.seconds(i)), Double.doubleToRawLongBits(samples.seconds(i)), where + ": numeric seconds " + i);
+      assertEquals(Double.doubleToRawLongBits(decoded.number(i)), Double.doubleToRawLongBits(samples.number(i)), where + ": numeric value " + i);
+    }
+  }
+
   /**
-   * The endpoint's buckets of the window's values against the overview of its range; with
-   * {@code unwrap}, both after unwrapping the values as an angle in radians across the window.
+   * The buckets of the window's decoded values against the buckets of its range in the column
+   * file, by the one bucket function both sources share; with {@code unwrap}, both after
+   * unwrapping the values as an angle in radians across the window.
    */
   static void assertSameBuckets(List<TimestampedValue> kept, Window window, int points,
       ColumnFile.Selection selection, ColumnFile.Range range, boolean unwrap, String where) {
     var values = kept;
+    var samples = selection.samples(range);
     if (unwrap) {
       var unwrapper = new AngleUnwrapper(2 * Math.PI);
       values = kept.stream().map(v -> v.withValue(unwrapper.apply(((Number) v.value()).doubleValue()))).toList();
+      samples = unwrapped(samples);
     }
     var label = where + " at " + points + " points";
     Buckets.Result expected;
+    var columns = samples;
     try {
       expected = Buckets.of(values, window.start(), window.end(), points);
     } catch (IllegalArgumentException refused) {
-      var thrown = assertThrows(IllegalArgumentException.class, () -> ColumnOverview.of(selection, range,
-          window.start(), window.end(), points, unwrap ? new AngleUnwrapper(2 * Math.PI)::apply : null), label);
+      var thrown = assertThrows(IllegalArgumentException.class,
+          () -> Buckets.of(columns, window.start(), window.end(), points), label);
       assertEquals(refused.getMessage(), thrown.getMessage(), label);
       return;
     }
-    var actual = ColumnOverview.of(selection, range, window.start(), window.end(), points,
-        unwrap ? new AngleUnwrapper(2 * Math.PI)::apply : null);
+    var actual = Buckets.of(samples, window.start(), window.end(), points);
     assertEquals(Double.doubleToRawLongBits(expected.bucketSec()), Double.doubleToRawLongBits(actual.bucketSec()), label + ": bucket duration");
     assertEquals(expected.buckets().size(), actual.buckets().size(), label + ": buckets");
     for (int i = 0; i < expected.buckets().size(); i++) {
       var e = expected.buckets().get(i);
       var a = actual.buckets().get(i);
       var at = label + " bucket " + i;
-      assertEquals(expected.startUs(i), a.startUs(), at + ": start");
-      assertEquals(Double.doubleToRawLongBits(e.start()), Double.doubleToRawLongBits(a.startUs() / 1e6), at + ": start seconds");
+      assertEquals(expected.startUs(i), actual.startUs(i), at + ": start");
+      assertEquals(Double.doubleToRawLongBits(e.start()), Double.doubleToRawLongBits(a.start()), at + ": start seconds");
       assertEquals(e.count(), a.count(), at + ": count");
       assertSameNumber(e.min(), a.min(), at + ": min");
       assertSameNumber(e.max(), a.max(), at + ": max");
@@ -192,6 +209,19 @@ final class ColumnOracle {
       assertEquals(Double.doubleToRawLongBits(e.first()), Double.doubleToRawLongBits(a.first()), at + ": first");
       assertEquals(Double.doubleToRawLongBits(e.last()), Double.doubleToRawLongBits(a.last()), at + ": last");
     }
+  }
+
+  /** Samples whose values are unwrapped as an angle in radians, in read order. */
+  static NumericSamples unwrapped(NumericSamples samples) {
+    var unwrapper = new AngleUnwrapper(2 * Math.PI);
+    var numbers = new double[samples.size()];
+    for (int i = 0; i < numbers.length; i++) numbers[i] = unwrapper.apply(samples.number(i));
+    return new NumericSamples() {
+      @Override public int size() { return numbers.length; }
+      @Override public long timeUs(int index) { return samples.timeUs(index); }
+      @Override public double seconds(int index) { return samples.seconds(index); }
+      @Override public double number(int index) { return numbers[index]; }
+    };
   }
 
   private static void assertSameNumber(Double expected, Double actual, String where) {

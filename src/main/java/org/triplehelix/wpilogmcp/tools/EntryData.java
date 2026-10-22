@@ -47,11 +47,9 @@ public final class EntryData {
 
     /** The samples within the window; a null bound is open. */
     public List<TimestampedValue> inWindow(Double startTime, Double endTime) {
-      if (startTime == null && endTime == null) return values;
-      return values.stream()
-          .filter(tv -> startTime == null || tv.timestamp() >= startTime)
-          .filter(tv -> endTime == null || tv.timestamp() <= endTime)
-          .toList();
+      var window = new org.triplehelix.wpilogmcp.read.SecondsWindow(startTime, endTime);
+      if (window.open()) return values;
+      return values.stream().filter(tv -> window.contains(tv.timestamp())).toList();
     }
   }
 
