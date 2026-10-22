@@ -57,36 +57,15 @@ class PersistentScanIntegrationTest {
 
   @AfterEach void stop() { if (manager != null) manager.shutdown(); }
 
-  @Test void anInteriorRewriteWithRestoredAttributesCannotReuseOldDeclarations() throws Exception {
-    try (var use = manager.acquireReadOnly(source.toString())) {
-      assertEquals(List.of(10.0, 20.0), values(use.log(), "/Value"));
-    }
-    assertEquals(1, indexes());
-    assertTrue(manager.unloadLog(source.toString()));
-    rewriteDeclaration(source);
-    long scans = LogScan.passCount();
-    try (var use = manager.acquireReadOnly(source.toString())) {
-      assertFalse(use.log().entries().containsKey("/Value"), "The stale index names the old declaration");
-      assertEquals(List.of(10.0, 20.0), values(use.log(), "/Other"));
-      assertEquals(List.of(99.0), values(use.log(), "/Tail"));
-    }
-    assertEquals(1, LogScan.passCount() - scans, "Changed content must run a new scan");
-  }
+  // An interior rewrite with every attribute restored now keeps its index where the file system
+  // vouches for the attributes: the maintainer's decision of 2026-10-21. ScanIndexReuseTest pins it.
 
-  @Test void aWarmRememberedManifestProofCannotAuthorizeChangedBytes() throws Exception {
-    var store = manager.stores().store(directory.resolve("store"));
-    var result = store.importPaths(new LogStore.Request(List.of(source), false, "practice"), p -> {})
-        .get(10, TimeUnit.SECONDS);
-    var placed = result.files().get(0);
-    assertEquals("imported", placed.status(), placed.toString());
-    store.migrateReplicas(store.replicaHeader().id()).get(10, TimeUnit.SECONDS);
-    var member = placed.path();
-    try (var use = manager.acquireReadOnly(member.toString())) {
-      assertNotNull(use.replica(), "The fixture must exercise manifested admission");
-      assertEquals(List.of(10.0, 20.0), values(use.log(), "/Value"));
-    }
+  @Test void aChangedStoreFileWhoseTimeMovedIsRefusedByItsManifest() throws Exception {
+    var member = indexedStoreMember();
     manager.unloadLog(member.toString());
+    var before = FileSnapshot.of(member);
     rewriteDeclaration(member);
+    Files.setLastModifiedTime(member, java.nio.file.attribute.FileTime.from(before.modified().toInstant().plusMillis(2_500)));
     long scans = LogScan.passCount();
     var failure = assertThrows(IOException.class, () -> manager.acquireReadOnly(member.toString()));
     assertTrue(failure.getMessage().contains("SOURCE_UNAVAILABLE"), failure::getMessage);
@@ -95,21 +74,32 @@ class PersistentScanIntegrationTest {
         "A mismatched manifested file must not fall back to scanning replacement content");
   }
 
-  @Test void aFailedFreshManifestProofCannotFallBackToAnEagerRead() throws Exception {
-    var store = manager.stores().store(directory.resolve("store"));
-    var result = store.importPaths(new LogStore.Request(List.of(source), false, "practice"), p -> {})
-        .get(10, TimeUnit.SECONDS);
-    var placed = result.files().get(0);
-    assertEquals("imported", placed.status(), placed.toString());
-    store.migrateReplicas(store.replicaHeader().id()).get(10, TimeUnit.SECONDS);
-    var member = placed.path();
-    try (var use = manager.acquireReadOnly(member.toString())) {
-      assertNotNull(use.replica(), "The fixture must exercise manifested admission");
-      assertEquals(List.of(10.0, 20.0), values(use.log(), "/Value"));
+  @Test void aStoreFileRewrittenWithEveryAttributeRestoredIsTrustedWhereTheFileSystemVouches() throws Exception {
+    var member = indexedStoreMember();
+    manager.unloadLog(member.toString());
+    rewriteDeclaration(member);
+    var now = FileSnapshot.of(member);
+    if (!(now.fileKey() != null && now.modified().toInstant().getNano() != 0)) {
+      // Attributes this file system cannot vouch for are checked, and the manifest refuses the change.
+      var failure = assertThrows(IOException.class, () -> manager.acquireReadOnly(member.toString()));
+      assertTrue(failure.getMessage().contains("manifested hash"), failure::getMessage);
+      return;
     }
+    // The accepted trade-off: unchanged attributes are trusted without reading the file.
+    try (var use = manager.acquireReadOnly(member.toString())) {
+      assertTrue(use.log().entries().containsKey("/Value"), "The trusted index keeps its declarations");
+    }
+  }
+
+  @Test void aFailedFreshManifestProofCannotFallBackToAnEagerRead() throws Exception {
+    var member = indexedStoreMember();
     assertTrue(manager.unloadLog(member.toString()));
+    // An unchanged member needs no read; a moved time makes the checksum read that must not fail open.
+    Files.setLastModifiedTime(member, java.nio.file.attribute.FileTime.from(
+        FileSnapshot.of(member).modified().toInstant().plusMillis(1_500)));
     manager.scanObserver((phase, path) -> {
-      if (phase == LazyParsedLog.OpenPhase.BEFORE_HASH) throw new IOException("synthetic proof read failure");
+      if (phase == LazyParsedLog.OpenPhase.BEFORE_CHECKSUM || phase == LazyParsedLog.OpenPhase.BEFORE_HASH)
+        throw new IOException("synthetic proof read failure");
     });
     long scans = LogScan.passCount();
     var failure = assertThrows(IOException.class, () -> manager.acquireReadOnly(member.toString()),
@@ -396,6 +386,22 @@ class PersistentScanIntegrationTest {
     }
     assertEquals(0, LogScan.passCount() - scans,
         "Shutdown fences earlier work, not a new explicit read using a valid persisted index");
+  }
+
+  /** Imports the source into a store and opens the member once, which indexes it. */
+  private Path indexedStoreMember() throws Exception {
+    var store = manager.stores().store(directory.resolve("store"));
+    var result = store.importPaths(new LogStore.Request(List.of(source), false, "practice"), p -> {})
+        .get(10, TimeUnit.SECONDS);
+    var placed = result.files().get(0);
+    assertEquals("imported", placed.status(), placed.toString());
+    store.migrateReplicas(store.replicaHeader().id()).get(10, TimeUnit.SECONDS);
+    var member = placed.path();
+    try (var use = manager.acquireReadOnly(member.toString())) {
+      assertNotNull(use.replica(), "The fixture must exercise manifested admission");
+      assertEquals(List.of(10.0, 20.0), values(use.log(), "/Value"));
+    }
+    return member;
   }
 
   private long indexes() throws IOException {

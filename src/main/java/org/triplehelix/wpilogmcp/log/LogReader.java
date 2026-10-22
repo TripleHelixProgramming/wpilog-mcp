@@ -52,6 +52,33 @@ public final class LogReader implements Iterable<DataLogRecord> {
     if (source == null) throw new IllegalStateException("Content proof requires an owned byte source");
     return java.util.HexFormat.of().formatHex(fingerprint(0, size()));
   }
+  /** The SHA-256 and the CRC32C of the whole content in one pass: the proof an index is written
+   * with, and the cheap check a later open falls back to when only the file's time moved. */
+  ContentProof contentProof() {
+    if (source == null) throw new IllegalStateException("Content proof requires an owned byte source");
+    try {
+      var digest = java.security.MessageDigest.getInstance("SHA-256");
+      var crc = new java.util.zip.CRC32C();
+      for (long pos = 0, end = size(); pos < end;) {
+        int count = (int) Math.min(65536, end - pos);
+        var chunk = source.view(pos, count);
+        digest.update(chunk.duplicate()); crc.update(chunk); pos += count;
+      }
+      return new ContentProof(java.util.HexFormat.of().formatHex(digest.digest()), crc.getValue());
+    } catch (java.security.NoSuchAlgorithmException e) { throw new AssertionError(e); }
+  }
+  /** The CRC32C of the whole content, about a quarter of the SHA-256's cost: enough to tell an
+   * index's bytes from changed ones, not to stand in for a store manifest's hash. */
+  long contentCrc32c() {
+    if (source == null) throw new IllegalStateException("Content proof requires an owned byte source");
+    var crc = new java.util.zip.CRC32C();
+    for (long pos = 0, end = size(); pos < end;) {
+      int count = (int) Math.min(65536, end - pos);
+      crc.update(source.view(pos, count)); pos += count;
+    }
+    return crc.getValue();
+  }
+  record ContentProof(String sha256, long crc32c) {}
   public long recordEnd(long offset) {
     if (legacy != null) return DataLogAccess.recordEnd(legacy, Math.toIntExact(offset));
     try {

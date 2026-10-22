@@ -183,9 +183,12 @@ content-addressed, versioned derivations are sufficient; an extra scope-wide gen
 proof that their answers are current.
 
 Persisted scan indexes apply the same rule to declarations, byte offsets and exact timestamp
-ordering: both format and scan-recipe versions participate in the key, and a fresh whole-source
-hash is checked before reuse. File attributes alone cannot detect an interior rewrite whose
-size and modification time were restored.
+ordering: both format and scan-recipe versions participate in the key, and the content an
+index is written for is proved by a whole-source hash. Reuse is the one deliberate exception,
+decided on 2026-10-21: it trusts the file's attributes where they vouch, and attributes alone
+cannot detect an interior rewrite whose size, modification time, identity and creation time
+were all restored, so such a file keeps its old index. A moved modification time is checked
+by CRC32C before a new scan.
 
 ### Capture has a disk reserve
 
@@ -911,7 +914,7 @@ If a call still runs out of memory, it returns an error that suggests a narrower
 | REV log sync results | Memory | Until the wpilog is unloaded |
 | REV signals shifted onto the wpilog's clock | Memory | Until the wpilog is unloaded |
 | REV log sync results | Disk | Until the cache's format version changes, or the cache is trimmed to its size limit |
-| Ordinary eligible-file scan indexes | Disk | Fresh content verification on reuse; format and recipe versions in the key; shared cleanup size limit |
+| Ordinary eligible-file scan indexes | Disk | Reuse on unchanged attributes, CRC32C when only the time moved, a fresh proof otherwise; format and recipe versions in the key; shared cleanup size limit |
 | The Blue Alliance responses | Memory | 24 hours; "not found" for 5 minutes; failures are not cached; 200 entries of each kind |
 | Game data | Memory | The life of the server |
 
@@ -945,12 +948,22 @@ is a sweep-time limit, not a per-write reservation. `health_check.scan_index_dis
 reports scan artifacts and process lookup counters.
 
 Index keys include both encoding and scan-recipe versions. A verified store member uses its
-manifest SHA-256 identity; an ordinary file uses its size, full-precision modification time
-and filesystem identity. Every eligible reopen hashes the entire source again, even when
-attributes or remembered admission hashes match. A changed ordinary file is rescanned;
-a finalized store member whose bytes disagree with its manifest is refused. Before/after
-source proofs prevent publishing a scan under a later generation's hash. These checks do
-not provide an OS snapshot against a hostile writer changing and restoring bytes mid-read.
+manifest SHA-256 identity; an ordinary file uses its path, size and filesystem identity, but
+neither of its times. Each index records the content's
+SHA-256 and CRC32C, and the file's modification time, identity and creation time when it was
+proved. A reopen whose recorded attributes all still match reuses the index without reading
+the file, where the file system vouches for them: it names the file, and keeps its time finer
+than a second. A moved modification time, or attributes the file system cannot vouch for
+(Windows reports no file identity; some file systems keep whole seconds), are checked by
+CRC32C, about a quarter of the hash's cost; a match reuses the index and records the new
+attributes, so the next open trusts them. Anything else, and any failed check, takes the
+SHA-256 proof: a changed ordinary file is rescanned, and a finalized store member whose bytes
+disagree with its manifest is refused. A creation time equal to the modification time counts
+as unreported, since Java before 22 reports one for the other on Linux. The trade-off, decided
+on 2026-10-21: a file rewritten in place with all four attributes restored keeps its old
+index, just as an open loaded log would not notice it. Before/after source proofs prevent
+publishing a scan under a later generation's hash. These checks do not provide an OS snapshot
+against a hostile writer changing and restoring bytes mid-read.
 
 Known active captures and observed growing files bypass persistence. In-memory growing
 indexes retain their copied resume state. Persisted indexes omit that continuation, so a

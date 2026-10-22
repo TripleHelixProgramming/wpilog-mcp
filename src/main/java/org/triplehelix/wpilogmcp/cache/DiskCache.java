@@ -30,7 +30,9 @@ import org.triplehelix.wpilogmcp.log.LogScan;
  * Shared disk-cache capacity and cleanup owner for scan indexes and REV results.
  *
  * <p>The ordinary load path persists bounded scan indexes, not decoded values. Its caller
- * supplies a fresh whole-content proof while holding the source read lease. Legacy eager
+ * writes an index with a fresh whole-content proof while holding the source read lease, and
+ * reuses one by what the index recorded: unchanged attributes, a matching CRC32C, or a fresh
+ * proof (see the opener in {@code LazyParsedLog}). Legacy eager
  * serialization remains available to its existing callers; its sampled fingerprint is
  * never a scan-index proof. The configured size limit is enforced by cleanup, shared with
  * REV results, rather than a reservation on each write.
@@ -109,11 +111,16 @@ public class DiskCache {
 
   /** Versions belong in the identity so a new recipe cannot overwrite another recipe's entry. */
   public static String scanFileName(ScanIndexSerializer.Source source) {
+    return scanFileName(source.identity(), source.sizeBytes());
+  }
+
+  /** The content hash is not part of the name: a file's index is found before its bytes are read. */
+  public static String scanFileName(String identity, long sizeBytes) {
     try {
       var digest = MessageDigest.getInstance("SHA-256");
-      digest.update(source.identity().getBytes(StandardCharsets.UTF_8));
+      digest.update(identity.getBytes(StandardCharsets.UTF_8));
       digest.update((byte) 0);
-      digest.update(Long.toString(source.sizeBytes()).getBytes(StandardCharsets.US_ASCII));
+      digest.update(Long.toString(sizeBytes).getBytes(StandardCharsets.US_ASCII));
       return "v" + ScanIndexSerializer.FORMAT_VERSION + "-r" + ScanIndexSerializer.RECIPE_VERSION
           + "-" + HexFormat.of().formatHex(digest.digest()) + "-scan.idx";
     } catch (NoSuchAlgorithmException impossible) {
@@ -121,20 +128,24 @@ public class DiskCache {
     }
   }
 
-  /** An eligible disk lookup counts once; disabled and known-growing bypasses do not count. */
-  public LogScan loadScanIndex(ScanIndexSerializer.Source source) {
+  /**
+   * The index stored for a file's identity and size, whatever content it was proved for. It is
+   * not counted: the opener decides how far the recorded attributes vouch, then records one lookup.
+   */
+  public ScanIndexSerializer.Held findScanIndex(String identity, long sizeBytes) {
     if (!enabled) return null;
     try {
-      var scan = scanSerializer.read(cacheDirectory.getPath().resolve(scanFileName(source)), source);
-      if (scan != null) {
-        scanHits.increment();
-        return scan;
-      }
+      return scanSerializer.hold(cacheDirectory.getPath().resolve(scanFileName(identity, sizeBytes)),
+          identity, sizeBytes);
     } catch (IOException optionalCacheFailure) {
       logger.debug("Scan index lookup unavailable: {}", optionalCacheFailure.getClass().getSimpleName());
+      return null;
     }
-    scanMisses.increment();
-    return null;
+  }
+
+  /** An eligible open counts once: a hit when it reused an index, a miss when it scanned. */
+  public void recordScanLookup(boolean reused) {
+    (reused ? scanHits : scanMisses).increment();
   }
 
   /**
@@ -142,9 +153,10 @@ public class DiskCache {
    * Each attempt owns only its CREATE_NEW temporary; atomic replacement permits competing
    * processes without a lock or a background queue retaining mapped sources.
    */
-  public void saveScanIndex(ScanIndexSerializer.Source source, LogScan scan) {
+  public void saveScanIndex(ScanIndexSerializer.Source source, ScanIndexSerializer.Recorded recorded,
+      LogScan scan) {
     try {
-      saveScanIndex(source, scan, () -> true);
+      saveScanIndex(source, recorded, scan, () -> true);
     } catch (IOException impossibleSourceRefusal) {
       throw new AssertionError(impossibleSourceRefusal);
     }
@@ -155,8 +167,8 @@ public class DiskCache {
   }
 
   /** The source owner rechecks its generation after optional encoding, immediately before rename. */
-  public void saveScanIndex(ScanIndexSerializer.Source source, LogScan scan, IndexPublication publication)
-      throws IOException {
+  public void saveScanIndex(ScanIndexSerializer.Source source, ScanIndexSerializer.Recorded recorded,
+      LogScan scan, IndexPublication publication) throws IOException {
     if (!enabled) return;
     Path target;
     try {
@@ -168,7 +180,7 @@ public class DiskCache {
     var temporary = target.resolveSibling(target.getFileName() + ".tmp." + UUID.randomUUID());
     try {
       try {
-        if (!scanSerializer.write(temporary, source, scan)) return;
+        if (!scanSerializer.write(temporary, source, recorded, scan)) return;
       } catch (IOException optionalCacheFailure) {
         logger.debug("Scan index encoding unavailable: {}", optionalCacheFailure.getClass().getSimpleName());
         return;

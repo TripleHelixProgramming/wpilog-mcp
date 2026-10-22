@@ -33,7 +33,12 @@ import org.triplehelix.wpilogmcp.log.ScopedLogReader;
 /** An independent fixed-layout writer and literal index facts exercise optional cache input. */
 class ScanIndexSerializerTest {
   private static final String HASH = "a".repeat(64);
-  private static final String IDENTITY = "attributes:" + "b".repeat(64);
+  private static final String IDENTITY = "file:" + "b".repeat(64);
+  // Recorded proof: a CRC above the signed 32-bit range, nanosecond times and a file key.
+  private static final long CRC32C = 0x89AB_CDEFL;
+  private static final java.time.Instant MODIFIED = java.time.Instant.ofEpochSecond(1_700_000_000L, 123_456_789);
+  private static final String FILE_KEY = "(dev=1,ino=2)";
+  private static final java.time.Instant CREATED = java.time.Instant.ofEpochSecond(1_699_999_999L, 5);
   @TempDir Path directory;
   private Api api;
 
@@ -139,7 +144,18 @@ class ScanIndexSerializerTest {
     var path = write("proof.idx", independent());
     assertNull(api.read(path, 127, HASH));
     assertNull(api.read(path, 128, "c".repeat(64)));
-    assertNull(api.read(path, "attributes:" + "d".repeat(64), 128, HASH));
+    assertNull(api.read(path, "file:" + "d".repeat(64), 128, HASH));
+  }
+
+  @Test void holdFindsAnIndexByIdentityAndSizeWithItsRecordedProof() throws Exception {
+    var path = write("held.idx", independent());
+    var held = api.hold(path, IDENTITY, 128);
+    assertNotNull(held, "The opener reads the stored proof before deciding how far it vouches");
+    assertEquals(api.source(IDENTITY, 128, HASH), held[0]);
+    assertEquals(api.recorded(), held[1], "CRC32C above the signed range, nanosecond times and the file key survive");
+    assertEquals(3, ((LogScan) held[2]).dataRecords());
+    assertNull(api.hold(path, IDENTITY, 127), "Size is part of the key");
+    assertNull(api.hold(path, "file:" + "d".repeat(64), 128), "Identity is part of the key");
   }
 
   @Test void truncatedDamageFactsSurviveWithoutInventingResumeState() throws Exception {
@@ -191,9 +207,15 @@ class ScanIndexSerializerTest {
     byte[] valid = independent();
     var layout = layout(valid);
     Map<String,Consumer<ByteBuffer>> cases = new LinkedHashMap<>();
-    cases.put("format", b -> b.putInt(8,2));
+    cases.put("previous-format", b -> b.putInt(8,1));
+    cases.put("future-format", b -> b.putInt(8,3));
     cases.put("recipe", b -> b.putInt(12,2));
     cases.put("identity-length", b -> b.putInt(16,Integer.MAX_VALUE));
+    cases.put("modified-nanos", b -> b.putInt(layout.get("nanos"),1_000_000_000));
+    cases.put("negative-nanos", b -> b.putInt(layout.get("nanos"),-1));
+    cases.put("file-key-length", b -> b.putInt(layout.get("file-key"),-2));
+    cases.put("creation-tag", b -> b.put(layout.get("created-tag"),(byte)2));
+    cases.put("created-nanos", b -> b.putInt(layout.get("created-nanos"),1_000_000_000));
     cases.put("nonfinite-min", b -> b.putDouble(layout.get("min"),Double.NaN));
     cases.put("reversed-range", b -> b.putDouble(layout.get("max"),-1));
     cases.put("count-mismatch", b -> b.putInt(layout.get("records"),4));
@@ -260,8 +282,10 @@ class ScanIndexSerializerTest {
     var crc = new CRC32();
     try (var raw = new java.io.BufferedOutputStream(Files.newOutputStream(path))) {
       var out = new DataOutputStream(new java.util.zip.CheckedOutputStream(raw, crc));
-      out.write(new byte[]{'W','P','I','S','C','A','N',0}); out.writeInt(1); out.writeInt(1);
+      out.write(new byte[]{'W','P','I','S','C','A','N',0}); out.writeInt(2); out.writeInt(1);
       string(out, IDENTITY); out.writeLong(128); out.write(HexFormat.of().parseHex(HASH));
+      // Recorded proof: CRC32C, modification time, no file key, no creation time.
+      out.writeInt(0); out.writeLong(0); out.writeInt(0); out.writeInt(-1); out.writeByte(0);
       out.writeDouble(0); out.writeDouble(0); out.writeInt(0); out.writeByte(0);
       out.writeInt(-1); out.writeLong(128); out.writeLong(12); out.writeInt(30_000);
       String metadata = "x".repeat(1000);
@@ -273,9 +297,10 @@ class ScanIndexSerializerTest {
       out.flush();
       new DataOutputStream(raw).writeInt((int) crc.getValue());
     }
-    // 184B framing + 30000*(1040B + name length); name lengths sum to318890.
-    assertEquals(31_519_074, Files.size(path));
-    // 694B base/identity + 30000*2620B +2*318890B names =79,238,474B accounted.
+    // 199B framing (a 69B identity and a 21B recorded proof) + 30000*(1040B + name length);
+    // name lengths sum to318890.
+    assertEquals(31_519_089, Files.size(path));
+    // 682B base/identity + 30000*2620B +2*318890B names =79,238,462B accounted.
     assertNull(api.read(path, 128, HASH), "Decoded accounting must reject a valid31MiB encoding");
     assertNull(api.inspect(path), "Cleanup must enforce the same decoded representation budget");
   }
@@ -284,7 +309,7 @@ class ScanIndexSerializerTest {
     var path=write("inspected.idx",independent());
     var header=api.inspect(path);
     assertNotNull(header);
-    assertEquals(1,header.getClass().getMethod("formatVersion").invoke(header));
+    assertEquals(2,header.getClass().getMethod("formatVersion").invoke(header));
     assertEquals(1,header.getClass().getMethod("recipeVersion").invoke(header));
     assertEquals(Files.size(path),header.getClass().getMethod("encodedBytes").invoke(header));
   }
@@ -311,8 +336,10 @@ class ScanIndexSerializerTest {
   private static byte[] independent() throws Exception {
     var bytes=new ByteArrayOutputStream();
     try(var out=new DataOutputStream(bytes)) {
-      out.write(new byte[]{'W','P','I','S','C','A','N',0});out.writeInt(1);out.writeInt(1);
+      out.write(new byte[]{'W','P','I','S','C','A','N',0});out.writeInt(2);out.writeInt(1);
       string(out,IDENTITY);out.writeLong(128);out.write(HexFormat.of().parseHex(HASH));
+      out.writeInt((int)CRC32C);out.writeLong(MODIFIED.getEpochSecond());out.writeInt(MODIFIED.getNano());
+      string(out,FILE_KEY);out.writeByte(1);out.writeLong(CREATED.getEpochSecond());out.writeInt(CREATED.getNano());
       out.writeDouble(0.000001);out.writeDouble(0.000003);out.writeInt(3);out.writeByte(0);
       out.writeInt(-1);out.writeLong(128);out.writeLong(12);out.writeInt(2);
       out.writeInt(7);string(out,"/Value");string(out,"double");string(out,"changed");
@@ -334,6 +361,9 @@ class ScanIndexSerializerTest {
   private static Map<String,Integer> layout(byte[] bytes) {
     var b=ByteBuffer.wrap(bytes);var at=new LinkedHashMap<String,Integer>();
     b.position(16);skipString(b);b.position(b.position()+8+32);
+    at.put("crc32c",b.position());b.getInt();b.getLong();at.put("nanos",b.position());b.getInt();
+    at.put("file-key",b.position());skipString(b);at.put("created-tag",b.position());b.get();
+    b.getLong();at.put("created-nanos",b.position());b.getInt();
     at.put("min",b.position());b.getDouble();at.put("max",b.position());b.getDouble();
     at.put("records",b.position());b.getInt();at.put("flags",b.position());b.get();
     at.put("message",b.position());b.getInt();at.put("resume",b.position());b.getLong();
@@ -350,14 +380,27 @@ class ScanIndexSerializerTest {
   private static final class Api {
     final Class<?> type;
     final Class<?> sourceType;
+    final Class<?> recordedType;
     final Object instance;
     Api() throws Exception {
       type=Class.forName("org.triplehelix.wpilogmcp.cache.ScanIndexSerializer");
       sourceType=Class.forName(type.getName()+"$Source");
+      recordedType=Class.forName(type.getName()+"$Recorded");
       instance=type.getConstructor().newInstance();
     }
     Object source(String identity,long size,String hash) throws Exception {
       return sourceType.getConstructor(String.class,long.class,String.class).newInstance(identity,size,hash);
+    }
+    Object recorded() throws Exception {
+      return recordedType.getConstructor(long.class,java.time.Instant.class,String.class,java.time.Instant.class)
+          .newInstance(CRC32C,MODIFIED,FILE_KEY,CREATED);
+    }
+    /** The held index's source and recorded proof, or null. */
+    Object[] hold(Path path,String identity,long size) throws Exception {
+      Object held=invoke("hold",new Class<?>[]{Path.class,String.class,long.class},path,identity,size);
+      if(held==null)return null;
+      return new Object[]{held.getClass().getMethod("source").invoke(held),
+          held.getClass().getMethod("recorded").invoke(held),held.getClass().getMethod("scan").invoke(held)};
     }
     LogScan read(Path path,long size,String hash) throws Exception {return read(path,IDENTITY,size,hash);}
     LogScan read(Path path,String identity,long size,String hash) throws Exception {
@@ -365,7 +408,8 @@ class ScanIndexSerializerTest {
     }
     Object inspect(Path path) throws Exception {return invoke("inspect",new Class<?>[]{Path.class},path);}
     boolean write(Path path,long size,String hash,LogScan scan) throws Exception {
-      return (Boolean)invoke("write",new Class<?>[]{Path.class,sourceType,LogScan.class},path,source(IDENTITY,size,hash),scan);
+      return (Boolean)invoke("write",new Class<?>[]{Path.class,sourceType,recordedType,LogScan.class},
+          path,source(IDENTITY,size,hash),recorded(),scan);
     }
     private Object invoke(String name,Class<?>[] parameters,Object... arguments) throws Exception {
       try {return type.getMethod(name,parameters).invoke(instance,arguments);}

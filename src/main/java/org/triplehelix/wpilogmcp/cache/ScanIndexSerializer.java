@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -37,11 +38,12 @@ import org.triplehelix.wpilogmcp.log.RecordOffsets;
  * source-content proof and owns atomic publication of the temporary file written here.
  *
  * <p>The fixed big-endian format is magic, format/recipe versions, source identity/size/SHA,
- * scan facts, declaration-ordered entries with narrow/wide positions, then CRC32 and exact EOF.
+ * the content's CRC32C and the file's attributes when it was proved, scan facts,
+ * declaration-ordered entries with narrow/wide positions, then CRC32 and exact EOF.
  * CRC detects corruption, not deliberate forgery by a local actor who can replace cache files.
  */
 public class ScanIndexSerializer {
-  public static final int FORMAT_VERSION = 1;
+  public static final int FORMAT_VERSION = 2;
   public static final int RECIPE_VERSION = 1;
   public static final int MAX_CACHE_FILE_BYTES = 64 * 1024 * 1024;
   public static final long MAX_DECODED_BYTES = 64L * 1024 * 1024;
@@ -53,14 +55,37 @@ public class ScanIndexSerializer {
 
   /** Identity nominates a key; sha256 is the caller's current whole-content proof. */
   public record Source(String identity, long sizeBytes, String sha256) {}
-  public record Header(int formatVersion, int recipeVersion, Source source, long encodedBytes) {}
+
+  /**
+   * What an index was proved under: the content's CRC32C, the cheap check a later open falls
+   * back to, and the file's modification time, identity and creation time then. A later open
+   * that finds the same attributes, where the file system can vouch for them, reuses the index
+   * without reading the file.
+   */
+  public record Recorded(long crc32c, Instant modified, String fileKey, Instant created) {}
+
+  /** An index as stored, before its caller decides how far the recorded attributes vouch. */
+  public record Held(Source source, Recorded recorded, LogScan scan) {}
+
+  public record Header(int formatVersion, int recipeVersion, Source source, Recorded recorded, long encodedBytes) {}
   private record Decoded(Header header, LogScan scan) {}
 
   /** A failed optional cache input always leaves the ordinary scan available. */
   public LogScan read(Path path, Source expected) {
     if (expected == null) return null;
     try {
-      return decode(path, expected, true).scan();
+      return decode(path, expected::equals, true).scan();
+    } catch (IOException | RuntimeException invalid) {
+      return null;
+    }
+  }
+
+  /** The index stored for a file's identity and size, whatever content it was proved for. */
+  public Held hold(Path path, String identity, long sizeBytes) {
+    try {
+      var decoded = decode(path,
+          source -> source.identity().equals(identity) && source.sizeBytes() == sizeBytes, true);
+      return new Held(decoded.header().source(), decoded.header().recorded(), decoded.scan());
     } catch (IOException | RuntimeException invalid) {
       return null;
     }
@@ -69,7 +94,7 @@ public class ScanIndexSerializer {
   /** Cleanup verifies the whole representation without allocating its offset arrays. */
   public Header inspect(Path path) {
     try {
-      return decode(path, null, false).header();
+      return decode(path, source -> true, false).header();
     } catch (IOException | RuntimeException invalid) {
       return null;
     }
@@ -80,10 +105,10 @@ public class ScanIndexSerializer {
    * must be a uniquely owned temporary: CREATE_NEW prevents overwriting another writer's work.
    * The caller serializes a stable, unpublished scan and handles failure/atomic final rename.
    */
-  public boolean write(Path path, Source source, LogScan scan) throws IOException {
+  public boolean write(Path path, Source source, Recorded recorded, LogScan scan) throws IOException {
     long encoded;
     try {
-      encoded = preflight(source, scan);
+      encoded = preflight(source, recorded, scan);
     } catch (IOException | RuntimeException unsupported) {
       return false;
     }
@@ -95,6 +120,13 @@ public class ScanIndexSerializer {
       out.write(MAGIC); out.writeInt(FORMAT_VERSION); out.writeInt(RECIPE_VERSION);
       writeString(out, source.identity()); out.writeLong(source.sizeBytes());
       out.write(HexFormat.of().parseHex(source.sha256()));
+      out.writeInt((int) recorded.crc32c());
+      out.writeLong(recorded.modified().getEpochSecond()); out.writeInt(recorded.modified().getNano());
+      writeString(out, recorded.fileKey());
+      out.writeByte(recorded.created() == null ? 0 : 1);
+      if (recorded.created() != null) {
+        out.writeLong(recorded.created().getEpochSecond()); out.writeInt(recorded.created().getNano());
+      }
       out.writeDouble(scan.minTimestamp()); out.writeDouble(scan.maxTimestamp());
       out.writeInt(scan.dataRecords());
       out.writeByte((scan.truncated() ? 1 : 0) | (scan.damaged() ? 2 : 0));
@@ -121,7 +153,8 @@ public class ScanIndexSerializer {
     return true;
   }
 
-  private Decoded decode(Path path, Source expected, boolean materialize) throws IOException {
+  private Decoded decode(Path path, java.util.function.Predicate<Source> accepted, boolean materialize)
+      throws IOException {
     long size = Files.size(path);
     if (size < 20 || size > MAX_CACHE_FILE_BYTES) throw invalid("encoded size");
     try (var raw = new BufferedInputStream(openInput(path))) {
@@ -138,7 +171,14 @@ public class ScanIndexSerializer {
       byte[] sha = new byte[32]; in.readFully(sha);
       var source = new Source(identity, sourceSize, HexFormat.of().formatHex(sha));
       validateSource(source);
-      if (expected != null && !expected.equals(source)) throw invalid("source proof");
+      if (!accepted.test(source)) throw invalid("source proof");
+      long checksum32c = Integer.toUnsignedLong(in.readInt());
+      var modified = fileTime(in.readLong(), in.readInt());
+      String fileKey = readString(in, limited, budget, true);
+      int createdTag = in.readUnsignedByte();
+      if (createdTag > 1) throw invalid("creation tag");
+      var recorded = new Recorded(checksum32c, modified, fileKey,
+          createdTag == 1 ? fileTime(in.readLong(), in.readInt()) : null);
       double min = in.readDouble(), max = in.readDouble();
       int records = in.readInt(), flags = in.readUnsignedByte();
       if (flags > 3) throw invalid("flags");
@@ -189,7 +229,7 @@ public class ScanIndexSerializer {
       int checksum = new DataInputStream(limited).readInt();
       if ((int) crc.getValue() != checksum || limited.remaining != 0 || raw.read() != -1)
         throw invalid("checksum or changed length");
-      var header = new Header(format, recipe, source, size);
+      var header = new Header(format, recipe, source, recorded, size);
       var scan = materialize ? new LogScan(Collections.unmodifiableMap(entries),
           Collections.unmodifiableMap(positions), min, max, records, truncated, damaged, message,
           resume, scanned, null) : null;
@@ -206,15 +246,18 @@ public class ScanIndexSerializer {
     return value == 1;
   }
 
-  private static long preflight(Source source, LogScan scan) throws IOException {
+  private static long preflight(Source source, Recorded recorded, LogScan scan) throws IOException {
     validateSource(source);
+    if (recorded == null || recorded.modified() == null || recorded.crc32c() < 0 || recorded.crc32c() > 0xFFFF_FFFFL)
+      throw invalid("recorded proof");
     validateScanFacts(source.sizeBytes(), scan.minTimestamp(), scan.maxTimestamp(), scan.dataRecords(),
         scan.truncated(), scan.damaged(), scan.truncationMessage(), scan.resumePoint(), scan.scannedFrom());
     if (scan.entries().size() > MAX_ENTRIES || !scan.entries().keySet().equals(scan.offsets().keySet()))
       throw invalid("entry maps");
     var budget = new Budget();
-    long bytes = 16 + stringSize(source.identity(), budget, false) + 8 + 32 + 16 + 4 + 1
-        + stringSize(scan.truncationMessage(), budget, true) + 16 + 4 + 4;
+    long bytes = 16 + stringSize(source.identity(), budget, false) + 8 + 32
+        + 4 + 12 + stringSize(recorded.fileKey(), budget, true) + 1 + (recorded.created() == null ? 0 : 12)
+        + 16 + 4 + 1 + stringSize(scan.truncationMessage(), budget, true) + 16 + 4 + 4;
     long total = 0;
     for (var item : scan.entries().entrySet()) {
       budget.charge(ENTRY_BYTES);
@@ -240,11 +283,20 @@ public class ScanIndexSerializer {
 
   private static void validateSource(Source source) throws IOException {
     if (source == null || source.identity() == null || source.sha256() == null
-        || !source.identity().matches("(?:sha256|attributes):[0-9a-f]{64}")
+        || !source.identity().matches("(?:sha256|file):[0-9a-f]{64}")
         || !source.sha256().matches("[0-9a-f]{64}")
         || source.identity().startsWith("sha256:") && !source.identity().substring(7).equals(source.sha256())
         || source.sizeBytes() < 12 || source.sizeBytes() > MappedLogBytes.MAX_FILE_BYTES)
       throw invalid("source identity");
+  }
+
+  private static Instant fileTime(long seconds, int nanos) throws IOException {
+    if (nanos < 0 || nanos > 999_999_999) throw invalid("file time");
+    try {
+      return Instant.ofEpochSecond(seconds, nanos);
+    } catch (java.time.DateTimeException outOfRange) {
+      throw invalid("file time");
+    }
   }
 
   private static void validateScanFacts(long size, double min, double max, int records,

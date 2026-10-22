@@ -11,6 +11,7 @@ import edu.wpi.first.util.datalog.DataLogReader;
 import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.AbstractMap;
 import java.util.AbstractSet;
 import java.util.Collections;
@@ -111,12 +112,32 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     }
   }
 
-  enum OpenPhase { BEFORE_HASH, AFTER_SCAN, BEFORE_INDEX_PUBLICATION, AFTER_INDEX_ENCODING }
+  enum OpenPhase { BEFORE_CHECKSUM, BEFORE_HASH, AFTER_SCAN, BEFORE_INDEX_PUBLICATION, AFTER_INDEX_ENCODING }
   @FunctionalInterface interface OpenObserver { void at(OpenPhase phase, Path path) throws IOException; }
   @FunctionalInterface interface IndexEligibility { boolean allowed() throws IOException; }
 
-  /** Optional index work stays with this request's reader, outside the manager's admission claim.
-   * A resumed growing prefix remains an in-memory checkpoint and is never written to disk. */
+  /** How far a held index's recorded attributes vouch for the file now. */
+  enum IndexTrust {
+    /** Nothing changed and the file system vouches: the index is reused without reading the file. */
+    ATTRIBUTES,
+    /** Only the modification time moved, or the file system cannot vouch: the CRC32C decides. */
+    CHECKSUM,
+    /** The file's identity changed: only the full SHA-256 proof can reuse the index. */
+    PROOF
+  }
+
+  /**
+   * Optional index work stays with this request's reader, outside the manager's admission claim.
+   * A resumed growing prefix remains an in-memory checkpoint and is never written to disk.
+   *
+   * <p>A held index is reused by how far its recorded attributes still vouch for the file, as
+   * the maintainer decided on 2026-10-21. Unchanged attributes that the file system vouches for
+   * are trusted without reading the file, so a file rewritten in place with every attribute
+   * restored keeps its old index. A moved modification time, or attributes the file system cannot
+   * vouch for, are checked by the content's CRC32C. Anything else, and any failed check, takes the
+   * SHA-256 proof, the store manifest's check and a new scan. A reuse that found new attributes
+   * records them, so the next open trusts them.
+   */
   static LazyParsedLog open(Path path, long budget, LogScan previous, DiskCache indexes,
       FileSnapshot boundary, String expectedManifestSha256, IndexEligibility eligible,
       OpenObserver observer) throws IOException {
@@ -127,15 +148,35 @@ public class LazyParsedLog implements LogData, AutoCloseable {
       LogScan restored = null;
       if (previous == null && indexes.isEnabled()
           && indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
-        String hash = contentProof(reader, path, expectedManifestSha256, observer, true);
-        if (expectedManifestSha256 != null && !expectedManifestSha256.equals(hash)) {
-          throw new LogFileException("SOURCE_UNAVAILABLE: recorded bytes do not match their manifested hash");
+        String identity = indexIdentity(path, boundary, expectedManifestSha256);
+        var held = indexes.findScanIndex(identity, boundary.size());
+        if (held != null) {
+          var trust = trust(held.recorded(), boundary);
+          boolean vouched = trust == IndexTrust.ATTRIBUTES || trust == IndexTrust.CHECKSUM
+              && checksum(reader, path, expectedManifestSha256, observer) == held.recorded().crc32c();
+          if (vouched && indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
+            source = held.source();
+            restored = held.scan();
+          }
         }
-        if (indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
-          String identity = expectedManifestSha256 != null ? "sha256:" + expectedManifestSha256
-              : "attributes:" + attributeIdentity(boundary);
-          source = new ScanIndexSerializer.Source(identity, boundary.size(), hash);
-          restored = indexes.loadScanIndex(source);
+        if (restored == null) {
+          String hash = contentProof(reader, path, expectedManifestSha256, observer);
+          if (expectedManifestSha256 != null && !expectedManifestSha256.equals(hash)) {
+            throw new LogFileException("SOURCE_UNAVAILABLE: recorded bytes do not match their manifested hash");
+          }
+          if (indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
+            source = new ScanIndexSerializer.Source(identity, boundary.size(), hash);
+            if (held != null && held.source().equals(source)) restored = held.scan();
+          }
+        }
+        if (source != null) indexes.recordScanLookup(restored != null);
+        if (held != null && restored != null && vouches(boundary)) {
+          var current = recorded(held.recorded().crc32c(), boundary);
+          if (!current.equals(held.recorded())) {
+            // The content is the one the index was proved for; it now has these attributes.
+            indexes.saveScanIndex(source, current, restored,
+                () -> indexEligible(eligible, path, boundary, reader, expectedManifestSha256));
+          }
         }
       }
       var log = new LazyParsedLog(path.toString(), reader, budget, previous, restored);
@@ -143,14 +184,14 @@ public class LazyParsedLog implements LogData, AutoCloseable {
       if (source != null && restored == null
           && indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
         // Proof after scanning prevents old offsets being attached to a later content hash.
-        String after = contentProof(reader, path, expectedManifestSha256, observer, false);
-        if (expectedManifestSha256 != null && !expectedManifestSha256.equals(after)) {
+        var after = guardedIndexSourceOperation(expectedManifestSha256, reader::contentProof);
+        if (expectedManifestSha256 != null && !expectedManifestSha256.equals(after.sha256())) {
           throw new LogFileException("SOURCE_UNAVAILABLE: recorded file changed during index construction");
         }
-        if (source.sha256().equals(after)) {
+        if (source.sha256().equals(after.sha256())) {
           observer.at(OpenPhase.BEFORE_INDEX_PUBLICATION, path);
           if (indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
-            indexes.saveScanIndex(source, log.scan, () -> {
+            indexes.saveScanIndex(source, recorded(after.crc32c(), boundary), log.scan, () -> {
               observer.at(OpenPhase.AFTER_INDEX_ENCODING, path);
               return indexEligible(eligible, path, boundary, reader, expectedManifestSha256);
             });
@@ -165,10 +206,67 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     }
   }
 
-  private static String contentProof(LogReader reader, Path path, String expectedManifestSha256,
-      OpenObserver observer, boolean notify) throws IOException {
+  /**
+   * How far recorded attributes vouch for the file now; the size is already part of the index's
+   * key. A creation time equal to the modification time counts as unreported, because Java before
+   * version 22 reports the modification time there on Linux, so it would move with the time.
+   */
+  static IndexTrust trust(ScanIndexSerializer.Recorded recorded, FileSnapshot now) {
+    String key = now.fileKey() == null ? null : now.fileKey().toString();
+    var created = reportedCreation(now.created() == null ? null : now.created().toInstant(),
+        now.modified().toInstant());
+    var recordedCreated = reportedCreation(recorded.created(), recorded.modified());
+    if (!Objects.equals(recorded.fileKey(), key)
+        || created != null && recordedCreated != null && !created.equals(recordedCreated)) {
+      return IndexTrust.PROOF;
+    }
+    return recorded.modified().equals(now.modified().toInstant()) && vouches(now)
+        ? IndexTrust.ATTRIBUTES : IndexTrust.CHECKSUM;
+  }
+
+  /** The file system vouches when it names the file and keeps its time finer than a second. */
+  static boolean vouches(FileSnapshot now) {
+    return now.fileKey() != null && now.modified().toInstant().getNano() != 0;
+  }
+
+  static ScanIndexSerializer.Recorded recorded(long crc32c, FileSnapshot file) {
+    return new ScanIndexSerializer.Recorded(crc32c, file.modified().toInstant(),
+        file.fileKey() == null ? null : file.fileKey().toString(),
+        file.created() == null ? null : file.created().toInstant());
+  }
+
+  private static Instant reportedCreation(Instant created, Instant modified) {
+    return created == null || created.equals(modified) ? null : created;
+  }
+
+  /**
+   * A store member is keyed by its manifested hash. Any other file is keyed by its path, size and
+   * identity, but neither of its times, so a file whose time alone moved still finds its index
+   * and is checked by checksum rather than scanned again. Creation time decides trust instead: it
+   * counts as unreported while it equals the modification time, so in a key it would change the
+   * moment a touch separated the two.
+   */
+  static String indexIdentity(Path path, FileSnapshot file, String expectedManifestSha256) {
+    if (expectedManifestSha256 != null) return "sha256:" + expectedManifestSha256;
+    String text = path.toAbsolutePath().normalize() + "\n" + file.size() + "\n" + file.fileKey();
+    try {
+      return "file:" + java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+          .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    } catch (java.security.NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
+  }
+
+  private static long checksum(LogReader reader, Path path, String expectedManifestSha256,
+      OpenObserver observer) throws IOException {
     return guardedIndexSourceOperation(expectedManifestSha256, () -> {
-      if (notify) observer.at(OpenPhase.BEFORE_HASH, path);
+      observer.at(OpenPhase.BEFORE_CHECKSUM, path);
+      return reader.contentCrc32c();
+    });
+  }
+
+  private static String contentProof(LogReader reader, Path path, String expectedManifestSha256,
+      OpenObserver observer) throws IOException {
+    return guardedIndexSourceOperation(expectedManifestSha256, () -> {
+      observer.at(OpenPhase.BEFORE_HASH, path);
       return reader.contentSha256();
     });
   }
@@ -198,15 +296,6 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
   private static boolean stable(Path path, FileSnapshot boundary, LogReader reader) throws IOException {
     return boundary != null && reader.size() == boundary.size() && boundary.sameAs(FileSnapshot.of(path));
-  }
-
-  private static String attributeIdentity(FileSnapshot boundary) {
-    String attributes = boundary.size() + "\n" + boundary.modified() + "\n" + boundary.fileKey()
-        + "\n" + boundary.created();
-    try {
-      return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
-          .digest(attributes.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-    } catch (java.security.NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
   }
 
   /** Retaining and retiring are one decision, so an evicted mapping cannot acquire a new user. */

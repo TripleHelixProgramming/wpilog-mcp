@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   status route. Complete pending counts are also available as a metric.
 
 - The unreleased lazy reader now persists bounded, versioned scan indexes in the shared
-  disk cache, with fresh whole-source verification before reuse; previously every evicted
+  disk cache, each proved by a whole-source hash when written; previously every evicted
   ordinary log was scanned again. Known active and growing sources bypass persistence.
 
 - The unreleased presentation reads now unwrap declared scalar angles before exact output
@@ -282,6 +282,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `start <name>` and `connect <name>` replace a running daemon of another version and keep one of the current version. Previously an upgrade left the old JAR serving until the user stopped it; concurrent upgrade starts now share one replacement daemon instead of overwriting each other's claims.
 - `start` verifies that a process answering its port is wpilog-mcp, adopts a matching server missing its PID file, and reports an unrelated listener without starting another process. Previously any HTTP response counted as the daemon and a busy port could spawn a server that immediately failed to bind.
 - The mirror no longer copies the pit's captures; a laptop records live data from the pit's gateway itself. In 0.10.0-dev1 through dev4 the mirror copied every file of a session, captures included, and refreshed an open capture every pass, 30 seconds apart by default. Captures those versions copied stay unrefreshed until their session ages out. A mirrored session now lists only the files the mirror holds, and the cap counts only those.
+- The unreleased scan index now reuses a finished log's index without reading the file when
+  its size, modification time, file identity and creation time are unchanged and the file
+  system can vouch for them; when only the modification time moved, or it cannot vouch (no file
+  identity, whole-second times), a CRC32C of the content decides before a new scan. Previously
+  every reopen hashed the whole file with SHA-256, which made reopening a large log from its
+  index slower than scanning it. As the maintainer decided, a file rewritten in place with all
+  four attributes restored keeps its old index. A store file's check against its manifest at
+  admission is unchanged. The index format moves to 2; older indexes are removed at startup.
 
 ### Fixed
 
@@ -724,10 +732,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server-install-only scope; summaries and a DuckDB-queried columnar store are measured against
   2 s for an event and 10 s for a season before either is chosen, and the rejection stands
   until then.
-- The hardening plan and the decision index record that the persistent scan index stays, and
-  the approved design for a cheaper proof: a finished file whose size, modification time, file
-  identity and creation time are unchanged reuses its index without a whole-file hash; it is not
-  yet built. Previously its
+- The hardening plan and the decision index record the maintainer's choice for the persistent
+  scan index: it stays, and its reuse trusts the file's attributes (see Changed). Previously its
   setting was open after the real-log timing, which found index opens slower than plain scans
   for large logs because each hashes the whole file.
 

@@ -54,7 +54,7 @@ class ScanIndexHealthTest {
           "recipe_version", "enabled", "directory"), index.keySet());
       for (var field : Set.of("entry_count", "size_bytes", "hits", "misses"))
         assertEquals(0L, index.get(field).getAsLong(), field + " is zero before any log lookup");
-      assertEquals(1, index.get("format_version").getAsInt());
+      assertEquals(2, index.get("format_version").getAsInt());
       assertEquals(1, index.get("recipe_version").getAsInt());
       assertEquals(enabled, index.get("enabled").getAsBoolean());
       assertTrue(Files.isSameFile(cache, Path.of(index.get("directory").getAsString())));

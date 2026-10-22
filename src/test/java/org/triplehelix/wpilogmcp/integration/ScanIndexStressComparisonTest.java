@@ -91,7 +91,7 @@ class ScanIndexStressComparisonTest {
       assertEquals(result.get("actual_index_bytes").getAsLong(), health.get("size_bytes").getAsLong());
       assertEquals(1, health.get("misses").getAsLong(), "Only the first enabled open misses");
       assertEquals(1, health.get("hits").getAsLong(), "The second enabled open must hit the persisted index");
-      assertEquals(1, health.get("format_version").getAsInt());
+      assertEquals(2, health.get("format_version").getAsInt());
       assertEquals(1, health.get("recipe_version").getAsInt());
       assertTrue(health.get("enabled").getAsBoolean());
       assertTrue(Files.isSameFile(cache, Path.of(health.get("directory").getAsString())));
