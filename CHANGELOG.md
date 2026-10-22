@@ -37,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The server builds a column file for each finished log in the background and keeps it in the
+  disk cache, named by the content's SHA-256 and the format and recipe versions; nothing reads
+  the files yet. A log gets one when the server reads it from its file, and when a store's
+  session manifest records it, as an import, a pull, an upload and a capture's close do. Builds
+  run one at a time on a low-priority thread, wait while the heap has less than 512 MB free or a
+  store would refuse a copy for want of recording's reserve, publish nothing when the file
+  changed while it was read, and trim the cache to its limit afterwards. Before, the cache's
+  size limit was enforced only at startup; now it is also enforced after each build, so other
+  cached files can be evicted sooner. A guard test, like the scan index's, fails when a source
+  that shapes a column file changes, until the change is decided.
 - `compare_sessions` compares one statistic of up to eight metrics across up to 64 finished
   sessions of one store or mirror, each session counting once, with sample-weighted pooling
   only on request and labeled so. Each session keeps its own clock and verified members; the

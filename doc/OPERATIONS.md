@@ -768,8 +768,9 @@ for server selection, rate limits and result fields.
   server is replaced at its next `start` or `connect`. For a systemd service, run
   `sudo systemctl restart wpilog-mcp-http.service`.
 - **Backing up a store.** Stop the server and copy the whole store directory.
-- **Disk space.** The REV synchronization cache has its own `diskcachesize` cap; imported logs
-  are kept until you choose to remove them. See [Config Fields](STANDALONE.md#config-fields).
+- **Disk space.** The disk cache (REV synchronizations, scan indexes and column files) has its
+  own `diskcachesize` cap; imported logs are kept until you choose to remove them. See
+  [Config Fields](STANDALONE.md#config-fields).
   `/health` reports `store_filesystems` with `free_bytes`, `reserved_bytes` and
   `capture_reserve_bytes`; unknown free space is null. With default capture settings, at
   256 MiB usable space or less recording closes cleanly while NT4 stays connected. Free space

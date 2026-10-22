@@ -180,6 +180,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
         }
       }
       var log = new LazyParsedLog(path.toString(), reader, budget, previous, restored);
+      if (restored != null) log.contentSha256 = source.sha256();
       if (restored == null) observer.at(OpenPhase.AFTER_SCAN, path);
       if (source != null && restored == null
           && indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
@@ -189,6 +190,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
           throw new LogFileException("SOURCE_UNAVAILABLE: recorded file changed during index construction");
         }
         if (source.sha256().equals(after.sha256())) {
+          log.contentSha256 = source.sha256();
           observer.at(OpenPhase.BEFORE_INDEX_PUBLICATION, path);
           if (indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
             indexes.saveScanIndex(source, recorded(after.crc32c(), boundary), log.scan, () -> {
@@ -349,6 +351,19 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
   public LazyParsedLog(String path, LogReader reader, long maxCacheWeightBytes) throws IOException {
     this(path, reader, maxCacheWeightBytes, null);
+  }
+
+  /** The content's SHA-256 when its scan index proved it; null for a log read without one. */
+  private volatile String contentSha256;
+
+  /**
+   * The SHA-256 of the content this log was read from, when the scan index proved it: an index
+   * reused under its trust rules, or a scan whose content was the same before and after it. A
+   * growing file, a log read with the disk cache off, and one that changed while it was scanned
+   * have none, so nothing derived from their content is kept.
+   */
+  public java.util.Optional<String> contentSha256() {
+    return java.util.Optional.ofNullable(contentSha256);
   }
 
   private LazyParsedLog(String path, LogReader reader, long maxCacheWeightBytes, LogScan previous) throws IOException {

@@ -181,8 +181,8 @@ The installer's file also has a `stresstest` server, which only the project's st
 | `tba_key` | The Blue Alliance API key | `TBA_API_KEY` from the environment |
 | `transport` | `stdio` or `http` | `stdio` |
 | `port` | HTTP port, 1–65535; `run` also accepts `0` for an OS-assigned port | `2363` |
-| `diskcachedir` | Shared directory for persistent scan indexes and REV synchronization results | `WPILOG_DISK_CACHE_DIR` from the environment, else the system's default (below) |
-| `diskcachesize` | Maximum shared disk cache size, in MB; still enforced by startup cleanup | `8192` |
+| `diskcachedir` | Shared directory for persistent scan indexes, column files and REV synchronization results | `WPILOG_DISK_CACHE_DIR` from the environment, else the system's default (below) |
+| `diskcachesize` | Maximum shared disk cache size, in MB; enforced by startup cleanup and after each column file is built | `8192` |
 | `diskcachedisable` | Turn off the persistent disk cache | `false` |
 | `exportdir` | Directory for CSV exports | `wpilog-export` in the system's temporary directory |
 | `scandepth` | How many directory levels to search for `.wpilog` and `.revlog` files | `5` |

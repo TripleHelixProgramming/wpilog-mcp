@@ -755,9 +755,10 @@ public class Main {
       logger().info("TBA enrichment disabled (no API key found)");
     }
 
-    // Run disk cache cleanup in background (non-blocking)
+    // Run disk cache cleanup in background (non-blocking), and build column files as logs arrive
     if (logManager.getDiskCache().isEnabled()) {
       startCacheCleanup(() -> logManager.getDiskCache().cleanup());
+      logManager.startColumnBuilds();
     }
 
     // Verify bundled game data is accessible

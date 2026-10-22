@@ -383,8 +383,9 @@ the same for a plain file or folder. Reference: [Importing Logs](../STANDALONE.m
 - **Backing up a store.** Stop the server and copy the whole store directory, or sync it to a
   second laptop ([9.4](#41-two-laptops-with-stores)). Never copy files out of or into a store
   while a server owns it.
-- **Disk space.** The disk cache (REV synchronizations) lives outside the install; its location
-  and the `diskcachesize` cap are under [Config Fields](../STANDALONE.md#config-fields). Capture
+- **Disk space.** The disk cache (REV synchronizations, scan indexes and column files) lives
+  outside the install; its location and the `diskcachesize` cap are under
+  [Config Fields](../STANDALONE.md#config-fields). Capture
   files roll at `capture.max_file_bytes` (1 GiB by default); old sessions are never deleted by
   the server.
 - **Memory.** `WPILOG_MAX_HEAP` (default `4g`) sets the server's heap; logs of several hundred

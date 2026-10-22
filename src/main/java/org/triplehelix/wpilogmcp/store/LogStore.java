@@ -722,7 +722,7 @@ public final class LogStore implements AutoCloseable {
   private void published(Path path, Object value) {
     if (queue.ownsCurrentThread()) publishCatalogCapacity(path, value);
     publicationGeneration.incrementAndGet();
-    logManager.catalogPublished();
+    logManager.catalogPublished(path, value);
     for (var observer : observers) {
       try { observer.manifest(path, value); }
       catch (RuntimeException e) { org.slf4j.LoggerFactory.getLogger(LogStore.class).warn("Session status update failed", e); }

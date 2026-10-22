@@ -21,8 +21,10 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.columns.ColumnFileFormat;
 import org.triplehelix.wpilogmcp.log.ParsedLog;
 import org.triplehelix.wpilogmcp.log.LogScan;
 
@@ -107,6 +109,69 @@ public class DiskCache {
    */
   public void setMaxTotalSizeMb(long mb) {
     this.maxTotalSizeMb = mb;
+  }
+
+  /** The suffix of a log's column file in the cache directory. */
+  public static final String COLUMN_SUFFIX = "-columns.col";
+
+  /**
+   * A log's column file, named by the content it was built from and by the format and recipe
+   * that wrote it, so that a file of another recipe is never read or replaced, and every copy of
+   * the same bytes shares one file.
+   */
+  public static String columnFileName(String contentSha256) {
+    if (!isContentHash(contentSha256))
+      throw new IllegalArgumentException("A column file is named by a SHA-256 content hash");
+    return columnPrefix() + contentSha256 + COLUMN_SUFFIX;
+  }
+
+  /** Whether a value is a SHA-256 in lowercase hex, which is how manifests and indexes write it. */
+  public static boolean isContentHash(String value) {
+    return value != null && value.matches("[0-9a-f]{64}");
+  }
+
+  private static String columnPrefix() {
+    return "v" + ColumnFileFormat.FORMAT_VERSION + "-r" + ColumnFileFormat.RECIPE_VERSION + "-";
+  }
+
+  /**
+   * Where a log's column file is or would be; empty when the cache is off or unavailable, or
+   * when the hash is not a SHA-256 in lowercase hex, so that a caller never fails on a name.
+   */
+  public Optional<Path> columnFilePath(String contentSha256) {
+    if (!enabled || !isContentHash(contentSha256)) return Optional.empty();
+    try {
+      return Optional.of(cacheDirectory.getPath().resolve(columnFileName(contentSha256)));
+    } catch (IOException unavailable) {
+      logger.debug("Column file directory unavailable: {}", unavailable.getClass().getSimpleName());
+      return Optional.empty();
+    }
+  }
+
+  /**
+   * After a column file is written: deletes the oldest cache files of every kind until the cache
+   * is under its limit again, keeping any file {@code inUse} names, since a reader holds it.
+   */
+  public void trim(Predicate<Path> inUse) {
+    if (!enabled) return;
+    try {
+      Path cacheDir = cacheDirectory.getPath();
+      if (!Files.isDirectory(cacheDir)) return;
+      long total = 0;
+      try (var files = Files.list(cacheDir)) {
+        for (var file : (Iterable<Path>) files::iterator) {
+          if (!counted(file)) continue;
+          try {
+            total += Files.size(file);
+          } catch (IOException gone) {
+            // Deleted by another sweep: it no longer counts.
+          }
+        }
+      }
+      evictOldest(cacheDir, total, inUse);
+    } catch (IOException e) {
+      logger.debug("Cache trim failed: {}", e.getMessage());
+    }
   }
 
   /** Versions belong in the identity so a new recipe cannot overwrite another recipe's entry. */
@@ -471,35 +536,25 @@ public class DiskCache {
         }
       }
 
-      // If still over size limit, delete oldest files until under limit
-      long limitBytes = maxTotalSizeMb * 1024 * 1024;
-      if (totalSize > limitBytes) {
-        logger.info("Cache size ({} MB) exceeds limit ({} MB), evicting oldest files",
-            totalSize / (1024 * 1024), maxTotalSizeMb);
-        try (var files = Files.list(cacheDir)) {
-          long[] runningSize = {totalSize};
-          files
-              .filter(f -> f.toString().endsWith(".msgpack") || f.toString().endsWith("-scan.idx"))
-              .sorted((a, b) -> {
-                try {
-                  return Long.compare(
-                      Files.getLastModifiedTime(a).toMillis(),
-                      Files.getLastModifiedTime(b).toMillis());
-                } catch (IOException e) {
-                  return 0;
-                }
-              })
-              .takeWhile(f -> runningSize[0] > limitBytes)
-              .forEach(f -> {
-                try {
-                  runningSize[0] -= Files.size(f);
-                  deleteQuietly(f);
-                } catch (Exception e) {
-                  // ignore
-                }
-              });
+      // A column file of another format or recipe, or whose header is damaged, is deleted; the
+      // rest count toward the limit. A damaged body is found when the file is opened.
+      try (var columns = Files.newDirectoryStream(cacheDir, "*" + COLUMN_SUFFIX)) {
+        for (var file : columns) {
+          if (!file.getFileName().toString().startsWith(columnPrefix()) || !currentColumnHeader(file)) {
+            deleteQuietly(file);
+            deleted++;
+            continue;
+          }
+          try {
+            totalSize += Files.size(file);
+          } catch (IOException gone) {
+            deleted++;
+          }
         }
       }
+
+      // If still over size limit, delete oldest files until under limit
+      evictOldest(cacheDir, totalSize, file -> false);
 
       if (deleted > 0) {
         logger.info("Cleaned up {} expired cache files", deleted);
@@ -535,6 +590,58 @@ public class DiskCache {
 
     } catch (IOException e) {
       logger.warn("Cache cleanup failed: {}", e.getMessage());
+    }
+  }
+
+  /** The files the size limit counts: parsed logs, REV results, scan indexes and column files. */
+  private static boolean counted(Path file) {
+    var name = file.getFileName().toString();
+    return name.endsWith(".msgpack") || name.endsWith("-scan.idx") || name.endsWith(COLUMN_SUFFIX);
+  }
+
+  /** Deletes the oldest counted files, by modification time, until the total is under the limit. */
+  private void evictOldest(Path cacheDir, long totalSize, Predicate<Path> inUse) throws IOException {
+    long limitBytes = maxTotalSizeMb * 1024 * 1024;
+    if (totalSize <= limitBytes) return;
+    logger.info("Cache size ({} MB) exceeds limit ({} MB), evicting oldest files",
+        totalSize / (1024 * 1024), maxTotalSizeMb);
+    try (var files = Files.list(cacheDir)) {
+      long[] runningSize = {totalSize};
+      files
+          .filter(DiskCache::counted)
+          .filter(f -> !inUse.test(f))
+          .sorted((a, b) -> {
+            try {
+              return Long.compare(
+                  Files.getLastModifiedTime(a).toMillis(),
+                  Files.getLastModifiedTime(b).toMillis());
+            } catch (IOException e) {
+              return 0;
+            }
+          })
+          .takeWhile(f -> runningSize[0] > limitBytes)
+          .forEach(f -> {
+            try {
+              runningSize[0] -= Files.size(f);
+              deleteQuietly(f);
+            } catch (Exception e) {
+              // ignore
+            }
+          });
+    }
+  }
+
+  /** Whether a file starts with a column file header of the current format and recipe. */
+  private static boolean currentColumnHeader(Path file) {
+    try (var channel = java.nio.channels.FileChannel.open(file)) {
+      var header = java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+      while (header.hasRemaining() && channel.read(header) >= 0) {
+        // keep reading until the header is complete or the file ends
+      }
+      return !header.hasRemaining() && header.getLong(0) == ColumnFileFormat.MAGIC
+          && header.getInt(8) == ColumnFileFormat.FORMAT_VERSION && header.getInt(12) == ColumnFileFormat.RECIPE_VERSION;
+    } catch (IOException unreadable) {
+      return false;
     }
   }
 

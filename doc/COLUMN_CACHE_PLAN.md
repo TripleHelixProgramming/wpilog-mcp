@@ -57,9 +57,11 @@ Strings and raw values keep today's path, and elements of plain numeric arrays c
 Column files live in the disk cache beside the scan indexes and REV synchronizations, under the
 same size limit and cleanup, and follow the same rules:
 
-- A column file is keyed by the source file's content and by everything that shapes it: the
-  decoder and format versions, the schemas and the clock revision. A change to how values are
-  decoded raises the recipe version, as the scan index's does.
+- A column file is named by the SHA-256 of the source file's content, which its scan index
+  proved, and by its format and recipe versions. The schemas are part of the content, and a
+  file holds only values on the log's own clock, so nothing else enters the name. A change to
+  how values are decoded, stored or read raises the recipe version, as the scan index's does,
+  and a test fails until the change is decided.
 - Every column file carries a checksum and its format version. A corrupt or crafted one is
   rejected and built again; reading one never crashes the server or exhausts its heap.
 - A column file gives the same answers as reading the WPILOG. Differential tests compare every
@@ -69,11 +71,21 @@ same size limit and cleanup, and follow the same rules:
 
 ### When it is built
 
-In the background. After an import, a pull or a capture closes, and for any finished file that
-is read before it has one, a bounded worker of low priority builds the column file. Until it is
-ready, today's path answers. The worker never runs on the store's worker or the recording's
-threads, and it pauses while the capture's disk reserve or the heap runs short: a recording
-comes first.
+In the background, one file at a time. The server asks for a log's column file when it reads
+the log from its file, and when a store writes a session manifest, as an import, a pull, an
+upload and a capture's close each do. Only a log whose content its scan index proved can have
+one, since the file is named by that content: a growing file, a file read with the disk cache
+off and a file that changed while it was scanned have none. A capture that has just closed is
+served from memory until it is unloaded, so its column file is built when it is next read from
+its file; so are the files a mirror copies, whose sessions the store does not announce. Files
+already in a store are not built ahead of a read. Until a file is ready, today's path answers.
+
+Asking touches only memory, since a store asks on its own thread. Builds run on one daemon
+thread at the lowest priority, never on the store's or the recording's threads. A build waits
+while the heap has less than 512 MB free, since one entry's columns may take 200 MB of it, so a
+server whose heap is 512 MB or smaller builds none; it also waits while a store's filesystem is
+down to recording's reserve or its free space is unknown, which is when the store would refuse
+a copy: a recording comes first.
 
 ### How it is read
 
@@ -201,6 +213,40 @@ The maintainer answered these on 2026-10-21, each as proposed.
 3. **The name.** "Companion" already names the REV log paired with a WPILOG, as in the read
    API's `companion_path`, so these are column files in the code and the documents.
 
+## Placing and building files
+
+The second step places column files in the disk cache and builds them in the background, as
+described above; nothing reads them yet. Building it settled five details.
+
+- **The name is the content.** A file is named `v<format>-r<recipe>-<sha256>-columns.col`, by
+  the SHA-256 its scan index proved, which for a store's file is the manifest's. Every copy of
+  the same bytes shares one file, and a file of another format or recipe is never read or
+  replaced. The startup sweep removes a file whose name or header names another format or
+  recipe; damage inside a section is left to the reader that needs it, in the next step.
+- **Eviction after each build.** The cache is trimmed to its limit after each build, the oldest
+  files first, REV results, scan indexes and column files alike, keeping any file a reader
+  holds. Before, the limit was enforced only when the server started. A file the limit has no
+  room for is not built again until the server restarts.
+- **What a build trusts.** A build reads the log as a tool does, read-only, so it starts no REV
+  synchronization, and checks that the log names the content the request named. It publishes
+  nothing if the file's attributes changed while it read, and it publishes under the final name
+  only when complete. Two servers sharing the cache may both build the same content; their
+  files are identical, so either one serves.
+- **What a failure stops.** A build that fails on the content is not tried again in the process.
+  A path that cannot be read, such as a capture folder renamed after it closed, does not count
+  against the content, which may still be read at another path. At shutdown a build in progress
+  is interrupted and its file abandoned.
+- **Only new files.** Building every stored file when the server starts would, for a store
+  larger than the cache's limit, evict files as fast as it built them.
+
+Tests check the values a built file holds against the fixture's own, each gate at its boundary
+(exactly 512 MB free, and a store with exactly its reserve free), a file changed while it was
+built, a request naming content its file no longer holds, the trim after a build and the files
+it keeps, both ways a build is asked for, one through a real import into a store, and a
+session listing a path no file system accepts, which must not fail the store's publication.
+Thirty planted mistakes, from a gate left open to a content hash recorded before the proof
+that justifies it, each failed them, as did four planted in the new guard and its baseline.
+
 ## Costs and risks
 
 - **Disk.** About 16 bytes for each numeric value, roughly the size of the log itself, before
@@ -220,8 +266,8 @@ The maintainer answered these on 2026-10-21, each as proposed.
 
 1. **Finished files.** Build column files in the background for numeric entries and the
    numeric fields of structs, and read them in the data endpoint and the statistics tools,
-   behind the differential tests. The format, writer and reader are built; placing the files
-   in the disk cache, the background worker and the readers come next.
+   behind the differential tests. The format, writer and reader are built, and the files are
+   placed in the disk cache and built in the background; the readers come next.
 2. **The recording.** The capture writes the open file's columns as it records, replacing the
    per-value index. This comes before the Grafana plan's stage 1, whose gate runs on it.
 3. **Across sessions.** The Grafana plan's stage 3 reads column files across sessions, and the

@@ -919,6 +919,7 @@ If a call still runs out of memory, it returns an error that suggests a narrower
 | REV signals shifted onto the wpilog's clock | Memory | Until the wpilog is unloaded |
 | REV log sync results | Disk | Until the cache's format version changes, or the cache is trimmed to its size limit |
 | Ordinary eligible-file scan indexes | Disk | Reuse on unchanged attributes, CRC32C when only the time moved, a fresh proof otherwise; format and recipe versions in the key; shared cleanup size limit |
+| Column files of finished logs | Disk | Named by the content's SHA-256 and the format and recipe versions; trimmed with the rest to the shared size limit after each build |
 | The Blue Alliance responses | Memory | 24 hours; "not found" for 5 minutes; failures are not cached; 200 entries of each kind |
 | Game data | Memory | The life of the server |
 
@@ -948,7 +949,7 @@ Other choices in the REV synchronization cache:
 Ordinary lazy opens persist their scan index as `*-scan.idx`, without decoded values.
 `DiskCache` owns the shared directory and startup cleanup budget for these indexes, legacy
 parsed artifacts and REV results. `diskcachedir` and `diskcachesize` remain active; the latter
-is a sweep-time limit, not a per-write reservation. `health_check.scan_index_disk_cache`
+is enforced by the startup sweep and after each column file is built, not reserved per write. `health_check.scan_index_disk_cache`
 reports scan artifacts and process lookup counters.
 
 Index keys include both encoding and scan-recipe versions. A verified store member uses its
@@ -989,6 +990,18 @@ The loading request encodes before publishing its mutable index, with no new bac
 queue retaining mappings. `ScanIndexVersionGuardTest` checks reviewed source digests and
 both version decisions. The stress comparison requires an actual persistent hit and compares
 fresh and cached answers; synthetic timings do not establish real-season performance.
+
+Column files of finished logs live in the same directory, named by the content SHA-256 the scan
+index proved and by their format and recipe versions, so every copy of the same bytes shares a
+file and nothing written by another recipe is read. The server builds them in the background,
+one at a time on a low-priority thread, for a log it reads from its file and for the logs a
+store's session manifest records; asking touches only memory, since a store asks on its own
+thread. A build waits while the heap is short or while a store would refuse a copy for want of
+recording's reserve, publishes nothing if the file changed while it was read, and trims the
+cache to its limit afterwards, keeping the files readers hold. Nothing reads them yet;
+[the column file plan](COLUMN_CACHE_PLAN.md) gives the design and the measurements, and a
+guard test, like the scan index's, fails when a source that shapes a file changes until the
+change is decided.
 
 ## REV Logs and Synchronization
 

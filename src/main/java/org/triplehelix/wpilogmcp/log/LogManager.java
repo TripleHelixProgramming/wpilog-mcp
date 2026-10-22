@@ -37,6 +37,7 @@ import org.triplehelix.wpilogmcp.cache.CacheDirectory;
 import org.triplehelix.wpilogmcp.cache.ContentFingerprint;
 import org.triplehelix.wpilogmcp.cache.DiskCache;
 import org.triplehelix.wpilogmcp.cache.SyncDiskCache;
+import org.triplehelix.wpilogmcp.columns.ColumnBuilds;
 import org.triplehelix.wpilogmcp.config.ClientLeases;
 import org.triplehelix.wpilogmcp.log.LogDirectory.RevLogFileInfo;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
@@ -113,6 +114,9 @@ public class LogManager {
   private final ScheduledExecutorService evictionScheduler;
   private volatile boolean autoSyncEnabled = true;
   private final java.util.Set<LogData> nativeSyncPending = ConcurrentHashMap.newKeySet();
+  private final Object columnBuildsLock = new Object();
+  private volatile ColumnBuilds columnBuilds;
+  private volatile boolean columnBuildsStopped;
 
   /** Only the claim is atomic: file I/O, cache callbacks and waiter completion stay outside it. */
   private final ConcurrentHashMap<String, CompletableFuture<Void>> loading = new ConcurrentHashMap<>();
@@ -153,6 +157,26 @@ public class LogManager {
   /** A durable store write wakes read-side publication probes without joining its queue. */
   public void catalogPublished() { catalogPublication.incrementAndGet(); }
   public long catalogPublication() { return catalogPublication.get(); }
+
+  /**
+   * A store's write of one manifest. A session manifest also asks for the column files of the logs
+   * it records, as an import, a pull and a capture's close each write one. Asking touches only
+   * memory, on the store's own thread, and never fails the publication: a column file is optional.
+   */
+  public void catalogPublished(Path manifest, Object value) {
+    catalogPublished();
+    var builds = columnBuilds;
+    if (builds == null || !(value instanceof org.triplehelix.wpilogmcp.store.StoreManifest.Session session)
+        || session.files() == null || manifest == null || manifest.getParent() == null) return;
+    for (var file : session.files()) {
+      if (!file.verified() || !"wpilog".equals(file.kind()) || file.path() == null) continue;
+      try {
+        builds.request(manifest.getParent().resolve(file.path()).normalize().toString(), file.sha256());
+      } catch (RuntimeException unresolved) {
+        logger.debug("No column file asked for {}: {}", file.path(), unresolved.toString());
+      }
+    }
+  }
   /** No filesystem work, locking or callbacks on the recorder loop. Null means no current
    * writer at this exact admitted path; followers then recheck the durable catalog. */
   public Object capturePublication(Path path) {
@@ -313,6 +337,7 @@ public class LogManager {
   public void shutdown() {
     loadGeneration.incrementAndGet();
     logger.info("Shutting down LogManager");
+    stopColumnBuilds();
     try { readAccess.close(); }
     catch (IOException e) { logger.warn("Could not retire read access", e); }
     stores.close(); replicaHashes.close();
@@ -329,6 +354,57 @@ public class LogManager {
     captures.values().forEach(log -> { log.finish(); log.close(); });
     captures.clear();
     logCache.clear();
+  }
+
+  /**
+   * Starts building column files in the background, for each log this manager reads from a file
+   * whose content its scan index proved and for each log a store's session records. The server
+   * starts them; a manager that has not, such as a test's, reads logs as before. After shutdown
+   * they stay stopped, as REV synchronization does.
+   */
+  public void startColumnBuilds() {
+    // Nothing reads column files yet, so trimming keeps none for a reader.
+    startColumnBuilds(() -> new ColumnBuilds(diskCache, ColumnBuilds.from(this), this::recordingReserveShort,
+        file -> false));
+  }
+
+  /**
+   * As the server starts them, with the heap measured as a test needs: a test's heap counts the
+   * garbage of every earlier test, so the server's measure would hold its builds at random.
+   */
+  void startColumnBuilds(java.util.function.LongSupplier freeHeap, long retryMs) {
+    startColumnBuilds(() -> new ColumnBuilds(diskCache, ColumnBuilds.from(this), freeHeap,
+        this::recordingReserveShort, file -> false, retryMs));
+  }
+
+  private void startColumnBuilds(java.util.function.Supplier<ColumnBuilds> builds) {
+    synchronized (columnBuildsLock) {
+      if (columnBuilds == null && !columnBuildsStopped) columnBuilds = builds.get();
+    }
+  }
+
+  /** Stopping waits for a build in progress, so it waits outside the lock. */
+  private void stopColumnBuilds() {
+    ColumnBuilds running;
+    synchronized (columnBuildsLock) {
+      columnBuildsStopped = true;
+      running = columnBuilds;
+    }
+    if (running != null) running.close();
+  }
+
+  /**
+   * Whether a store's filesystem is down to what recording keeps in reserve, or its free space is
+   * unknown: then the store refuses a copy, and a column file waits as a copy would.
+   */
+  private boolean recordingReserveShort() {
+    return reserveShort(stores.diskSnapshots());
+  }
+
+  static boolean reserveShort(List<org.triplehelix.wpilogmcp.store.DiskSpaceBudgets.Snapshot> filesystems) {
+    return filesystems.stream().anyMatch(snapshot -> snapshot.state()
+        == org.triplehelix.wpilogmcp.store.DiskSpaceBudgets.State.UNKNOWN || snapshot.availableBytes() == null
+        || snapshot.availableBytes() <= snapshot.captureReserveBytes());
   }
 
   /** One owner for HTTP, inbox, command, and listing access to each store. */
@@ -679,6 +755,8 @@ public class LogManager {
             log.entryCount(), String.format("%.2f", log.duration()));
 
         if (synchronize && autoSyncEnabled) startAutoSync(log);
+        var builds = columnBuilds;
+        if (builds != null) builds.request(normalizedPath, log);
 
         // Evict again after adding the new log in case it pushed us over limits
         logCache.evictIfNeeded();

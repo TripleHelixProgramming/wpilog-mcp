@@ -1,0 +1,30 @@
+{
+  "format_version": 1,
+  "recipe_version": 1,
+  "reviewed_at": "2026-10-21",
+  "decision": "initial_baseline",
+  "reason": "The first baseline. Format 1 and recipe 1 are the first build's format, writer and reader, which the differential tests check sample by sample against the tools' own reads on every fixture, and which matched every sample of three team logs read-only; no column file was written to a user's cache before this guard.",
+  "source_sha256": {
+    "edu/wpi/first/util/datalog/DataLogAccess.java": "9e6659d846e967a7a97ffb85ad288326f362c00e6bd32fbe9c2384f5cca79b11",
+    "org/triplehelix/wpilogmcp/columns/ColumnFile.java": "9872250ccdec0e01e285a0bb4e1e3fd97360195299091d92fdc04c2540794cbd",
+    "org/triplehelix/wpilogmcp/columns/ColumnFileFormat.java": "3eff3d87ede2e60ad3012429655cf02e9e7bf49d7082a511dd2da2ce89247403",
+    "org/triplehelix/wpilogmcp/columns/ColumnFileWriter.java": "ca9538ea441906910f64fdad13550c6313c2cd20e1ad60bb37c8e381f21e1a30",
+    "org/triplehelix/wpilogmcp/log/DecodeProblem.java": "b535cf893f81185e28135afd7c8a71580da873539e69e660a7faa99cdb8915ee",
+    "org/triplehelix/wpilogmcp/log/LazyParsedLog.java": "fed399967116a88c2e2b396dd85896dcd641d09b31195676b246cd98d84f068f",
+    "org/triplehelix/wpilogmcp/log/LogBytes.java": "7132f203db4e70b6bbdff119acd960432944d87ec4fddfcc3da24a9580428a75",
+    "org/triplehelix/wpilogmcp/log/LogReader.java": "86ac1517f2acbe03ef880b44af7972fd258214b2b7c19c59ee3ff1fa317d7adc",
+    "org/triplehelix/wpilogmcp/log/LogScan.java": "ae044f7252e8bfb98d13ea8a19644146db753126ffe7b91ded5f78b51703a9d5",
+    "org/triplehelix/wpilogmcp/log/MappedLogBytes.java": "b7e3470779478fadd040f7facabe4812cc849875ff27f3740b072797090dd34a",
+    "org/triplehelix/wpilogmcp/log/RecordOffsets.java": "a9d97d722cb275ce205d628057cfb7da2621e5c6b80746581d669bece2fd37e5",
+    "org/triplehelix/wpilogmcp/log/struct/CanonicalSchemas.java": "9936084dc6e93249954afe2e9d8b18a54770982de5ca82eed02746700bb204ef",
+    "org/triplehelix/wpilogmcp/log/struct/EnumValue.java": "b5b907f0d43795377ee167c328335dd6b6e3f95d226e96a9dc56519c98f46719",
+    "org/triplehelix/wpilogmcp/log/struct/StructMap.java": "57fc4b40d2aba48675a972deb8a693fb7b7bf0cacb2a2ac511bea40a8e1b27e1",
+    "org/triplehelix/wpilogmcp/log/struct/StructSchemas.java": "93b957b75aaed4aefa28c519cb0566bcc76acf6a8c56c8d8e85eb7a025f16516",
+    "org/triplehelix/wpilogmcp/log/struct/UnsignedEnumValue.java": "68af6b053f83ba062dce831cc4755a15b9f23db9d986394b837918d08c9bde62",
+    "org/triplehelix/wpilogmcp/log/subsystems/BinaryReader.java": "59dc78d958e9ee5dcf9d3d1db308ef4ae147b176bc86e1690313d23b75e038a9",
+    "org/triplehelix/wpilogmcp/log/subsystems/EntryDecoder.java": "39bbaaeebfd8f009a0dc7c98ce1bbd4cb252a268fbbe169d781bf69c7f00cf3b",
+    "org/triplehelix/wpilogmcp/read/FieldPath.java": "5b0c9df3a43872727e5e1d3b1044b8835b4d8492b71fcb2f2104c64cf7760687",
+    "org/triplehelix/wpilogmcp/read/RecordSeries.java": "d3cb073e15cf31b58bd5b97045955f4226eb96f04d973cce0a281fc5dfa8557e",
+    "org/triplehelix/wpilogmcp/read/SampleCursors.java": "ffc008d9f10dce189b5b331605127ff056c03c05109ba614449f64fb8e187e8e"
+  }
+}
