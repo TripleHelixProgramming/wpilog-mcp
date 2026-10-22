@@ -122,11 +122,6 @@ public interface LogData {
   }
 
   /**
-   * The entry's numbers at {@code path} from the log's column file, when one holds them exactly;
-   * empty otherwise, and the caller decodes the log as before. The samples belong to the
-   * caller's use of this log, on one thread.
-   */
-  /**
    * This log's time mapped to UTC by its measured clock. A loaded log keeps its mapping; a view of
    * a recording extends its recording's readings rather than reading the clock entry again.
    */
@@ -134,6 +129,11 @@ public interface LogData {
     return org.triplehelix.wpilogmcp.read.UtcTimeMapping.from(this);
   }
 
+  /**
+   * The entry's numbers at {@code path} from columns that hold them exactly, a finished log's
+   * column file or a recording's own; empty otherwise, and the caller decodes the log as before.
+   * The samples belong to the caller's use of this log, on one thread.
+   */
   default Optional<NumericColumn> numericColumn(String entryName, org.triplehelix.wpilogmcp.read.FieldPath path) {
     return Optional.empty();
   }

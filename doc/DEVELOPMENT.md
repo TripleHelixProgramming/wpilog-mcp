@@ -831,7 +831,9 @@ its own `timestamp_utc`. `capture=current` is checked against two recordings wri
 writers, with the capture's status moved from one to the next and then closed. A recording's
 mapping must equal a fresh read of every sampled prefix, for views held while later ones extend
 it, through a clock set, a clock stepped an hour and an ambiguous clock; and a ten-second UTC
-window on a two-hour recording, counted, decodes at most 40 of its 1,400 column blocks.
+window on a two-hour recording, counted, decodes at most 40 of its 1,400 column blocks. A struct
+field's window, counted the same way with every record cold, decodes none of the entry's records
+from the WPILOG and at most 100 of the 4,218 blocks its entry and leaves hold.
 
 ### Shared reader checks
 

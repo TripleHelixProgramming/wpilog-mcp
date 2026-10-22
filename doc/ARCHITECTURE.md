@@ -1044,7 +1044,9 @@ change is decided.
 
 A recording keeps its index in columns too, in a scratch file in the same directory named for
 its capture: the heap holds under half a byte for each recorded number, however long the
-session runs. The file is written as the capture records and never forced to
+session runs. A struct entry's numeric fields are columns too, decoded once as the writer
+records each record and walked by the rules a finished file's column file follows, so a field of
+a recording reads as a number does. The file is written as the capture records and never forced to
 disk, since a crash loses nothing the WPILOG does not hold, and a server that starts again
 deletes the files an earlier process left. The file counts toward the size limit but is never
 evicted, as the recording depends on it; where the cache is off or cannot take it, the blocks

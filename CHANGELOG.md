@@ -310,6 +310,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   why in a new `index_in_heap`. The file counts toward `diskcachesize` but is never evicted; it
   is deleted once the writer has moved on to another file and the index's last reader is done,
   and by the next start after a crash.
+- A recording's struct fields are read from columns too. The capture's writer decodes each struct
+  record once, with the schemas a read of it would use, and keeps each numeric leaf, such as a
+  pose's `.translation.x` or a module state's `[2].speed`, as a column beside its entry's. Before,
+  every read of a field on the open capture decoded the whole entry, so a live panel of a pose
+  decoded every pose of the session on each refresh, 360,000 of them after two hours at 50 Hz.
+  Now a ten-second window decodes none and reads a few dozen blocks, and an entry's decode
+  problems are counted as its records are written. The writer's work on a pose record goes from
+  about 60 to 270 ns, and on four module states to 635 ns, beside about 4 µs to write the record.
+  When a struct's schema is recorded after some of its values, the writer decodes those values
+  again under it, at most 4,096 records for one schema; an entry past that, a struct array record
+  wider than 64 elements, a field whose kind changes and an entry recorded out of time order are
+  read from the WPILOG as before. Finished column files and a recording now take a struct's
+  fields by one walk; column files are unchanged, byte for byte, on every fixture and five real
+  logs.
 - Numeric reads take their numbers from a log's column file once one is built: `read_entry`,
   `render_chart`, the data endpoint, `get_statistics`, `compare_entries`, `compare_matches`,
   `detect_anomalies`, `find_peaks`, `rate_of_change`, `time_correlate`, `align_entries`,
@@ -661,6 +675,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- A recording's struct fields are checked against a decode of the same prefix, for every leaf and
+  pooled path at sampled boundaries, through malformed records, arrays of changing length, values
+  before their schema, nested schemas recorded late, an array wider than columns take, unsigned
+  fields crossing 2^63, a schema whose records exceed the writer's budget, and time running
+  backwards, with views read again after later records and schemas; against the numbers written,
+  a scan of a copy, and the finished file's column file. Counted, a ten-second UTC window of a
+  pose's `x` on a two-hour recording decodes no pose from the WPILOG. Twenty-five planted
+  mistakes each fail them.
 - The recorder's clock is checked against readings worked out by hand from a moving test clock,
   in files too small to hold a reading beside their last value, against an upstream topic of its
   name, and end to end through a UTC window on a recording and on its finished file; the replay
@@ -822,8 +844,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `doc/GRAFANA_PLAN.md` records what stage 1 has built and the maintainer's two answers: every
   capture records its server's clock as an entry, now built, and struct fields on a recording
-  become columns as the writer records them, which reverses the recording phase's first answer
-  and which the maintainer confirmed in words. `doc/ARCHITECTURE_HARDENING_PLAN.md` item 6 notes the
+  become columns as the writer records them, which reverses the recording phase's first answer,
+  which the maintainer confirmed in words, and which is now built. `doc/COLUMN_CACHE_PLAN.md`
+  records how, and what it costs the writer. `doc/ARCHITECTURE_HARDENING_PLAN.md` item 6 notes the
   maintainer's relaxation for captures and what the data endpoint reads today.
 - `doc/COLUMN_CACHE_PLAN.md` proposes the recording phase's design: the open capture's columns
   written as it records, to a scratch file in the disk cache that is never forced to disk, so

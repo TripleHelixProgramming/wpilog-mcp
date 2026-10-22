@@ -471,6 +471,32 @@ blocks are packed, blocks stay in the heap when the disk cannot take them, and n
 hot window. The first was reversed the same day, for live struct panels at any zoom: the writer
 records struct fields as columns ([Grafana plan](GRAFANA_PLAN.md#decisions-for-the-maintainer)).
 
+### Struct fields, recorded
+
+Built on 2026-10-22, after the first answer was reversed. The writer decodes each struct record
+once, with the schemas a call reading that record decodes it with, and walks it by the same code
+a finished file's column file is written with, so both hold the same leaves under the same paths.
+Each leaf is a column of its samples' records and values, in blocks of 512 packed and placed as an
+entry's blocks are. A field is read by search, and an entry's decode problems are counted as its
+records are written.
+
+A call decodes with the schemas its own prefix records, so a schema recorded after some of a
+struct's values changes how a later call decodes all of them. When the schema of a struct, or of
+one nested in it, is first recorded or another takes its place, the writer decodes the entry's
+records so far again, into new columns that only calls from that record on read. One recorded
+schema may cost the writer at most 4,096 records decoded again, taken entry by entry in the order
+they were declared; an entry they do not cover is read from the WPILOG from that record on. The
+WPILOG also answers for a struct array record wider than 64 elements, a leaf whose kind changes,
+a pooled path once some leaf had no column, and an entry recorded out of time order.
+
+Measured on the writer's thread, the index's work on a pose record went from 62 to 271 ns, and on
+four module states from 62 to 635 ns, against about 4.1 µs to write the record: 5 and 14% more on
+those records. That is more than the prototype's 151 and 284 ns, which timed decoding and taking
+the numbers but not appending them to columns, and took eight numbers from four module states
+where the columns take twelve, their derived angles included. A ten-second UTC window of a pose's
+`x` on a two-hour recording reads 70 of the 4,218 blocks its entry and leaves hold and decodes no
+pose.
+
 ### Tests that must fail first
 
 - At sampled publication boundaries of a recorded capture, every view's records, facts and

@@ -191,6 +191,81 @@ class DataEndpointCaptureTest {
     }
   }
 
+  /**
+   * A struct field reads as a number does: the recording's writer decoded each pose once, so a
+   * ten-second UTC window of {@code .translation.x} on a two-hour recording decodes no pose from
+   * the WPILOG, finds its decode problems without decoding, and reads a few dozen of the blocks
+   * its leaves and records hold. Every record is cold, so a decode would be counted.
+   */
+  @Test
+  void aStructFieldsWindowOnATwoHourRecordingDecodesNoRecord() throws Exception {
+    long w = 1_767_225_600_000_000L;
+    var path = directory.resolve("poses.wpilog");
+    var columns = directory.resolve("poses-open.col");
+    var log = new org.triplehelix.wpilogmcp.log.LiveLog(path, 0, () -> null, java.util.UUID.randomUUID().toString(),
+        new org.triplehelix.wpilogmcp.log.OpenColumns.Placement() {
+          @Override public java.util.Optional<Path> file(String identity) { return java.util.Optional.of(columns); }
+          @Override public boolean reserveShort() { return false; }
+        });
+    int records = 2 * 3600 * 50;
+    try (var out = new org.triplehelix.wpilogmcp.capture.WpilogOutput(path)) {
+      manager.beginCapture(log);
+      // WPILib's schemas, nested ones first, as WPILib publishes them.
+      var texts = new java.util.LinkedHashMap<String, String>();
+      texts.put("Translation2d", "double x;double y");
+      texts.put("Rotation2d", "double value");
+      texts.put("Pose2d", "Translation2d translation;Rotation2d rotation");
+      var schemas = new java.util.LinkedHashMap<org.triplehelix.wpilogmcp.log.EntryInfo, byte[]>();
+      for (var schema : texts.entrySet()) {
+        var name = "NT:/.schema/struct:" + schema.getKey();
+        schemas.put(new org.triplehelix.wpilogmcp.log.EntryInfo(out.start(name, "structschema", "", 0), name, "structschema", ""),
+            schema.getValue().getBytes(StandardCharsets.UTF_8));
+      }
+      var pose = new org.triplehelix.wpilogmcp.log.EntryInfo(out.start("NT:/pose", "struct:Pose2d", "", 0), "NT:/pose", "struct:Pose2d", "");
+      var clock = new org.triplehelix.wpilogmcp.log.EntryInfo(out.start("NT:/AdvantageKit/SystemStats/EpochTimeMicros", "int64", "", 0),
+          "NT:/AdvantageKit/SystemStats/EpochTimeMicros", "int64", "");
+      schemas.keySet().forEach(log::announce);
+      log.announce(pose);
+      log.announce(clock);
+      for (var schema : schemas.entrySet()) {
+        var entry = schema.getKey();
+        log.append(entry, new ValueFrame(entry.id(), 1_000_000L, 5, schema.getValue()), out.append(entry.id(), 1_000_000L, schema.getValue()));
+      }
+      for (int i = 0; i < records + 50; i++) {
+        long time = 1_000_000L + 20_000L * i;
+        var epoch = java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN).putLong(w + 20_000L * i).array();
+        log.append(clock, new ValueFrame(clock.id(), time, 2, w + 20_000L * i), out.append(clock.id(), time, epoch));
+        var bytes = java.nio.ByteBuffer.allocate(24).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            .putDouble(i * 0.5).putDouble(-i * 0.25).putDouble(i * 1e-4).array();
+        log.append(pose, new ValueFrame(pose.id(), time, 5, bytes), out.append(pose.id(), time, bytes));
+        log.advance(time + 1);
+        if (i % 1000 == 999) log.expire();
+      }
+      log.expire();
+      int last = records + 49;
+      var window = Map.of("path", path.toString(), "names", "NT:/pose.translation.x", "format", "csv",
+          "start_utc", instant(w + 20_000L * (last - 500)), "end_utc", instant(w + 20_000L * last));
+      // The first refresh reads the clock whole, once.
+      assertEquals(200, get(window).statusCode());
+      long blocks = log.columnBlocksRead();
+      long decoded = log.mappedReadCount();
+      var response = get(window);
+      long blocksRead = log.columnBlocksRead() - blocks;
+      long recordsDecoded = log.mappedReadCount() - decoded;
+      assertEquals(200, response.statusCode(), response.body());
+      var rows = values(response.body());
+      assertEquals(501, rows.size(), "ten seconds at 50 Hz, both ends included");
+      for (int k = 0; k <= 500; k++) assertEquals((last - 500 + k) * 0.5, rows.get(k), "row " + k);
+      // A view reads the first record of each schema entry to know the schemas, and no pose.
+      assertTrue(recordsDecoded <= schemas.size(), "records decoded from the WPILOG: " + recordsDecoded);
+      assertTrue(blocksRead <= 100, "blocks decoded for the window: " + blocksRead + " of " + 6 * (records / 512));
+    } finally {
+      manager.finishCapture(log);
+      manager.unloadLog(path.toString());
+      log.discard();
+    }
+  }
+
   private static String instant(long epochUs) {
     return Instant.ofEpochSecond(Math.floorDiv(epochUs, 1_000_000L), Math.floorMod(epochUs, 1_000_000L) * 1000).toString();
   }

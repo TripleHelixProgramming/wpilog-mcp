@@ -24,11 +24,15 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import org.triplehelix.wpilogmcp.capture.WpilogOutput;
+import org.triplehelix.wpilogmcp.columns.ColumnFileFormat.Kind;
+import org.triplehelix.wpilogmcp.columns.StructLeaves;
 import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.log.subsystems.EntryDecoder;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
+import org.triplehelix.wpilogmcp.read.FieldPath;
 import org.triplehelix.wpilogmcp.read.LegacyMaterializer;
+import org.triplehelix.wpilogmcp.read.NumericSamples;
 import org.triplehelix.wpilogmcp.read.RecordSeries;
 import org.triplehelix.wpilogmcp.read.SampleCursors;
 
@@ -43,7 +47,9 @@ import org.triplehelix.wpilogmcp.read.SampleCursors;
  * read from its column when its record's payload has its type's width, as every record the writer
  * encodes has; any other record keeps its wire value while it is hot, and older ones are read from
  * read-only mappings beside the write channel, so a malformed record is still reported where it
- * is. Mappings have atomic reader references: replacing one never unmaps bytes a decoder is using.
+ * is. A struct entry's numeric leaves are decoded once as the writer records each record, and kept
+ * as columns too ({@link StructColumns}), so a field such as a pose's {@code x} is read as a
+ * number is. Mappings have atomic reader references: replacing one never unmaps bytes a decoder is using.
  * Eviction retires the mapping after in-flight calls; resumption reuses the writer's index and
  * opens a new mapping, without a scan. The columns' scratch file is deleted once the writer has
  * moved on and the last reader has finished.
@@ -140,6 +146,8 @@ public final class LiveLog implements LogData, AutoCloseable {
   private static final class Entry {
     final OpenColumns.Series columns;
     final HotValues hot = new HotValues();
+    /** A struct entry's leaves as columns; null for any other entry. */
+    final StructColumns struct;
     /** The payload size of a number its column holds, or -1 when it holds none. */
     final int width;
     /** The first record whose value is not its column's; written by the writer. */
@@ -153,8 +161,9 @@ public final class LiveLog implements LogData, AutoCloseable {
     /** How many times the writer copied the list to grow it, which a test counts. */
     int otherGrowths;
 
-    Entry(OpenColumns.Series columns) {
+    Entry(OpenColumns store, OpenColumns.Series columns) {
       this.columns = columns;
+      this.struct = StructSchemas.structName(columns.info.type()) != null ? new StructColumns(store, columns) : null;
       width = columns.kind == null ? -1 : switch (columns.kind) {
         case F64, I64 -> 8;
         case F32 -> 4;
@@ -187,6 +196,372 @@ public final class LiveLog implements LogData, AutoCloseable {
       // The count first: a list read after it holds every index the count covers.
       int count = otherCount;
       return java.util.Arrays.binarySearch(others, 0, count, index) < 0;
+    }
+  }
+
+  /**
+   * Records the writer decodes again for one recorded schema, a few milliseconds of its loop,
+   * taken entry by entry in the order they were declared. An entry they do not cover is read from
+   * the WPILOG from the schema's record on.
+   */
+  static final int REBUILD_BUDGET = 4096;
+
+  /** One leaf's column; a leaf of another kind at its path drops it from that record on. */
+  private static final class LeafColumn {
+    final OpenColumns.Leaf leaf;
+    final FieldPath path;
+    /** The record whose leaf of another kind dropped the column: a view of more records reads the WPILOG. */
+    volatile int droppedAt = Integer.MAX_VALUE;
+
+    LeafColumn(OpenColumns.Leaf leaf, FieldPath path) {
+      this.leaf = leaf;
+      this.path = path;
+    }
+  }
+
+  /** A path in a struct entry's records, with its column once a leaf comes there. Writer thread only. */
+  private static final class LeafNode extends StructLeaves.Node<LeafNode> {
+    LeafColumn column;
+
+    LeafNode(String path, boolean indexed, int depth) {
+      super(path, indexed, depth);
+    }
+
+    @Override
+    protected LeafNode child(String path, boolean indexed, int depth) {
+      return new LeafNode(path, indexed, depth);
+    }
+  }
+
+  /**
+   * A struct entry's columns under one set of schemas: its records as those schemas decode them,
+   * for the views whose boundary is at least {@code from} and below {@code until}, the boundary at
+   * which a schema the struct depends on changed. A view of more records than {@code unheldFrom},
+   * or, for a pooled path, than {@code incompleteFrom}, reads the WPILOG as before.
+   */
+  private static final class Generation implements StructLeaves.Leaves<LeafNode> {
+    final long from;
+    volatile long until = Long.MAX_VALUE;
+    /** The first record the columns do not hold: one wider than columns take, or one no decode reads. */
+    volatile int unheldFrom = Integer.MAX_VALUE;
+    /** The first record with a leaf no column holds, as {@link StructLeaves} decides it. */
+    volatile int incompleteFrom = Integer.MAX_VALUE;
+    final ConcurrentHashMap<String, LeafColumn> columns = new ConcurrentHashMap<>();
+    /** The records that failed to decode, in order, below {@code failureCount}. */
+    private volatile int[] failures = new int[0];
+    private volatile int failureCount;
+    /** Why the first of them failed, as a view's decode reports it. */
+    private volatile String firstFailure;
+    // Writer thread only.
+    final StructSchemas schemas;
+    final Map<String, Object> dependencies;
+    private final long widest;
+    private final OpenColumns store;
+    private final String type;
+    private final LeafNode root = new LeafNode("", false, 0);
+    private int columnCount;
+    private int record;
+
+    Generation(long from, StructSchemas schemas, Map<String, Object> dependencies, OpenColumns store, String type) {
+      this.from = from;
+      this.schemas = schemas;
+      this.dependencies = dependencies;
+      this.widest = StructLeaves.widestRecord(schemas, type);
+      this.store = store;
+      this.type = type;
+    }
+
+    /**
+     * Writer thread only, in record order: one record, decoded by {@code decode} with these
+     * schemas. A record that does not decode is counted as a view's decode counts it; a record
+     * wider than columns take, or one that fails otherwise, ends what the columns hold.
+     */
+    void add(int index, long payloadBytes, java.util.function.Supplier<Object> decode) {
+      if (unheldFrom != Integer.MAX_VALUE) return;
+      if (widest > 0 && payloadBytes > widest) {
+        unheldFrom = index;
+        return;
+      }
+      Object decoded;
+      try {
+        decoded = decode.get();
+      } catch (StructDecodeException failure) {
+        fail(index, failure.getMessage());
+        return;
+      }
+      record = index;
+      StructLeaves.walk(root, decoded, this);
+    }
+
+    private void fail(int index, String message) {
+      var list = failures;
+      int count = failureCount;
+      if (count == list.length) {
+        list = java.util.Arrays.copyOf(list, Math.max(8, 2 * list.length));
+        failures = list;
+      }
+      list[count] = index;
+      if (firstFailure == null) firstFailure = message;
+      // Published after the index is in the list a reader then reads.
+      failureCount = count + 1;
+    }
+
+    /** How many of the first {@code records} records failed to decode. */
+    int failuresBelow(int records) {
+      // The count first: a list read after it holds every index the count covers.
+      int count = failureCount;
+      int at = java.util.Arrays.binarySearch(failures, 0, count, records);
+      return at >= 0 ? at : -at - 1;
+    }
+
+    String firstFailure() {
+      return firstFailure;
+    }
+
+    @Override public int columns() { return columnCount; }
+
+    @Override
+    public void begin(LeafNode node) {
+      columnCount++;
+      node.column = new LeafColumn(store.new Leaf(node.kind()), FieldPath.parse(node.path()));
+      columns.put(node.path(), node.column);
+    }
+
+    @Override public void value(LeafNode node, long bits) { node.column.leaf.append(record, bits); }
+
+    @Override public void drop(LeafNode node) { node.column.droppedAt = record; }
+
+    @Override
+    public void incomplete() {
+      if (incompleteFrom == Integer.MAX_VALUE) incompleteFrom = record;
+    }
+
+    long heapBytes() {
+      long bytes = 4L * failures.length;
+      for (var column : columns.values()) bytes += column.leaf.heapBytes();
+      return bytes;
+    }
+  }
+
+  /**
+   * A struct entry's numeric leaves as columns, decoded once as the writer records each record,
+   * by the rules a finished log's column file holds them by, so a field of a recording is read
+   * as a number is, at any zoom. A record is decoded with the schemas a view of it decodes with:
+   * the log's struct schemas as of that record, WPILib's where the log has recorded none. When a
+   * schema the struct depends on is first recorded later, or changes, the records so far are
+   * decoded again under it, into a new generation, so a view on either side of the change reads
+   * the columns its own schemas give.
+   */
+  private static final class StructColumns {
+    private final OpenColumns store;
+    private final OpenColumns.Series series;
+    private final String type;
+    private final String struct;
+    /** Every generation, oldest first. */
+    private volatile Generation[] generations = new Generation[0];
+    /** Writer thread only: the generation records go to, null before the first record. */
+    private Generation current;
+    /** Writer thread only: set once nothing more goes to columns. */
+    private boolean stopped;
+
+    StructColumns(OpenColumns store, OpenColumns.Series series) {
+      this.store = store;
+      this.series = series;
+      this.type = series.info.type();
+      this.struct = StructSchemas.structName(type);
+    }
+
+    /**
+     * Writer thread only, before the record is published: one record's leaves, decoded from its
+     * wire value with {@code schemas}, the schemas a view of it decodes with; null when those
+     * could not be read, which ends the columns.
+     */
+    void record(int index, Object wire, long payloadBytes, StructSchemas schemas) {
+      if (stopped) return;
+      try {
+        if (current == null) {
+          if (schemas == null) {
+            stopped = true;
+            return;
+          }
+          current = begin(0, schemas, dependencies(schemas, struct));
+        }
+        var decoding = current.schemas;
+        current.add(index, payloadBytes, () -> EntryDecoder.decodeNetworkValue(wire, type, decoding));
+      } catch (RuntimeException unexpected) {
+        // A recording never stops for its columns: the WPILOG answers this entry from here on.
+        if (current != null) current.unheldFrom = Math.min(current.unheldFrom, index);
+        stopped = true;
+      }
+    }
+
+    /**
+     * Writer thread only: views from {@code boundary} on decode with {@code next}. When the
+     * struct decodes differently under them, the records so far are decoded again into a new
+     * generation, if no more than {@code budget} of them; {@code decode} reads one as a view
+     * does, with {@code next}. Returns how many were decoded again.
+     */
+    int schemasChanged(long boundary, StructSchemas next, int budget, java.util.function.IntFunction<Object> decode) {
+      if (stopped || current == null) return 0;
+      try {
+        var dependencies = next == null ? null : dependencies(next, struct);
+        if (current.dependencies.equals(dependencies)) return 0;
+        current.until = boundary;
+        int records = series.length();
+        if (dependencies == null || records > budget) {
+          current = null;
+          stopped = true;
+          return 0;
+        }
+        current = begin(boundary, next, dependencies);
+        var reader = series.reader(records);
+        for (int i = 0; i < records; i++) {
+          int index = i;
+          current.add(index, reader.payloadBytes(index), () -> decode.apply(index));
+        }
+        return records;
+      } catch (RuntimeException unexpected) {
+        if (current != null) current.unheldFrom = 0;
+        current = null;
+        stopped = true;
+        return 0;
+      }
+    }
+
+    private Generation begin(long from, StructSchemas schemas, Map<String, Object> dependencies) {
+      var generation = new Generation(from, schemas, dependencies, store, type);
+      var grown = java.util.Arrays.copyOf(generations, generations.length + 1);
+      grown[grown.length - 1] = generation;
+      generations = grown;
+      return generation;
+    }
+
+    /** The generation a view at {@code boundary} reads, or null when none holds its records. */
+    private Generation at(long boundary) {
+      var all = generations;
+      for (int i = all.length - 1; i >= 0; i--) {
+        if (all[i].from <= boundary && boundary < all[i].until) return all[i];
+      }
+      return null;
+    }
+
+    /** Whether the columns hold every one of the first {@code length} records, for a view at {@code boundary}. */
+    boolean holds(long boundary, int length) {
+      var generation = at(boundary);
+      return generation != null && length <= generation.unheldFrom;
+    }
+
+    /** The decode problem of the first {@code length} records, as a view's decode reports it; see {@link #holds}. */
+    Optional<DecodeProblem> problem(long boundary, int length) {
+      var generation = at(boundary);
+      int failed = generation.failuresBelow(length);
+      return failed == 0 ? Optional.empty() : Optional.of(new DecodeProblem(generation.firstFailure(), failed, length));
+    }
+
+    /**
+     * The numbers at {@code path} in the first {@code length} records, in time order, as a view's
+     * decode would project them; empty when the columns do not hold them all, and the caller
+     * decodes the records.
+     */
+    Optional<NumericColumn> column(long boundary, int length, FieldPath path) {
+      var generation = at(boundary);
+      if (generation == null || length == 0 || length > generation.unheldFrom || !series.monotonic(length)) return Optional.empty();
+      List<LeafColumn> matched;
+      if (!path.hasWildcard()) {
+        var column = generation.columns.get(path.toString());
+        if (column == null || column.droppedAt < length) return Optional.empty();
+        matched = List.of(column);
+      } else {
+        // A pooled path needs every element, so every leaf of every record must have a column.
+        if (length > generation.incompleteFrom) return Optional.empty();
+        matched = StructLeaves.pooled(generation.columns.values(), column -> column.path, path);
+      }
+      int decoded = length - generation.failuresBelow(length);
+      var records = series.reader(length);
+      int count = matched.size();
+      var leaves = new OpenColumns.LeafReader[count];
+      var kinds = new Kind[count];
+      int total = 0;
+      for (int c = 0; c < count; c++) {
+        var leaf = matched.get(c).leaf;
+        leaves[c] = leaf.reader(leaf.bound(length));
+        kinds[c] = leaf.kind;
+        total += leaves[c].size();
+      }
+      // No sample is what a decode finds for a path that holds no number, which it reports.
+      if (total == 0) return Optional.empty();
+      if (count == 1) {
+        var leaf = leaves[0];
+        var kind = kinds[0];
+        int size = total;
+        var samples = new NumericSamples() {
+          @Override public int size() { return size; }
+          @Override public long timeUs(int index) { return records.timeUs(leaf.record(index)); }
+          /** As {@code TimestampedValue.atMicros} computes a decoded value's seconds. */
+          @Override public double seconds(int index) { return timeUs(index) / 1_000_000.0; }
+          @Override public double number(int index) { return kind.number(leaf.bits(index)); }
+          /** An integer's own bits, as {@code Long.equals} compares the decoded values. */
+          @Override public long valueBits(int index) {
+            return kind == Kind.I64 ? leaf.bits(index) : Double.doubleToLongBits(number(index));
+          }
+        };
+        return Optional.of(new NumericColumn(samples, decoded, decoded - size, null));
+      }
+      // By record, and within a record by element, as FieldPath.resolveAll visits them.
+      var column = new int[total];
+      var position = new int[total];
+      var next = new int[count];
+      int distinct = 0, last = -1;
+      for (int i = 0; i < total; i++) {
+        int best = -1, bestRecord = 0;
+        for (int c = 0; c < count; c++) {
+          if (next[c] == leaves[c].size()) continue;
+          int record = leaves[c].record(next[c]);
+          if (best < 0 || record < bestRecord) {
+            best = c;
+            bestRecord = record;
+          }
+        }
+        column[i] = best;
+        position[i] = next[best]++;
+        if (bestRecord != last) distinct++;
+        last = bestRecord;
+      }
+      int size = total;
+      var samples = new NumericSamples() {
+        @Override public int size() { return size; }
+        @Override public long timeUs(int i) { return records.timeUs(leaves[column[i]].record(position[i])); }
+        @Override public double seconds(int i) { return timeUs(i) / 1_000_000.0; }
+        @Override public double number(int i) { return kinds[column[i]].number(leaves[column[i]].bits(position[i])); }
+      };
+      return Optional.of(new NumericColumn(samples, decoded, decoded - distinct, null));
+    }
+
+    long heapBytes() {
+      long bytes = 0;
+      for (var generation : generations) bytes += generation.heapBytes();
+      return bytes;
+    }
+
+    /**
+     * What a struct's decode depends on in a set of schemas: the struct's schema and every schema
+     * nested in it, as their sources, texts, sizes and errors describe them, or their absence. Two
+     * sets of schemas that agree here decode the struct's records alike.
+     */
+    static Map<String, Object> dependencies(StructSchemas schemas, String struct) {
+      var found = new java.util.HashMap<String, Object>();
+      var pending = new java.util.ArrayDeque<String>();
+      pending.push(struct);
+      while (!pending.isEmpty()) {
+        var name = pending.pop();
+        if (found.containsKey(name)) continue;
+        var info = schemas.info(name);
+        found.put(name, info.isPresent() ? info.get() : "absent");
+        info.ifPresent(described -> described.fields().forEach(field -> {
+          if (field.structType() != null) pending.push(field.structType());
+        }));
+      }
+      return found;
     }
   }
 
@@ -232,6 +607,12 @@ public final class LiveLog implements LogData, AutoCloseable {
   private final AtomicBoolean retired = new AtomicBoolean();
   private final Object lifetime = new Object();
   private long coldBefore = Long.MIN_VALUE;
+  /**
+   * Writer thread only: the struct schemas a view of the records so far decodes with, or null
+   * once they could not be read; and each schema entry's first value, as a view reads it.
+   */
+  private StructSchemas writerSchemas = StructSchemas.fallbackOnly();
+  private final Map<String, Object> schemaTexts = new java.util.HashMap<>();
 
   /** A small immutable token cannot retain the index after a follower releases its prefix.
    * Followers allocate and compare it off the writer loop; publication only advances the
@@ -266,7 +647,7 @@ public final class LiveLog implements LogData, AutoCloseable {
   public void announce(EntryInfo info) {
     var before = state;
     if (before.entries().containsKey(info.name())) return;
-    var entries = new LinkedHashMap<>(before.entries()); entries.put(info.name(), new Entry(columns.new Series(info)));
+    var entries = new LinkedHashMap<>(before.entries()); entries.put(info.name(), new Entry(columns, columns.new Series(info)));
     var infos = new LinkedHashMap<>(before.infos()); infos.put(info.name(), info);
     state = new State(Collections.unmodifiableMap(entries), Collections.unmodifiableMap(infos), before.sequence(), before.min(), before.max(), before.jumps(), before.firstJump(), true, before.revision() + 1);
   }
@@ -303,13 +684,37 @@ public final class LiveLog implements LogData, AutoCloseable {
       entry.hot.put(index, frame.value());
       hot.add(new Hot(entry, index, frame.timestampUs(), written.offset() + written.size()));
     }
+    if (entry.struct != null) entry.struct.record(index, frame.value(), written.payloadSize(), writerSchemas);
     entry.columns.append(sequence, frame.timestampUs(), written.offset(), written.payloadSize(),
         held ? OpenColumns.bitsOf(kind, frame.value()) : 0);
+    if (index == 0 && StructSchemas.schemaEntryStruct(info.name(), info.type()) != null) schemaRecorded(entry, sequence, before);
     double min = sequence == 1 ? time : Math.min(before.min(), time);
     double max = sequence == 1 ? time : Math.max(before.max(), time);
     // Readers can only see complete record slots after this volatile publication.
     state = new State(before.entries(), before.infos(), sequence, min, max, before.jumps(), before.firstJump(), true, before.revision() + 1);
     advance(Math.round(max * 1_000_000));
+  }
+
+  /**
+   * Writer thread only, before the record is published: a schema entry's first value, which
+   * changes the schemas a view decodes structs with from this record on. Each struct entry's
+   * columns follow, read as a view reads them, within {@value #REBUILD_BUDGET} records.
+   */
+  private void schemaRecorded(Entry schema, long sequence, State before) {
+    try {
+      schemaTexts.put(schema.info().name(), value(schema, schema.columns.reader(1), 0, StructSchemas.fallbackOnly(), false));
+      writerSchemas = StructSchemas.fromLog(before.infos(), schemaTexts::get);
+    } catch (RuntimeException unreadable) {
+      // A view cannot read these schemas either, so no struct field is answered from columns.
+      writerSchemas = null;
+    }
+    var next = writerSchemas;
+    int budget = REBUILD_BUDGET;
+    for (var entry : before.entries().values()) {
+      if (entry.struct == null) continue;
+      var reader = entry.columns.reader(entry.columns.length());
+      budget -= entry.struct.schemasChanged(sequence, next, budget, index -> value(entry, reader, index, next, false));
+    }
   }
 
   /** Values and time sync move the boundary; only the flush tick retires hot objects. */
@@ -464,7 +869,9 @@ public final class LiveLog implements LogData, AutoCloseable {
      */
     @Override public Optional<NumericColumn> numericColumn(String name, org.triplehelix.wpilogmcp.read.FieldPath path) {
       var entry = seen.entries().get(name);
-      if (entry == null || !path.isRoot() || entry.width < 0) return Optional.empty();
+      if (entry == null) return Optional.empty();
+      if (!path.isRoot()) return entry.struct == null ? Optional.empty() : entry.struct.column(seen.sequence(), sampleCount(name), path);
+      if (entry.width < 0) return Optional.empty();
       int length = sampleCount(name);
       if (entry.firstOther < length || !entry.columns.monotonic(length)) return Optional.empty();
       var kind = entry.columns.kind;
@@ -489,10 +896,16 @@ public final class LiveLog implements LogData, AutoCloseable {
       }
       return Optional.of(new NumericColumn(samples, length, 0, new Values()));
     }
-    /** A number whose column holds every record of this prefix decoded each as its type; anything else is decoded to find out. */
+    /**
+     * A number whose column holds every record of this prefix decoded each as its type, and a
+     * struct whose columns hold every record, which counted its failures as it decoded them;
+     * anything else is decoded to find out.
+     */
     @Override public Optional<DecodeProblem> decodeProblem(String name) {
       var entry = seen.entries().get(name);
       if (entry != null && entry.width >= 0 && entry.firstOther >= sampleCount(name)) return Optional.empty();
+      if (entry != null && entry.struct != null && entry.struct.holds(seen.sequence(), sampleCount(name)))
+        return entry.struct.problem(seen.sequence(), sampleCount(name));
       values().get(name);
       return Optional.ofNullable(problems.get(name));
     }
@@ -537,11 +950,15 @@ public final class LiveLog implements LogData, AutoCloseable {
     }
     /**
      * The heap this view's prefix holds in the index, excluding hot value objects: each entry's
-     * filling tail, its blocks kept in the heap, and a reference to each block.
+     * filling tail, its blocks kept in the heap, and a reference to each block; and the same for
+     * every struct entry's leaf columns, whole.
      */
     public long indexBytes() {
       long bytes = 0;
-      for (var entry : seen.entries().entrySet()) bytes += entry.getValue().columns.heapBytes(sampleCount(entry.getKey()));
+      for (var entry : seen.entries().entrySet()) {
+        bytes += entry.getValue().columns.heapBytes(sampleCount(entry.getKey()));
+        if (entry.getValue().struct != null) bytes += entry.getValue().struct.heapBytes();
+      }
       return bytes;
     }
     /** File-order access to this immutable publication prefix; the caller retains this view.
@@ -644,7 +1061,8 @@ public final class LiveLog implements LogData, AutoCloseable {
         + String.format("Data from %.2f to %.2f s was recovered.", seen.min(), seen.max());
   }
   @Override public StructSchemas structSchemas() { return current().structSchemas(); }
-  long mappedReadCount() { return mappedReads.get(); }
+  /** Records readers have decoded from the WPILOG's mapping, which tests count to show a read decodes none it need not. */
+  public long mappedReadCount() { return mappedReads.get(); }
   /** Column blocks readers have decoded, which tests count to show a read costs what its window holds. */
   public long columnBlocksRead() { return columns.blocksRead(); }
   int otherListGrowths(String name) {

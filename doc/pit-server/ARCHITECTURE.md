@@ -452,8 +452,25 @@ entry table, and schemas therefore come from one consistent prefix. `inputs.sess
 names that prefix in seconds, and `compare_matches` supplies a range per live input path. Data reads
 take no writer lock. Short lifetime transitions and the existing file leases protect retirement.
 
+A struct entry's numeric fields are columns too. The writer decodes each struct record once, with
+the schemas a call reading that record decodes it with, and takes its numbers by the same walk a
+finished file's column file uses: a column for each path, such as `.translation.x` or
+`[2].angle.value`, holding each sample's record and value in packed blocks beside the entry's. A
+field is then read by search, as a number is, at any zoom, and the entry's decode problems are
+counted as its records are written rather than by decoding the entry on every call. When a
+schema the struct depends on is first recorded, or another takes its place, a call from that
+record on decodes every record with it, so the writer decodes the entry's records so far again
+into new columns, which calls before that record never read. One recorded schema costs the
+writer's loop at most 4,096 records decoded again, a few milliseconds, taken entry by entry in
+the order they were declared; an entry past that budget is read from the WPILOG from that record
+on. Schemas usually arrive before their values or within a few records of them, so the budget is
+rarely touched. The WPILOG also answers for a struct array record wider than columns take, a
+leaf whose kind changed, a pooled path once some leaf had no column, and an entry recorded out of
+time order.
+
 The default ten-minute hot window keeps the client's decoded values of strings, raw values, arrays
-and structs, with array/struct conversion when a tool requests them. A number keeps none: it is
+and structs, with array/struct conversion when a tool requests a whole value; a struct field read
+from its columns needs neither. A number keeps none: it is
 read from its column when its record holds it in its type's width, as every record the writer
 encodes does, and any other record is read from the WPILOG like a string, so a malformed record
 is still reported where it is. Expiry follows server time sync as well as new data, so idle topics age

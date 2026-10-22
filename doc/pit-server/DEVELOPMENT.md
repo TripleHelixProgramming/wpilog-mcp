@@ -620,7 +620,15 @@ strings with a zero hot window while numbers keep no hot values, mapping retirem
 reader, resume after eviction, and rename after release. The index's columns are checked on their
 own and against an independent read of the same bytes at sampled publication boundaries, in a file
 and in the heap; ten million numbers leave the heap within 16 MB of where it started, and a
-ten-second window on two hours decodes only the blocks that hold it. The recorder's clock is checked
+ten-second window on two hours decodes only the blocks that hold it. A struct entry's columns are
+checked at sampled boundaries against a decode of the same prefix, for every leaf and pooled path:
+malformed records of two sizes, arrays whose length changes, values before their schema, a nested
+schema recorded late or with another layout of the same size, a WPILib schema recorded after its
+values, an array wider than columns take, an unsigned field crossing 2^63 alone and inside an
+array, more records before a schema than the writer decodes again for it, and time running
+backwards. Views are read again after later records and schemas, one of them from early on to the
+end; a pose's numbers are checked against those written, a scan of a copy of the prefix answers
+alike, and the finished file's column file holds the same leaves as the recording. The recorder's clock is checked
 against readings worked out by hand from a test clock that moves with the scheduler, including a
 synchronization handled after its reply arrived; in files too small to hold a reading beside their
 last value, none of which may start with a reading; against an upstream topic of its name; and end

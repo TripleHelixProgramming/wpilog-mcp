@@ -364,11 +364,11 @@ change](#the-change):
    window of the log's microseconds, found by search over the mapping, so the rows are exactly
    those whose `timestamp_utc` lies in it. A log that cannot be placed is refused with `422`
    and the reason; each entry's `utc_basis` counts its samples before the clock's first reading.
-3. **Windows cost what they hold, for numbers.** A number is read from its column by search,
-   in a capture as in a finished file. The sampling class is scored over the window, the sample
-   count comes from the index, and a recording finds that a number whose column holds every
-   record has no decode problem without decoding it. Struct fields on a recording still decode
-   the whole entry for each request; see the second decision below.
+3. **Windows cost what they hold.** A number or a struct field is read from its column by
+   search, in a capture as in a finished file. The sampling class is scored over the window, the
+   sample count comes from the index, and a recording finds an entry's decode problems without
+   decoding it: a number whose column holds every record has none, and a struct entry counted
+   its failures as the writer decoded each record, as the second decision below chose.
 4. **The UTC mapping is kept.** A loaded log builds it once; a recording extends it by the
    clock's new readings, and each request maps its own prefix exactly as a fresh read would.
    The robot's clock places a log when it has a valid reading, otherwise a recorded server
@@ -384,8 +384,13 @@ ambiguous clock; and, counted, a ten-second UTC window on a two-hour recording t
 most 40 of its 1,400 blocks. Twenty-two planted mistakes each fail them. The recorder's clock is
 checked against readings worked by hand from a moving test clock, for files too small to hold a
 reading beside their last value, against an upstream topic of its name, and end to end: a robot
-with no clock read by a UTC window on its recording and its finished file. Items 5 and 6, the gate
-and the Compose example, are not built.
+with no clock read by a UTC window on its recording and its finished file. A recording's struct
+fields are checked against a decode of the same prefix for every leaf and pooled path, through the
+cases where the columns must stop, start again or step aside, with views read again after later
+records and schemas, against the numbers written and against the finished file's column file;
+and, counted, a ten-second UTC window of a pose's `x` on a two-hour recording decodes no pose and
+at most 100 of its 4,218 blocks. Twenty-five planted mistakes each fail them. Items 5 and 6, the
+gate and the Compose example, are not built.
 
 ### Decisions for the maintainer
 
@@ -417,7 +422,9 @@ and the Compose example, are not built.
    column files already hold struct fields, at about 1% more writer time for a struct-heavy robot
    and scratch disk about the size of the struct records while the file is open. Answered on
    2026-10-22: fields as columns, recorded. That reverses the recording phase's first answer, and
-   the maintainer confirmed it in words the same day; it is built next.
+   the maintainer confirmed it in words the same day. It is built: the writer's work on a pose
+   record went from 62 to 271 ns, and on four module states to 635 ns, against about 4.1 µs to
+   write the record ([the column plan](COLUMN_CACHE_PLAN.md#struct-fields-recorded)).
 
 ## Tests
 
