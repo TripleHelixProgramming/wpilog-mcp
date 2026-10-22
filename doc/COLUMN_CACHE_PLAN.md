@@ -75,10 +75,12 @@ In the background, one file at a time. The server asks for a log's column file w
 the log from its file, and when a store writes a session manifest, as an import, a pull, an
 upload and a capture's close each do. Only a log whose content its scan index proved can have
 one, since the file is named by that content: a growing file, a file read with the disk cache
-off and a file that changed while it was scanned have none. A capture that has just closed is
-served from memory until it is unloaded, so its column file is built when it is next read from
-its file; so are the files a mirror copies, whose sessions the store does not announce. Files
-already in a store are not built ahead of a read. Until a file is ready, today's path answers.
+off and a file that changed while it was scanned have none. A capture that has just closed
+goes on being served from memory until it is unloaded, and that copy names no proven content,
+so its build reads the file itself, privately, while the copy in memory serves reads. The files
+a mirror copies are built when first read, since the store does not announce their sessions,
+and files already in a store are not built ahead of a read. Until a file is ready, today's path
+answers.
 
 Asking touches only memory, since a store asks on its own thread. Builds run on one daemon
 thread at the lowest priority, never on the store's or the recording's threads. A build waits
@@ -228,10 +230,12 @@ described above; nothing reads them yet. Building it settled five details.
   holds. Before, the limit was enforced only when the server started. A file the limit has no
   room for is not built again until the server restarts.
 - **What a build trusts.** A build reads the log as a tool does, read-only, so it starts no REV
-  synchronization, and checks that the log names the content the request named. It publishes
-  nothing if the file's attributes changed while it read, and it publishes under the final name
-  only when complete. Two servers sharing the cache may both build the same content; their
-  files are identical, so either one serves.
+  synchronization, and checks that the log names the content the request named. A request may
+  name a path the store has since moved, as a session renamed for its match at close is, and
+  the read follows the store's record of the move. A build publishes nothing if the file it read
+  changed while it read, and it publishes under the final name only when complete. Two servers
+  sharing the cache may both build the same content; their files are identical, so either one
+  serves.
 - **What a failure stops.** A build that fails on the content is not tried again in the process.
   A path that cannot be read, such as a capture folder renamed after it closed, does not count
   against the content, which may still be read at another path. At shutdown a build in progress
@@ -244,8 +248,11 @@ Tests check the values a built file holds against the fixture's own, each gate a
 built, a request naming content its file no longer holds, the trim after a build and the files
 it keeps, both ways a build is asked for, one through a real import into a store, and a
 session listing a path no file system accepts, which must not fail the store's publication.
-Thirty planted mistakes, from a gate left open to a content hash recorded before the proof
-that justifies it, each failed them, as did four planted in the new guard and its baseline.
+Recorded captures check the close: a capture held in memory and one renamed for its match are
+each built from the file, with the values recorded, and a capture still recording is refused.
+Thirty-five planted mistakes, from a gate left open to a content hash recorded before the
+proof that justifies it, each failed them, as did four planted in the new guard and its
+baseline.
 
 ## Costs and risks
 
@@ -259,6 +266,11 @@ that justifies it, each failed them, as did four planted in the new guard and it
 - **A second read path.** Every reader that moves to column files must give today's answers,
   including angles, bucket edges, decode problems and entries logged out of order. The
   differential tests carry that weight.
+- **Renames at close.** A build holds its file while it reads it, as a tool call does. When a
+  session closes with its match facts, the store renames its folder after waiting up to 3 s for
+  the folder's readers; a build still reading a file there, such as a robot log pulled into the
+  session moments before, leaves the folder under its old name, with the match facts in its
+  manifest all the same.
 - **Windows.** A mapped column file cannot be deleted while it is mapped, as a mapped WPILOG
   cannot; cleanup has to wait for its readers, as it already does for logs.
 

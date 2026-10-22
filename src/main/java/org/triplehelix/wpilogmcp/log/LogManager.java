@@ -579,8 +579,10 @@ public class LogManager {
     }
   }
 
-  private LogUse acquireAttempt(String path, boolean synchronize, long generation) throws IOException {
-    if (loadGeneration.get() != generation) throw new LogFileException("Log manager is closed");
+  /** Where a read of a path goes, moved files followed, and a store member's verified facts. */
+  private record Admission(Path path, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) {}
+
+  private Admission admit(String path) throws IOException {
     Path filePath = Path.of(path).toAbsolutePath().normalize();
 
     // Validate path is allowed (or cache is already loaded)
@@ -595,6 +597,70 @@ public class LogManager {
     var replica = org.triplehelix.wpilogmcp.store.ReplicaReads.facts(filePath, securityValidator, replicaReadEpoch);
     if (replica != null) replicaHashes.verify(filePath.toRealPath(), FileSnapshot.of(filePath), replica.contentSha256());
     LogFileAccess.checkReadable(filePath);
+    return new Admission(filePath, replica);
+  }
+
+  /**
+   * The lazy open every read shares. Its scan index is kept only while the manager is open and
+   * the file is neither this process's capture nor another process's open one.
+   */
+  private LazyParsedLog openLazy(Path filePath, LogScan previous, FileSnapshot snapshot,
+      org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica, long generation) throws IOException {
+    return LazyParsedLog.open(filePath, valueBudget(lazyLogs().size() + 1), previous, diskCache, snapshot,
+        replica == null ? null : replica.contentSha256(),
+        () -> loadGeneration.get() == generation && captureAt(filePath) == null
+            && !org.triplehelix.wpilogmcp.store.ReplicaReads.openCapture(filePath, securityValidator),
+        scanObserver);
+  }
+
+  /**
+   * A use of the log as its file holds it, for work that needs the file's own bytes, such as a
+   * column file's build. It is what a read-only acquire admits, except that a finished capture
+   * still served from memory is opened again from its file, privately and uncached, so the copy
+   * in memory keeps serving reads; closing the use closes the private log. A capture still
+   * recording is refused, since its file is still growing.
+   */
+  public LogUse acquireFromFile(String path) throws IOException {
+    var use = acquireReadOnly(path);
+    if (!(use.log() instanceof LiveLog.View)) return use;
+    use.close();
+    long generation = loadGeneration.get();
+    var admission = admit(path);
+    var file = admission.path();
+    if (captureAt(file) != null) throw stillRecording(file);
+    long size = Files.size(file);
+    if (size > MappedLogBytes.MAX_FILE_BYTES) throw LogFileException.tooLarge(file, size);
+    var snapshot = FileSnapshot.of(file);
+    if (snapshot == null) throw new LogFileException("File not found: " + file);
+    var log = openLazy(file, null, snapshot, admission.replica(), generation);
+    try {
+      if (loadGeneration.get() != generation) throw new LogFileException("Log manager closed while loading a log");
+      if (captureAt(file) != null) throw stillRecording(file);
+      if (!log.retain()) throw new LogFileException("Log closed while it was opened: " + file);
+    } catch (IOException | RuntimeException | Error failure) {
+      log.close();
+      throw failure;
+    }
+    var fromFile = new LogUse(log, snapshot, log::close, admission.replica());
+    try {
+      // A move reserved while the file was opened refuses this read, as it does every other.
+      LogFileAccess.checkReadable(file);
+      return fromFile;
+    } catch (IOException | RuntimeException | Error failure) {
+      fromFile.close();
+      throw failure;
+    }
+  }
+
+  private static LogFileException stillRecording(Path file) {
+    return new LogFileException("Still recording, so its file is still growing: " + file);
+  }
+
+  private LogUse acquireAttempt(String path, boolean synchronize, long generation) throws IOException {
+    if (loadGeneration.get() != generation) throw new LogFileException("Log manager is closed");
+    var admission = admit(path);
+    Path filePath = admission.path();
+    var replica = admission.replica();
 
     // Check if already cached (fast path, no lock needed), and still the file on disk
     String normalizedPath = filePath.toString();
@@ -699,14 +765,8 @@ public class LogManager {
       // requested. The mapping must outlive both its cache entry and any in-flight uses.
       LogData log;
       try {
-        long perLogBudgetBytes = valueBudget(lazyLogs().size() + 1);
-        var admittedPath = filePath;
-        log = LazyParsedLog.open(filePath, perLogBudgetBytes,
-            snapshot.grewFrom(previousSnapshot) ? previousScan : null, diskCache, snapshot,
-            replica == null ? null : replica.contentSha256(),
-            () -> loadGeneration.get() == generation && captureAt(admittedPath) == null
-                && !org.triplehelix.wpilogmcp.store.ReplicaReads.openCapture(admittedPath, securityValidator),
-            scanObserver);
+        log = openLazy(filePath, snapshot.grewFrom(previousSnapshot) ? previousScan : null, snapshot, replica,
+            generation);
       } catch (LogFileException e) {
         // Not a log at all (empty, zeros, another format): the eager parser would only say
         // the same

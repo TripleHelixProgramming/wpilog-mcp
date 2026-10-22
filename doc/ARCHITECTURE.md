@@ -996,7 +996,8 @@ index proved and by their format and recipe versions, so every copy of the same 
 file and nothing written by another recipe is read. The server builds them in the background,
 one at a time on a low-priority thread, for a log it reads from its file and for the logs a
 store's session manifest records; asking touches only memory, since a store asks on its own
-thread. A build waits while the heap is short or while a store would refuse a copy for want of
+thread. A closed capture still served from memory is read again from its file for its build,
+privately, so the copy in memory goes on serving reads. A build waits while the heap is short or while a store would refuse a copy for want of
 recording's reserve, publishes nothing if the file changed while it was read, and trims the
 cache to its limit afterwards, keeping the files readers hold. Nothing reads them yet;
 [the column file plan](COLUMN_CACHE_PLAN.md) gives the design and the measurements, and a

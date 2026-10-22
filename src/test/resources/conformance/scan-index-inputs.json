@@ -3,7 +3,7 @@
   "recipe_version": 1,
   "reviewed_at": "2026-10-21",
   "decision": "cache_unaffected",
-  "reason": "Format 2 and recipe 1 are unchanged. Column files join the disk cache: the cache owner gains their names, the startup sweep's check of their headers and a trim to the size limit after each build; the lazy log's opener records the content SHA-256 that a reused index or the before-and-after proof of a scan established; the log manager starts the builds and asks for them after a load. How a log is scanned, how an index is encoded, read and trusted, and which files are eligible are untouched, so indexes already written give the same answers. The trim can evict an index sooner than the startup sweep did; a missing index is a miss and a fresh scan.",
+  "reason": "Format 2 and recipe 1 are unchanged. The log manager's admission and lazy open move, unchanged, into helpers that an ordinary read shares with a new read from the file; that read opens a finished capture still served from memory again from its file, privately, for a column file's build, with the same eligibility, so any index it writes is the one an ordinary read would write. How a log is scanned, how an index is encoded, read and trusted, and which files are eligible are untouched, so indexes already written give the same answers.",
   "previous_format_version": 2,
   "previous_recipe_version": 1,
   "source_sha256": {
@@ -14,7 +14,7 @@
     "org/triplehelix/wpilogmcp/log/FileSnapshot.java": "394586e261df0b8ead605f67ff09334b4d439c114ae526e7de332df0c65bc68b",
     "org/triplehelix/wpilogmcp/log/LazyParsedLog.java": "fed399967116a88c2e2b396dd85896dcd641d09b31195676b246cd98d84f068f",
     "org/triplehelix/wpilogmcp/log/LogBytes.java": "7132f203db4e70b6bbdff119acd960432944d87ec4fddfcc3da24a9580428a75",
-    "org/triplehelix/wpilogmcp/log/LogManager.java": "3f9300e6bb2adf4336c763ae37afaa82ba32373342445a1d8c55947fe8227685",
+    "org/triplehelix/wpilogmcp/log/LogManager.java": "c73d2f0106aa2a414c43e566830968b7b6e77429cea94d861469dd00ce557de9",
     "org/triplehelix/wpilogmcp/log/LogReader.java": "86ac1517f2acbe03ef880b44af7972fd258214b2b7c19c59ee3ff1fa317d7adc",
     "org/triplehelix/wpilogmcp/log/LogScan.java": "ae044f7252e8bfb98d13ea8a19644146db753126ffe7b91ded5f78b51703a9d5",
     "org/triplehelix/wpilogmcp/log/MappedLogBytes.java": "b7e3470779478fadd040f7facabe4812cc849875ff27f3740b072797090dd34a",

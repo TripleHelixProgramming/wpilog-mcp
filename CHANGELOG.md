@@ -40,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The server builds a column file for each finished log in the background and keeps it in the
   disk cache, named by the content's SHA-256 and the format and recipe versions; nothing reads
   the files yet. A log gets one when the server reads it from its file, and when a store's
-  session manifest records it, as an import, a pull, an upload and a capture's close do. Builds
+  session manifest records it, as an import, a pull, an upload and a capture's close do; a
+  closed capture still served from memory is read again from its file for the build. Builds
   run one at a time on a low-priority thread, wait while the heap has less than 512 MB free or a
   store would refuse a copy for want of recording's reserve, publish nothing when the file
   changed while it was read, and trim the cache to its limit afterwards. Before, the cache's

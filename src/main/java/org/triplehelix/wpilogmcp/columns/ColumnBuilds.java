@@ -65,20 +65,24 @@ public final class ColumnBuilds implements AutoCloseable {
     Lease acquire(String path) throws IOException;
   }
 
-  /** The manager's logs, read-only, so that a build starts no REV synchronization. */
+  /**
+   * The manager's logs as their files hold them: read-only, so a build starts no REV
+   * synchronization, and from the file even where a closed capture is still served from memory.
+   */
   public static Logs from(LogManager manager) {
     return path -> {
-      var use = manager.acquireReadOnly(path);
+      var use = manager.acquireFromFile(path);
       return new Lease() {
         @Override
         public LogData log() {
           return use.log();
         }
 
+        /** The file read, not the path asked for: a request may name a path since moved. */
         @Override
         public boolean unchanged() {
           try {
-            return use.snapshot() != null && use.snapshot().sameAs(FileSnapshot.of(Path.of(path)));
+            return use.snapshot() != null && use.snapshot().sameAs(FileSnapshot.of(Path.of(use.log().path())));
           } catch (IOException gone) {
             return false;
           }
