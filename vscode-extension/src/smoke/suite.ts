@@ -42,11 +42,14 @@ async function smoke(): Promise<void> {
     assert.ok(!fs.existsSync(pidFile), "activation alone starts no shared server");
     record("activation");
 
-    const find = async (parent?: LogItem): Promise<LogItem | undefined> => {
+    // What the search walked, for a failure message: a missing fixture otherwise hides the reason.
+    const walked: string[] = [];
+    const find = async (parent?: LogItem, depth = 0): Promise<LogItem | undefined> => {
       for (const item of await api.logs.getChildren(parent)) {
+        walked.push(`${"  ".repeat(depth)}${item.node.kind}: ${String(item.label)}${item.description ? ` (${String(item.description)})` : ""}`);
         if (item.node.kind === "log" && item.node.log?.path === fixture) return item;
         if (item.collapsibleState !== vscode.TreeItemCollapsibleState.None) {
-          const child = await find(item); if (child) return child;
+          const child = await find(item, depth + 1); if (child) return child;
         }
       }
       return undefined;
@@ -63,7 +66,7 @@ async function smoke(): Promise<void> {
     assert.equal(info.version, extension.packageJSON.version);
     record("listing local logs starts the shared standalone server");
 
-    assert.ok(item, "actual Logs provider lists the generated fixture, through its window lease");
+    assert.ok(item, `actual Logs provider lists the generated fixture, through its window lease; it walked:\n${walked.join("\n") || "(nothing)"}`);
     record("Logs tree lists generated fixture");
 
     assert.equal(item.command?.command, "wpilog-mcp.explorer.openLog");
