@@ -471,6 +471,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A read of a store's catalog that meets a folder the store renamed or removed meanwhile, as it
+  renames a session's folder once the session's match is known, reads the store again, up to
+  three times, and then names the folder still moving rather than passing it by. Before,
+  `list_available_logs` could refuse a whole store ("No configured log directory could be read")
+  or leave the closing session out of its answer; the shop harness hit it in one run of three on a
+  Linux workstation.
 - The Compose example's Prometheus and Grafana start on a host with SELinux enforcing, such as
   Fedora or RHEL: each file the stack mounts from the repository carries `z`, so Docker relabels
   it for containers, and does nothing where SELinux is off. Before, Prometheus could not read its
@@ -793,6 +799,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the store alone. Before, the check ran against a server without a store, so it saw only the
   history panels' refusal. Two planted server mistakes and a planted dashboard mistake each fail
   it.
+- A catalog read is checked with a session folder renamed at chosen points inside the read,
+  through the read's own hooks: while another session is read, after it was read, as its own
+  manifest opens, and on every attempt. Each test fails on the previous code, and six planted
+  mistakes each fail them.
 - The recorder's buffer is checked against an output that writes each record as it comes, byte
   for byte and offset for offset, with buffers smaller than one record and larger than the whole
   file, through a write that fails halfway, a record larger than the buffer, a resumed file and a

@@ -6,6 +6,7 @@ package org.triplehelix.wpilogmcp.store;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -207,8 +208,58 @@ public final class StoreCatalog {
     }
   }
 
+  /** How many times a read starts over when a folder it listed vanished before it was read. */
+  private static final int READ_ATTEMPTS = 3;
+
+  /**
+   * A folder the read listed, gone before it was read: the store moved it meanwhile, as it renames
+   * a session's folder once the session's match is known. Readers take no lock, so the read starts
+   * over and finds the folder under its new name.
+   */
+  private static final class Vanished extends IOException {
+    Vanished(Path path, Throwable cause) { super("Moved while the catalog was read: " + path, cause); }
+  }
+
+  /**
+   * A read takes no lock, so the store can rename or remove a folder while the read walks it: the
+   * read would fail on the folder it listed, or pass it by unread. A rename is one atomic step, so
+   * the read starts over at once and sees its result. On the last attempt a folder still moving is
+   * named: a strict read fails with it, and a tolerant one lists it with the other problems.
+   */
   private static Snapshot readValidated(Path directory, SecurityValidator security, boolean strays,
       java.util.function.BiConsumer<Path, String> skipped, SessionReader reader, PathObserver observer, boolean tolerateControls) throws IOException {
+    for (int attempt = 1; ; attempt++) {
+      boolean last = attempt == READ_ATTEMPTS;
+      try {
+        return readOnce(directory, security, strays, skipped, reader, observer, tolerateControls, !last);
+      } catch (Vanished moved) {
+        // Read again: the next attempt lists the store as the move left it.
+      } catch (java.nio.file.NoSuchFileException missing) {
+        if (last) throw missing;
+      }
+    }
+  }
+
+  /** A folder found gone: read again while attempts remain; on the last, name it. */
+  private static void moved(Path folder, Throwable cause, boolean retry,
+      java.util.function.BiConsumer<Path, String> skipped) throws IOException {
+    var vanished = new Vanished(folder, cause);
+    if (retry) throw vanished;
+    if (skipped == null) throw new IOException(vanished.getMessage() + ", on each of " + READ_ATTEMPTS + " reads", cause);
+    skipped.accept(folder, vanished.getMessage());
+  }
+
+  /** Whether a failure is a folder's vanishing: the folder no longer exists. */
+  private static boolean vanished(Path folder, Throwable failure) {
+    for (var cause = failure; cause != null; cause = cause.getCause()) {
+      if (cause instanceof java.nio.file.NoSuchFileException) return !Files.exists(folder, LinkOption.NOFOLLOW_LINKS);
+    }
+    return false;
+  }
+
+  private static Snapshot readOnce(Path directory, SecurityValidator security, boolean strays,
+      java.util.function.BiConsumer<Path, String> skipped, SessionReader reader, PathObserver observer, boolean tolerateControls,
+      boolean retry) throws IOException {
     var root = directory.toRealPath();
     var io = new StoreFiles(root, security);
     io.observe(observer);
@@ -238,7 +289,10 @@ public final class StoreCatalog {
       for (var robotDir : children(robotsRoot)) {
         io.check(robotDir);
         var robotPath = robotDir.resolve("robot.json");
-        if (!Files.isDirectory(robotDir) || !Files.isRegularFile(robotPath)) continue;
+        if (!Files.isDirectory(robotDir) || !Files.isRegularFile(robotPath)) {
+          if (!Files.exists(robotDir, LinkOption.NOFOLLOW_LINKS)) moved(robotDir, null, retry, skipped);
+          continue;
+        }
         Robot robot;
         try {
           robot = io.read(robotPath, Robot.class);
@@ -283,11 +337,18 @@ public final class StoreCatalog {
         if (!Files.isDirectory(sessions)) continue;
         for (var day : children(sessions)) {
           io.check(day);
-          if (!Files.isDirectory(day)) continue;
+          if (!Files.isDirectory(day)) {
+            if (!Files.exists(day, LinkOption.NOFOLLOW_LINKS)) moved(day, null, retry, skipped);
+            continue;
+          }
           for (var sessionDir : children(day)) {
             io.check(sessionDir);
             var manifest = sessionDir.resolve("session.json");
-            if (!Files.isDirectory(sessionDir) || !Files.isRegularFile(manifest)) continue;
+            if (!Files.isDirectory(sessionDir) || !Files.isRegularFile(manifest)) {
+              // Listed, then gone: renamed since, and its new name was not in the listing.
+              if (!Files.exists(sessionDir, LinkOption.NOFOLLOW_LINKS)) moved(sessionDir, null, retry, skipped);
+              continue;
+            }
             try {
               var inventory = sessionInventory(io, root, sessionDir, robot, selectedReader);
               for (var path : inventory.managed()) {
@@ -296,6 +357,7 @@ public final class StoreCatalog {
               managed.addAll(inventory.managed()); managed.addAll(inventory.shared()); files.addAll(inventory.files());
               openCaptures.addAll(inventory.openCaptures()); sessionDirectories.add(inventory.session());
             } catch (IOException | RuntimeException invalid) {
+              if (vanished(sessionDir, invalid)) { moved(sessionDir, invalid, retry, skipped); continue; }
               if (skipped == null) throw invalid;
               skipped.accept(manifest, invalid.getMessage());
             }
@@ -308,7 +370,10 @@ public final class StoreCatalog {
       for (var bucket : children(unassigned)) {
         io.check(bucket);
         var manifest = bucket.resolve("import.json");
-        if (!Files.isDirectory(bucket) || !Files.isRegularFile(manifest)) continue;
+        if (!Files.isDirectory(bucket) || !Files.isRegularFile(manifest)) {
+          if (!Files.exists(bucket, LinkOption.NOFOLLOW_LINKS)) moved(bucket, null, retry, skipped);
+          continue;
+        }
         try {
           var file = io.read(manifest, LogFile.class);
           var path = io.resolve(bucket, file.path());
@@ -357,6 +422,12 @@ public final class StoreCatalog {
       var target = io.resolve(root, move.movedTo());
       if (Instant.parse(move.movedAt()).plus(MOVE_NOTICE_LIFETIME).isAfter(Instant.now())) {
         moved.add(new Move(move.originalPath(), target.toString(), move.movedAt()));
+      }
+    }
+    // A session read whole, then moved before the read finished: its paths are stale.
+    if (retry) {
+      for (var session : sessionDirectories) {
+        if (!Files.exists(session.path(), LinkOption.NOFOLLOW_LINKS)) throw new Vanished(session.path(), null);
       }
     }
     return new Snapshot(root, header, List.copyOf(robots), List.copyOf(files),

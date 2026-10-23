@@ -728,6 +728,13 @@ so later growth refreshes observed sizes. Shrinkage, same-size modification and 
 pass as growth. Two unstable scans return retryable `FILE_CHANGED`, not a history verdict; the
 managed reader and ordinal engine still own writer/ordinal/hash continuity. A missing member
 while building the canonical map also restarts the bounded scan rather than publishing it.
+Beneath it, each store's catalog is read without a lock, so the store can rename or remove a
+folder while a read walks it, as it renames a session's folder once the session's match is known.
+A read that finds a folder it listed gone, or a session it read moved before it finished, starts
+over at once, since a rename is one atomic step; on its third attempt it names a folder still
+moving, as the error of a strict read or a problem of a tolerant one, rather than passing it by. The
+shop harness found the race on a Linux workstation: a listing refused a whole store over one
+session renamed as it closed, and a read that missed the moment left the session out instead.
 The HTTP endpoint retains the catalog while its admitted root set agrees, retiring an old set
 after its final request. REV descriptions and queries share bounded immutable decodes there,
 with leases charging active reads and alignment kept per request. Native REV queries decode only
