@@ -159,6 +159,26 @@ systemd locally; their ordinary Java tests still cover the foreground command an
 The retry exhaustion and `OnFailure=` restart still need a real Linux-host check; the
 existing CI probe step alone does not exercise them.
 
+### The metrics stack check
+
+CI's Linux job runs `ci/check_metrics.py` after building the shadow JAR. It starts the server
+and the documented Compose stack (Prometheus, and Grafana with the pinned Infinity plugin) and
+checks, in two phases:
+
+1. With no store and nothing recording: the configuration and a scrape pass `promtool`, every
+   sampled-dashboard query parses on the real Prometheus, the plugin is the pinned release, all
+   three dashboards are provisioned, and the recorded and history panels' own queries, sent
+   through Grafana, are refused by the server.
+2. On a store of two logs whose clocks the check sets, a roboRIO log and a recording of the same
+   minutes, written by the check from the format's specification: the history dashboard's robot
+   choice, its sessions table, and a panel's rows and buckets, each through Grafana, against rows
+   the check works out from the store alone.
+
+Run it on any Linux host with Docker and its compose plugin, from the repository root, with
+exactly one `build/libs/*-all.jar` and ports 2363, 3000 and 9090 free; its evidence lands in
+`build/metrics-smoke`. macOS cannot run it without Docker. `python3 -m unittest ci.test_check_metrics`
+checks its fixture writer, expected rows and answer checks without Docker.
+
 ### What `./gradlew test` covers
 
 Tests are in `src/test/java`, in the same packages as the code they test, plus a few test-only packages: `fixtures`, `conformance`, `golden`, `docs`, and `integration`.

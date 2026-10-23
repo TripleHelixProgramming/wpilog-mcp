@@ -4,6 +4,10 @@ import json
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
+import struct
+import tempfile
+from pathlib import Path
+from ci import check_metrics
 from ci.check_metrics import grafana_sample, history_refusal, pinned_infinity, preload_images, recording_refusal
 
 
@@ -106,3 +110,93 @@ class HistoryDashboardTest(unittest.TestCase):
         with patch('ci.check_metrics.post', return_value={'results': {'A': {'frames': []}}}):
             with self.assertRaisesRegex(AssertionError, 'not refused'):
                 history_refusal(self.dashboard())
+
+
+class FixtureStoreTest(unittest.TestCase):
+    def test_the_fixture_logs_follow_the_format_specification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'x.wpilog'
+            check_metrics.wpilog(path, [('/x', 'double', [(2_000_000, 1.5)])])
+            data = path.read_bytes()
+        # The header: magic, version 1.0, an empty extra header.
+        self.assertEqual(b'WPILOG', data[:6])
+        self.assertEqual((0x0100, 0), struct.unpack('<HI', data[6:12]))
+        # A start control record for entry 1, then its one sample.
+        header, entry, length, timestamp = struct.unpack('<BIIQ', data[12:29])
+        self.assertEqual((0x7F, 0, 0), (header, entry, timestamp))
+        start = data[29:29 + length]
+        self.assertEqual((0, 1), (start[0], struct.unpack('<I', start[1:5])[0]))
+        self.assertEqual(b'/x', start[9:11])
+        at = 29 + length
+        header, entry, size, timestamp = struct.unpack('<BIIQ', data[at:at + 17])
+        self.assertEqual((1, 8, 2_000_000), (entry, size, timestamp))
+        self.assertEqual(1.5, struct.unpack('<d', data[at + 17:at + 25])[0])
+        self.assertEqual(at + 25, len(data))
+
+    def test_the_expected_rows_follow_the_stretch_rule(self):
+        rows = check_metrics.expected_rows()
+        self.assertEqual(11 + 20 + 50, len(rows))
+        w = check_metrics.W
+        # The recording answers until the roboRIO log's first sample, the log its span, the recording after.
+        self.assertEqual((w + 100_000_000, 13 + 11 / 1000), rows[10])
+        self.assertEqual((w + 101_000_000, 12 + 1 / 100), rows[11])
+        self.assertEqual((w + 120_000_000, 12 + 20 / 100), rows[30])
+        self.assertEqual((w + 121_000_000, 13 + 32 / 1000), rows[31])
+
+    def test_the_expected_buckets_follow_the_bucket_rule(self):
+        w = check_metrics.W
+        # A window of 125 s in four buckets starting at 0, 31.25, 62.5 and 93.75 s; the last is empty.
+        rows = [(w + 90_000_000, 1.0), (w + 121_250_000, 2.0), (w + 121_250_001, 4.0), (w + 215_000_000, 8.0)]
+        self.assertEqual([(w + 90_000_000, 1, 1.0, 1.0, 1.0), (w + 121_250_000, 2, 2.0, 4.0, 3.0),
+                          (w + 183_750_000, 1, 8.0, 8.0, 8.0)], check_metrics.expected_buckets(rows, 4))
+
+    def dashboard(self):
+        with open('doc/pit-server/metrics/pit-history-dashboard.json', encoding='utf-8') as file:
+            return json.load(file)
+
+    def answer(self, columns):
+        """A frame as Infinity gives one: each field named by its column's display text."""
+        texts = {}
+        for target in [p['targets'][0] for p in self.dashboard()['panels'] if 'targets' in p] + [
+                v['query']['infinityQuery'] for v in self.dashboard()['templating']['list'] if v['type'] == 'query']:
+            for column in target.get('columns', []):
+                texts[column['selector']] = column.get('text') or column['selector']
+        names = [texts.get(c, c) for c in columns]
+        return {'results': {'A': {'frames': [{'schema': {'fields': [{'name': n} for n in names]},
+                                              'data': {'values': list(columns.values())}}]}}}
+
+    def test_a_history_panel_must_answer_the_rows_worked_out_from_the_fixture(self):
+        rows = check_metrics.expected_rows()
+        right = {'timestamp_utc': [utc // 1000 for utc, _ in rows], 'min': [v for _, v in rows],
+                 'max': [v for _, v in rows], 'mean': [v for _, v in rows]}
+        with patch('ci.check_metrics.post', return_value=self.answer(right)) as send:
+            self.assertEqual(len(rows), check_metrics.history_rows(self.dashboard()))
+            params = {p['key']: p['value'] for p in send.call_args.args[1]['queries'][0]['url_options']['params']}
+            self.assertEqual(('RIO', 'robot_log', check_metrics.RIO, check_metrics.PIT),
+                             (params['robot'], params['source'], params['names'], params['capture_names']))
+        wrong = dict(right, max=right['max'][:-1] + [right['max'][-1] + 1])
+        with patch('ci.check_metrics.post', return_value=self.answer(wrong)):
+            with self.assertRaisesRegex(AssertionError, 'expected'):
+                check_metrics.history_rows(self.dashboard())
+        with patch('ci.check_metrics.post', return_value={'results': {'A': {'frames': [{'schema': {'fields': []},
+                                                                                       'data': {'values': []}}]}}}):
+            with self.assertRaisesRegex(AssertionError, '0 rows answered'):
+                check_metrics.history_rows(self.dashboard())
+        with patch('ci.check_metrics.post', return_value={'results': {'A': {'error': 'status code : 404'}}}):
+            with self.assertRaisesRegex(AssertionError, 'refused'):
+                check_metrics.history_rows(self.dashboard())
+
+    def grafana(self, *answers):
+        """Answers as Grafana gives them: under the id each query carries."""
+        remaining = list(answers)
+        def send(url, body):
+            ref = body['queries'][0].get('refId')
+            return {'results': {ref: self.answer(remaining.pop(0))['results']['A']}}
+        return send
+
+    def test_the_choices_must_be_the_fixture_robot_and_sessions(self):
+        with patch('ci.check_metrics.post', side_effect=self.grafana({'robot_id': ['RIO']}, {'session_id': ['c', 'a']})):
+            self.assertEqual(2, check_metrics.history_choices(self.dashboard()))
+        with patch('ci.check_metrics.post', side_effect=[self.answer({'robot_id': ['OTHER']})]):
+            with self.assertRaisesRegex(AssertionError, 'fixture robot'):
+                check_metrics.history_choices(self.dashboard())

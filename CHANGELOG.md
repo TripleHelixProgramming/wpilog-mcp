@@ -782,6 +782,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filed in one session, of two boots, each placed by its own clock; and a peer's recording of the
   same boot refused. Five planted mistakes each fail them, the previous rule and the previous
   exemption among them.
+- CI's metrics check reads the history dashboard on a store of logs whose clocks the check sets:
+  the server restarts on a roboRIO log and a recording of the same minutes, written by the check
+  from the format's specification, and the dashboard's robot choice, sessions table and a panel's
+  rows and buckets, each through Grafana and Infinity, are checked against rows worked out from
+  the store alone. Before, the check ran against a server without a store, so it saw only the
+  history panels' refusal. Two planted server mistakes and a planted dashboard mistake each fail
+  it.
 - The recorder's buffer is checked against an output that writes each record as it comes, byte
   for byte and offset for offset, with buffers smaller than one record and larger than the whole
   file, through a write that fails halfway, a record larger than the buffer, a resumed file and a

@@ -624,6 +624,12 @@ On 2026-10-23, the server's reads and the dashboard's listings:
    those files are spared the overlap refusal, where before the files of one session were, which
    peer sync can give two recordings. Three tests, each with clocks that tell the rules apart, and
    five planted mistakes, each of which fails them.
+7. **The metrics check on a fixture store.** CI's metrics check restarts the server on a store of
+   two logs whose clocks the check sets, a roboRIO log and a recording of the same minutes, and
+   sends the history dashboard's own queries through Grafana and Infinity: the robot choice, the
+   sessions table, and a panel's rows and buckets, every row checked against rows the check works
+   out from the store alone. It ran on a Linux workstation with Docker on 2026-10-23; two server
+   mistakes and a dashboard mistake planted there each fail it.
 
 Built tests: a range over three files whose clocks the fixture sets, against rows worked out from
 the fixture alone, through a roboRIO log whose catalog time is an hour off, a sample before a
@@ -633,8 +639,7 @@ order, a file with no clock skipped, an open recording, a manifest the catalog c
 every refusal, the file limit, and both listings. Twelve planted mistakes were run; eleven fail
 them, and the twelfth, placing a sample from before the clock's first reading, cannot change an
 answer, since the window already starts at that reading. The dashboard's structure is checked as
-the recorded dashboard's is, and three planted mistakes fail it. Still to build: the metrics
-check against a fixture store whose clocks are known, which needs CI's Docker to run.
+the recorded dashboard's is, and three planted mistakes fail it.
 
 ### Tests that must fail first
 
