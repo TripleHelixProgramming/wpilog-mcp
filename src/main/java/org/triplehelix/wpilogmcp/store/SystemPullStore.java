@@ -234,7 +234,7 @@ public final class SystemPullStore implements FileTransfer.Local {
         prepared.stage = ImportStage.create(io, plan.to().getParent());
         prepared.copy = prepared.stage.path(plan.to().getFileName());
         prepared.reservation = store.reserveDiskCopy(prepared.copy.getParent(), before.size());
-        if (!Files.getFileStore(prepared.copy.getParent()).equals(Files.getFileStore(plan.to().getParent())))
+        if (!FilesystemIdentity.same(prepared.copy.getParent(), plan.to().getParent()))
           throw new IOException("System placement stage is not on the destination filesystem");
         var attributes = copier.copy(from, prepared.copy, before.size());
         if (Files.size(prepared.copy) != before.size() || !hash.equals(StoreFiles.hash(prepared.copy)))

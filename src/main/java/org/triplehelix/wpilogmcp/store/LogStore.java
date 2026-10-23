@@ -291,7 +291,7 @@ public final class LogStore implements AutoCloseable {
   /** Filesystem operations are injectable so tests can model a second volume without one. */
   static class Mover {
     boolean sameFileStore(Path source, Path destination) throws IOException {
-      return Files.getFileStore(source).equals(Files.getFileStore(destination.getParent()));
+      return FilesystemIdentity.same(source, destination.getParent());
     }
     void move(Path source, Path destination, java.nio.file.CopyOption... options) throws IOException {
       Files.move(source, destination, options);

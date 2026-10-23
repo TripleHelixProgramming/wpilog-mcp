@@ -72,7 +72,7 @@ public final class DiskSpaceBudgets implements AutoCloseable {
   private static final int MAX_SAMPLE_RETRIES = 8;
   private final SpaceSource space;
   private final LongSupplier clock;
-  private final Map<FileStore, Budget> filesystems = new LinkedHashMap<>();
+  private final Map<FilesystemIdentity, Budget> filesystems = new LinkedHashMap<>();
   private final Map<Path, StorePolicy> policies = new LinkedHashMap<>();
   private final AtomicBoolean closed = new AtomicBoolean();
   private int nextFilesystem;
@@ -95,12 +95,13 @@ public final class DiskSpaceBudgets implements AutoCloseable {
     // Resolve actual placement, including a nested mount, before entering accounting.
     var folder = existingDirectory.toRealPath();
     var filesystem = Files.getFileStore(folder);
+    var identity = FilesystemIdentity.of(filesystem);
     synchronized (filesystems) {
       if (closed.get()) throw new IOException("Disk-space owner is closed");
       var policy = policies.computeIfAbsent(root,
           ignored -> new StorePolicy(Policy.DEFAULT.reserveBytes(), false));
-      var budget = filesystems.computeIfAbsent(filesystem,
-          ignored -> new Budget(filesystem, folder, "filesystem_" + ++nextFilesystem));
+      var budget = filesystems.computeIfAbsent(identity,
+          ignored -> new Budget(filesystem, identity, folder, "filesystem_" + ++nextFilesystem));
       if (budget.stores.putIfAbsent(root, policy) == null) budget.changed();
       return new StoreBudget(budget, root);
     }
@@ -224,7 +225,7 @@ public final class DiskSpaceBudgets implements AutoCloseable {
         var root = roots.get(i);
         try {
           var resolved = Files.getFileStore(root);
-          if (!resolved.equals(budget.filesystem)) continue;
+          if (!FilesystemIdentity.of(resolved).equals(budget.identity)) continue;
           bytes = usableBytes(resolved);
           if (bytes != null) synchronized (filesystems) {
             budget.measuredThrough = resolved;
@@ -283,7 +284,7 @@ public final class DiskSpaceBudgets implements AutoCloseable {
   private record StorePolicy(long reserveBytes, boolean configured) {}
 
   private static final class Budget {
-    final FileStore filesystem;
+    final FilesystemIdentity identity;
     /** The filesystem as resolved through measuredFolder; both guarded by filesystems. */
     FileStore measuredThrough;
     Path measuredFolder;
@@ -292,8 +293,8 @@ public final class DiskSpaceBudgets implements AutoCloseable {
     long generation, reserved, sampledAt;
     Long free;
     volatile Snapshot published;
-    Budget(FileStore filesystem, Path folder, String id) {
-      this.filesystem = filesystem;
+    Budget(FileStore filesystem, FilesystemIdentity identity, Path folder, String id) {
+      this.identity = identity;
       this.measuredThrough = filesystem;
       this.measuredFolder = folder;
       this.id = id;

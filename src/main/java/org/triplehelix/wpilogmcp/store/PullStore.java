@@ -506,7 +506,7 @@ public final class PullStore implements FileTransfer.Local {
     try {
       owner = ImportStage.create(io, target.getParent());
       var staged = owner.path(Path.of("payload"));
-      if (!Files.getFileStore(staged.getParent()).equals(Files.getFileStore(target.getParent()))) {
+      if (!FilesystemIdentity.same(staged.getParent(), target.getParent())) {
         throw new IOException("Pull placement stage is not on the destination filesystem");
       }
       disk = store.reserveDiskCopy(staged.getParent(), snapshot.size());
