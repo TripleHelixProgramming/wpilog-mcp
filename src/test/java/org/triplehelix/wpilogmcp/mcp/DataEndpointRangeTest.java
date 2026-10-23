@@ -376,8 +376,8 @@ class DataEndpointRangeTest {
     refusal(get(HttpTransport.DATA_PATH, range(s, e, "names", RIO, "path", a.toString())), 400);
     refusal(get(HttpTransport.DATA_PATH, Map.of("robot", "RIO", "names", RIO, "start_utc", iso(s))), 400);
     refusal(get(HttpTransport.DATA_PATH, range(s, e, "names", RIO, "utc", "false")), 400);
-    assertTrue(refusal(get(HttpTransport.DATA_PATH, range(s, e, "names", "REV/SparkMax_3/AppliedOutput")), 400)
-        .get("error").getAsString().contains("REV signal"));
+    assertTrue(refusal(get(HttpTransport.DATA_PATH, range(s, e, "names", "REV/SparkMax_3/AppliedOutput", "capture_names", PIT)), 400)
+        .get("error").getAsString().contains("REV signal is one signal"), "A REV signal is named alike in both lists");
     // A second store and no choice: there is no default store.
     var other = store("other");
     transport.stop();

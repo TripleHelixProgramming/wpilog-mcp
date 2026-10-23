@@ -36,6 +36,8 @@ public final class RevReadCache implements AutoCloseable {
   private final long budget;
   private final Map<Key, Entry> entries = new LinkedHashMap<>(16, .75f, true);
   private long held;
+  /** The signals this cache's parses have decoded, every file's together. */
+  private long decodedSignals;
   private boolean loading, closed;
   public RevReadCache() { this(DEFAULT_BUDGET); }
   RevReadCache(long budget) { this.budget = budget; }
@@ -80,7 +82,7 @@ public final class RevReadCache implements AutoCloseable {
         if (!boundary.sameAs(FileSnapshot.of(path))) throw changed(path);
         var data = RecordedRevRead.immutableSignals(parsed.signals());
         long weight = 2 * boundary.size() + OVERHEAD + RevLogParser.retainedValueBytes(data);
-        synchronized (this) { held -= entry.bytes - weight; entry.bytes = weight; loading = false; }
+        synchronized (this) { held -= entry.bytes - weight; entry.bytes = weight; loading = false; decodedSignals += data.size(); }
         entry.data.complete(data);
       } catch (Throwable failure) {
         if (failure instanceof RevLogParser.SampleLimitException) failure = limit(failure.getMessage());
@@ -100,6 +102,9 @@ public final class RevReadCache implements AutoCloseable {
       throw new IOException("REV decoding failed", cause);
     }
   }
+  /** How many signals this cache's parses have decoded: a read that selects one signal adds one. */
+  public synchronized long decodedSignals() { return decodedSignals; }
+
   private static ReadException limit(String message) { return new ReadException(ReadProblem.Code.RESOURCE_LIMIT, message); }
   private static ReadException changed(Path path) { return new ReadException(ReadProblem.Code.FILE_CHANGED, "REV file changed while reading: " + path); }
   private synchronized void release(Key key, Entry entry) {

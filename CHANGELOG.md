@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty. Its first panel says what each refusal means. CI's metrics check provisions it and sends a
   panel's own query through Grafana, which the server, configured without a store, refuses.
   Before, Grafana showed the open capture and sampled latest values, never stored history.
+- A robot range reads REV signals: a name that starts with `REV/`, the same in `names` and
+  `capture_names`, is read from the robot's REV logs, each placed through the alignment the store
+  recorded with a WPILOG of its session that the range placed, the roboRIO's log before the pit's
+  recording, and decoded for the signals asked for alone. A REV log without a recorded alignment is
+  listed as skipped, never correlated during a request. Before, a range refused a REV signal, and
+  one was read only by its log's path.
 - Every capture records its server's wall clock as `/Daemon/Clock/EpochTimeMicros`: after each
   NetworkTables time synchronization, the next value logged takes a reading at its own robot
   time, so a robot that publishes no wall clock can still be placed in UTC, live and in its
@@ -451,6 +457,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read, and a UTC window is refused with `422` only when no file of the session can be placed.
   Before, a live panel read the open file alone, so after a radio blip it lost everything before
   the reconnect until its window moved past it.
+- A robot range loads its logs without starting REV synchronization, as the closed files of the
+  recording `capture=current` reads do. Before, a range's first read of each log started the
+  background synchronization a tool's read starts, which decodes every signal of each REV log
+  recorded with it, for a request that named none.
 
 ### Fixed
 
@@ -753,6 +763,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in seconds, a peer's capture of the same boot left out, a file the manifest still names open, an
   unreadable file listed, a file without a clock counted unplaced, an angle unwrapped once across
   the reconnect, and the file limit. Sixteen planted mistakes each fail them.
+- REV signals in a robot range are checked on a session whose recording's clock reads half a
+  second later than its roboRIO log's, so placing a REV log through either gives a different
+  answer: through the roboRIO log by default and through the recording alone with
+  `source=capture`, each row worked out from the fixture; one signal decoded, counted, and no
+  synchronization started; a REV log without an alignment, or without the signal, listed; two REV
+  logs over one signal refused and two buses' logs both answering. Ten planted mistakes each fail
+  them.
 - The recorder's buffer is checked against an output that writes each record as it comes, byte
   for byte and offset for offset, with buffers smaller than one record and larger than the whole
   file, through a write that fails halfway, a record larger than the buffer, a resumed file and a

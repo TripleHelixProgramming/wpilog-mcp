@@ -4,9 +4,9 @@ Status: proposed on 2026-10-21 at the maintainer's request, and its [decisions](
 answered the same day. Stage 1 was [built](#stage-1-built-so-far) on 2026-10-22: the server's
 reads, the gate, which they pass, and the recorded dashboard. Stage 2's
 [design](#stage-2-design-history-by-robot-and-time) was answered on 2026-10-23 as proposed, and
-its server reads and dashboard are [built](#stage-2-built-so-far); REV signals in a range are
-still to build. Two answers differ from the proposal: a dashboard starts from a robot and a time
-range, and live panels on the open capture come first.
+its server reads, REV signals included, and its dashboard are [built](#stage-2-built-so-far).
+Two answers differ from the proposal: a dashboard starts from a robot and a time range, and live
+panels on the open capture come first.
 The designs those answers need are agreed before they are built. The first stage's design is
 [proposed below](#stage-1-design-the-open-capture); the maintainer answered its six questions
 on 2026-10-21.
@@ -608,6 +608,13 @@ On 2026-10-23, the server's reads and the dashboard's listings:
    then, each closed file's up to its last record, so the values a reconnect repeats keep the
    time the closed file gave them. Fourteen tests over files whose clocks they set, every row
    worked out from the fixture, and sixteen planted mistakes, each of which fails them.
+5. **REV signals in a range.** A REV log is placed through the alignment the store recorded with
+   a WPILOG of its session that the range placed, the roboRIO's log where one aligns and the
+   recording otherwise, as the maintainer confirmed on 2026-10-23, and only the signals asked for
+   are decoded. A REV log without a recorded alignment is listed as skipped and never correlated,
+   and a range's logs load without starting REV synchronization. Eight tests, on a session whose
+   recording's clock reads half a second later than its roboRIO log's, so the two anchors give two
+   answers; ten planted mistakes, each of which fails them.
 
 Built tests: a range over three files whose clocks the fixture sets, against rows worked out from
 the fixture alone, through a roboRIO log whose catalog time is an hour off, a sample before a
@@ -617,9 +624,8 @@ order, a file with no clock skipped, an open recording, a manifest the catalog c
 every refusal, the file limit, and both listings. Twelve planted mistakes were run; eleven fail
 them, and the twelfth, placing a sample from before the clock's first reading, cannot change an
 answer, since the window already starts at that reading. The dashboard's structure is checked as
-the recorded dashboard's is, and three planted mistakes fail it. Still to build: REV signals in a
-range, which a range refuses until then, and the metrics check against a fixture store whose
-clocks are known, which needs CI's Docker to run.
+the recorded dashboard's is, and three planted mistakes fail it. Still to build: the metrics
+check against a fixture store whose clocks are known, which needs CI's Docker to run.
 
 ### Tests that must fail first
 

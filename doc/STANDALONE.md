@@ -1376,9 +1376,21 @@ At most 64 files are nominated; more are refused with `413` and the true count.
   Without it, a CSV row is `timestamp_utc,file,timestamp_sec,...`: `file` indexes `inputs.files`
   and `timestamp_sec` is the file's own time. Arrow carries the same columns, with `timestamp` in
   the file's microseconds in place of `timestamp_sec`. A range has no `ETag`.
+- **REV signals.** A name that starts with `REV/` is a REV log's signal, as the REV log names it
+  (`REV/SparkMax_3/AppliedOutput`), and one signal whichever log places it, so `names` and
+  `capture_names` give it alike. It is read from the robot's REV logs the catalog nominates, each
+  placed through the alignment the store recorded with a WPILOG of its session that the range
+  placed, the roboRIO's log before the pit's recording, and decoded for the signals asked for
+  alone. Nothing is correlated during a request: a REV log without a recorded alignment, or one
+  that holds none of the signals asked for, is listed in `inputs.skipped` with why. In
+  `inputs.files` a REV log has `source` `rev`, `anchor`, the index of the WPILOG that places it,
+  and the alignment's `sync_method`, `offset_seconds` and `sync_confidence`; a REV sample's
+  `timestamp_sec` is on its anchor's clock. Two REV logs that answer one signal over the same
+  minutes are refused together with `409`, and a REV log being decoded for another request
+  answers `503`, to be asked again.
+- Loading a range's logs starts no REV synchronization, unlike a tool's read of a log.
 - It cannot be combined with `path`, `capture`, `start_time`, `end_time` or a source
-  qualification, and `utc`, if given, must be `true`. A REV signal is read by its log's `path`
-  for now, since a range does not yet choose which WPILOG places a REV log; a range refuses one.
+  qualification, and `utc`, if given, must be `true`.
 
 **Robots and sessions.** `GET /data/robots` lists a store's robots, a CSV row each:
 `robot_id,serial_number,name,basis,store_id`. `GET /data/sessions` lists one robot's sessions

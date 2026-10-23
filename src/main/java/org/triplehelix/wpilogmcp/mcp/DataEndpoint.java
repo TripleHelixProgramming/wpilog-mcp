@@ -801,7 +801,8 @@ final class DataEndpoint {
    * where one exists and the pit's recording otherwise, which needs each entry's name in both, since
    * the two name one signal differently: {@code names} for the roboRIO's logs and
    * {@code capture_names} for the recordings, paired by position. {@code source=capture} reads the
-   * recordings alone.
+   * recordings alone. A REV signal is one signal whichever log places it, so a pair names it
+   * alike; it is read from the robot's REV logs, each placed through a recorded alignment.
    */
   private record RangeRequest(String robot, String store, boolean capturesOnly, List<String> names,
       List<String> captureNames, long startUtc, long endUtc, Integer maxPoints, String format, String angle) {
@@ -811,10 +812,21 @@ final class DataEndpoint {
       var chosen = role == DataRanges.Role.ROBOT_LOG ? names : captureNames;
       return chosen.isEmpty() ? null : chosen.get(entry);
     }
+    /** A REV signal, read from the robot's REV logs and not from a WPILOG. */
+    boolean rev(int entry) { return label(entry).startsWith(EntryData.REV_PREFIX); }
+    String revKey(int entry) { return label(entry).substring(EntryData.REV_PREFIX.length()); }
+    boolean anyRev() {
+      for (int i = 0; i < entries(); i++) if (rev(i)) return true;
+      return false;
+    }
   }
 
-  /** A placed file: what the catalog nominated, the log read, and its UTC span inside the window. */
-  private record Placed(DataRanges.Candidate candidate, String log, long startUtc, long endUtc) {}
+  /**
+   * A placed file: what the catalog nominated, the log read, and its UTC span inside the window; a
+   * WPILOG's clock, and a REV log's anchor, the index of the WPILOG that places it, with the alignment.
+   */
+  private record Placed(DataRanges.Candidate candidate, String log, long startUtc, long endUtc, UtcTimeMapping utc,
+      int anchor, org.triplehelix.wpilogmcp.sync.SyncResult alignment) {}
 
   /** A sample of a range: its measured UTC, the placed file it came from, and its value there. */
   private record RangeSample(long utcUs, int file, TimestampedValue value) {}
@@ -848,12 +860,19 @@ final class DataEndpoint {
     if (!names.isEmpty() && !captureNames.isEmpty() && names.size() != captureNames.size())
       throw new Refusal(400, "names and capture_names pair by position, so they need as many entries each, not "
           + names.size() + " and " + captureNames.size(), null);
-    // A REV signal is placed through a REV log's recorded alignment with one WPILOG, which a range
-    // does not choose yet: it is refused rather than reported missing from every file.
-    for (var name : java.util.stream.Stream.concat(names.stream(), captureNames.stream()).toList()) {
-      if (name.startsWith(EntryData.REV_PREFIX))
-        throw new Refusal(400, "A robot range reads WPILOG entries; " + name + " is a REV signal, read by its log's path",
-            "GET /data/entries?path=<log>&names=" + name);
+    // A REV signal is one signal whichever WPILOG places its log, so a pair names it alike.
+    for (int i = 0; i < Math.max(names.size(), captureNames.size()); i++) {
+      String robotName = names.isEmpty() ? null : names.get(i), captureName = captureNames.isEmpty() ? null : captureNames.get(i);
+      boolean rev = robotName != null && robotName.startsWith(EntryData.REV_PREFIX)
+          || captureName != null && captureName.startsWith(EntryData.REV_PREFIX);
+      if (rev && robotName != null && captureName != null && !robotName.equals(captureName))
+        throw new Refusal(400, "A REV signal is one signal whichever log places it, so names and capture_names name it "
+            + "alike; entry " + (i + 1) + " is " + robotName + " and " + captureName, null);
+      for (var name : java.util.Arrays.asList(robotName, captureName)) {
+        if (name != null && name.equals(EntryData.REV_PREFIX))
+          throw new Refusal(400, "A REV signal names a device and a signal after " + EntryData.REV_PREFIX,
+              "names=REV/SparkMax_3/AppliedOutput");
+      }
     }
     Long startUtc = instant(q, "start_utc", true);
     Long endUtc = instant(q, "end_utc", false);
@@ -870,14 +889,6 @@ final class DataEndpoint {
   }
 
   private void serveRange(HttpExchange exchange, RangeRequest request) throws IOException, Refusal {
-    List<DataRanges.Candidate> candidates;
-    JsonArray problems;
-    try (var lease = catalogs.acquire()) {
-      var stores = DataRanges.stores(lease.value(), request.store());
-      problems = DataRanges.problems(lease.value(), stores);
-      candidates = DataRanges.candidates(stores, request.robot(), !request.capturesOnly(),
-          !request.captureNames().isEmpty(), request.startUtc(), request.endUtc());
-    }
     var placed = new ArrayList<Placed>();
     var skipped = new JsonArray();
     int count = request.entries();
@@ -885,78 +896,17 @@ final class DataEndpoint {
     var files = new ArrayList<JsonArray>();
     var types = new ArrayList<ArrowType>();
     for (int i = 0; i < count; i++) { samples.add(new ArrayList<>()); files.add(new JsonArray()); types.add(null); }
-    for (var candidate : candidates) {
-      org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot use;
-      try {
-        use = logAccess.acquire(candidate.path().toString(), null);
-      } catch (IOException unreadable) {
-        skipped.add(skippedFile(candidate, "Unreadable: " + unreadable.getMessage()));
-        continue;
+    JsonArray problems;
+    // The catalog is held while the files are read: a REV log opens through it, by its recorded alignment.
+    try (var lease = catalogs.acquire()) {
+      var stores = DataRanges.stores(lease.value(), request.store());
+      problems = DataRanges.problems(lease.value(), stores);
+      var candidates = DataRanges.candidates(stores, request.robot(), !request.capturesOnly(),
+          !request.captureNames().isEmpty(), request.anyRev(), request.startUtc(), request.endUtc());
+      for (var candidate : candidates) {
+        if (candidate.role() != DataRanges.Role.REV) readWpilog(request, candidate, placed, skipped, samples, files, types);
       }
-      try (use) {
-        var log = use.log();
-        var before = use.snapshot();
-        var utc = log.utcMapping();
-        var unplaced = utc.unavailableReason();
-        if (unplaced.isPresent()) {
-          skipped.add(skippedFile(candidate, "Not placed in UTC: " + unplaced.get()));
-          continue;
-        }
-        var window = logWindow(utc, request.startUtc(), request.endUtc());
-        var span = window == null ? null : span(log, utc, window, request);
-        if (span == null) {
-          skipped.add(skippedFile(candidate, "Outside the window"));
-          continue;
-        }
-        int index = placed.size();
-        placed.add(new Placed(candidate, log.path(), span[0], span[1]));
-        for (int i = 0; i < count; i++) {
-          String name = request.name(candidate.role(), i);
-          if (name == null) continue;
-          var facts = new JsonObject();
-          facts.addProperty("file", index);
-          facts.addProperty("entry", name);
-          files.get(i).add(facts);
-          EntryData.Series series;
-          try {
-            series = EntryData.resolve(log, name);
-          } catch (IllegalArgumentException missing) {
-            facts.addProperty("missing", missing.getMessage());
-            continue;
-          }
-          if (request.maxPoints() != null && !series.numeric() && !"boolean".equals(series.type())) {
-            throw new Refusal(400, "max_points buckets numeric entries; " + name + " is " + series.type()
-                + " in " + log.path(), "Ask for a numeric field inside it, or leave max_points out to read every sample");
-          }
-          EntryData.Prepared presentation;
-          try {
-            presentation = EntryData.prepareMicros(log, series, window[0], window[1], request.angle());
-          } catch (IllegalArgumentException invalid) {
-            throw new Refusal(400, invalid.getMessage(), "Select a numeric entry or scalar field for angle presentation");
-          }
-          var type = request.maxPoints() != null || presentation.angle() ? new ArrowType.Float64() : EntryData.arrowType(log, series);
-          if (types.get(i) == null) types.set(i, type);
-          else if (request.format().equals("arrow") && !types.get(i).equals(type)) {
-            throw new Refusal(400, "An Arrow stream has one schema, and " + name + " in " + log.path() + " ("
-                + describe(type) + ") does not share the value type of the same entry in an earlier file ("
-                + describe(types.get(i)) + ")", "Pass max_points, whose buckets have one shape, or ask for CSV");
-          }
-          var values = presentation.values();
-          if (request.maxPoints() != null && !series.numeric()) values = asNumbers(values);
-          int kept = 0;
-          for (var tv : values) {
-            var at = utc.at(tv.timestampUs()).epochMicros();
-            if (at == null || at < request.startUtc() || at > request.endUtc()) continue;
-            samples.get(i).add(new RangeSample(at, index, tv));
-            kept++;
-          }
-          facts.addProperty("type", series.type());
-          facts.addProperty("sample_count", kept);
-        }
-        // A finished file that changed while it was read is refused, as a single file is.
-        if (before != null && !before.sameAs(FileSnapshot.of(use.path())))
-          throw new Refusal(409, "A log changed during this data request: " + log.path(), "Ask again");
-      }
+      if (request.anyRev()) readRev(lease.value(), stores, candidates, request, placed, skipped, samples, files, types);
     }
     refuseOverlaps(placed);
     var covered = placed.stream().filter(p -> p.candidate().role() == DataRanges.Role.ROBOT_LOG).toList();
@@ -1017,6 +967,186 @@ final class DataEndpoint {
     }
   }
 
+  /** One WPILOG of a range: placed by its own clock, and each entry's samples inside the window. */
+  private void readWpilog(RangeRequest request, DataRanges.Candidate candidate, List<Placed> placed, JsonArray skipped,
+      List<List<RangeSample>> samples, List<JsonArray> files, List<ArrowType> types) throws IOException, Refusal {
+    org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot use;
+    try {
+      // A range reads what it names: loading a log here starts no REV synchronization.
+      use = logAccess.acquireWithoutRevSync(candidate.path().toString());
+    } catch (IOException unreadable) {
+      skipped.add(skippedFile(candidate, "Unreadable: " + unreadable.getMessage()));
+      return;
+    }
+    try (use) {
+      var log = use.log();
+      var before = use.snapshot();
+      var utc = log.utcMapping();
+      var unplaced = utc.unavailableReason();
+      if (unplaced.isPresent()) {
+        skipped.add(skippedFile(candidate, "Not placed in UTC: " + unplaced.get()));
+        return;
+      }
+      var window = logWindow(utc, request.startUtc(), request.endUtc());
+      var span = window == null ? null : span(log, utc, window, request);
+      if (span == null) {
+        skipped.add(skippedFile(candidate, "Outside the window"));
+        return;
+      }
+      int index = placed.size();
+      placed.add(new Placed(candidate, log.path(), span[0], span[1], utc, -1, null));
+      for (int i = 0; i < request.entries(); i++) {
+        if (request.rev(i)) continue;
+        String name = request.name(candidate.role(), i);
+        if (name == null) continue;
+        var facts = new JsonObject();
+        facts.addProperty("file", index);
+        facts.addProperty("entry", name);
+        files.get(i).add(facts);
+        EntryData.Series series;
+        try {
+          series = EntryData.resolve(log, name);
+        } catch (IllegalArgumentException missing) {
+          facts.addProperty("missing", missing.getMessage());
+          continue;
+        }
+        if (request.maxPoints() != null && !series.numeric() && !"boolean".equals(series.type())) {
+          throw new Refusal(400, "max_points buckets numeric entries; " + name + " is " + series.type()
+              + " in " + log.path(), "Ask for a numeric field inside it, or leave max_points out to read every sample");
+        }
+        EntryData.Prepared presentation;
+        try {
+          presentation = EntryData.prepareMicros(log, series, window[0], window[1], request.angle());
+        } catch (IllegalArgumentException invalid) {
+          throw new Refusal(400, invalid.getMessage(), "Select a numeric entry or scalar field for angle presentation");
+        }
+        var type = request.maxPoints() != null || presentation.angle() ? new ArrowType.Float64() : EntryData.arrowType(log, series);
+        if (types.get(i) == null) types.set(i, type);
+        else if (request.format().equals("arrow") && !types.get(i).equals(type)) {
+          throw new Refusal(400, "An Arrow stream has one schema, and " + name + " in " + log.path() + " ("
+              + describe(type) + ") does not share the value type of the same entry in an earlier file ("
+              + describe(types.get(i)) + ")", "Pass max_points, whose buckets have one shape, or ask for CSV");
+        }
+        var values = presentation.values();
+        if (request.maxPoints() != null && !series.numeric()) values = asNumbers(values);
+        int kept = 0;
+        for (var tv : values) {
+          var at = utc.at(tv.timestampUs()).epochMicros();
+          if (at == null || at < request.startUtc() || at > request.endUtc()) continue;
+          samples.get(i).add(new RangeSample(at, index, tv));
+          kept++;
+        }
+        facts.addProperty("type", series.type());
+        facts.addProperty("sample_count", kept);
+      }
+      // A finished file that changed while it was read is refused, as a single file is.
+      if (before != null && !before.sameAs(FileSnapshot.of(use.path())))
+        throw new Refusal(409, "A log changed during this data request: " + log.path(), "Ask again");
+    }
+  }
+
+  /**
+   * A range's REV signals. Each REV log the catalog nominated is placed through its recorded
+   * alignment with a WPILOG the range placed, of its own session, a roboRIO log before a recording,
+   * and decoded for the signals asked for alone; nothing is correlated during a request. A REV log
+   * that no placed WPILOG aligns is listed with why. Two REV logs that answer one entry over the
+   * same minutes are refused together, as two WPILOGs of one source are.
+   */
+  private static void readRev(org.triplehelix.wpilogmcp.read.catalog.StoreReadCatalog catalog,
+      List<org.triplehelix.wpilogmcp.store.StoreCatalog.Snapshot> stores, List<DataRanges.Candidate> candidates,
+      RangeRequest request, List<Placed> placed, JsonArray skipped, List<List<RangeSample>> samples, List<JsonArray> files,
+      List<ArrowType> types) throws IOException, Refusal {
+    var keys = new java.util.LinkedHashSet<String>();
+    for (int i = 0; i < request.entries(); i++) if (request.rev(i)) keys.add(request.revKey(i));
+    var wpilogs = placed.stream().map(Placed::candidate).toList();
+    var answered = new LinkedHashMap<Integer, List<long[]>>();
+    for (var candidate : candidates) {
+      if (candidate.role() != DataRanges.Role.REV) continue;
+      var anchor = DataRanges.anchor(candidate, wpilogs, stores);
+      if (anchor.file() < 0) {
+        skipped.add(skippedFile(candidate, anchor.refusal()));
+        continue;
+      }
+      var on = placed.get(anchor.file());
+      org.triplehelix.wpilogmcp.read.rev.RecordedRevRead read;
+      try {
+        read = catalog.openRev(candidate.path(), on.candidate().path(), keys);
+      } catch (org.triplehelix.wpilogmcp.read.ReadException refused) {
+        switch (refused.code()) {
+          case BUSY, RESOURCE_LIMIT -> throw new Refusal(503, "A REV log cannot be decoded now: " + refused.getMessage(), "Ask again");
+          case FILE_CHANGED -> throw new Refusal(409, "A log changed during this data request: " + candidate.path(), "Ask again");
+          default -> {
+            skipped.add(skippedFile(candidate, "Unreadable: " + refused.getMessage()));
+            continue;
+          }
+        }
+      } catch (IOException unreadable) {
+        skipped.add(skippedFile(candidate, "Unreadable: " + unreadable.getMessage()));
+        continue;
+      }
+      try (read) {
+        if (read.state() != org.triplehelix.wpilogmcp.read.rev.RecordedRevRead.State.RECORDED) {
+          skipped.add(skippedFile(candidate, "Its recorded alignment cannot place it: " + read.reason()));
+          continue;
+        }
+        int index = placed.size();
+        var kept = new LinkedHashMap<Integer, List<RangeSample>>();
+        long first = Long.MAX_VALUE, last = Long.MIN_VALUE;
+        boolean holds = false;
+        for (int i = 0; i < request.entries(); i++) {
+          if (!request.rev(i) || !read.signals().containsKey(request.revKey(i))) continue;
+          holds = true;
+          var here = new ArrayList<RangeSample>();
+          // On the anchor's clock, by the recorded alignment, then in UTC by the anchor's own clock.
+          for (var tv : read.values(request.revKey(i))) {
+            var at = on.utc().at(tv.timestampUs()).epochMicros();
+            if (at == null || at < request.startUtc() || at > request.endUtc()) continue;
+            here.add(new RangeSample(at, index, tv));
+            first = Math.min(first, at);
+            last = Math.max(last, at);
+          }
+          kept.put(i, here);
+        }
+        if (!holds) {
+          skipped.add(skippedFile(candidate, "Holds none of the REV signals asked for"));
+          continue;
+        }
+        if (first > last) {
+          skipped.add(skippedFile(candidate, "Outside the window"));
+          continue;
+        }
+        placed.add(new Placed(candidate, read.path().toString(), first, last, null, anchor.file(), read.alignment()));
+        for (var entry : kept.entrySet()) {
+          int i = entry.getKey();
+          var here = entry.getValue();
+          var facts = new JsonObject();
+          facts.addProperty("file", index);
+          facts.addProperty("entry", request.revKey(i));
+          facts.addProperty("type", "double");
+          facts.addProperty("sample_count", here.size());
+          files.get(i).add(facts);
+          if (here.isEmpty()) continue;
+          here.sort(java.util.Comparator.comparingLong(RangeSample::utcUs));
+          for (var span : answered.getOrDefault(i, List.of())) {
+            if (span[0] <= here.get(here.size() - 1).utcUs() && here.get(0).utcUs() <= span[1]) {
+              var refusal = new Refusal(409, "Two of the robot's REV logs answer " + request.label(i) + " over the same "
+                  + "minutes, and nothing merges them: " + placed.get((int) span[2]).log() + " and " + read.path(),
+                  "Narrow the time range to one of them, or read each by its path");
+              var both = new JsonArray();
+              both.add(placed.get((int) span[2]).log());
+              both.add(read.path().toString());
+              refusal.body.add("files", both);
+              throw refusal;
+            }
+          }
+          answered.computeIfAbsent(i, k -> new ArrayList<>()).add(new long[] {here.get(0).utcUs(), here.get(here.size() - 1).utcUs(), index});
+          samples.get(i).addAll(here);
+          if (types.get(i) == null) types.set(i, new ArrowType.Float64());
+        }
+      }
+    }
+  }
+
   private static JsonObject skippedFile(DataRanges.Candidate candidate, String reason) {
     var skipped = new JsonObject();
     skipped.addProperty("path", candidate.path().toString());
@@ -1048,7 +1178,8 @@ final class DataEndpoint {
       for (int b = a + 1; b < placed.size(); b++) {
         var x = placed.get(a);
         var y = placed.get(b);
-        if (x.candidate().role() != y.candidate().role()) continue;
+        // REV logs are checked entry by entry as they are read: two buses' logs answer different signals.
+        if (x.candidate().role() != y.candidate().role() || x.candidate().role() == DataRanges.Role.REV) continue;
         if (x.candidate().role() == DataRanges.Role.CAPTURE
             && java.util.Objects.equals(x.candidate().sessionId(), y.candidate().sessionId())) continue;
         if (x.startUtc() <= y.endUtc() && y.startUtc() <= x.endUtc()) {
@@ -1076,6 +1207,8 @@ final class DataEndpoint {
     var stretches = new ArrayList<Stretch>();
     for (int i = 0; i < placed.size(); i++) {
       var p = placed.get(i);
+      // A REV log answers its own signals, beside whichever WPILOG answers a stretch.
+      if (p.candidate().role() == DataRanges.Role.REV) continue;
       if (p.candidate().role() == DataRanges.Role.ROBOT_LOG) {
         stretches.add(new Stretch(p.startUtc(), p.endUtc(), i, p.candidate().role().wire));
         continue;
@@ -1126,6 +1259,13 @@ final class DataEndpoint {
       if (p.candidate().open()) file.addProperty("recording", true);
       file.addProperty("start_utc", utcText(p.startUtc()));
       file.addProperty("end_utc", utcText(p.endUtc()));
+      if (p.alignment() != null) {
+        // How the REV log's times were put on its anchor's clock: the recorded alignment's basis.
+        file.addProperty("anchor", p.anchor());
+        file.addProperty("sync_method", p.alignment().method().name());
+        file.addProperty("offset_seconds", p.alignment().offsetSeconds());
+        file.addProperty("sync_confidence", p.alignment().confidenceLevel().getLabel());
+      }
       list.add(file);
     }
     inputs.add("files", list);

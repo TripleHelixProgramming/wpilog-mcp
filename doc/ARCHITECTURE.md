@@ -654,6 +654,15 @@ last record: a value the reconnect's file repeats at its original time is placed
 first recorded, and the two copies agree, where each file's own clock would give them two times
 a synchronization apart.
 
+A robot range chooses its files from the store's catalog and places each by its own clock, as
+one file is placed; the catalog's times, from the pit's clock, a log's own clock or a file's name,
+only nominate a file. A REV signal in a range is placed only through an alignment the store
+recorded, with a WPILOG of the REV log's session that the range placed, and only the signals
+asked for are decoded: a request never correlates, since a correlation costs seconds a file and
+would make a dashboard's refresh pay for a measurement. For the same reason a range, and a
+recording's closed files, load their logs without the REV synchronization a tool's first read of
+a log starts.
+
 `SystemLogClocks` shares the ambiguity validation: conflicting duplicate coordinates or
 backward epoch readings place neither forward UTC nor an inverse wall-clock time. Identical
 repeated pairs are redundant. Its wall-clock inverse also lives in `UtcTimeMapping`: recognized

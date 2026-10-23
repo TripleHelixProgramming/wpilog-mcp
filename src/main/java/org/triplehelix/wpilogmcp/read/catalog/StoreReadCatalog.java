@@ -365,6 +365,9 @@ public final class StoreReadCatalog implements AutoCloseable {
     return result;
   }
 
+  /** How many REV signals this catalog's reads have decoded, counted so a test can see a selection hold. */
+  public long revSignalsDecoded() { return revs.decodedSignals(); }
+
   private StoreFile requireMember(Path path) throws IOException {
     return requireMember(path, inventory());
   }

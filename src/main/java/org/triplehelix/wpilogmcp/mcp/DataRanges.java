@@ -32,14 +32,14 @@ final class DataRanges {
   static final int MAX_FILES = 64;
 
   enum Role {
-    ROBOT_LOG("robot_log"), CAPTURE("capture");
+    ROBOT_LOG("robot_log"), CAPTURE("capture"), REV("rev");
     final String wire;
     Role(String wire) { this.wire = wire; }
   }
 
-  /** A nominated file: its role, its session, and whether it is the capture still recording. */
+  /** A nominated file: its role, its session, whether it is the capture still recording, and its catalog record. */
   record Candidate(Path path, Role role, String storeId, String robotId, String sessionId, boolean open,
-      Long startedUs) {}
+      Long startedUs, StoreCatalog.StoredFile stored) {}
 
   /**
    * The stores a request reads: the one it names, or the only one. Several stores and no choice
@@ -88,12 +88,13 @@ final class DataRanges {
 
   /**
    * The robot's WPILOGs whose catalog times overlap the window widened by
-   * {@link #NOMINATION_MARGIN_US}, in calendar order. A file that states no time cannot be left
-   * out on that evidence, so it is nominated too. A robot the store does not know is refused, and
-   * so is a range that nominates more than {@link #MAX_FILES} files, with the true count.
+   * {@link #NOMINATION_MARGIN_US}, in calendar order, and its REV logs when a REV signal is asked
+   * for. A file that states no time cannot be left out on that evidence, so it is nominated too. A
+   * robot the store does not know is refused, and so is a range that nominates more than
+   * {@link #MAX_FILES} files, with the true count.
    */
   static List<Candidate> candidates(List<StoreCatalog.Snapshot> stores, String robot, boolean robotLogs,
-      boolean captures, long startUtc, long endUtc) throws DataEndpoint.Refusal {
+      boolean captures, boolean revLogs, long startUtc, long endUtc) throws DataEndpoint.Refusal {
     var found = new ArrayList<Candidate>();
     boolean known = false;
     for (var store : stores) {
@@ -101,17 +102,25 @@ final class DataRanges {
       var open = new HashSet<Path>();
       store.openCaptures().forEach(f -> open.add(f.path()));
       for (var file : store.allFiles()) {
-        if (!matches(file.robot(), robot) || !"wpilog".equals(file.file().kind())) continue;
-        var provenance = file.file().provenance();
-        var role = provenance != null && provenance.captured() ? Role.CAPTURE : Role.ROBOT_LOG;
-        if (role == Role.CAPTURE ? !captures : !robotLogs) continue;
+        if (!matches(file.robot(), robot)) continue;
+        Role role;
+        if ("revlog".equals(file.file().kind())) {
+          if (!revLogs) continue;
+          role = Role.REV;
+        } else if ("wpilog".equals(file.file().kind())) {
+          var provenance = file.file().provenance();
+          role = provenance != null && provenance.captured() ? Role.CAPTURE : Role.ROBOT_LOG;
+          if (role == Role.CAPTURE ? !captures : !robotLogs) continue;
+        } else {
+          continue;
+        }
         boolean recording = open.contains(file.path());
         Long start = epochMicros(file.file().startedAt());
         Long end = recording ? null : epochMicros(file.file().endedAt());
         if (start != null && start > endUtc + NOMINATION_MARGIN_US) continue;
         if (end != null && end < startUtc - NOMINATION_MARGIN_US) continue;
         found.add(new Candidate(file.path(), role, store.header() == null ? null : store.header().id(),
-            file.robot().id(), file.session() == null ? null : file.session().id(), recording, start));
+            file.robot().id(), file.session() == null ? null : file.session().id(), recording, start, file));
       }
     }
     if (!known) {
@@ -128,6 +137,34 @@ final class DataRanges {
     found.sort(Comparator.comparing((Candidate c) -> c.startedUs() == null ? Long.MAX_VALUE : c.startedUs())
         .thenComparing(c -> c.path().toString()));
     return found;
+  }
+
+  /** A REV log's anchor: the WPILOG at {@code file} in the list given, and the alignment onto its clock; or why none places it. */
+  record Anchor(int file, org.triplehelix.wpilogmcp.sync.SyncResult alignment, String refusal) {}
+
+  /**
+   * The WPILOG that places a REV log: of the files given, the first of its session with a recorded
+   * alignment, a roboRIO log before a recording, as the default source prefers the roboRIO's own
+   * log. Only recorded alignments count; nothing is correlated during a request.
+   */
+  static Anchor anchor(Candidate rev, List<Candidate> wpilogs, List<StoreCatalog.Snapshot> stores) {
+    var store = stores.stream().filter(s -> rev.stored().path().startsWith(s.root())).findFirst();
+    if (store.isEmpty()) return new Anchor(-1, null, "Not in a store the range reads");
+    var files = store.get().allFiles();
+    String origin = org.triplehelix.wpilogmcp.store.RecordedClocks.origin(store.get());
+    String failed = null;
+    for (var role : List.of(Role.ROBOT_LOG, Role.CAPTURE)) {
+      for (int i = 0; i < wpilogs.size(); i++) {
+        var wpilog = wpilogs.get(i);
+        if (wpilog.role() != role) continue;
+        var alignment = org.triplehelix.wpilogmcp.store.RecordedClocks.revAlignment(rev.stored(), wpilog.stored(), files, origin);
+        if (alignment.isEmpty()) continue;
+        if (alignment.get().isSuccessful()) return new Anchor(i, alignment.get(), null);
+        if (failed == null) failed = alignment.get().explanation();
+      }
+    }
+    return new Anchor(-1, null, failed != null ? "Its recorded alignment cannot place it: " + failed
+        : "No WPILOG the range placed has a recorded alignment with it");
   }
 
   static boolean matches(org.triplehelix.wpilogmcp.store.StoreManifest.Robot record, String robot) {
