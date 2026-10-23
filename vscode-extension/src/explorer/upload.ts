@@ -1,4 +1,5 @@
 import { HttpHeaders, noHeaders } from "../pitCredential";
+import { byteLimit } from "./storeClient";
 /** A selected laptop file is streamed, with a separately computed hash, to the pit importer.
  * Never repeat an uncertain POST: the user can retry and the store recognizes its hash. */
 import * as http from "http";
@@ -9,7 +10,8 @@ import { createHash } from "crypto";
 import { Exchange, ImportJob, ImportResult, importEndpointOf, pollImport } from "./importJobs";
 
 export async function uploadLog(mcpUrl: string, file: string, storeId: string,
-  report: (job: ImportJob) => void, sleep?: (ms: number) => Promise<void>, headersFor: HttpHeaders = noHeaders): Promise<ImportResult> {
+  report: (job: ImportJob) => void, sleep?: (ms: number) => Promise<void>, headersFor: HttpHeaders = noHeaders,
+  maxReplyBytes = 1024 * 1024): Promise<ImportResult> {
   const endpoint = importEndpointOf(mcpUrl);
   if (!["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password) throw new Error("Use an HTTP(S) pit URL without credentials");
   const info = await fs.promises.stat(file);
@@ -22,13 +24,23 @@ export async function uploadLog(mcpUrl: string, file: string, storeId: string,
     const input = fs.createReadStream(file);
     const request = (endpoint.protocol === "https:" ? https : http).request(endpoint, { method: "POST", timeout: 30_000,
       headers: { ...authorization, "Content-Type": "application/octet-stream", "Content-Length": info.size, "X-WPILOG-SHA256": hash.digest("hex") } }, response => {
-      const chunks: Buffer[] = []; let size = 0;
+      const chunks: Buffer[] = []; let size = 0, exceeded = false;
       response.on("data", (chunk: Buffer) => {
+        if (exceeded) return;
         size += chunk.length;
-        if (size > 1024 * 1024) request.destroy(new Error("Upload response exceeds 1 MiB")); else chunks.push(chunk);
+        // Refused here, then destroyed without the error: a reply that arrived whole would
+        // otherwise resolve with a truncated body, and on Node 20 and 22 an error destroy throws
+        // on its already freed socket.
+        if (size > maxReplyBytes) {
+          exceeded = true; input.destroy(); request.destroy(); reject(new Error(`Upload response exceeds ${byteLimit(maxReplyBytes)}`)); return;
+        }
+        chunks.push(chunk);
       });
       response.on("error", reject);
-      response.on("end", () => { input.destroy(); resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks).toString("utf8") }); });
+      response.on("end", () => {
+        if (exceeded) return;
+        input.destroy(); resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks).toString("utf8") });
+      });
     });
     input.on("error", error => request.destroy(error));
     request.on("timeout", () => request.destroy(new Error("The upload stopped making progress for 30 seconds")));

@@ -93,3 +93,10 @@ test("controls preserve refusal reasons, reject foreign poll URLs and bound a st
     mode = "stall"; await assert.rejects(client.status(), /timed out/);
   } finally { host.server.closeAllConnections(); await host.close(); }
 });
+
+test("a control reply over its byte limit is refused for its size even when it arrives whole", async () => {
+  // One piece: the reply has ended before the client sees it is too large.
+  const host = await server((_request, response) => { response.writeHead(200); response.end(Buffer.alloc(1025, 0x20)); });
+  try { await assert.rejects(new StoreClient(host.url, undefined, undefined, 1024).status(), /exceeds 1024 bytes/); }
+  finally { host.server.closeAllConnections(); await host.close(); }
+});
