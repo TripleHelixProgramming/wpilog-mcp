@@ -52,7 +52,7 @@ public final class ManagedLogAccess implements LogAccess {
       requested = requested.isAbsolute() ? requested : scope.root().resolve(requested);
       manager.sourceScopes().recheckPath(requested, scope);
       path = requested.toString();
-    } else if (!requested.isAbsolute()) {
+    } else if (SourceScopes.relativeToASource(requested)) {
       var choices = manager.sourceScopes().snapshot();
       if (choices.size() > 1) throw new SourceScopes.Failure("SOURCE_SELECTION_REQUIRED", "A relative file path requires an explicit source scope", choices);
     }

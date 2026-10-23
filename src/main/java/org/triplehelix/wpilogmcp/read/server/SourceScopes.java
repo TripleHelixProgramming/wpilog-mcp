@@ -112,12 +112,17 @@ public final class SourceScopes {
     return selected;
   }
 
-  /** An absolute file path is an explicit local selection. Relative names cannot select among
+  /** Only a path with no root is relative to a source, so only it needs a source chosen. On
+   * Windows, {@code \logs\match.wpilog} has a root but no drive: it names that file on the current
+   * drive, as every Windows program reads it, and cannot mean a file inside one of the sources. */
+  public static boolean relativeToASource(Path path) { return path.getRoot() == null; }
+
+  /** A path with a root is an explicit local selection. Relative names cannot select among
    * roots, and a scope-qualified path must stay in that exact store/directory after aliases. */
   public Scope forPath(Path path, String id) throws IOException {
     var scopes = snapshot(); var real = canonical(path);
     if (id == null && scopes.isEmpty()) return null; // Existing unrestricted standalone mode.
-    if (id == null && !path.isAbsolute() && scopes.size() > 1)
+    if (id == null && relativeToASource(path) && scopes.size() > 1)
       throw new Failure("SOURCE_SELECTION_REQUIRED", "Relative paths require an explicit source scope", scopes);
     var containing = scopes.stream().filter(s -> real.startsWith(s.root())).toList();
     // A manifested store owns its subtree even when its parent was also configured for browsing.

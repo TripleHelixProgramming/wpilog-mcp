@@ -84,7 +84,7 @@ public final class RecordedSources implements AutoCloseable {
   }
   public JsonObject identify(Authority caller, Path requested, String scopeId, boolean qualified) throws Exception {
     VisualizationAccess.transport(caller, qualified ? 2 : 1, VisualizationAccess.Operation.READ);
-    if (!qualified && !requested.isAbsolute()) {
+    if (!qualified && org.triplehelix.wpilogmcp.read.server.SourceScopes.relativeToASource(requested)) {
       var choices = logs.sourceScopes().snapshot();
       if (choices.size() > 1) throw new org.triplehelix.wpilogmcp.read.server.SourceScopes.Failure(
           "SOURCE_SELECTION_REQUIRED", "A relative file path requires an explicit source selection", choices,

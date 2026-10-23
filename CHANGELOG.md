@@ -759,6 +759,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Server installation:** destination containment checks refuse escaped symlinks, and installer JSON checks keep JVM stderr banners separate; previously installation could escape its destination or a JVM banner could be mistaken for invalid installer output.
 - **Health checks:** `health_check` recognizes an in-memory registered TBA key; previously it could report a missing key despite a client's active registration.
 - **File-size refusal:** WPILOGs beyond the supported mapping bound remain untouched on import and appear with the same explained refusal in plain-directory listings, instead of being omitted or partially placed. Windowed mapping raises that bound to 1 TiB.
+- **Windows paths without a drive:** with several log folders configured, a path such as `\logs\match.wpilog` now reads that file on the current drive, as any Windows program would. Before, it was refused as relative ("A relative file path requires an explicit source scope"), although a path with a root cannot be relative to one of the folders; on Windows, 408 tests that name mock logs this way failed. Nothing changes on macOS or Linux, where every such path is absolute.
 
 ### Security
 

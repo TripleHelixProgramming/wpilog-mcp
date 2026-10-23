@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.FixtureLogs;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
@@ -24,6 +25,9 @@ class SourceSelectionTest {
   final LogDirectory directory = LogDirectory.getInstance();
   Set<Path> oldAllowed;
   List<Path> oldDirectories;
+
+  // The fixture folder's grant lasts for the JVM: take it before remember(), so restore() keeps it.
+  @BeforeAll static void grantFixtureFolder() { FixtureLogs.defaultDirectory(); }
 
   @BeforeEach void remember() {
     oldAllowed = logs.getConfiguredDirectories(); oldDirectories = directory.getLogDirectories();
@@ -49,6 +53,30 @@ class SourceSelectionTest {
     assertEquals(2, result.getAsJsonArray("source_scopes").size());
     assertTrue(result.get("hint").getAsString().contains("ask the user"));
     assertFalse(result.has("logs"), "No file search precedes explicit selection");
+  }
+
+  @Test void onlyAPathWithNoRootIsRelativeToASource() throws Exception {
+    // Fixtures sit under the build folder, on the working directory's drive: the drive a Windows path
+    // such as \logs\match.wpilog names. JUnit's temporary folder can be on another drive.
+    var fixture = FixtureLogs.generateAll(FixtureLogs.defaultDirectory()).stream()
+        .filter(f -> f.id().equals("akit_match")).findFirst().orElseThrow().path().toRealPath();
+    var other = Files.createDirectory(temp.resolve("other")).toRealPath();
+    logs.clearAllowedDirectories(); logs.addAllowedDirectory(fixture.getParent()); logs.addAllowedDirectory(other);
+    directory.setLogDirectories(List.of(fixture.getParent().toString(), other.toString()));
+    var byName = entries(fixture.getFileName().toString());
+    assertEquals("SOURCE_SELECTION_REQUIRED", byName.get("code").getAsString(), byName.toString());
+    // On Windows this drops the drive letter and keeps the root; elsewhere it is the whole path.
+    var rooted = fixture.toString().substring(fixture.getRoot().toString().length() - 1);
+    assertEquals(fixture, Path.of(rooted).toAbsolutePath(), "the fixture is on the working directory's drive");
+    var full = entries(fixture.toString());
+    var fromRoot = entries(rooted);
+    assertEquals("ok", fromRoot.get("status").getAsString(), fromRoot.toString());
+    assertEquals(full.get("entries"), fromRoot.get("entries"));
+  }
+
+  private static JsonObject entries(String path) throws Exception {
+    var request = new JsonObject(); request.addProperty("path", path);
+    return new CoreTools.ListEntriesTool().execute(request).getAsJsonObject();
   }
 
   @Test void explicitListingsAndRelativeReadsRemainInTheirSelectedDirectory() throws Exception {
