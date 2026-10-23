@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { readSourceUri } from "../sourceUri";
 
 interface LogItem extends vscode.TreeItem { node: { kind: string; log?: { path: string } }; }
 interface Api {
@@ -81,7 +82,9 @@ async function smoke(): Promise<void> {
     await within(vscode.commands.executeCommand(item.command!.command, ...item.command!.arguments!), "fixture editor opens");
     assert.ok(vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab =>
       tab.input instanceof vscode.TabInputCustom && tab.input.viewType === "wpilog-mcp.explorer"
-      && tab.input.uri.fsPath === fixture), "the custom editor, not a text editor, opened this fixture");
+      // The editor opens a source document, whose address names the connection, server, scope and path.
+      && tab.input.uri.scheme === "wpilog-source" && readSourceUri(tab.input.uri.toString()).path === fixture),
+      "the custom editor, not a text editor, opened this fixture");
     record("custom editor opens the fixture");
 
     assert.equal(await within(api.smokeData(["/Value"], 0, 1), "Perspective fixture rows"), 2);
