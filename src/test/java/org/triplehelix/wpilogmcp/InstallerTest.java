@@ -9,7 +9,6 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonParser;
-import java.net.ServerSocket;
 import java.time.Year;
 import java.util.ArrayList;
 import java.io.File;
@@ -166,10 +165,8 @@ class InstallerTest {
     var root = home.resolve(".wpilog-mcp");
     var env = Map.of("JAVA_TOOL_OPTIONS", "-Duser.home=" + home);
     assertEquals(0, run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString()), env, false).exit());
-    int port;
-    try (var socket = new ServerSocket(0)) {
-      port = socket.getLocalPort();
-    }
+    // A port the daemon binds later, from outside the range other tests' connections draw on.
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused();
     var config = root.resolve("servers.yaml");
     String settings = "# preserved comment\nteam: 2363\nlogdir: []\nservers:\n  http:\n    transport: http\n    port: " + port + "\n";
     Files.writeString(config, settings);

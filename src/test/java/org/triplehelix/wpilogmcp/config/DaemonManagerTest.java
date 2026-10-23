@@ -64,11 +64,9 @@ class DaemonManagerTest {
     return transport;
   }
 
-  /** A port nothing listens on. */
+  /** A port nothing listens on, which no other test can take before the manager or a stand-in binds it. */
   private static int freePort() throws IOException {
-    try (var socket = new ServerSocket(0)) {
-      return socket.getLocalPort();
-    }
+    return org.triplehelix.wpilogmcp.fixtures.TestPorts.unused();
   }
 
   private List<String> pidFileLines(DaemonManager manager, String name) throws IOException {

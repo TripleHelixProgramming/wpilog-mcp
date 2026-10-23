@@ -8,7 +8,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -64,11 +63,9 @@ class MainImportTest {
     return config;
   }
 
-  /** Offline discovery must never probe the maintainer's well-known server port. */
+  /** Offline discovery must never probe the maintainer's well-known server port, nor one another test took. */
   private Path offlineConfig(Path... dirs) throws Exception {
-    int port;
-    try (var socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
-    return config("default", port, dirs);
+    return config("default", org.triplehelix.wpilogmcp.fixtures.TestPorts.unused(), dirs);
   }
 
   private JsonObject result(Ran ran) {
@@ -143,8 +140,7 @@ class MainImportTest {
 
   @Test void runningNamedDaemonReceivesJobAndOutsideCopiesOrMovesUseItsInbox() throws Exception {
     temp = temp.toRealPath();
-    int port;
-    try (var socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused();
     var root = Files.createDirectory(temp.resolve("store"));
     var config = config("pit", port, root);
     var output = temp.resolve("daemon.txt");

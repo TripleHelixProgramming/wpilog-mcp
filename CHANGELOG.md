@@ -891,6 +891,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- The daemon, installer and offline import tests take the ports they name from a slice below every
+  system's ephemeral range, one slice to each Gradle fork, each port checked free and handed out
+  once. Before, each test asked the system for a free port, closed it, and then had a daemon bind
+  it or expected it to stay empty, so a test in another fork could be handed the same port in
+  between, and full builds failed finding the port taken.
+
 - The store copy admission tests now grant their own folder and restore the log manager's grants
   afterwards. Previously the upload test relied on an empty grant list, which admits every path,
   so its import was refused ("outside configured log directories") whenever a test that uses the
