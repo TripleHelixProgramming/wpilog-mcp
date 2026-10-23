@@ -70,6 +70,7 @@ class SearchSystemLogsTest {
   /** A pulled robot log whose own clock runs 10..40 s, recorded as `offset` microseconds off robot time. */
   void pulled(long offset, double confidence) throws Exception {
     var log = capture.resolveSibling("robot").resolve("robot.wpilog"); Files.createDirectories(log.getParent());
+    org.triplehelix.wpilogmcp.fixtures.LogRewrites.releaseBeforeRewrite(log);
     try (var writer = new org.triplehelix.wpilogmcp.fixtures.WpilogWriter(log, "synthetic pulled log")) {
       int id = writer.start("/counter", "int64", "", 10_000_000);
       writer.append(id, 10_000_000, org.triplehelix.wpilogmcp.fixtures.WpilogWriter.encodeInt64(1));

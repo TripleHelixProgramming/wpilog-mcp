@@ -37,6 +37,7 @@ class ClockRecordsTest {
   /** Uptime 100 + 2i seconds at robot time 10 + 2i seconds: the pit's sampling every 2 s. */
   Path writeCapture(String id, int samples) throws Exception {
     var path = folder(id).resolve("capture.wpilog"); Files.createDirectories(path.getParent());
+    org.triplehelix.wpilogmcp.fixtures.LogRewrites.releaseBeforeRewrite(path);
     try (var writer = new WpilogWriter(path, "clock fixture")) {
       int uptime = writer.start(ClockRecords.UPTIME_ENTRY, "double", "{\"source\":\"ssh\"}", 10_000_000);
       for (int i = 0; i < samples; i++) writer.append(uptime, 10_000_000L + 2_000_000L * i, WpilogWriter.encodeDouble(100 + 2 * i));

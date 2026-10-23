@@ -187,7 +187,9 @@ class VisualizationEndpointTest {
     assertEquals(409, http.send(HttpRequest.newBuilder(url.apply(other)).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
     assertEquals(409, http.send(HttpRequest.newBuilder(URI.create(url.apply(path) + "&server_instance_id=" + UUID.randomUUID())).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
     assertEquals(400, http.send(HttpRequest.newBuilder(URI.create(url.apply(path) + "&scope_id=" + UUID.randomUUID())).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
-    java.nio.file.Files.writeString(path, "changed synthetic bytes");
+    // The log stays loaded: a cached read must still see its file change.
+    org.triplehelix.wpilogmcp.fixtures.LogRewrites.flipLastByte(path);
+    java.nio.file.Files.setLastModifiedTime(path, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 2000));
     var stale = http.send(HttpRequest.newBuilder(url.apply(path)).header("If-None-Match", reply.headers().firstValue("ETag").orElseThrow()).GET().build(), HttpResponse.BodyHandlers.ofString());
     assertEquals(409, stale.statusCode(), stale.body());
   }

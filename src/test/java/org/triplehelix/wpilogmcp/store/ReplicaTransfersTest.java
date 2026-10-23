@@ -391,7 +391,7 @@ class ReplicaTransfersTest {
     store.replicaTransfers().confirm(policy, id(), confirmation(candidate)).get();
     var path = store.root().resolve(result.file().path());
     try (var warm = manager.acquireReadOnly(path.toString())) { assertEquals(16.0, warm.log().values().get("/Value").get(0).value()); }
-    byte[] corrupted = bytes.clone(); corrupted[corrupted.length - 1] ^= 1; Files.write(path, corrupted);
+    org.triplehelix.wpilogmcp.fixtures.LogRewrites.flipLastByte(path);
     Files.setLastModifiedTime(path, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 10_000));
     var failure = assertThrows(java.io.IOException.class, () -> manager.acquireReadOnly(path.toString()));
     assertTrue(failure.getMessage().contains("hash"), failure.getMessage());

@@ -52,8 +52,8 @@ class RecordingViewsTest {
     var request = saved.getAsJsonObject("saved_view_ref").deepCopy(); request.addProperty("request_id", UUID.randomUUID().toString()); return request;
   }
   void corrupt() throws Exception {
-    var path = fixture.directory.resolve("capture.wpilog"); var bytes = Files.readAllBytes(path); bytes[bytes.length - 1] ^= 1;
-    Files.write(path, bytes); Files.setLastModifiedTime(path, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 2000));
+    var path = fixture.directory.resolve("capture.wpilog"); org.triplehelix.wpilogmcp.fixtures.LogRewrites.flipLastByte(path);
+    Files.setLastModifiedTime(path, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 2000));
   }
   @Test void healthRequiresLocalAuthorityBeforeResolvingAnIdentity() {
     assertThrows(java.nio.file.AccessDeniedException.class, () -> workspace.health(Authority.UNTRUSTED, new JsonObject()));

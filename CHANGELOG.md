@@ -894,6 +894,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- Tests that write a new log over one the server has loaded now release it first, and tests that
+  corrupt a loaded log change its bytes in place. Windows refuses to truncate or replace a file
+  while it is mapped, so on Windows these tests failed before reaching what they test; the
+  content-hash test's rewrite then fell back to an eager parse and failed with a class cast, and it
+  now requires the lazy log it means to examine.
+
 - The editor smoke check now requires that activation alone starts no shared server, and checks the
   server's health and version after listing local logs, the first request that needs it. Before, it
   expected activation to start the server, which the extension stopped doing when local services

@@ -115,7 +115,7 @@ class RecordingBindingsTest {
   }
   @Test void everyCheckReadmitsTheSourceAndRejectsChangedHashOrGrant() throws Exception {
     resolved(check(config("entry", RecordingFixture.name(0), "int64", "number", null)), RecordingFixture.name(0));
-    var path = fixture.directory.resolve("capture.wpilog"); var bytes = Files.readAllBytes(path); bytes[bytes.length - 1] ^= 1; Files.write(path, bytes);
+    org.triplehelix.wpilogmcp.fixtures.LogRewrites.flipLastByte(fixture.directory.resolve("capture.wpilog"));
     assertTrue(assertThrows(java.io.IOException.class, () -> check(config("entry", RecordingFixture.name(0), "int64", "number", null))).getMessage().contains("SOURCE_UNAVAILABLE"));
     logs.clearAllowedDirectories(); logs.addAllowedDirectory(Files.createDirectory(temp.resolve("different")));
     assertThrows(Exception.class, () -> check(config("entry", RecordingFixture.name(0), "int64", "number", null)));
