@@ -13,8 +13,9 @@ const plants = [
     after: 'function activate(context) { throw new Error("Planted activation failure");', checks: 0, reason: /activat/i },
   { name: "server", file: "serverManager.js", before: "ensure(spec) {", after: "ensure(spec) { return Promise.resolve(undefined);",
     checks: 1, reason: /starts the shared daemon/ },
-  { name: "listing", file: "explorer.js", before: "async getChildren(element) {", after: "async getChildren(element) { return [];",
-    checks: 2, reason: /actual Logs provider lists/ },
+  // The listing still runs, and so starts the server; only the tree built from it is lost.
+  { name: "listing", file: "explorer.js", before: "return (0, logsTree_1.buildLogTree)(listing, this.filter).map(",
+    after: "return [].map(", checks: 2, reason: /actual Logs provider lists/ },
   { name: "editor", file: "explorer.js", before: 'vscode.commands.executeCommand("vscode.openWith",',
     after: 'Promise.resolve("vscode.openWith",', checks: 3, reason: /custom editor/ },
   { name: "data-append", file: "../media/dataView.js", before: "if (rows.length) await this.table.update(rows);",

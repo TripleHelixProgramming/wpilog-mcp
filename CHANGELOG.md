@@ -892,6 +892,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- The editor smoke check now requires that activation alone starts no shared server, and checks the
+  server's health and version after listing local logs, the first request that needs it. Before, it
+  expected activation to start the server, which the extension stopped doing when local services
+  became opt-in, so the check failed on both VS Code versions as soon as CI ran it. The listing plant
+  now breaks only the tree built from a listing, which still starts the server.
+
 - The systemd CI check installs all four printed units and proves the restart on a real Linux
   host: it pauses the server, whose port stays open but silent, requires the health probe to fail
   only after its retries, and requires systemd to leave a new process answering. A second plant,

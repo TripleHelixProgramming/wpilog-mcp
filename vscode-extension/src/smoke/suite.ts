@@ -36,19 +36,11 @@ async function smoke(): Promise<void> {
     const api = await within(extension.activate(), "activation");
     assert.ok(extension.isActive, "extension activated in VS Code");
     assert.ok(typeof api?.ready?.then === "function" && api?.logs, "activation exposes only readiness and the actual Logs provider's read interface");
-    record("activation");
-
-    await within(api.ready, "shared server startup");
+    await within(api.ready, "activation readiness");
+    // Local services are opt-in: nothing starts the shared server until a request needs it.
     const pidFile = path.join(testHome, ".wpilog-mcp", "run", "http.pid");
-    assert.ok(fs.existsSync(pidFile), "extension starts the shared daemon in the isolated home");
-    const [, port] = fs.readFileSync(pidFile, "utf8").split(/\r?\n/);
-    assert.ok(Number(port) > 0, "start records the chosen port");
-    const base = `http://127.0.0.1:${port}`;
-    const health = await within(fetch(`${base}/health`), "daemon health");
-    assert.equal(health.status, 200);
-    const info = await health.json() as { version: string };
-    assert.equal(info.version, extension.packageJSON.version);
-    record("shared standalone server starts");
+    assert.ok(!fs.existsSync(pidFile), "activation alone starts no shared server");
+    record("activation");
 
     const find = async (parent?: LogItem): Promise<LogItem | undefined> => {
       for (const item of await api.logs.getChildren(parent)) {
@@ -59,7 +51,18 @@ async function smoke(): Promise<void> {
       }
       return undefined;
     };
+    // Listing local logs is the first request that needs the local server.
     const item = await within(find(), "Logs tree listing");
+    assert.ok(fs.existsSync(pidFile), "listing local logs starts the shared daemon in the isolated home");
+    const [, port] = fs.readFileSync(pidFile, "utf8").split(/\r?\n/);
+    assert.ok(Number(port) > 0, "start records the chosen port");
+    const base = `http://127.0.0.1:${port}`;
+    const health = await within(fetch(`${base}/health`), "daemon health");
+    assert.equal(health.status, 200);
+    const info = await health.json() as { version: string };
+    assert.equal(info.version, extension.packageJSON.version);
+    record("listing local logs starts the shared standalone server");
+
     assert.ok(item, "actual Logs provider lists the generated fixture, through its window lease");
     record("Logs tree lists generated fixture");
 

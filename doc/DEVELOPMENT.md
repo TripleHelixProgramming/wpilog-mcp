@@ -504,8 +504,9 @@ editor. `npm test` is unchanged.
 
 The smoke generates its log once with the pure-Java fixture writer, copies it and its append record
 into each run's temporary folder, seeds a standalone install in a temporary home under
-`build/extension-smoke`, and lets the extension start its server. It checks activation, the shared
-daemon's health/version, the actual Logs provider's leased fixture listing, the custom editor tab,
+`build/extension-smoke`, and lets the extension start its server when a request first needs one. It
+checks that activation alone starts no server, that listing local logs starts the shared daemon with
+the right health and version, the actual Logs provider's leased fixture listing, the custom editor tab,
 Perspective's actual row count (two fixture records, then three after an appended record), and the
 real pit command's user-scope arguments. A test `claude` executable records argv without registering
 anything.
@@ -514,12 +515,12 @@ The runner stops its own daemon, retains logs/results under `build/extension-smo
 changes the user's install or account. Test code, downloaded editors and dependencies are excluded
 from the VSIX.
 
-CI then runs `test:smoke:plants`: six faults in disposable compiled output remove activation,
-startup, listing or editor opening, replace an appended table batch, or add a synthetic secret
-argument. Each must fail at its own assertion after the earlier checks passed; a timeout or
+CI then runs `test:smoke:plants`: seven faults in disposable compiled output remove activation,
+startup, the listed tree or editor opening, replace an appended table batch, rename a data-store
+command, or add a synthetic secret argument. Each must fail at its own assertion after the earlier checks passed; a timeout or
 unrelated crash is not accepted. The script restores every compiled file and runs only in Linux CI.
 
-This retires the real-editor caveat for those six surfaces. It does not inspect rendered
+This retires the real-editor caveat for those seven surfaces. It does not inspect rendered
 plots, exercise credential dialogs, contact the Claude service, or prove agent discovery.
 The older milestones were checked without a real editor; these interactions still need the
 oldest supported and current versions by hand:
