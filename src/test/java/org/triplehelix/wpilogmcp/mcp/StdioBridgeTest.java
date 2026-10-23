@@ -14,7 +14,6 @@ import java.io.IOException;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -336,10 +335,7 @@ class StdioBridgeTest {
   @Test
   @DisplayName("a server that cannot be reached answers the request with an error and ends the bridge")
   void unreachableServer() throws Exception {
-    int port;
-    try (var socket = new ServerSocket(0)) {
-      port = socket.getLocalPort();
-    }
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused(); // Nothing answers, and no other test can take it.
     try (var client = new Client(URI.create("http://127.0.0.1:" + port + "/mcp"))) {
       client.send(request(1, "initialize", "{}"));
       var answer = client.next();

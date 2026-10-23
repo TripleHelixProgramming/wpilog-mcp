@@ -6,7 +6,6 @@ package org.triplehelix.wpilogmcp.capture.context;
 
 import static org.junit.jupiter.api.Assertions.*;
 import java.lang.management.ManagementFactory;
-import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -147,7 +146,7 @@ class JvmProviderTest {
   }
 
   @Test void refusedPortNamesLaunchFlagsAndUsesOneTwoFourSecondBackoff() throws Exception {
-    int port; try (var socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused(); // Nothing listens, and no other test can take it.
     var clock = new ManualScheduler(); var attempts = new AtomicInteger(); var retries = new ArrayList<Long>();
     var scheduler = new org.triplehelix.wpilogmcp.nt4.client.ClientScheduler() {
       public long nowUs() { return clock.nowUs(); }

@@ -894,6 +894,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- The bridge, JVM provider, import command and install refresh tests also take the ports they
+  expect nothing to answer on from that per-fork slice. Before, each closed a system-chosen port
+  and then relied on it staying empty, so a server in another test process could take it in
+  between; one full build failed this way, its bridge reaching a server it expected to be
+  unreachable.
+
 - The conformance sweep's teardown no longer throws when its setup failed part way, so a report
   shows the setup's own failure. On Windows the setup had failed on the drive-check bug above, so
   the sweep had not run there since that bug came in.

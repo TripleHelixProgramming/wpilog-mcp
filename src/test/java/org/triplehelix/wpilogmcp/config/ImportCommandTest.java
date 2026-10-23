@@ -12,7 +12,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -163,8 +162,7 @@ class ImportCommandTest {
   }
 
   @Test void noAnswerExplicitlyUsesTheOfflineImporter() throws Exception {
-    int port;
-    try (var socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused(); // Nothing answers, and no other test can take it.
     assertEquals(0, run(port), text());
     assertTrue(text().contains("No running daemon"), text());
     assertFalse(text().lines().anyMatch(line -> line.startsWith("job ")), text());
@@ -197,8 +195,7 @@ class ImportCommandTest {
   }
 
   @Test void specificNonLoopbackBindRefusesInsteadOfCreatingASecondWriter() throws Exception {
-    int port;
-    try (var socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused();
     var ran = child("192.0.2.1", port);
     assertEquals(1, ran.code(),
         "A specific non-loopback bind cannot safely use the loopback-only path-import route:\n"
