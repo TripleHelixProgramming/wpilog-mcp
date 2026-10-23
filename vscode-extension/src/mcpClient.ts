@@ -434,7 +434,11 @@ export class McpClient {
           response.on("data", (chunk: string) => {
             if (exceeded) return;
             bytes += Buffer.byteLength(chunk);
-            if (bytes > maxBytes) { exceeded = true; request.destroy(new Error("Response exceeds its byte budget")); return; }
+            // Rejected first, then destroyed without the error: when the whole reply arrived in this
+            // chunk, Node 20 has already freed the socket, and an error destroy throws on it.
+            if (bytes > maxBytes) {
+              exceeded = true; reject(this.unreachable(method, new Error("Response exceeds its byte budget"))); request.destroy(); return;
+            }
             text += chunk;
           });
           response.on("end", () => {
