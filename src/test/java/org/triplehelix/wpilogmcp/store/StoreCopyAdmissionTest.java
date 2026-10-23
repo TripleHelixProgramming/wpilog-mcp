@@ -37,15 +37,22 @@ class StoreCopyAdmissionTest {
   SecurityValidator security;
   StoreRegistry registry;
   LogStore store;
+  java.util.Set<Path> allowed;
 
   @BeforeEach void setup() throws Exception {
     temp = temp.toRealPath(); security = new SecurityValidator(); security.addAllowedDirectory(temp);
+    // An empty grant list admits every path, but a test that ran earlier in this JVM may have
+    // granted its own folder, and an import here would then be refused when it releases a file.
+    allowed = LogManager.getInstance().getAllowedDirectories(); LogManager.getInstance().addAllowedDirectory(temp);
     registry = new StoreRegistry(security, LogManager.getInstance(), StoreCatalog::discover, space);
     store = registry.store(temp.resolve("store"));
     store.capture(files -> null);
     store.diskBudget().configureCapture(new DiskSpaceBudgets.Policy(100, 20, 30));
   }
-  @AfterEach void close() { registry.close(); }
+  @AfterEach void close() {
+    try { registry.close(); }
+    finally { LogManager.getInstance().clearAllowedDirectories(); allowed.forEach(LogManager.getInstance()::addAllowedDirectory); }
+  }
   static String id() { return UUID.randomUUID().toString(); }
   static String hash(byte[] bytes) throws Exception {
     return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));

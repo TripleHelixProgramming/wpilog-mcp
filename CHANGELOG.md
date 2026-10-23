@@ -881,6 +881,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- The store copy admission tests now grant their own folder and restore the log manager's grants
+  afterwards. Previously the upload test relied on an empty grant list, which admits every path,
+  so its import was refused ("outside configured log directories") whenever a test that uses the
+  shared fixture folder ran before it in the same JVM; adding a test class to the store package
+  moved it behind one. Run after such a test in one JVM, it failed before the change and passes
+  after it.
 - The capture writer's publication timing test now grants its own folder and restores the log
   manager's grants afterwards. Previously it relied on an empty grant list, which admits every
   path, so it failed whenever a test that uses the shared fixture folder ran before it in the
