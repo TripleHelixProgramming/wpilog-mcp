@@ -86,13 +86,15 @@ public final class CaptureIndex implements CaptureWriter.Observer {
     placement.publication(session, receivedUs, publishedUs);
   }
   @Override public void flushed(CaptureWriter.Session session) throws IOException {
-    live.expire(); placement.flushed(session);
+    live.expire(session.sizeBytes()); placement.flushed(session);
   }
   @Override public void timeSync(CaptureWriter.Session session, long serverTimeUs) throws IOException {
     live.advance(serverTimeUs); placement.timeSync(session, serverTimeUs);
   }
   @Override public void fileClosed(CaptureWriter.Session session) throws IOException {
-    manager.finishCapture(live); placement.fileClosed(session);
+    // A file that stopped at a failed write may lack records the index holds: reads go to the file.
+    if (session.writeFailed()) manager.dropCapture(live); else manager.finishCapture(live);
+    placement.fileClosed(session);
   }
   @Override public void providers(CaptureWriter.Session session) throws IOException { placement.providers(session); }
   @Override public void closed(CaptureWriter.Session session) throws IOException { placement.closed(session); }

@@ -332,7 +332,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decoded every pose of the session on each refresh, 360,000 of them after two hours at 50 Hz.
   Now a ten-second window decodes none and reads a few dozen blocks, and an entry's decode
   problems are counted as its records are written. The writer's work on a pose record goes from
-  about 60 to 270 ns, and on four module states to 635 ns, beside about 4 µs to write the record.
+  about 60 to 270 ns, and on four module states to 635 ns.
   When a struct's schema is recorded after some of its values, the writer decodes those values
   again under it, at most 4,096 records for one schema; an entry past that, a struct array record
   wider than 64 elements, a field whose kind changes and an entry recorded out of time order are
@@ -406,6 +406,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index slower than scanning it. As the maintainer decided, a file rewritten in place with all
   four attributes restored keeps its old index. A store file's check against its manifest at
   admission is unchanged. The index format moves to 2; older indexes are removed at startup.
+- The recorder writes its records at once. It keeps them in a 256 KiB buffer and writes them to
+  the file at each 250 ms flush tick, when the buffer fills, and at close and rollover. Before, it
+  wrote each record as it came, with two writes and three requests for the file's position for
+  every value, about 4 µs. At ten times the soak's rate, 50,000 values a second, the listener
+  waited in the kernel for over a second four times in twelve minutes, and at thirty times it
+  lost the robot; written at once, a value costs about 20 ns. A process crash now loses at most the
+  last tick's records, where before the file held every record the recorder had taken.
+  The size the store publishes for the open capture counts only the bytes in the file. A write of
+  the buffer that fails ends the session as a failed write, with no finish record naming an entry
+  whose start was lost, and lets the recording's index go, so no call answers from records the file
+  lost. The store also decides each entry's metadata role once, not for every value.
 
 ### Fixed
 
@@ -695,6 +706,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The recorder's buffer is checked against an output that writes each record as it comes, byte
+  for byte and offset for offset, with buffers smaller than one record and larger than the whole
+  file, through a write that fails halfway, a record larger than the buffer, a resumed file and a
+  close whose last write fails. With a slow disk's force held open, a value stays in the index
+  until its record is in the file, and the size the store publishes never counts the buffer; a
+  write that fails at a tick or at close leaves no index answering for the records the file lost,
+  and no finish record naming an entry whose start was lost. The server's recorder is checked over
+  a real NT4 connection to write its records at the flush tick, and the store to decide a match
+  number's role again when its entry comes back with another type. Twenty planted mistakes each
+  fail them. The tests' capture record helper now reads to the end of a file: WPILib's iterator
+  ends a for-each loop once fewer than 16 bytes remain, so it skipped an integer value at the end
+  of a file without finish records.
+- The live dashboard's gate also reports the listener's delays while its prefill streams at ten
+  times the soak's rate. With the buffer, the longest was 112 ms in one run and 7 ms in another,
+  and none reached a second; writing each record as it came, the same prefill had waited over a
+  second four times in twelve minutes. Of those two runs, on the maintainer's computer under a
+  load average of 8.5, the first failed one bound, one of its five refreshes at two minutes taking
+  260 ms against 250 ms while the others took 16 ms, and the second passed every bound.
 - The live dashboard's gate, an opt-in run of the soak test: the pit server's capture service
   records a synthetic robot for two hours, then for ten minutes in real time while twelve panels
   refresh every five seconds through the real HTTP transport by measured UTC. On the maintainer's

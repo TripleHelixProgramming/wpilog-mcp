@@ -703,7 +703,11 @@ public final class LiveLog implements LogData, AutoCloseable {
         before.min(), before.max(), before.jumps(), before.firstJump(), before.open(), before.revision() + 1);
   }
 
-  /** Called only after WpilogOutput has written the entire record. */
+  /**
+   * Called only after WpilogOutput has taken the entire record. A capture's output writes it to
+   * the file at a later flush tick, so a value that is not held stays hot until {@link #expire(long)}
+   * finds its record in the file.
+   */
   public void append(EntryInfo info, ValueFrame frame, WpilogOutput.Written written) throws IOException {
     var before = state; var entry = before.entries().get(info.name());
     if (entry == null || !entry.info().type().equals(info.type())) return;
@@ -764,7 +768,15 @@ public final class LiveLog implements LogData, AutoCloseable {
 
   /** One mapping can cover the entire expired batch, even for a zero-length hot window. */
   public void expire() throws IOException {
-    while (!hot.isEmpty() && hot.peek().timestampUs() <= coldBefore) {
+    expire(Long.MAX_VALUE);
+  }
+
+  /**
+   * As above, for records within the file's first {@code fileBytes}: a writer that buffers its
+   * records writes them at its flush tick, and a record not yet in the file stays hot until then.
+   */
+  public void expire(long fileBytes) throws IOException {
+    while (!hot.isEmpty() && hot.peek().timestampUs() <= coldBefore && hot.peek().end() <= fileBytes) {
       var cold = hot.peek(); ensureMapped(cold.end());
       cold.entry().hot.clear(cold.index()); hot.remove();
     }

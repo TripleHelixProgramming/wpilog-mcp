@@ -409,7 +409,9 @@ wait at most a second; each refresh must finish within 250 ms, and its requests 
 a full collection must grow by less than 64 MB. `-PhardeningGatePrefillHours` and
 `-PhardeningGateSeconds` shorten it for a trial, which proves nothing about two hours. It takes
 about 25 minutes, writes about a gigabyte under `build/reports/architecture-hardening`, deletes
-it when it passes and keeps it when it fails, and reports to `dashboard-gate-<label>.json`. The shorter 120-second run is a pre-change baseline, not the ten-minute
+it when it passes and keeps it when it fails, and reports to `dashboard-gate-<label>.json`. The
+report also holds the listener's longest delay while the prefill streams, and how many of its
+delays reached a second; those are reported, not bounded. The shorter 120-second run is a pre-change baseline, not the ten-minute
 acceptance gate. All recordings are synthetic; this does not replace Linux, Windows, real
 robot, NT4 replay or native editor validation.
 

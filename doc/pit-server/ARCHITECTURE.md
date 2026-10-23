@@ -474,13 +474,28 @@ from its columns needs neither. A number keeps none: it is
 read from its column when its record holds it in its type's width, as every record the writer
 encodes does, and any other record is read from the WPILOG like a string, so a malformed record
 is still reported where it is. Expiry follows server time sync as well as new data, so idle topics age
-out too. Each 250 ms flush tick hands disk force to the writer's daemon thread, with only one force
+out too.
+
+The writer keeps its records in a 256 KiB buffer on the listener loop and writes them to the file
+at once: at each 250 ms flush tick, when the buffer fills, and at close and rollover. Written as
+they came, each value cost two writes and three requests for the file's position, about 4 µs, and
+at ten times the soak's rate the loop waited in the kernel for over a second at a time; written at
+once, they cost about 20 ns a value. A process crash loses what the buffer holds, at most one tick's records. After
+the tick's write, the tick hands disk force to the writer's daemon thread, with only one force
 outstanding. Its completion time and index/manifest notification are published back on the ordered
-listener loop; close and rollover wait before closing the channel or replacing its file. Record
-writes remain on the listener loop.
+listener loop; close and rollover wait before closing the channel or replacing its file. The size
+the store publishes for the open file counts only what the file holds, so a reader of the growing
+file finds every byte it is told of.
+
+A write of the buffer that fails leaves the file where its last complete write ended, and the
+buffer's records are lost, although the live index already holds their values. The session ends as
+a failed write, with no finish record after the loss, since a lost start would leave a finish naming
+an entry the file lacks, and the index is let go once its last reader has finished, so the next
+call reads the file.
 
 Expiry follows completed flushes, at most four growth remaps per second even with a zero hot window.
-Before discarding a hot value, the writer first covers its complete record with a read-only mapping.
+A hot value stays until its record is in the file, and before discarding it the writer first covers
+its complete record with a read-only mapping.
 Older values use their offsets, and replacing a mapping waits for its last atomic reader reference
 before unmapping it. The write channel remains open beside the mapping on Windows.
 

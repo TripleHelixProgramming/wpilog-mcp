@@ -513,6 +513,8 @@ file modification time as `ended_at`, and `end_reason: "server stopped while rec
 incomplete final record stays marked as truncated. An unreadable or structurally damaged file
 stays open, with a recovery reason in the manifest and the server log. This covers a crash, a
 power loss or a daemon ended before shutdown finished, and it never changes the capture's bytes.
+The recorder writes its records to the file at each 250 ms flush tick, so a crash loses at most the
+last tick's records, and a power loss also those the disk had not yet stored.
 
 **Reading the open capture.** Every log tool accepts the open capture's path. Each call sees a
 fixed prefix, reported as `inputs.session_time_range`; a later call can include newer records.

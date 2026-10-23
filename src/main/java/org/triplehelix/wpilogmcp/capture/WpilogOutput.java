@@ -16,20 +16,42 @@ import java.util.List;
 
 /**
  * Single-writer WPILOG 1.0 output, from WPILib's datalog.adoc. Unlike DataLog's JNI writer,
- * this can ship in the Java-only install. A complete write precedes publication to the live index;
- * offsets describe the durable format, not a second representation invented for capture.
+ * this can ship in the Java-only install. Offsets describe the durable format, not a second
+ * representation invented for capture.
+ *
+ * <p>A capture's output keeps its records in memory until the file takes many in one write: at
+ * the writer's flush tick, when the buffer fills, and at close. Written record by record, each
+ * value cost five system calls, two writes and three requests for the position, about 4 µs, and
+ * at ten times the soak's rate the loop waited inside them for over a second at a time. A record
+ * is therefore in the file only once {@link #writtenBytes} covers it; a crash loses what the
+ * buffer holds, at most one flush tick's records. Any other output writes each record as it comes.
  */
 public class WpilogOutput implements AutoCloseable {
   public record Written(long offset, int size, long payloadOffset, int payloadSize) {}
+  /** What a capture's output keeps in memory: a tick's records at ten times the soak's rate are about 200 KB. */
+  public static final int CAPTURE_BUFFER_BYTES = 256 << 10;
   private final FileChannel channel;
   private final CaptureLease lease;
   private int nextEntry;
   private boolean broken;
+  /** Records waiting for the file, or null when each record is written as it comes. */
+  private final ByteBuffer pending;
+  private int pendingRecords;
+  /** With a buffer, the bytes the file holds, which a record's offset counts from. */
+  private long written;
+  private long lostRecords;
 
   public WpilogOutput(Path path) throws IOException { this(path, 1, false); }
 
   /** Only the recorder which closed this session can resume it, with its next unused entry id. */
   public WpilogOutput(Path path, int nextEntry, boolean resume) throws IOException {
+    this(path, nextEntry, resume, 0);
+  }
+
+  /** As above, keeping up to {@code bufferBytes} of records in memory; 0 writes each as it comes. */
+  public WpilogOutput(Path path, int nextEntry, boolean resume, int bufferBytes) throws IOException {
+    if (bufferBytes < 0) throw new IllegalArgumentException("Negative buffer");
+    pending = bufferBytes == 0 ? null : ByteBuffer.allocate(bufferBytes);
     lease = CaptureLease.tryAcquire(path).orElseThrow(() -> resume
         ? new IOException("Capture is owned by another writer or recovery: " + path)
         : new java.nio.file.FileAlreadyExistsException(path.toString()));
@@ -40,6 +62,7 @@ public class WpilogOutput implements AutoCloseable {
           : FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
       channel = opened;
       if (!resume) write(ByteBuffer.wrap(new byte[] {'W', 'P', 'I', 'L', 'O', 'G', 0, 1, 0, 0, 0, 0}));
+      written = opened.size();
     } catch (IOException | RuntimeException e) {
       try { if (opened != null) opened.close(); } catch (IOException close) { e.addSuppressed(close); }
       try { lease.close(); } catch (IOException close) { e.addSuppressed(close); }
@@ -48,7 +71,34 @@ public class WpilogOutput implements AutoCloseable {
   }
 
   public int nextEntry() { return nextEntry; }
-  public long size() throws IOException { return channel.position(); }
+  /** The bytes written so far, the buffer's included: where the next record starts. */
+  public long size() throws IOException { return pending == null ? channel.position() : written + pending.position(); }
+  /** The bytes the file holds: every record that ends within them is in the file. */
+  public long writtenBytes() throws IOException { return pending == null ? channel.position() : written; }
+  /** Records a failed write of the buffer lost; the file ends before them. */
+  public long lostRecords() { return lostRecords; }
+
+  /**
+   * Writes the records waiting in memory to the file, in one write. A failure leaves the file as
+   * it was before them, and they are lost.
+   */
+  public void drain() throws IOException {
+    if (pending == null || pending.position() == 0) return;
+    if (broken) throw new IOException("Capture output has an incomplete record");
+    pending.flip();
+    try {
+      write(pending);
+      written += pending.limit();
+    } catch (IOException failure) {
+      lostRecords += pendingRecords;
+      try { channel.truncate(written); channel.position(written); }
+      catch (IOException rollback) { broken = true; failure.addSuppressed(rollback); }
+      throw failure;
+    } finally {
+      pending.clear();
+      pendingRecords = 0;
+    }
+  }
   public static int recordSize(int id, long timestampUs, int payloadSize) {
     return 1 + width(Integer.toUnsignedLong(id), 4) + width(payloadSize, 4) + width(timestampUs, 8) + payloadSize;
   }
@@ -91,6 +141,18 @@ public class WpilogOutput implements AutoCloseable {
     int ids = width(Integer.toUnsignedLong(id), 4);
     int sizes = width(payload.length, 4);
     int times = width(timestampUs, 8);
+    int headerSize = 1 + ids + sizes + times;
+    if (pending != null && headerSize + payload.length <= pending.capacity()) {
+      if (pending.remaining() < headerSize + payload.length) drain();
+      long offset = written + pending.position();
+      pending.put((byte) (ids - 1 | (sizes - 1) << 2 | (times - 1) << 4));
+      little(pending, id, ids); little(pending, payload.length, sizes); little(pending, timestampUs, times);
+      pending.put(payload);
+      pendingRecords++;
+      return new Written(offset, headerSize + payload.length, offset + headerSize, payload.length);
+    }
+    // A record larger than the buffer follows the records waiting for the file.
+    if (pending != null) drain();
     var header = new ByteArrayOutputStream();
     header.write(ids - 1 | (sizes - 1) << 2 | (times - 1) << 4);
     little(header, id, ids); little(header, payload.length, sizes); little(header, timestampUs, times);
@@ -102,6 +164,7 @@ public class WpilogOutput implements AutoCloseable {
       catch (IOException rollback) { broken = true; failure.addSuppressed(rollback); }
       throw failure;
     }
+    if (pending != null) written = offset + header.size() + payload.length;
     return new Written(offset, header.size() + payload.length, offset + header.size(), payload.length);
   }
 
@@ -115,6 +178,9 @@ public class WpilogOutput implements AutoCloseable {
   }
   private static void little(ByteArrayOutputStream out, long value, int size) {
     for (int i = 0; i < size; i++) out.write((int) (value >>> (i * 8)) & 255);
+  }
+  private static void little(ByteBuffer out, long value, int size) {
+    for (int i = 0; i < size; i++) out.put((byte) (value >>> (i * 8)));
   }
   private static void string(ByteArrayOutputStream out, String value) {
     byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
@@ -143,8 +209,15 @@ public class WpilogOutput implements AutoCloseable {
     };
   }
 
+  /** Forces what the file holds to the disk; records still in the buffer wait for {@link #drain}. */
   public void flush() throws IOException { channel.force(false); }
   @Override public void close() throws IOException {
-    try { flush(); } finally { try { channel.close(); } finally { lease.close(); } }
+    try {
+      IOException failure = null;
+      try { drain(); } catch (IOException e) { failure = e; }
+      // What the file holds is forced even when the buffer's last write failed.
+      try { flush(); } catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
+      if (failure != null) throw failure;
+    } finally { try { channel.close(); } finally { lease.close(); } }
   }
 }

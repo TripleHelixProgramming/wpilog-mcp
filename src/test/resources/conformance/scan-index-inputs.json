@@ -3,7 +3,7 @@
   "recipe_version": 1,
   "reviewed_at": "2026-10-22",
   "decision": "cache_unaffected",
-  "reason": "Format 2 and recipe 1 are unchanged. A loaded log now keeps its UTC mapping once it has read it. How a log is scanned, how an index is encoded, read and trusted, and which files are eligible are untouched, so indexes already written give the same answers.",
+  "reason": "Format 2 and recipe 1 are unchanged. The log manager gains a way to let a recording's index go after a failed write, so that the next read loads the file. How a log is scanned, how an index is encoded, read and trusted, and which files are eligible are untouched, so indexes already written give the same answers.",
   "previous_format_version": 2,
   "previous_recipe_version": 1,
   "source_sha256": {
@@ -14,7 +14,7 @@
     "org/triplehelix/wpilogmcp/log/FileSnapshot.java": "394586e261df0b8ead605f67ff09334b4d439c114ae526e7de332df0c65bc68b",
     "org/triplehelix/wpilogmcp/log/LazyParsedLog.java": "1834b8cd05ec020579db9dfd7d2451ee0b9092ba840934af8a3983f632aa25cc",
     "org/triplehelix/wpilogmcp/log/LogBytes.java": "7132f203db4e70b6bbdff119acd960432944d87ec4fddfcc3da24a9580428a75",
-    "org/triplehelix/wpilogmcp/log/LogManager.java": "646d615c7be28f28afdb610df9f81e5b6a39d6f204189a00f24232606c16db89",
+    "org/triplehelix/wpilogmcp/log/LogManager.java": "3a498a362bd27c02774f1423758d608e17340b6582125b2ec3117d17a127c1df",
     "org/triplehelix/wpilogmcp/log/LogReader.java": "86ac1517f2acbe03ef880b44af7972fd258214b2b7c19c59ee3ff1fa317d7adc",
     "org/triplehelix/wpilogmcp/log/LogScan.java": "ae044f7252e8bfb98d13ea8a19644146db753126ffe7b91ded5f78b51703a9d5",
     "org/triplehelix/wpilogmcp/log/MappedLogBytes.java": "b7e3470779478fadd040f7facabe4812cc849875ff27f3740b072797090dd34a",

@@ -42,20 +42,20 @@ public final class CaptureService implements AutoCloseable {
   }
   /** The gateway follows the deliberately selected HTTP bind, on its own port. */
   public CaptureService(CaptureConfig config, LogManager manager, String bindAddress) throws IOException {
-    this(config, manager, Clock.systemUTC(), ClientScheduler.daemon(), WpilogOutput::new, CLOSE_TIMEOUT,
+    this(config, manager, Clock.systemUTC(), ClientScheduler.daemon(), CaptureWriter.BUFFERED, CLOSE_TIMEOUT,
         null, bindAddress);
   }
   /** Registry ownership stays with the server; this service retains only its configured policy. */
   public CaptureService(CaptureConfig config, LogManager manager, String bindAddress,
       org.triplehelix.wpilogmcp.store.DiskSpaceBudgets.StoreBudget budget) throws IOException {
-    this(config, manager, Clock.systemUTC(), ClientScheduler.daemon(), WpilogOutput::new, CLOSE_TIMEOUT,
+    this(config, manager, Clock.systemUTC(), ClientScheduler.daemon(), CaptureWriter.BUFFERED, CLOSE_TIMEOUT,
         null, bindAddress, config.gatewayPort() == 0 ? null : ClientScheduler.daemon("nt4-gateway-bind"), budget);
   }
   public int gatewayClients() { return gateway == null ? 0 : gateway.clientCount(); }
 
   public CaptureService(CaptureConfig config, LogManager manager, Clock clock, ClientScheduler loop)
       throws IOException {
-    this(config, manager, clock, loop, WpilogOutput::new);
+    this(config, manager, clock, loop, CaptureWriter.BUFFERED);
   }
 
   /** Injectable output for filesystem-failure checks over a real loopback NT4 connection. */

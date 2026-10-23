@@ -13,7 +13,9 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -186,9 +188,22 @@ public final class CaptureStore implements CaptureWriter.Observer {
   long manifestWrites() { return writes.get(); }
   long queuedUpdates() { return submissions.get(); }
 
+  /** An entry's metadata role, which its name and type decide once; the writer's loop only. */
+  private record Role(String type, MetadataRole role) {}
+  private final Map<String, Role> roles = new HashMap<>();
+
+  private MetadataRole role(EntryInfo entry) {
+    var known = roles.get(entry.name());
+    if (known == null || !known.type().equals(entry.type())) {
+      known = new Role(entry.type(), MetadataRole.of(entry.name(), entry.type()).orElse(null));
+      roles.put(entry.name(), known);
+    }
+    return known.role();
+  }
+
   @Override public void value(CaptureWriter.Session session, EntryInfo entry, ValueFrame frame, WpilogOutput.Written written)
       throws IOException {
-    var role = MetadataRole.of(entry.name(), entry.type()).orElse(null);
+    var role = role(entry);
     if (role == null || role == MetadataRole.COMMENTS) return;
     if (role == MetadataRole.SERIAL) {
       if (frame.value() instanceof String serial && !serial.isBlank()) {

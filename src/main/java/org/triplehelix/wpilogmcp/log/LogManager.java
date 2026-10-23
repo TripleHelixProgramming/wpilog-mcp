@@ -209,6 +209,18 @@ public class LogManager {
     captures.remove(log.path(), log);
   }
 
+  /**
+   * A capture whose file stopped at a failed write. Its writer buffers records, so the index may
+   * hold some the file lost; the index is let go, after the reads in progress, and the next read
+   * loads the file itself.
+   */
+  public void dropCapture(LiveLog log) {
+    log.finish();
+    captures.remove(log.path(), log);
+    log.discard();
+    log.close();
+  }
+
   public void relocateCapture(LiveLog log, Path from, Path to) throws IOException {
     log.relocate(to);
     if (captures.remove(from.toString(), log)) captures.put(to.toString(), log);

@@ -18,6 +18,10 @@ import org.triplehelix.wpilogmcp.log.WallClock;
 /**
  * A capture file's records as the robot sent them. A capture also records its server's own
  * clock beside the robot's values; a test of what the robot sent leaves those readings out.
+ *
+ * <p>WPILib's iterator ends a for-each loop once fewer than 16 bytes remain, which skips a short
+ * last record, such as an integer value in a file that ends without finish records; the records
+ * are read with {@code forEachRemaining}, which reads to the end.
  */
 public final class CaptureRecords {
   private CaptureRecords() {}
@@ -26,7 +30,9 @@ public final class CaptureRecords {
   public static List<DataLogRecord> robot(Path file) throws IOException {
     var clock = new HashSet<Integer>();
     var out = new ArrayList<DataLogRecord>();
-    for (var record : new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(file)))) {
+    var all = new ArrayList<DataLogRecord>();
+    new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(file))).iterator().forEachRemaining(all::add);
+    for (var record : all) {
       if (record.isStart()) {
         var start = record.getStartData();
         if (start.name.equals(WallClock.PIT_CLOCK_ENTRY)) clock.add(start.entry); else clock.remove(start.entry);

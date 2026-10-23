@@ -50,6 +50,9 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   @FunctionalInterface public interface OutputFactory {
     WpilogOutput open(Path path, int nextEntry, boolean resume) throws IOException;
   }
+  /** A capture's output, which keeps its records in memory until a flush tick writes them at once. */
+  public static final OutputFactory BUFFERED =
+      (path, nextEntry, resume) -> new WpilogOutput(path, nextEntry, resume, WpilogOutput.CAPTURE_BUFFER_BYTES);
   @FunctionalInterface public interface ContextSink {
     void value(String name, String type, Object value, long timestampUs, JsonObject metadata);
   }
@@ -114,6 +117,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     private Instant endedAt;
     private boolean open;
     private String endReason;
+    /** Set when a write failed, so the file may end before records the live index already holds. */
+    private boolean writeFailed;
     private DeviceIdentity identity;
     private int nextEntry = 1, fileNumber = 1;
     private long minUs = Long.MAX_VALUE, maxUs = Long.MIN_VALUE, sizeBytes, observedAtUs;
@@ -135,9 +140,15 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     /** One file's writer incarnation survives a short reconnect, but never a rollover or new boot. */
     public String writerIdentity() { return writerIdentity; }
     public String endReason() { return endReason; }
+    /** Whether the file stopped at a failed write, which may have lost records the live index holds. */
+    public boolean writeFailed() { return writeFailed; }
     public DeviceIdentity identity() { return identity; }
     public long minTimestampUs() { return minUs == Long.MAX_VALUE ? 0 : minUs; }
     public long maxTimestampUs() { return maxUs == Long.MIN_VALUE ? 0 : maxUs; }
+    /**
+     * The bytes the current file holds, which never counts a record still in the writer's buffer:
+     * the store publishes this size, and a reader of the growing file finds every byte it names.
+     */
     public long sizeBytes() { return sizeBytes; }
     public long observedAtUs() { return observedAtUs; }
     public Instant observedAt() { return observedAt; }
@@ -419,7 +430,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
         var entry = new EntryInfo(id, before.name(), before.type(), before.metadata());
         contexts.put(entry.name(), entry); observer.entry(session, entry);
       }
-      session.sizeBytes = output.size(); reopenAfterDisk = false;
+      session.sizeBytes = output.writtenBytes(); reopenAfterDisk = false;
     }
     if (deferred.isEmpty()) activity.run();
   }
@@ -567,7 +578,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     }
     var written = output.append(clockEntry.id(), robotUs, payload);
     progress.written();
-    session.sizeBytes = output.size();
+    session.sizeBytes = output.writtenBytes();
     observer.value(session, clockEntry, new ValueFrame(clockEntry.id(), robotUs, 2, epoch), written);
     clockPending = false;
     lastClockUs = robotUs;
@@ -620,7 +631,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
           + (diskSeed == null ? 0 : WpilogOutput.recordSize(Integer.MAX_VALUE, serverUs, seedBytes)), 1);
       int id = output.start(name, type, metadata, serverUs);
       progress.written();
-      session.sizeBytes = output.size();
+      session.sizeBytes = output.writtenBytes();
       var entry = new EntryInfo(id, name, type, metadata);
       var topic = new Topic(entry, periodUs);
       topics.put(announce.id(), topic);
@@ -630,7 +641,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
         var seed = new ValueFrame(announce.id(), serverUs, diskSeed.frame().typeCode(), diskSeed.frame().value());
         var written = output.append(entry.id(), serverUs, (byte[]) seed.value());
         progress.written();
-        topic.schema = seed; session.sizeBytes = output.size();
+        topic.schema = seed; session.sizeBytes = output.writtenBytes();
         session.minUs = Math.min(session.minUs, serverUs); session.maxUs = Math.max(session.maxUs, serverUs);
         observer.value(session, entry, seed, written);
       }
@@ -663,7 +674,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
         progress.written();
         topic.entry = new EntryInfo(topic.entry.id(), topic.entry.name(), topic.entry.type(), metadata);
         observer.metadata(session, topic.entry);
-        session.sizeBytes = output.size();
+        session.sizeBytes = output.writtenBytes();
       });
     }
   }
@@ -676,7 +687,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       var thread = new Thread(r, "capture-flush"); thread.setDaemon(true); return thread;
     });
     session.files.removeIf(f -> f.name().equals(session.path().getFileName().toString()));
-    session.open = true; session.endedAt = null; session.sizeBytes = output.size();
+    session.open = true; session.endedAt = null; session.sizeBytes = output.writtenBytes();
     session.observedAtUs = nowUs(); session.observedAt = wallNow();
     observer.opened(session, append);
     clockEntry = null; clockPending = haveClock; lastClockUs = Long.MIN_VALUE;
@@ -713,7 +724,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     var written = output.append(id, serverUs, WpilogOutput.payload(4, value.toString()));
     progress.written();
     session.minUs = Math.min(session.minUs, serverUs); session.maxUs = Math.max(session.maxUs, serverUs);
-    observer.value(session, entry, frame, written); output.finish(id, serverUs); progress.written(); session.sizeBytes = output.size();
+    observer.value(session, entry, frame, written); output.finish(id, serverUs); progress.written(); session.sizeBytes = output.writtenBytes();
     contextSink.value(name, "json", value.toString(), serverUs, metadata);
   }
 
@@ -743,7 +754,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       var written = output.append(entry.id(), timestampUs, payload);
       progress.written();
       session.minUs = Math.min(session.minUs, timestampUs); session.maxUs = Math.max(session.maxUs, timestampUs);
-      session.sizeBytes = output.size(); observer.value(session, entry, frame, written); bytes[0] = written.size();
+      session.sizeBytes = output.writtenBytes(); observer.value(session, entry, frame, written); bytes[0] = written.size();
       contextSink.value(name, nt.nt4(), value, timestampUs, metadata);
     });
     return bytes[0];
@@ -815,7 +826,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       var entry = new EntryInfo(id, before.name(), before.type(), before.metadata());
       contexts.put(entry.name(), entry); observer.entry(session, entry);
     }
-    session.sizeBytes = output.size();
+    session.sizeBytes = output.writtenBytes();
   }
 
   private static String rolloverMetadata(Topic topic) {
@@ -830,7 +841,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     announced.remove(announce.id()); diskSchemas.remove(announce.id()); pendingDiskSeeds.remove(announce.id());
     var topic = topics.remove(announce.id());
     if (topic != null && output != null) io(() -> {
-      output.finish(topic.entry.id(), serverUs); progress.written(); session.sizeBytes = output.size();
+      output.finish(topic.entry.id(), serverUs); progress.written(); session.sizeBytes = output.writtenBytes();
     });
   }
 
@@ -855,7 +866,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       room(WpilogOutput.recordSize(topic.entry.id(), frame.timestampUs(), payload.length), 0);
       var written = output.append(topic.entry.id(), frame.timestampUs(), payload);
       progress.written();
-      topic.lastUs = frame.timestampUs(); session.sizeBytes = output.size();
+      topic.lastUs = frame.timestampUs(); session.sizeBytes = output.writtenBytes();
       if (topic.entry.type().equals("structschema")) {
         topic.schema = frame; rememberDiskSchema(announce, frame, receivedAtUs);
       }
@@ -877,6 +888,9 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   private void scheduleFlush(WpilogOutput expected) {
     loop.schedule(() -> {
       if (output != expected) return;
+      // The tick's records reach the file in one write, here on the loop, before any force.
+      io(expected::drain);
+      if (output != expected) return;
       if (pendingForce == null) {
         var force = CompletableFuture.supplyAsync(() -> {
           try { expected.flush(); return loop.nowUs(); }
@@ -885,7 +899,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
         pendingForce = force;
         force.whenComplete((time, failure) -> {
           try { loop.execute(() -> {
-            if (output == expected && pendingForce == force) io(this::finishForce);
+            if (output == expected && pendingForce == force) io(() -> finishForce(expected));
           }); } catch (java.util.concurrent.RejectedExecutionException ignored) {
             // Shutdown/rollover owns the completion barrier and failure reporting now.
           }
@@ -896,7 +910,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
 
   /** Called only by the listener loop: ordinary ticks never wait; close is a durability barrier. */
-  private void finishForce() throws IOException {
+  private void finishForce(WpilogOutput forced) throws IOException {
     var pending = pendingForce;
     if (pending == null) return;
     pendingForce = null;
@@ -905,6 +919,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
       if (e.getCause() instanceof IOException failure) throw failure;
       throw new IOException("Capture flush failed", e.getCause());
     }
+    // The live index lets a value go cold only once its record is in the file.
+    session.sizeBytes = forced.writtenBytes();
     observer.flushed(session);
     if (session.observedAtUs >= nextReportUs) {
       var stats = session.statistics();
@@ -936,13 +952,17 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     if (closing == null) return;
     output = null;
     IOException failure = null;
-    try { finishForce(); }
+    try { finishForce(closing); }
     catch (IOException e) { failure = e; }
     finally { forceThread.shutdown(); }
     try {
-      for (var topic : topics.values()) { closing.finish(topic.entry.id(), serverUs); progress.written(); }
-      for (var entry : contexts.values()) { closing.finish(entry.id(), serverUs); progress.written(); }
-      if (clockEntry != null) { closing.finish(clockEntry.id(), serverUs); progress.written(); clockEntry = null; }
+      // A failed write of the buffer may have lost an entry's start, and no finish may name it.
+      if (closing.lostRecords() == 0) {
+        for (var topic : topics.values()) { closing.finish(topic.entry.id(), serverUs); progress.written(); }
+        for (var entry : contexts.values()) { closing.finish(entry.id(), serverUs); progress.written(); }
+        if (clockEntry != null) { closing.finish(clockEntry.id(), serverUs); progress.written(); }
+      }
+      clockEntry = null;
     }
     catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }
     try { closing.close(); }
@@ -952,6 +972,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     var costs = new LinkedHashMap<String, TopicCost.Snapshot>();
     session.costs.forEach((name, cost) -> costs.put(name, cost.snapshot(session.observedAtUs)));
     session.closedCosts = Map.copyOf(costs);
+    // The last records may have been in the buffer: the index must not outlive what the file lost.
+    if (failure != null) session.writeFailed = true;
     try {
       session.sizeBytes = Files.size(session.path());
       session.files.add(new ClosedFile(session.path().getFileName().toString(), session.sizeBytes,
@@ -980,7 +1002,10 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     catch (IOException e) {
       progress.writeFailed();
       failed = true;
-      if (session != null) session.endReason = "Capture write failed: " + e.getMessage();
+      if (session != null) {
+        session.endReason = "Capture write failed: " + e.getMessage();
+        session.writeFailed = true;
+      }
       LoggerFactory.getLogger(CaptureWriter.class).error("Capture recording stopped until a new robot clock: {}", e.getMessage());
       try { closeFile(); } catch (IOException close) { e.addSuppressed(close); }
       topics.clear(); contexts.clear();

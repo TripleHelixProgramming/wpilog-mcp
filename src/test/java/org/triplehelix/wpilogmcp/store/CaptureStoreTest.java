@@ -307,6 +307,38 @@ class CaptureStoreTest {
     }
   }
 
+  /**
+   * An entry's name and type decide its role, and the store keeps the answer for each name: a
+   * name that comes back with another type, after a code change on the robot, is decided again.
+   */
+  @Test void aMatchNumberPublishedAsTextIsNotTheMatchNumberAndItsNumberLaterIs() throws Exception {
+    var security = new SecurityValidator(); security.addAllowedDirectory(directory);
+    try (var stores = new StoreRegistry(security)) {
+      var store = stores.store(directory.resolve("store")); var placement = store.captures(WALL);
+      var loop = new ManualScheduler();
+      try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
+        connect(writer, loop, 10_000_000, 0);
+        var type = new Announce("/FMSInfo/MatchType", 2, "int", null, new JsonObject());
+        var text = new Announce("/FMSInfo/MatchNumber", 3, "string", null, new JsonObject());
+        writer.announce(type); writer.announce(text);
+        writer.value(type, new ValueFrame(2, 10_000_000, 2, 2L), 0);
+        writer.value(text, new ValueFrame(3, 10_000_000, 4, "7"), 0);
+        placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        assertNull(StoreCatalog.read(store.root(), security).openCaptures().get(0).session().matchNumber());
+        writer.disconnected(); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        // The robot restarts with new code, which publishes the match number as a number.
+        connect(writer, loop, 100_000, 1_000_000);
+        var number = new Announce("/FMSInfo/MatchNumber", 3, "int", null, new JsonObject());
+        writer.announce(type); writer.announce(number);
+        writer.value(type, new ValueFrame(2, 100_000, 2, 2L), 1_000_000);
+        writer.value(number, new ValueFrame(3, 100_000, 2, 42L), 1_000_000);
+        placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
+        var open = StoreCatalog.read(store.root(), security).openCaptures().get(0).session();
+        assertEquals("Qualification", open.matchType()); assertEquals(42, open.matchNumber());
+      }
+    }
+  }
+
   @Test void rolloverManifestsHashEachFileAndServeOneLiveIndexPerFile() throws Exception {
     var security = new SecurityValidator(); security.addAllowedDirectory(directory);
     var manager = LogManager.getInstance(); manager.addAllowedDirectory(directory);

@@ -385,7 +385,8 @@ class ArchitectureHardeningSoakTest {
   /**
    * How much faster than real time the prefill streams. Run as fast as the recorder takes values,
    * about thirty times the soak's rate, the listener stalled for seconds and once lost the robot,
-   * which a recording at the soak's rate never meets.
+   * which a recording at the soak's rate never meets. That was when the writer wrote each record
+   * as it came; the prefill's own listener delays are reported, not bounded.
    */
   private static final int PREFILL_SPEED = 10;
 
@@ -438,6 +439,7 @@ class ArchitectureHardeningSoakTest {
     CaptureService capture = null;
     HttpTransport transport = null;
     var monitor = new Monitor();
+    var prefillMonitor = new Monitor();
     boolean passed = false;
     try {
       gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), robot::get, List.of(Nt4Client.V40));
@@ -463,6 +465,7 @@ class ArchitectureHardeningSoakTest {
       long twoMinutes = 2 * 60 * RATE_HZ;
       var early = new ArrayList<Refresh>();
       Refresh warmUp = null;
+      prefillMonitor.start(loop);
       long prefillStart = System.nanoTime();
       for (long tick = 0; tick < prefillTicks; tick++) {
         long due = prefillStart + TimeUnit.MICROSECONDS.toNanos(tick * PERIOD_US / PREFILL_SPEED);
@@ -482,8 +485,11 @@ class ArchitectureHardeningSoakTest {
         }
       }
       HarnessHttp.awaitProgress("prefilled values", 120, live::receivedValues, () -> live.receivedValues() == sent.get());
+      prefillMonitor.close();
       report.addProperty("prefill_values", sent.get());
       report.addProperty("prefill_wall_sec", (System.nanoTime() - prefillStart) / 1e9);
+      report.addProperty("prefill_listener_loop_max_delay_ms", prefillMonitor.longestNs.get() / 1e6);
+      report.addProperty("prefill_listener_delays_over_one_second", prefillMonitor.stalls.get());
 
       // Real time from here: the robot streams while the dashboard refreshes every five seconds.
       monitor.start(loop);
@@ -541,6 +547,7 @@ class ArchitectureHardeningSoakTest {
       passed = true;
     } finally {
       monitor.close();
+      prefillMonitor.close();
       dashboard.shutdownNow();
       if (transport != null) transport.stop();
       if (capture != null) capture.close();
@@ -743,6 +750,8 @@ class ArchitectureHardeningSoakTest {
   private static final class Monitor implements AutoCloseable {
     final AtomicLong longestNs = new AtomicLong(), peakHeapBytes = new AtomicLong();
     final AtomicLong pendingAtNs = new AtomicLong();
+    /** Probes the loop ran a second or more late, the watchdog's stall. */
+    final AtomicLong stalls = new AtomicLong();
     final java.util.concurrent.ScheduledExecutorService observer =
         Executors.newSingleThreadScheduledExecutor(runnable -> {
           var thread = new Thread(runnable, "hardening-soak-watchdog");
@@ -757,7 +766,9 @@ class ArchitectureHardeningSoakTest {
         if (previous != 0) longestNs.accumulateAndGet(now - previous, Math::max);
         else if (pendingAtNs.compareAndSet(0, now)) {
           loop.execute(() -> {
-            longestNs.accumulateAndGet(System.nanoTime() - now, Math::max);
+            long delay = System.nanoTime() - now;
+            longestNs.accumulateAndGet(delay, Math::max);
+            if (delay >= TimeUnit.MICROSECONDS.toNanos(LoopWatchdog.STALL_US)) stalls.incrementAndGet();
             pendingAtNs.compareAndSet(now, 0);
           });
         }
