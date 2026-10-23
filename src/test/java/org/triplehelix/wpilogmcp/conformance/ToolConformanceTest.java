@@ -173,9 +173,10 @@ class ToolConformanceTest {
 
   @AfterAll
   static void tearDown() {
-    executor.shutdownNow();
-    ExportTools.setExportDirectory(savedExportDir.toString());
-    LogDirectory.getInstance().setLogDirectories(
+    // A setup that failed part way leaves some of these unset; its own failure is the one to report.
+    if (executor != null) executor.shutdownNow();
+    if (savedExportDir != null) ExportTools.setExportDirectory(savedExportDir.toString());
+    if (savedLogDirs != null) LogDirectory.getInstance().setLogDirectories(
         savedLogDirs.stream().map(Path::toString).toList());
     LogManager.getInstance().unloadAllLogs();
   }

@@ -894,6 +894,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- The conformance sweep's teardown no longer throws when its setup failed part way, so a report
+  shows the setup's own failure. On Windows the setup had failed on the drive-check bug above, so
+  the sweep had not run there since that bug came in.
+
 - Three tests wait longer, where Ubuntu's timings did not fit the Windows runner, which is 6 to 16
   times slower on file-heavy store work: the capture admission and replica reconciliation tests'
   completion waits, which matter only when a test hangs, and the inventory test's build deadline,
