@@ -125,9 +125,12 @@ class RecordingInventoriesTest {
       var admission = sources.admitRecording(ref); entered.countDown();
       boolean done = false; while (!done) try { release.await(); done = true; } catch (InterruptedException ignored) { /* Model an uninterruptible disk read. */ }
       return admission;
-    }, new RecordingInventories.Limits(32L << 20, 64L << 20, 8, 2, Duration.ofMinutes(1).toNanos(), Duration.ofMinutes(5).toNanos(), Duration.ofMillis(80).toNanos()), System::nanoTime);
+    // The deadline must outlast the admission before the stall: a timeout interrupts the builder
+    // wherever it is, and admission takes longer than 80 ms on Windows runners.
+    }, new RecordingInventories.Limits(32L << 20, 64L << 20, 8, 2, Duration.ofMinutes(1).toNanos(), Duration.ofMinutes(5).toNanos(), Duration.ofSeconds(2).toNanos()), System::nanoTime);
     try {
-      var failure = assertThrows(InventoryFailure.class, this::open); assertTrue(failure.retryable); assertTrue(entered.await(1, TimeUnit.SECONDS));
+      var failure = assertThrows(InventoryFailure.class, this::open); assertTrue(failure.retryable);
+      assertTrue(entered.await(1, TimeUnit.SECONDS), "Admission finished before the build deadline");
       assertEquals(32L << 20, inventories.retainedBytes()); assertEquals(1, inventories.retainedHandles());
       assertFalse(logs.release(temp).released(), "Uninterruptible admission still owns its prefix");
     } finally { release.countDown(); }

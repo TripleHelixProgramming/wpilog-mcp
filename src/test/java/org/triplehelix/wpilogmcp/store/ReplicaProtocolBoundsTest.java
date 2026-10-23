@@ -92,7 +92,8 @@ class ReplicaProtocolBoundsTest {
         new StoreFiles(mirrorRoot, security).write(mirrorRoot.resolve("store.json"), new Header(2, "2026-10-19T00:00:00Z", id(), List.of(), Map.of(), true,
             List.of(), new MirrorOrigin(master, origin, null, List.of(), Map.of()), new ReplicaCatalog(1, id(), 1, held, List.of(), List.of())));
         var policy = new org.triplehelix.wpilogmcp.config.MirrorConfig(origin, mirrorRoot, 14, 64L << 20, List.of(), List.of(), 30, 0, "all", 8L << 20, List.of(), false);
-        var answer = mirror.mirror(policy, p -> {}).get(120, java.util.concurrent.TimeUnit.SECONDS);
+        // A wait, not a budget: reconciling 300 files takes about 15 s on Linux and over 120 s on Windows runners.
+        var answer = mirror.mirror(policy, p -> {}).get(600, java.util.concurrent.TimeUnit.SECONDS);
         assertEquals("synchronized", answer.state(), answer.toString());
         assertEquals(3 * files.get(0).sizeBytes(), answer.bytesCopied()); assertEquals(3, downloads.get());
         assertTrue(handshakes.get() >= 3, "idle and absolute session expiry both require a new handshake");

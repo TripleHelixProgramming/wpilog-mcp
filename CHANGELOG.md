@@ -894,6 +894,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- Three tests wait longer, where Ubuntu's timings did not fit the Windows runner, which is 6 to 16
+  times slower on file-heavy store work: the capture admission and replica reconciliation tests'
+  completion waits, which matter only when a test hangs, and the inventory test's build deadline,
+  which must outlast the admission it interrupts (80 ms became 2 s). The placement test that kills
+  a child holding a stage now waits for the child's lock to be released before the next placement,
+  since Windows releases a dead process's file locks when resources allow, not when it exits.
+
 - Tests that write a new log over one the server has loaded now release it first, and tests that
   corrupt a loaded log change its bytes in place. Windows refuses to truncate or replace a file
   while it is mapped, so on Windows these tests failed before reaching what they test; the

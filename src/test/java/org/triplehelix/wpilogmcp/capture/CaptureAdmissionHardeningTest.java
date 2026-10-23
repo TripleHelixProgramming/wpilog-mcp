@@ -35,6 +35,8 @@ import org.triplehelix.wpilogmcp.store.StoreRegistry;
 
 /** Admission must survive unrelated payload work and a short external store-lock holder. */
 class CaptureAdmissionHardeningTest {
+  /** Waits for completion, not budgets: 128 imports take about 3 s on Linux and over 10 s on Windows runners. */
+  private static final long COMPLETION_WAIT_SEC = 120;
   @TempDir Path directory;
   private static final Clock WALL = Clock.fixed(Instant.parse("2026-04-05T12:00:00Z"), ZoneOffset.UTC);
   private static final CaptureWriter.AdmissionLimits LIMITS =
@@ -78,19 +80,19 @@ class CaptureAdmissionHardeningTest {
         assertTrue(stores.queueMetrics().longestTurnUs() < 1_000_000,
             "The outside-observed store turns must remain within the agreed one-second budget");
         release.countDown();
-        var result = importing.get(10, TimeUnit.SECONDS);
+        var result = importing.get(COMPLETION_WAIT_SEC, TimeUnit.SECONDS);
         assertEquals(128, result.files().size(), "Every independently generated source has an outcome");
         assertTrue(result.files().stream().allMatch(file -> "imported".equals(file.status())), result.toString());
         writer.disconnected();
         loop.drain();
-        placement.completion().get(10, TimeUnit.SECONDS);
+        placement.completion().get(COMPLETION_WAIT_SEC, TimeUnit.SECONDS);
         assertRecordedValues(writer);
       } finally {
         release.countDown();
-        importing.get(10, TimeUnit.SECONDS);
+        importing.get(COMPLETION_WAIT_SEC, TimeUnit.SECONDS);
         writer.shutdown();
         loop.drain();
-        placement.completion().get(10, TimeUnit.SECONDS);
+        placement.completion().get(COMPLETION_WAIT_SEC, TimeUnit.SECONDS);
         loop.close();
       }
     } finally {
