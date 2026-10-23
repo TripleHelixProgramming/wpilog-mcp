@@ -52,8 +52,9 @@ test("direct remote contexts browse, page, follow, analyze and save on two real 
   const handle = await inventory.open(sa.source_ref, signal), filter = { query: "", types: [], unavailable: false };
   const names: string[] = []; let cursor: string | undefined;
   do { const page = await inventory.list(handle, filter, cursor, signal); names.push(...page.entries.map(entry => entry.name!)); cursor = page.next_cursor ?? undefined; } while (cursor);
-  const expected = ["NT:/x", "NT:/y", ...Array.from({ length: 298 }, (_, n) => `NT:/inputs/synthetic/subsystem/signal-${String(n).padStart(5, "0")}`)].sort();
-  assert.deepEqual(names, expected); assert.equal(new Set(names).size, 300);
+  // Beside the robot's 300 entries, every capture records its server's clock.
+  const expected = ["/Daemon/Clock/EpochTimeMicros", "NT:/x", "NT:/y", ...Array.from({ length: 298 }, (_, n) => `NT:/inputs/synthetic/subsystem/signal-${String(n).padStart(5, "0")}`)].sort();
+  assert.deepEqual(names, expected); assert.equal(new Set(names).size, 301);
   await inventory.close(handle); assert.equal(budget.reserved, 0);
   const configuration = structuredClone(a.configuration);
   configuration.requirements = [{ id: "x", selector_kind: "entry", entry: "NT:/y", accepted_entry_types: ["double"], value_type: "number", field_path: null, unit: null }];

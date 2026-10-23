@@ -723,7 +723,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in files too small to hold a reading beside their last value, against an upstream topic of its
   name, and end to end through a UTC window on a recording and on its finished file; the replay
   audit checks every reading of every replayed capture. Tests that pin a capture's exact entries,
-  records or bytes now count the robot's records apart from the recorder's clock.
+  records or bytes now count the robot's records apart from the recorder's clock, and the
+  extension's real-server check of a recording's entries expects the clock beside the robot's.
 - UTC windows are checked against rows worked out by hand, at and beside each end, with open
   ends, fractions of a microsecond, offsets, buckets and refusals, and by a differential on every
   fixture with a clock in which each window holds exactly the rows a whole read places in it.
