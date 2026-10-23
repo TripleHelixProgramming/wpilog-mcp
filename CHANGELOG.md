@@ -892,6 +892,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- The test that two simultaneous REV reconsideration requests share one turn now holds the import
+  staging thread, where reconsideration has waited since it moved off the store queue, and also
+  requires the shared request to be still pending. Before, it held the store queue, which
+  reconsideration no longer waits behind, so the first request could finish before the second was
+  made; Ubuntu CI failed once this way.
+
 - The daemon, installer and offline import tests take the ports they name from a slice below every
   system's ephemeral range, one slice to each Gradle fork, each port checked free and handed out
   once. Before, each test asked the system for a free port, closed it, and then had a daemon bind
