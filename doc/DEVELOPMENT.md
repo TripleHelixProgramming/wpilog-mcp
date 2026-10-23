@@ -389,7 +389,27 @@ Reports distinguish sampled heap from total process memory and exact peaks. Stor
 retain the blocked logging callback limitation in
 [item 1](ARCHITECTURE_HARDENING_PLAN.md#implementation-disposition--2026-10-20).
 The task also has a separate 500-file import timing method; select the method above when only
-the soak is wanted. The shorter 120-second run is a pre-change baseline, not the ten-minute
+the soak is wanted.
+
+The live dashboard's gate is the task's third method, which the recorded Grafana dashboard had to
+pass before it shipped:
+
+```bash
+./gradlew architectureHardeningSoakTest \
+  --tests '*ArchitectureHardeningSoakTest.liveDashboardKeepsItsBoundsOnATwoHourRecording' --console=plain
+```
+
+The pit server's capture service records a synthetic robot over loopback NT4: the soak's 100
+topics at 50 Hz and an AdvantageKit-style wall clock. It first records two hours, streamed ten
+times faster than real time, then ten minutes in real time while twelve panels ask the real HTTP
+transport every five seconds for `capture=current` over the last five minutes by measured UTC, at
+1,000 points, as Grafana does; every answer is checked against the generator. The listener must
+wait at most a second; each refresh must finish within 250 ms, and its requests allocate under
+50 MB on the server's HTTP threads, both at two minutes and at two hours; and the heap left after
+a full collection must grow by less than 64 MB. `-PhardeningGatePrefillHours` and
+`-PhardeningGateSeconds` shorten it for a trial, which proves nothing about two hours. It takes
+about 25 minutes, writes about a gigabyte under `build/reports/architecture-hardening`, deletes
+it when it passes and keeps it when it fails, and reports to `dashboard-gate-<label>.json`. The shorter 120-second run is a pre-change baseline, not the ten-minute
 acceptance gate. All recordings are synthetic; this does not replace Linux, Windows, real
 robot, NT4 replay or native editor validation.
 

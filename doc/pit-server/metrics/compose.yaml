@@ -12,10 +12,16 @@ services:
       - prometheus-data:/prometheus
   grafana:
     image: grafana/grafana:13.2.3
+    environment:
+      # The recorded dashboard reads the server's CSV through Infinity, pinned like the images
+      # and installed before Grafana starts, so provisioning finds it.
+      GF_PLUGINS_PREINSTALL_SYNC: yesoreyeram-infinity-datasource@4.1.1
     ports: ["127.0.0.1:3000:3000"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - ./provisioning:/etc/grafana/provisioning:ro
       - ./pit-dashboard.json:/etc/grafana/dashboards/pit-dashboard.json:ro
+      - ./pit-recording-dashboard.json:/etc/grafana/dashboards/pit-recording-dashboard.json:ro
       - grafana-data:/var/lib/grafana
 volumes:
   prometheus-data:

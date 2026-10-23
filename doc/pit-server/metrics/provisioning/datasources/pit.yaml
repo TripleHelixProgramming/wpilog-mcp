@@ -7,3 +7,14 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: true
+  # The server's data endpoint, which the recorded dashboard reads. Its base URL is the server,
+  # so the dashboard moves to another server by changing this one URL; requests go nowhere else.
+  - name: Pit recording
+    uid: pit-recording
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    url: http://host.docker.internal:2363
+    editable: true
+    jsonData:
+      allowedHosts:
+        - http://host.docker.internal:2363

@@ -1,0 +1,885 @@
+{
+  "uid": "wpilog-pit-recording",
+  "title": "Pit recording",
+  "tags": [
+    "wpilog-mcp"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 40,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-5m",
+    "to": "now"
+  },
+  "editable": true,
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "battery_entry",
+        "label": "Battery entry (volts)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the capture names it: NT: and the topic for a robot topic, such as NT:/SmartDashboard/Battery."
+      },
+      {
+        "name": "can_entry",
+        "label": "CAN utilization entry (fraction)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the capture names it: NT: and the topic for a robot topic, such as NT:/SmartDashboard/Battery."
+      },
+      {
+        "name": "loop_entry",
+        "label": "Loop duration entry (seconds)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the capture names it: NT: and the topic for a robot topic, such as NT:/SmartDashboard/Battery."
+      },
+      {
+        "name": "cpu_entry",
+        "label": "Robot CPU entry (fraction)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the capture names it: NT: and the topic for a robot topic, such as NT:/SmartDashboard/Battery."
+      },
+      {
+        "name": "disk_entry",
+        "label": "Robot free disk entry (bytes)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the capture names it: NT: and the topic for a robot topic, such as NT:/SmartDashboard/Battery."
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Reading this dashboard",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 5
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Every value the open capture recorded, read from its file by measured UTC. Each panel is one entry: the band runs from each bucket's minimum to its maximum, the line is its mean, and zooming in narrows the buckets until every sample shows. The window reaches back no further than the open file.\n\nFill the boxes with entries exactly as the capture names them, in the units each box states. A panel the server refuses shows only its status code: **404** means nothing is recording or the box names no entry of the capture, **422** means the recording cannot be placed in UTC yet, and **400** means a box is empty or names something that is not a number. The sampled dashboard shows whether a session is open."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Battery",
+      "description": "Every value the open capture recorded for this entry: a band from each bucket's minimum to its maximum, with its mean. Zoom in until every sample shows.",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "pit-recording"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "pit-recording"
+          },
+          "type": "csv",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/data/entries",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "capture",
+                "value": "current"
+              },
+              {
+                "key": "names",
+                "value": "$battery_entry"
+              },
+              {
+                "key": "format",
+                "value": "csv"
+              },
+              {
+                "key": "start_utc",
+                "value": "${__from:date:iso}"
+              },
+              {
+                "key": "end_utc",
+                "value": "${__to:date:iso}"
+              },
+              {
+                "key": "max_points",
+                "value": "1000"
+              }
+            ]
+          },
+          "csv_options": {
+            "comment": "#"
+          },
+          "columns": [
+            {
+              "selector": "timestamp_utc",
+              "text": "time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "min",
+              "text": "min",
+              "type": "number"
+            },
+            {
+              "selector": "max",
+              "text": "max",
+              "type": "number"
+            },
+            {
+              "selector": "mean",
+              "text": "mean",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "volt",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max"
+            },
+            "properties": [
+              {
+                "id": "custom.fillBelowTo",
+                "value": "min"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mean"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "CAN utilization",
+      "description": "Every value the open capture recorded for this entry: a band from each bucket's minimum to its maximum, with its mean. Zoom in until every sample shows.",
+      "gridPos": {
+        "x": 8,
+        "y": 5,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "pit-recording"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "pit-recording"
+          },
+          "type": "csv",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/data/entries",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "capture",
+                "value": "current"
+              },
+              {
+                "key": "names",
+                "value": "$can_entry"
+              },
+              {
+                "key": "format",
+                "value": "csv"
+              },
+              {
+                "key": "start_utc",
+                "value": "${__from:date:iso}"
+              },
+              {
+                "key": "end_utc",
+                "value": "${__to:date:iso}"
+              },
+              {
+                "key": "max_points",
+                "value": "1000"
+              }
+            ]
+          },
+          "csv_options": {
+            "comment": "#"
+          },
+          "columns": [
+            {
+              "selector": "timestamp_utc",
+              "text": "time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "min",
+              "text": "min",
+              "type": "number"
+            },
+            {
+              "selector": "max",
+              "text": "max",
+              "type": "number"
+            },
+            {
+              "selector": "mean",
+              "text": "mean",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max"
+            },
+            "properties": [
+              {
+                "id": "custom.fillBelowTo",
+                "value": "min"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mean"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Loop duration",
+      "description": "Every value the open capture recorded for this entry: a band from each bucket's minimum to its maximum, with its mean. Zoom in until every sample shows.",
+      "gridPos": {
+        "x": 16,
+        "y": 5,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "pit-recording"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "pit-recording"
+          },
+          "type": "csv",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/data/entries",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "capture",
+                "value": "current"
+              },
+              {
+                "key": "names",
+                "value": "$loop_entry"
+              },
+              {
+                "key": "format",
+                "value": "csv"
+              },
+              {
+                "key": "start_utc",
+                "value": "${__from:date:iso}"
+              },
+              {
+                "key": "end_utc",
+                "value": "${__to:date:iso}"
+              },
+              {
+                "key": "max_points",
+                "value": "1000"
+              }
+            ]
+          },
+          "csv_options": {
+            "comment": "#"
+          },
+          "columns": [
+            {
+              "selector": "timestamp_utc",
+              "text": "time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "min",
+              "text": "min",
+              "type": "number"
+            },
+            {
+              "selector": "max",
+              "text": "max",
+              "type": "number"
+            },
+            {
+              "selector": "mean",
+              "text": "mean",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max"
+            },
+            "properties": [
+              {
+                "id": "custom.fillBelowTo",
+                "value": "min"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mean"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Robot CPU",
+      "description": "Every value the open capture recorded for this entry: a band from each bucket's minimum to its maximum, with its mean. Zoom in until every sample shows.",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "pit-recording"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "pit-recording"
+          },
+          "type": "csv",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/data/entries",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "capture",
+                "value": "current"
+              },
+              {
+                "key": "names",
+                "value": "$cpu_entry"
+              },
+              {
+                "key": "format",
+                "value": "csv"
+              },
+              {
+                "key": "start_utc",
+                "value": "${__from:date:iso}"
+              },
+              {
+                "key": "end_utc",
+                "value": "${__to:date:iso}"
+              },
+              {
+                "key": "max_points",
+                "value": "1000"
+              }
+            ]
+          },
+          "csv_options": {
+            "comment": "#"
+          },
+          "columns": [
+            {
+              "selector": "timestamp_utc",
+              "text": "time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "min",
+              "text": "min",
+              "type": "number"
+            },
+            {
+              "selector": "max",
+              "text": "max",
+              "type": "number"
+            },
+            {
+              "selector": "mean",
+              "text": "mean",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max"
+            },
+            "properties": [
+              {
+                "id": "custom.fillBelowTo",
+                "value": "min"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mean"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Robot free disk",
+      "description": "Every value the open capture recorded for this entry: a band from each bucket's minimum to its maximum, with its mean. Zoom in until every sample shows.",
+      "gridPos": {
+        "x": 8,
+        "y": 13,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "pit-recording"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "pit-recording"
+          },
+          "type": "csv",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/data/entries",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "capture",
+                "value": "current"
+              },
+              {
+                "key": "names",
+                "value": "$disk_entry"
+              },
+              {
+                "key": "format",
+                "value": "csv"
+              },
+              {
+                "key": "start_utc",
+                "value": "${__from:date:iso}"
+              },
+              {
+                "key": "end_utc",
+                "value": "${__to:date:iso}"
+              },
+              {
+                "key": "max_points",
+                "value": "1000"
+              }
+            ]
+          },
+          "csv_options": {
+            "comment": "#"
+          },
+          "columns": [
+            {
+              "selector": "timestamp_utc",
+              "text": "time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "min",
+              "text": "min",
+              "type": "number"
+            },
+            {
+              "selector": "max",
+              "text": "max",
+              "type": "number"
+            },
+            {
+              "selector": "mean",
+              "text": "mean",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max"
+            },
+            "properties": [
+              {
+                "id": "custom.fillBelowTo",
+                "value": "min"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mean"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ]
+}

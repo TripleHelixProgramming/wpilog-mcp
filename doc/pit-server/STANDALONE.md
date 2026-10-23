@@ -1372,8 +1372,9 @@ The ready-to-run files are in [metrics/](metrics/compose.yaml):
 docker compose -f doc/pit-server/metrics/compose.yaml up -d
 ```
 
-[The Compose file](metrics/compose.yaml) pins Prometheus 3.15.0 and Grafana 13.2.3, stores
-both services' data in Docker volumes, and exposes their UIs only on this laptop's loopback.
+[The Compose file](metrics/compose.yaml) pins Prometheus 3.15.0, Grafana 13.2.3 and Grafana's
+Infinity data source 4.1.1, stores both services' data in Docker volumes, and exposes their UIs
+only on this laptop's loopback.
 [Prometheus configuration](metrics/prometheus.yml) scrapes once a second. Edit its target
 for a pit server on another machine; the default `host.docker.internal:2363` addresses the
 Docker host and includes Linux's host-gateway mapping. The pit server must bind to an
@@ -1389,9 +1390,28 @@ pull gate and NT4 round trip. Fill the topic boxes with exact names and the unit
 state; empty boxes deliberately show no robot data. For a topic in other units, edit the
 query's conversion. CPU/disk panels work when the robot publishes them; future context
 providers will supply their own topics. The heap panel is the **server's** JVM. Use the
-capture and analysis tools for full-resolution history, not the dashboard's sampled curve.
-Plotting stored history in this Grafana is proposed, not implemented; see
-[GRAFANA_PLAN.md](../GRAFANA_PLAN.md).
+recorded dashboard below, or the capture and analysis tools, for full-resolution history, not
+the sampled dashboard's curve.
+
+**Pit / Pit recording** plots what the open capture recorded, read from its file through the
+server's [data endpoint](../STANDALONE.md#the-data-endpoint) by Infinity, which Grafana installs
+before it starts. Its [dashboard](metrics/pit-recording-dashboard.json) has the same five robot
+panels: each is one entry, the last five minutes by default, refreshed every five seconds, drawn
+as a band from each bucket's minimum to its maximum with the mean, in 1,000 buckets across the
+window. A 30 ms voltage dip between two scrapes shows there as a bucket's minimum. Zooming in
+narrows the buckets until every sample shows; zooming out reaches back to the start of the open
+file, not across a rollover or a reboot. Fill the boxes with entries exactly as the capture names
+them, which is `NT:` and the topic for a robot topic (`NT:/SmartDashboard/Battery`), in the units
+each box states. The provisioned data source's base URL is the server, `http://host.docker.internal:2363`;
+edit it with the Prometheus target for a pit server on another machine.
+
+A panel is placed by the robot's own wall clock when the robot publishes one, and otherwise by
+this server's ([the server's clock](#sessions-and-capture-files)). A panel the server refuses
+shows only the status code, since Infinity does not pass the server's reason on: **404** when
+nothing is recording or the box names no entry of the capture, **422** when the recording cannot
+be placed in UTC yet, **400** when a box is empty or names something that is not a number. The
+dashboard's first panel says the same. Plotting stored history across sessions in this Grafana
+is proposed, not implemented; see [GRAFANA_PLAN.md](../GRAFANA_PLAN.md).
 
 The configuration follows the official [Prometheus container setup](https://prometheus.io/docs/prometheus/latest/installation/)
 and [Grafana provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/).

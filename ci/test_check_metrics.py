@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
-from ci.check_metrics import grafana_sample, preload_images
+from ci.check_metrics import grafana_sample, pinned_infinity, preload_images, recording_refusal
 
 
 class MetricsReadinessTest(unittest.TestCase):
@@ -46,3 +46,42 @@ class MetricsImageTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Unrecognized.*unrecognized/server:1'):
                 preload_images(['docker', 'compose'])
             run.assert_not_called()
+
+
+class RecordedDashboardTest(unittest.TestCase):
+    def dashboard(self):
+        with open('doc/pit-server/metrics/pit-recording-dashboard.json', encoding='utf-8') as file:
+            return json.load(file)
+
+    def test_the_pinned_release_is_read_as_compose_reads_it(self):
+        config = {'services': {'grafana': {'environment': {'GF_PLUGINS_PREINSTALL_SYNC': 'yesoreyeram-infinity-datasource@4.1.1'}}}}
+        with patch('ci.check_metrics.subprocess.check_output', return_value=json.dumps(config)) as run:
+            self.assertEqual('4.1.1', pinned_infinity(['docker', 'compose', '-f', 'synthetic.yaml']))
+            run.assert_called_once_with(['docker', 'compose', '-f', 'synthetic.yaml', 'config', '--format', 'json'], text=True)
+
+    def test_an_unpinned_plugin_is_refused(self):
+        config = {'services': {'grafana': {'environment': {'GF_PLUGINS_PREINSTALL_SYNC': 'yesoreyeram-infinity-datasource'}}}}
+        with patch('ci.check_metrics.subprocess.check_output', return_value=json.dumps(config)):
+            with self.assertRaisesRegex(ValueError, 'pinned Infinity release'):
+                pinned_infinity(['docker', 'compose'])
+
+    def test_the_panels_own_query_goes_with_its_box_and_range_filled(self):
+        dashboard = self.dashboard()
+        answer = {'results': {'A': {'error': 'unsuccessful HTTP response\nstatus code : 404 Not Found'}}}
+        with patch('ci.check_metrics.post', return_value=answer) as send:
+            self.assertIn('404', recording_refusal(dashboard))
+            body = send.call_args.args[1]
+            params = {p['key']: p['value'] for p in body['queries'][0]['url_options']['params']}
+            self.assertEqual('current', params['capture'])
+            self.assertEqual('NT:/synthetic-unpublished', params['names'])
+            self.assertEqual('2026-01-01T00:00:00Z', params['start_utc'])
+            self.assertEqual('2026-01-01T00:05:00Z', params['end_utc'])
+        # The dashboard keeps its own boxes and range.
+        first = next(p for p in dashboard['panels'] if p['type'] == 'timeseries')
+        self.assertIn('$battery_entry', [p['value'] for p in first['targets'][0]['url_options']['params']])
+
+    def test_a_panel_that_answers_is_not_taken_for_the_refusal(self):
+        with patch('ci.check_metrics.post', return_value={'results': {'A': {'frames': []}}}):
+            with self.assertRaisesRegex(AssertionError, 'not refused'):
+                recording_refusal(self.dashboard())
+

@@ -1,8 +1,8 @@
 # Recorded History in Grafana
 
 Status: proposed on 2026-10-21 at the maintainer's request, and its [decisions](#decisions)
-answered the same day. Stage 1's server reads were [built](#stage-1-built-so-far) on
-2026-10-22; its gate and dashboard are not. Two answers differ from the proposal: a
+answered the same day. Stage 1 was [built](#stage-1-built-so-far) on 2026-10-22: the server's
+reads, the gate, which they pass, and the recorded dashboard. Two answers differ from the proposal: a
 dashboard starts from a robot and a time range, and live panels on the open capture come first.
 The designs those answers need are agreed before they are built. The first stage's design is
 [proposed below](#stage-1-design-the-open-capture); the maintainer answered its six questions
@@ -389,8 +389,44 @@ fields are checked against a decode of the same prefix for every leaf and pooled
 cases where the columns must stop, start again or step aside, with views read again after later
 records and schemas, against the numbers written and against the finished file's column file;
 and, counted, a ten-second UTC window of a pose's `x` on a two-hour recording decodes no pose and
-at most 100 of its 4,218 blocks. Twenty-five planted mistakes each fail them. Items 5 and 6, the
-gate and the Compose example, are not built.
+at most 100 of its 4,218 blocks. Twenty-five planted mistakes each fail them.
+
+5. **The gate passes.** An opt-in run of the soak test records a synthetic robot through the pit
+   server's own capture service, two hours of the soak's 100 topics at 50 Hz and a wall clock,
+   then ten minutes in real time while twelve panels ask every five seconds for the last five
+   minutes by measured UTC at 1,000 points, through the real HTTP transport. On the
+   maintainer's computer, the 120 refreshes at two hours took 18 ms at the median and 101 ms at
+   worst, against 250 ms, and allocated 36 MB at the median and 44 MB at worst, against 50 MB; at
+   two minutes they took 19 ms and 26 MB. The listener waited at most 37 ms, against a second,
+   and the heap after a full collection grew 9.8 MB, against 64 MB. With the recording's column
+   reads turned off, so that each refresh decodes its entries whole as before the recording
+   phase, the refreshes passed at two minutes, at 38 MB, and failed at two hours, at 870 MB each,
+   though they still took under 250 ms on this computer: the allocation bound is the one that
+   sees a cost growing with the session.
+6. **The recorded dashboard.** The Compose example's Grafana installs Infinity 4.1.1, pinned,
+   before it starts, with a provisioned data source whose base URL is the server, and
+   provisions **Pit / Pit recording** beside the sampled dashboard: its five robot panels, each
+   a band from minimum to maximum with the mean over `capture=current`. CI's metrics check
+   confirms the plugin's version, the provisioning, and that a panel's own query, sent through
+   Grafana with nothing recording, comes back refused by the server.
+
+Building the gate found three things.
+
+- **The first run failed its allocation bound.** A refresh allocated 51 to 88 MB, about 4.5 MB a
+  request, and a dashboard opened after two quiet hours would have read every new clock reading
+  as an object in each of its panels at once, about 50 MB apiece. CSV rows now come from one
+  buffer, UTC cells are sized without formatting them, UTC is mapped in long arithmetic with the
+  exact path kept for overflow, a recording's column blocks are read into a buffer each reader
+  keeps, and one request at a time extends the clock's readings, as numbers, while the others
+  wait. A request takes about 2.5 MB, the same at six minutes as at two hours, and every
+  response is byte for byte what it was.
+- **Infinity does not pass the server's reason on.** A refused panel shows only the status code,
+  so the dashboard's first panel says what 404, 422 and 400 mean; the server's text is in the
+  response, which Grafana does not show.
+- **The prefill is paced at ten times real time.** Streamed as fast as the recorder took values,
+  about thirty times the soak's rate, the listener stalled for over a second several times and
+  once lost the robot, which started a new session. At ten times it still stalled four times
+  during the prefill, never during the ten minutes at the soak's rate.
 
 ### Decisions for the maintainer
 

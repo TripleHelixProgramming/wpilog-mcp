@@ -44,6 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window with "No wall-clock entry". There are about 1,200 readings an hour; they never widen a
   file's time range, are never forwarded to gateway clients and never make a file roll over, and
   an upstream topic of the same name is not recorded.
+- The Compose example's Grafana gains a recorded dashboard, **Pit / Pit recording**, beside the
+  sampled one: battery, CAN utilization, loop duration, robot CPU and free disk from the open
+  capture, every value drawn as a band from each bucket's minimum to its maximum with the mean,
+  the last five minutes by default, refreshed every five seconds, with zoom down to single
+  samples. Grafana reads the data endpoint's CSV through Infinity 4.1.1, pinned and installed
+  before Grafana starts, from a provisioned data source whose base URL is the server. Infinity
+  shows a refused panel's status code but not the server's reason, so the dashboard's first
+  panel says what 404, 422 and 400 mean. Before, the pit wall showed only sampled latest values,
+  so a voltage dip between two scrapes was lost.
 - `/data/entries` takes `capture=current` in place of `path`: the capture this server is
   recording when the request arrives, so a dashboard panel follows it across a rollover or a
   new session without knowing its file. The response names the file it read; with nothing
@@ -686,6 +695,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The live dashboard's gate, an opt-in run of the soak test: the pit server's capture service
+  records a synthetic robot for two hours, then for ten minutes in real time while twelve panels
+  refresh every five seconds through the real HTTP transport by measured UTC. On the maintainer's
+  computer, refreshes at two hours took 18 ms at the median and 101 ms at worst against a 250 ms
+  bound, allocated 36 MB at the median and 44 MB at worst against 50 MB, the listener waited 37 ms
+  at most against a second, and the heap after a full collection grew 9.8 MB against 64 MB. With
+  the recording's column reads turned off, as before the recording phase, refreshes pass at two
+  minutes and allocate about 870 MB each at two hours, so the gate fails. CI's metrics check
+  installs the pinned Infinity, provisions the recorded dashboard, and sends a panel's own query
+  through Grafana, which the server refuses for want of a capture.
 - The CSV rows the data endpoint writes are pinned character for character against hand-worked
   text, with empty cells for a bucket of no finite sample and for a time before the clock's first
   reading, and the long arithmetic that maps each row's UTC against the exact path on random

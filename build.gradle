@@ -325,6 +325,8 @@ tasks.register('architectureHardeningSoakTest', Test) {
     maxHeapSize = '768m'
     systemProperty 'hardening.soak.seconds', project.findProperty('hardeningSoakSeconds') ?: '600'
     systemProperty 'hardening.soak.label', project.findProperty('hardeningSoakLabel') ?: 'full'
+    systemProperty 'hardening.gate.seconds', project.findProperty('hardeningGateSeconds') ?: '600'
+    systemProperty 'hardening.gate.prefill.hours', project.findProperty('hardeningGatePrefillHours') ?: '2'
     environment 'WPILOG_DISK_CACHE_DIR', file("$buildDir/hardening-soak-disk-cache").absolutePath
     doFirst { delete file("$buildDir/hardening-soak-disk-cache") }
     outputs.upToDateWhen { false }

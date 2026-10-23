@@ -13,14 +13,22 @@ import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -34,6 +42,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.triplehelix.wpilogmcp.config.CaptureConfig;
 import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.harness.HarnessHttp;
@@ -359,6 +368,305 @@ class ArchitectureHardeningSoakTest {
           new GsonBuilder().serializeNulls().setPrettyPrinting().create().toJson(report) + System.lineSeparator());
       System.out.println("Architecture hardening soak: " + report);
     }
+  }
+
+  /** The robot's wall clock, by AdvantageKit's name, so panels are placed by measured UTC. */
+  private static final String CLOCK = "/AdvantageKit/SystemStats/EpochTimeMicros";
+  /** The robot's wall clock at {@code START_US}: 2026-10-22T00:00:00Z. */
+  private static final long EPOCH_AT_START_US = 1_792_627_200_000_000L;
+  private static final int PANELS = 12;
+  private static final long WINDOW_US = TimeUnit.MINUTES.toMicros(5);
+  private static final int MAX_POINTS = 1000;
+  private static final long REFRESH_BOUND_NS = TimeUnit.MILLISECONDS.toNanos(250);
+  private static final long REFRESH_ALLOCATION_BOUND = 50L << 20;
+  private static final long HEAP_GROWTH_BOUND = 64L << 20;
+  /** Values sent but not yet recorded while the prefill runs ahead of real time: ten seconds' worth. */
+  private static final long PREFILL_IN_FLIGHT = 50_000;
+  /**
+   * How much faster than real time the prefill streams. Run as fast as the recorder takes values,
+   * about thirty times the soak's rate, the listener stalled for seconds and once lost the robot,
+   * which a recording at the soak's rate never meets.
+   */
+  private static final int PREFILL_SPEED = 10;
+
+  /** One refresh of the twelve panels: its wall time, and what the server's HTTP threads allocated. */
+  private record Refresh(long elapsedNs, long allocatedBytes) {}
+
+  /**
+   * The gate live panels on a recording must pass before the recorded dashboard ships (stage 1 of
+   * the Grafana plan, with the bounds the maintainer set on 2026-10-21). The capture first holds
+   * two hours at the soak's rate, streamed ten times faster than real time; then the robot streams in real
+   * time for ten minutes while twelve panels ask every five seconds for the last five minutes, by
+   * measured UTC, at 1,000 points, as Grafana does. The listener waits at most a second; each
+   * refresh finishes within 250 ms and its requests allocate under 50 MB, at two hours as at two
+   * minutes; and the heap left after a full collection grows by less than 64 MB over the run.
+   * Before the recording kept its index in columns, a refresh decoded every record of each
+   * panel's entry, so its cost grew with the session.
+   */
+  @Test @Order(3) void liveDashboardKeepsItsBoundsOnATwoHourRecording() throws Exception {
+    int seconds = Integer.getInteger("hardening.gate.seconds", 600);
+    double hours = Double.parseDouble(System.getProperty("hardening.gate.prefill.hours", "2"));
+    String label = System.getProperty("hardening.soak.label", "full");
+    assertTrue(label.matches("[A-Za-z0-9_-]+"));
+    var reportDirectory = Files.createDirectories(Path.of("build/reports/architecture-hardening"));
+    var work = Files.createTempDirectory(reportDirectory, "dashboard-gate-" + label + "-").toRealPath();
+    var manager = LogManager.getInstance();
+    var savedAllowed = manager.getAllowedDirectories();
+    manager.addAllowedDirectory(work);
+    var report = new JsonObject();
+    report.addProperty("label", label);
+    report.addProperty("synthetic", true);
+    report.addProperty("topics", TOPICS);
+    report.addProperty("clock_topic", CLOCK);
+    report.addProperty("rate_hz_per_topic", RATE_HZ);
+    report.addProperty("prefill_hours", hours);
+    report.addProperty("prefill_speed", PREFILL_SPEED);
+    report.addProperty("dashboard_sec", seconds);
+    report.addProperty("panels", PANELS);
+    report.addProperty("window_sec", WINDOW_US / 1_000_000);
+    report.addProperty("max_points", MAX_POINTS);
+    report.addProperty("allocation_measurement", "Bytes allocated by the HTTP server's request and streaming threads while the twelve requests ran.");
+    var robot = new AtomicLong(START_US);
+    var sent = new AtomicLong();
+    var loop = ClientScheduler.daemon("dashboard-gate-listener");
+    var dashboard = Executors.newSingleThreadScheduledExecutor(runnable -> {
+      var thread = new Thread(runnable, "dashboard-gate-panels");
+      thread.setDaemon(true);
+      return thread;
+    });
+    Nt4Gateway gateway = null;
+    CaptureService capture = null;
+    HttpTransport transport = null;
+    var monitor = new Monitor();
+    boolean passed = false;
+    try {
+      gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), robot::get, List.of(Nt4Client.V40));
+      gateway.start().get(10, TimeUnit.SECONDS);
+      for (int topic = 0; topic < TOPICS; topic++) gateway.announce(name(topic), "int", new JsonObject()).get(10, TimeUnit.SECONDS);
+      gateway.announce(CLOCK, "int", new JsonObject()).get(10, TimeUnit.SECONDS);
+      // The pit server's capture as servers.yaml configures it, with the default ten-minute hot window.
+      capture = new CaptureService(new CaptureConfig(List.of(RobotAddress.uri("127.0.0.1", gateway.port(), "dashboard-gate")),
+          work.resolve("store"), .001, CapturePolicy.ALL, TimeUnit.SECONDS.toMicros(600)), manager, Clock.systemUTC(), loop);
+      capture.start();
+      var live = capture.live();
+      HarnessHttp.await("synthetic NT4 connection and clock", 15, () -> live.connected() && live.timeEstimate().isPresent());
+      HarnessHttp.await("all synthetic topic declarations", 15, () -> live.topics().size() == TOPICS + 1);
+      var tools = new ToolRegistry();
+      WpilogTools.registerAll(tools);
+      transport = new HttpTransport(tools, 0);
+      transport.useConfiguredCapture(capture);
+      transport.start();
+      var panels = new Panels(transport.getPort());
+      long heapBefore = heapAfterFullCollection();
+
+      long prefillTicks = Math.round(hours * 3600 * RATE_HZ);
+      long twoMinutes = 2 * 60 * RATE_HZ;
+      var early = new ArrayList<Refresh>();
+      Refresh warmUp = null;
+      long prefillStart = System.nanoTime();
+      for (long tick = 0; tick < prefillTicks; tick++) {
+        long due = prefillStart + TimeUnit.MICROSECONDS.toNanos(tick * PERIOD_US / PREFILL_SPEED);
+        while (System.nanoTime() < due) LockSupport.parkNanos(due - System.nanoTime());
+        sent.addAndGet(publish(gateway, robot, tick));
+        while (sent.get() - live.receivedValues() > PREFILL_IN_FLIGHT) {
+          // A recording that lost its robot loses what was sent meanwhile; say why at once.
+          assertTrue(live.connected(), () -> "The recorder disconnected at tick " + live.receivedValues() / (TOPICS + 1)
+              + ": " + live.disconnectReason());
+          LockSupport.parkNanos(200_000);
+        }
+        if (tick + 1 == twoMinutes) {
+          HarnessHttp.awaitProgress("values at two minutes", 60, live::receivedValues, () -> live.receivedValues() == sent.get());
+          // The first request after start loads and compiles the read path; it is reported, not bounded.
+          warmUp = panels.refresh(tick);
+          for (int i = 0; i < 5; i++) early.add(panels.refresh(tick));
+        }
+      }
+      HarnessHttp.awaitProgress("prefilled values", 120, live::receivedValues, () -> live.receivedValues() == sent.get());
+      report.addProperty("prefill_values", sent.get());
+      report.addProperty("prefill_wall_sec", (System.nanoTime() - prefillStart) / 1e9);
+
+      // Real time from here: the robot streams while the dashboard refreshes every five seconds.
+      monitor.start(loop);
+      var refreshes = Collections.synchronizedList(new ArrayList<Refresh>());
+      var panelFailure = new AtomicReference<Throwable>();
+      var lastTick = new AtomicLong(prefillTicks - 1);
+      dashboard.scheduleAtFixedRate(() -> {
+        try {
+          refreshes.add(panels.refresh(lastTick.get()));
+        } catch (Throwable problem) {
+          panelFailure.compareAndSet(null, problem);
+        }
+      }, 0, 5, TimeUnit.SECONDS);
+      long streamStart = System.nanoTime();
+      long ticks = (long) seconds * RATE_HZ;
+      for (long i = 0; i < ticks; i++) {
+        long due = streamStart + TimeUnit.MICROSECONDS.toNanos(i * PERIOD_US);
+        while (System.nanoTime() < due) LockSupport.parkNanos(due - System.nanoTime());
+        long tick = prefillTicks + i;
+        sent.addAndGet(publish(gateway, robot, tick));
+        lastTick.set(tick);
+      }
+      dashboard.shutdown();
+      assertTrue(dashboard.awaitTermination(60, TimeUnit.SECONDS), "The last refresh must finish");
+      HarnessHttp.awaitProgress("streamed values", 60, live::receivedValues, () -> live.receivedValues() == sent.get());
+      monitor.close();
+      long heapAfter = heapAfterFullCollection();
+
+      List<Refresh> run;
+      synchronized (refreshes) { run = List.copyOf(refreshes); }
+      report.add("warm_up_refresh", json(warmUp == null ? List.of() : List.of(warmUp)));
+      report.add("refreshes_at_two_minutes", json(early));
+      report.add("refreshes_at_two_hours", json(run));
+      report.addProperty("listener_loop_max_delay_ms", monitor.longestNs.get() / 1e6);
+      report.addProperty("heap_after_full_collection_before_bytes", heapBefore);
+      report.addProperty("heap_after_full_collection_after_bytes", heapAfter);
+      report.addProperty("heap_growth_bytes", heapAfter - heapBefore);
+      report.addProperty("sent_values", sent.get());
+      report.addProperty("recorded_values", live.receivedValues());
+      report.addProperty("panel_failure", panelFailure.get() == null ? null : panelFailure.get().toString());
+      var all = new ArrayList<>(early);
+      all.addAll(run);
+      long slowest = all.stream().mapToLong(Refresh::elapsedNs).max().orElse(0);
+      long largest = all.stream().mapToLong(Refresh::allocatedBytes).max().orElse(0);
+      assertAll(
+          () -> assertNull(panelFailure.get(), "Every panel must answer with its window's buckets"),
+          () -> assertTrue(run.size() >= seconds / 5, "Refreshes run: " + run.size()),
+          () -> assertTrue(monitor.longestNs.get() <= TimeUnit.MICROSECONDS.toNanos(LoopWatchdog.STALL_US),
+              "Listener loop exceeded one second: " + monitor.longestNs.get() / 1e6 + " ms"),
+          () -> assertTrue(slowest <= REFRESH_BOUND_NS, "A refresh took " + slowest / 1e6 + " ms"),
+          () -> assertTrue(largest < REFRESH_ALLOCATION_BOUND, "A refresh allocated " + largest / 1e6 + " MB"),
+          () -> assertTrue(heapAfter - heapBefore < HEAP_GROWTH_BOUND,
+              "Heap after a full collection grew by " + (heapAfter - heapBefore) / 1e6 + " MB"),
+          () -> assertEquals(sent.get(), live.receivedValues(), "Every value sent must be recorded"));
+      passed = true;
+    } finally {
+      monitor.close();
+      dashboard.shutdownNow();
+      if (transport != null) transport.stop();
+      if (capture != null) capture.close();
+      if (gateway != null) gateway.close();
+      loop.close();
+      loop.awaitTermination(TimeUnit.SECONDS.toMicros(30));
+      manager.release(work);
+      manager.clearAllowedDirectories();
+      savedAllowed.forEach(manager::addAllowedDirectory);
+      Files.writeString(reportDirectory.resolve("dashboard-gate-" + label + ".json"),
+          new GsonBuilder().serializeNulls().setPrettyPrinting().create().toJson(report) + System.lineSeparator());
+      System.out.println("Live dashboard gate: " + report);
+      // Two hours of capture take about a gigabyte: a pass deletes them, a failure keeps them to look at.
+      if (passed) {
+        try (var paths = Files.walk(work)) {
+          for (var path : paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+        }
+      }
+    }
+  }
+
+  /** One tick: every topic's value and the robot's wall clock, at the tick's robot time; the values sent. */
+  private static int publish(Nt4Gateway gateway, AtomicLong robot, long tick) throws Exception {
+    long timestamp = START_US + tick * PERIOD_US;
+    robot.set(timestamp);
+    var batch = new CompletableFuture<?>[TOPICS + 1];
+    for (int topic = 0; topic < TOPICS; topic++) batch[topic] = gateway.value(name(topic), timestamp, 2, value(topic, tick));
+    batch[TOPICS] = gateway.value(CLOCK, timestamp, 2, EPOCH_AT_START_US + tick * PERIOD_US);
+    CompletableFuture.allOf(batch).get(10, TimeUnit.SECONDS);
+    return TOPICS + 1;
+  }
+
+  /** Twelve panels, as Grafana's Infinity asks for them: one entry each, by measured UTC, in buckets. */
+  private static final class Panels {
+    private final HttpClient http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
+    private final int port;
+
+    Panels(int port) {
+      this.port = port;
+    }
+
+    /** All twelve at once for the five minutes up to {@code lastTick}, with each answer checked. */
+    Refresh refresh(long lastTick) throws Exception {
+      long end = EPOCH_AT_START_US + lastTick * PERIOD_US;
+      // A window reaching back before the recording began starts at its first value.
+      long firstTick = Math.max(0, lastTick - WINDOW_US / PERIOD_US);
+      var before = requestThreadAllocation();
+      long started = System.nanoTime();
+      var answers = new ArrayList<CompletableFuture<HttpResponse<String>>>();
+      for (int panel = 0; panel < PANELS; panel++) {
+        var query = "?capture=current&format=csv&max_points=" + MAX_POINTS
+            + "&names=" + URLEncoder.encode("NT:" + name(panel), StandardCharsets.UTF_8)
+            + "&start_utc=" + URLEncoder.encode(instant(end - WINDOW_US), StandardCharsets.UTF_8)
+            + "&end_utc=" + URLEncoder.encode(instant(end), StandardCharsets.UTF_8);
+        var uri = URI.create("http://127.0.0.1:" + port + HttpTransport.DATA_PATH + query);
+        answers.add(http.sendAsync(HttpRequest.newBuilder(uri).GET().build(), HttpResponse.BodyHandlers.ofString()));
+      }
+      var responses = new ArrayList<HttpResponse<String>>();
+      for (var answer : answers) responses.add(answer.get(60, TimeUnit.SECONDS));
+      long elapsed = System.nanoTime() - started;
+      long allocated = allocatedSince(before);
+      for (int panel = 0; panel < PANELS; panel++) check(responses.get(panel), panel, firstTick, lastTick);
+      return new Refresh(elapsed, allocated);
+    }
+
+    /**
+     * The window's buckets: the first holds the sample at the window's start, exactly, and the
+     * last reaches the latest value sent, less any still on its way to the recording.
+     */
+    private static void check(HttpResponse<String> response, int topic, long firstTick, long lastTick) {
+      assertEquals(200, response.statusCode(), response.body());
+      var rows = response.body().lines().filter(line -> !line.isEmpty() && !line.startsWith("#")).toList();
+      assertEquals("timestamp_sec,timestamp_utc,count,min,max,mean,first,last", rows.get(0));
+      assertTrue(rows.size() > 1 && rows.size() <= MAX_POINTS + 1, "Buckets: " + (rows.size() - 1));
+      var first = rows.get(1).split(",", -1);
+      var last = rows.get(rows.size() - 1).split(",", -1);
+      assertEquals((double) value(topic, firstTick), Double.parseDouble(first[3]), "The first bucket's minimum");
+      double latest = Double.parseDouble(last[4]);
+      assertTrue(latest <= value(topic, lastTick) && latest >= value(topic, lastTick - RATE_HZ),
+          "The last bucket's maximum, " + latest + ", against the value sent at tick " + lastTick);
+    }
+  }
+
+  private static String instant(long epochUs) {
+    return Instant.ofEpochSecond(Math.floorDiv(epochUs, 1_000_000L), Math.floorMod(epochUs, 1_000_000L) * 1000).toString();
+  }
+
+  /**
+   * Bytes each of the HTTP server's threads has allocated so far: those that take requests and
+   * those that stream a data response, where an answer's work is done.
+   */
+  private static Map<Long, Long> requestThreadAllocation() {
+    var threads = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+    var allocated = new HashMap<Long, Long>();
+    for (var thread : Thread.getAllStackTraces().keySet()) {
+      if (!thread.getName().startsWith("http-")) continue;
+      long bytes = threads.getThreadAllocatedBytes(thread.getId());
+      if (bytes >= 0) allocated.put(thread.getId(), bytes);
+    }
+    return allocated;
+  }
+
+  private static long allocatedSince(Map<Long, Long> before) {
+    long total = 0;
+    for (var thread : requestThreadAllocation().entrySet()) total += thread.getValue() - before.getOrDefault(thread.getKey(), 0L);
+    return total;
+  }
+
+  private static long heapAfterFullCollection() {
+    for (int i = 0; i < 3; i++) System.gc();
+    return ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed();
+  }
+
+  private static com.google.gson.JsonObject json(List<Refresh> refreshes) {
+    var summary = new JsonObject();
+    var times = refreshes.stream().mapToDouble(r -> r.elapsedNs() / 1e6).sorted().toArray();
+    var bytes = refreshes.stream().mapToDouble(r -> r.allocatedBytes() / 1e6).sorted().toArray();
+    summary.addProperty("count", refreshes.size());
+    if (times.length > 0) {
+      summary.addProperty("median_ms", times[times.length / 2]);
+      summary.addProperty("p95_ms", times[(int) Math.min(times.length - 1, Math.ceil(.95 * times.length) - 1)]);
+      summary.addProperty("max_ms", times[times.length - 1]);
+      summary.addProperty("median_allocated_mb", bytes[bytes.length / 2]);
+      summary.addProperty("max_allocated_mb", bytes[bytes.length - 1]);
+    }
+    return summary;
   }
 
   private static String name(int topic) { return "/architecture-soak/topic-" + topic; }

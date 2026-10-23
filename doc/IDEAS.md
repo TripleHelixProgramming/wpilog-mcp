@@ -20,8 +20,9 @@ down. Its three runs built all seven items, the cross-session contract as `compa
 
 [Recorded history in Grafana](GRAFANA_PLAN.md) plans plotting stored sessions in the Grafana
 that shows the live metrics, on server installs, after live panels on the open capture
-(section 9.5 below). Its decisions are recorded; stage 1's server reads, live and by UTC,
-are built, and its gate and dashboard are next.
+(section 9.5 below). Its decisions are recorded; stage 1, live panels on the open capture, is
+built: the server's reads, the gate they pass, and the recorded dashboard. History by robot and
+time, stage 2, is next.
 [The column file plan](COLUMN_CACHE_PLAN.md) proposes keeping each log's numeric entries as
 columns beside it, so reads at any zoom and across sessions skip the per-sample cost. Its file
 format, writer and reader are built, the server builds the files in the background, the
@@ -709,7 +710,8 @@ Plot stored sessions at full resolution in the Grafana that already shows the li
 on a server install. [GRAFANA_PLAN.md](GRAFANA_PLAN.md) is the plan, its decisions answered on
 2026-10-21: Grafana's Infinity data source reads the data endpoint's CSV with measured UTC,
 Grafana's time range chooses the window, and a dashboard starts from a robot and a time range.
-Live panels on the open capture come first. Panels across many sessions follow a measurement
+Live panels on the open capture came first and are built, with the gate their bounds set and a
+recorded dashboard in the Compose example. Panels across many sessions follow a measurement
 of summaries the server keeps against a columnar store on server installs only, which the
 [columnar plan](COLUMNAR_STORE_PLAN.md#revisited-for-server-installs-2026-10-21) reconsiders.
 
