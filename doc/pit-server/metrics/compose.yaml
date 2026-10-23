@@ -1,3 +1,5 @@
+# Each file mounted from this folder carries z: on a host with SELinux enforcing, such as Fedora,
+# Docker relabels it so the container can read it; elsewhere z changes nothing.
 services:
   prometheus:
     image: prom/prometheus:v3.15.0
@@ -8,7 +10,7 @@ services:
     ports: ["127.0.0.1:9090:9090"]
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro,z
       - prometheus-data:/prometheus
   grafana:
     image: grafana/grafana:13.2.3
@@ -19,10 +21,10 @@ services:
     ports: ["127.0.0.1:3000:3000"]
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
-      - ./provisioning:/etc/grafana/provisioning:ro
-      - ./pit-dashboard.json:/etc/grafana/dashboards/pit-dashboard.json:ro
-      - ./pit-recording-dashboard.json:/etc/grafana/dashboards/pit-recording-dashboard.json:ro
-      - ./pit-history-dashboard.json:/etc/grafana/dashboards/pit-history-dashboard.json:ro
+      - ./provisioning:/etc/grafana/provisioning:ro,z
+      - ./pit-dashboard.json:/etc/grafana/dashboards/pit-dashboard.json:ro,z
+      - ./pit-recording-dashboard.json:/etc/grafana/dashboards/pit-recording-dashboard.json:ro,z
+      - ./pit-history-dashboard.json:/etc/grafana/dashboards/pit-history-dashboard.json:ro,z
       - grafana-data:/var/lib/grafana
 volumes:
   prometheus-data:

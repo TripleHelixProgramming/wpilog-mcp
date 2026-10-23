@@ -1383,7 +1383,9 @@ for a pit server on another machine; the default `host.docker.internal:2363` add
 Docker host and includes Linux's host-gateway mapping. The pit server must bind to an
 address reachable from that container (for example, set `WPILOG_HTTP_BIND=0.0.0.0` before
 `wpilog-mcp start pit`); binding only to loopback is not reachable through a Linux bridge.
-The server runs neither of these services itself.
+The server runs neither of these services itself. On a host with SELinux enforcing, such as Fedora,
+Docker relabels the files the stack mounts from this folder so its containers can read them; the
+mounts carry `z` for that, which changes nothing elsewhere.
 
 Open Grafana at `http://127.0.0.1:3000` (initial login `admin`/`admin`, then choose your
 password) and select **Pit / Pit sampled telemetry**. Its

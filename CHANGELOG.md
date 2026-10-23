@@ -471,6 +471,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Compose example's Prometheus and Grafana start on a host with SELinux enforcing, such as
+  Fedora or RHEL: each file the stack mounts from the repository carries `z`, so Docker relabels
+  it for containers, and does nothing where SELinux is off. Before, Prometheus could not read its
+  configuration there and stopped, and Grafana could not read its provisioning.
 - The first data request after a quiet stretch of a recording reads the clock's new readings from
   its column as numbers, and requests that arrive together wait for one of them to read them
   rather than each reading them again. Before, the first request after two quiet hours allocated

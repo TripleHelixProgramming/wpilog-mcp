@@ -65,7 +65,7 @@ class MetricsDocsTest {
     var plugin = ((Map<?, ?>) grafana.get("environment")).get("GF_PLUGINS_PREINSTALL_SYNC").toString();
     assertTrue(plugin.matches("yesoreyeram-infinity-datasource@\\d+\\.\\d+\\.\\d+"), "Infinity pinned to a release: " + plugin);
     assertTrue(((List<?>) grafana.get("extra_hosts")).contains("host.docker.internal:host-gateway"), "Grafana reaches the server as Prometheus does");
-    assertTrue(((List<?>) grafana.get("volumes")).contains("./pit-recording-dashboard.json:/etc/grafana/dashboards/pit-recording-dashboard.json:ro"));
+    assertTrue(((List<?>) grafana.get("volumes")).contains("./pit-recording-dashboard.json:/etc/grafana/dashboards/pit-recording-dashboard.json:ro,z"));
     Map<String, Object> provisioned = yaml.load(Files.readString(base.resolve("provisioning/datasources/pit.yaml")));
     var infinity = ((List<?>) provisioned.get("datasources")).stream().map(d -> (Map<?, ?>) d)
         .filter(d -> "yesoreyeram-infinity-datasource".equals(d.get("type"))).findFirst().orElseThrow();
@@ -118,7 +118,7 @@ class MetricsDocsTest {
     var yaml = new org.yaml.snakeyaml.Yaml(); var base = Path.of("doc/pit-server/metrics");
     Map<String, Object> compose = yaml.load(Files.readString(base.resolve("compose.yaml")));
     var grafana = (Map<?, ?>) ((Map<?, ?>) compose.get("services")).get("grafana");
-    assertTrue(((List<?>) grafana.get("volumes")).contains("./pit-history-dashboard.json:/etc/grafana/dashboards/pit-history-dashboard.json:ro"));
+    assertTrue(((List<?>) grafana.get("volumes")).contains("./pit-history-dashboard.json:/etc/grafana/dashboards/pit-history-dashboard.json:ro,z"));
     Map<String, Object> provisioned = yaml.load(Files.readString(base.resolve("provisioning/datasources/pit.yaml")));
     var infinity = ((List<?>) provisioned.get("datasources")).stream().map(d -> (Map<?, ?>) d)
         .filter(d -> "yesoreyeram-infinity-datasource".equals(d.get("type"))).findFirst().orElseThrow();
@@ -176,5 +176,25 @@ class MetricsDocsTest {
     assertTrue(table, "A sessions table helps find a range");
     assertEquals(5, plots);
     assertTrue(Files.readString(Path.of("doc/pit-server/STANDALONE.md")).contains("metrics/pit-history-dashboard.json"));
+  }
+
+  /**
+   * Every file the example mounts from the repository carries z, so the stack starts on a host
+   * with SELinux enforcing: on Fedora, Prometheus could not read its unlabeled configuration and
+   * stopped. Docker does nothing for z where SELinux is off.
+   */
+  @Test void everyMountedFileIsRelabeledForContainers() throws Exception {
+    Map<String, Object> compose = new org.yaml.snakeyaml.Yaml().load(Files.readString(Path.of("doc/pit-server/metrics/compose.yaml")));
+    int mounts = 0;
+    for (var service : ((Map<?, ?>) compose.get("services")).values()) {
+      for (var volume : (List<?>) ((Map<?, ?>) service).get("volumes")) {
+        String mount = volume.toString();
+        if (!mount.startsWith("./")) continue;
+        mounts++;
+        var options = List.of(mount.substring(mount.lastIndexOf(':') + 1).split(","));
+        assertTrue(options.contains("z") && options.contains("ro"), mount);
+      }
+    }
+    assertEquals(5, mounts);
   }
 }
