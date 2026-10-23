@@ -81,6 +81,12 @@ class StoreReadCatalogRefreshTest {
   @ParameterizedTest @ValueSource(strings = {"shrink", "rewrite", "replacement", "closed-growth"})
   void onlyOpenPayloadGrowthCanPassThePostScanCheck(String change) throws Exception {
     store(!change.equals("closed-growth")); var scans = new AtomicInteger();
+    // Without a file identity (Windows), NTFS gives the replacement the old creation time, so it
+    // reads as growth here; the readers' saved header and last-record anchors refuse it. Decided
+    // before the catalog reads: an assumption inside its scan would surface as the wrong error.
+    if (change.equals("replacement")) org.junit.jupiter.api.Assumptions.assumeTrue(
+        Files.readAttributes(payload, java.nio.file.attribute.BasicFileAttributes.class).fileKey() != null,
+        "the file system reports no file identity");
     try (var catalog = catalog(() -> {
       scans.incrementAndGet();
       switch (change) {

@@ -1427,7 +1427,11 @@ this memory. A miss hashes the file, checking its boundary before and after; a c
 size, modification time, file identity or expected hash needs a new proof. Failures are never
 remembered, and the opened native snapshot still has to match the verified boundary. Every
 admission retains current catalog and path/grant checks. Edits preserving all observed file
-attributes remain outside this proof, as with the existing loaded-log boundary checks.
+attributes remain outside this proof, as with the existing loaded-log boundary checks. On Windows,
+which reports no file identity, the creation time stands in for one, and NTFS can give a file that
+replaces another the replaced file's creation time for about 15 seconds (tunneling). A same-size
+replacement whose modification time is set back within that window is such an edit, and unlike a
+loaded log this memory has no saved anchors to catch it: a limitation accepted on 2026-10-23.
 Concurrent cold misses may duplicate hashing; no I/O holds the metadata lock or a cache
 computation lock, and a hash finishing after close cannot repopulate the memory. Followers use
 the same verification policy with memory owned by each lease. Paged inventory open/details reuse the

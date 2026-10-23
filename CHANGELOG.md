@@ -900,6 +900,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   content-hash test's rewrite then fell back to an eager parse and failed with a class cast, and it
   now requires the lazy log it means to examine.
 
+- The tests of a replaced file's identity now run only where the file system reports one. Windows
+  reports none, and NTFS gives a file that replaces another the old creation time for about 15
+  seconds, so on Windows those fixtures could not make the change they test and failed their own
+  precondition. A Windows-only test checks the fallback instead: a different creation time alone
+  counts as a changed file. The window is documented: there, a same-size replacement with its
+  modification time set back is not detected by the memory of verified hashes.
+
 - The editor smoke check now requires that activation alone starts no shared server, and checks the
   server's health and version after listing local logs, the first request that needs it. Before, it
   expected activation to start the server, which the extension stopped doing when local services
