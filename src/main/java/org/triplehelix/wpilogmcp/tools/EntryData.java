@@ -304,6 +304,14 @@ public final class EntryData {
     return quality.sampling().name().toLowerCase(java.util.Locale.ROOT);
   }
 
+  /**
+   * The sampling class of a recording's window, each file's samples a segment of their own, so no
+   * interval runs across the gap between two files.
+   */
+  public static String sampling(LogData log, String entry, List<List<TimestampedValue>> segments) {
+    return DataQuality.fromSegments(log, entry, segments).sampling().name().toLowerCase(java.util.Locale.ROOT);
+  }
+
   /** Suffixes a name may end with, and the unit each states. */
   private static final String[][] UNIT_SUFFIXES = {
       {"MetersPerSecondSquared", "m/s^2"}, {"MetersPerSecSquared", "m/s^2"},

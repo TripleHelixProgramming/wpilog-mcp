@@ -32,7 +32,16 @@ public final class ManagedLogAccess implements LogAccess {
   public ManagedReadSnapshot acquire(String path) throws IOException { return acquire(path, true, null); }
   public ManagedReadSnapshot acquire(String path, String scopeId) throws IOException { return acquire(path, true, scopeId); }
 
+  /** As {@link #acquire(String)}, the caller owning its use until it closes, but without the REV
+   * synchronization a log's first load otherwise starts: a robot range and a recording's closed
+   * files read only what their request names, a range's REV signals by their recorded alignment. */
+  public ManagedReadSnapshot acquireWithoutRevSync(String path) throws IOException { return acquire(path, true, null, false); }
+
   private ManagedReadSnapshot acquire(String path, boolean callerOwnsUse, String scopeId) throws IOException {
+    return acquire(path, callerOwnsUse, scopeId, callerOwnsUse);
+  }
+
+  private ManagedReadSnapshot acquire(String path, boolean callerOwnsUse, String scopeId, boolean synchronize) throws IOException {
     synchronized (this) {
       if (closed) throw new ReadException(ReadProblem.Code.CLOSED, "Managed log access is closed");
     }
@@ -47,7 +56,7 @@ public final class ManagedLogAccess implements LogAccess {
       var choices = manager.sourceScopes().snapshot();
       if (choices.size() > 1) throw new SourceScopes.Failure("SOURCE_SELECTION_REQUIRED", "A relative file path requires an explicit source scope", choices);
     }
-    var use = callerOwnsUse ? manager.acquire(path) : manager.acquireReadOnly(path);
+    var use = synchronize ? manager.acquire(path) : manager.acquireReadOnly(path);
     ManagedReadSnapshot snapshot;
     try {
       if (scope != null) manager.sourceScopes().recheckPath(Path.of(use.log().path()), scope);

@@ -1402,8 +1402,9 @@ before it starts. Its [dashboard](metrics/pit-recording-dashboard.json) has the 
 panels: each is one entry, the last five minutes by default, refreshed every five seconds, drawn
 as a band from each bucket's minimum to its maximum with the mean, in 1,000 buckets across the
 window. A 30 ms voltage dip between two scrapes shows there as a bucket's minimum. Zooming in
-narrows the buckets until every sample shows; zooming out reaches back to the start of the open
-file, not across a rollover or a reboot. Fill the boxes with entries exactly as the capture names
+narrows the buckets until every sample shows; zooming out reaches back across a rollover or a
+same-boot reconnect to the session's start, but not across a reboot, which starts a new session.
+Fill the boxes with entries exactly as the capture names
 them, which is `NT:` and the topic for a robot topic (`NT:/SmartDashboard/Battery`), in the units
 each box states. The provisioned data source's base URL is the server, `http://host.docker.internal:2363`;
 edit it with the Prometheus target for a pit server on another machine.

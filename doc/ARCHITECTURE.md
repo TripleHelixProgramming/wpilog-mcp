@@ -645,7 +645,14 @@ not replaced. `start_utc` and `end_utc` become one inclusive window of log micro
 search over the mapping, which never runs backwards along the log's time: the samples inside it
 are exactly those whose UTC lies in the UTC window, so a sample has one time however it is asked
 for. `capture=current` resolves the capture recording at each request before the same admission
-as any path.
+as any path. It reads the closed files of the session that the window reaches as well as the open
+one, since a rollover or a same-boot reconnect only starts the session's next file: a live panel
+would otherwise lose everything before a radio blip until its window moved past it. The files
+share the robot's clock, which is what kept the session going, so they merge in its order. In UTC
+a time is placed by the clock of the file that was recording then, each closed file's up to its
+last record: a value the reconnect's file repeats at its original time is placed where it was
+first recorded, and the two copies agree, where each file's own clock would give them two times
+a synchronization apart.
 
 `SystemLogClocks` shares the ambiguity validation: conflicting duplicate coordinates or
 backward epoch readings place neither forward UTC nor an inverse wall-clock time. Identical

@@ -443,6 +443,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dashboard's included, and its publication stayed pending as an authority conflict through every
   recovery pass. A closed capture file is now never written again. The next file starts with what
   the robot sends on reconnecting, including its topics' last values at their original times.
+- `capture=current` reads the closed files of the session recording now that its window
+  reaches, a rollover's or a same-boot reconnect's, as well as the open file, as one recording on
+  the robot clock those files share. In UTC a time is placed by the clock of the file that was
+  recording then, so a value a reconnect's file repeats at its original time keeps the time the
+  closed file gave it. The response lists the files read and any closed file that could not be
+  read, and a UTC window is refused with `422` only when no file of the session can be placed.
+  Before, a live panel read the open file alone, so after a radio blip it lost everything before
+  the reconnect until its window moved past it.
 
 ### Fixed
 
@@ -739,6 +747,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A format-2 mirror is checked to copy an import and a capture's clock record byte for byte and
   never the capture, and the peer test of a growing offer now offers an import, since a capture is
   skipped before that check. A planted mistake that copies captures again fails it.
+- `capture=current` over a session of two files is checked against rows worked out from fixture
+  files whose clocks the tests set: the value a reconnect repeats placed by the closed file's
+  clock, buckets across both files placed by the clock recording at each bucket's start, a window
+  in seconds, a peer's capture of the same boot left out, a file the manifest still names open, an
+  unreadable file listed, a file without a clock counted unplaced, an angle unwrapped once across
+  the reconnect, and the file limit. Sixteen planted mistakes each fail them.
 - The recorder's buffer is checked against an output that writes each record as it comes, byte
   for byte and offset for offset, with buffers smaller than one record and larger than the whole
   file, through a write that fails halfway, a record larger than the buffer, a resumed file and a

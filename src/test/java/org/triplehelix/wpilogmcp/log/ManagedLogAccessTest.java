@@ -211,10 +211,10 @@ class ManagedLogAccessTest {
   @Test void mcpAndDataConsumersUseTheSharedAdmissionBoundary() throws Exception {
     var sources = Map.of("tools/LogRequiringTool.java", 1, "tools/CoreTools.java", 1,
         "tools/RobotAnalysisTools.java", 2, "tools/SystemLogClocks.java", 2,
-        "capture/context/SystemTextPublisher.java", 1, "mcp/DataEndpoint.java", 2);
+        "capture/context/SystemTextPublisher.java", 1, "mcp/DataEndpoint.java", 3);
     var root = Path.of("src/main/java/org/triplehelix/wpilogmcp");
     var direct = Pattern.compile("\\b(?:logManager|manager)\\s*\\.\\s*acquire\\s*\\(");
-    var shared = Pattern.compile("\\b(?:logAccess|access)\\s*\\.\\s*(?:open|acquire)\\s*\\(");
+    var shared = Pattern.compile("\\b(?:logAccess|access)\\s*\\.\\s*(?:open|acquire|acquireWithoutRevSync)\\s*\\(");
     for (var source : sources.entrySet()) {
       String text = Files.readString(root.resolve(source.getKey()));
       assertFalse(direct.matcher(text).find(), source.getKey() + " bypasses shared read admission");

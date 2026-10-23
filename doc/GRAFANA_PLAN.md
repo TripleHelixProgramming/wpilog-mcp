@@ -317,7 +317,10 @@ stages 2 and 3.
    panel's left side is empty, with the reason in the metadata, and a reboot's new session starts
    a fresh panel. The alternative reads the previous file of the same session too, which is the
    first answer across files that stage 2 designs in general. Answered on 2026-10-21: the open
-   file only.
+   file only. Superseded on 2026-10-23, once a same-boot reconnect continued the session in its
+   next file, in the maintainer's words "(2) Yes" to reading the session's earlier files within
+   the window: a live window reads the files of the open session that it reaches, a reboot still
+   starting a fresh panel.
 4. **The open index's memory, first.** For: a recording comes first. At 82 bytes per value, a
    long session at a high value rate runs the server out of heap before its first rollover,
    whether or not Grafana is in use. Proposed: compact the open index into primitive arrays of
@@ -599,6 +602,12 @@ On 2026-10-23, the server's reads and the dashboard's listings:
    panels, each with a box for each source's name, every box empty to start. CI's metrics check
    provisions it and sends a panel's own query through Grafana to a server with no store, which
    refuses it.
+4. **The open session, whole.** `capture=current` reads the closed files of the open session that
+   the window reaches as well as the open file, in place of stage 1's open file alone. The files
+   share the robot's clock; in UTC a time is placed by the clock of the file that was recording
+   then, each closed file's up to its last record, so the values a reconnect repeats keep the
+   time the closed file gave them. Fourteen tests over files whose clocks they set, every row
+   worked out from the fixture, and sixteen planted mistakes, each of which fails them.
 
 Built tests: a range over three files whose clocks the fixture sets, against rows worked out from
 the fixture alone, through a roboRIO log whose catalog time is an hour off, a sample before a

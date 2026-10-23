@@ -54,7 +54,8 @@ import org.triplehelix.wpilogmcp.tools.EntryData;
  *
  * <p>Query parameters: {@code path} (the log), or {@code capture=current} for the capture
  * recording at the time of the request, which follows a rollover or a new session without the
- * caller knowing the file; {@code names} (entries or field paths, comma separated, or repeated),
+ * caller knowing the file, and reads the closed files of its session that the window reaches as
+ * one recording ({@link DataRecording}); {@code names} (entries or field paths, comma separated, or repeated),
  * {@code start_time} and {@code end_time} (seconds), {@code max_points} (buckets, by
  * {@link Buckets}' rule, the same as {@code read_entry}'s), and {@code format} ({@code arrow}, the
  * default, or {@code csv}). Optional {@code utc=true} adds a nullable timestamp measured from the
@@ -339,16 +340,23 @@ final class DataEndpoint {
   /** A series with what the response says about it; {@code rev} for a REV log signal. */
   private record Prepared(EntryData.Series series, List<TimestampedValue> values,
       ArrowType valueType, Buckets.Result buckets, String sampling, String unit,
-      EntryData.RevSync rev, JsonObject decoding, JsonObject utcBasis) {}
+      EntryData.RevSync rev, JsonObject decoding, JsonObject utcBasis, long sampleCount) {}
+
+  /** Places a time on a log's clock in UTC: one log's own mapping, or a recording's clock across its files. */
+  @FunctionalInterface interface Placement { UtcTimeMapping.Mapping at(long logMicros); }
+
+  /** What a recording of several files adds to a response: the files read, oldest first, those skipped, and their span. */
+  private record Recorded(JsonArray files, JsonArray skipped, double minSec, double maxSec) {}
 
   /**
-   * The open file of the capture recording now. With nothing recording, a refusal that says why
-   * and names the last session, so a panel shows why it is blank.
+   * The capture recording now: its open file and its session's closed files. With nothing
+   * recording, a refusal that says why and names the last session, so a panel shows why it is blank.
    */
-  private String currentCapture() throws Refusal {
+  private org.triplehelix.wpilogmcp.capture.LiveCapture.Recording currentCapture() throws Refusal {
     var live = captures.get();
+    var recording = live == null ? null : live.recording();
+    if (recording != null) return recording;
     var current = live == null ? null : live.current();
-    if (current != null && current.open()) return live.resolve(current.path()).toString();
     var last = org.triplehelix.wpilogmcp.capture.LiveCapture.location(live, live == null ? null : current);
     var body = new JsonObject();
     body.addProperty("error", live == null ? "Capture is not enabled on this server" : "No capture session is open");
@@ -393,8 +401,14 @@ final class DataEndpoint {
 
   private void serve(HttpExchange exchange, Request request, SourceResolver sources) throws IOException, Refusal {
     org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot use;
+    List<org.triplehelix.wpilogmcp.capture.LiveCapture.SessionFile> earlier = List.of();
     try {
-      if (request.currentCapture()) request = request.at(currentCapture());
+      if (request.currentCapture()) {
+        var recording = currentCapture();
+        request = request.at(recording.open().toString());
+        earlier = DataRecording.nominate(recording.earlier(), request.startTime(), request.endTime(),
+            request.startUtc(), request.endUtc());
+      }
       checkSource(request, sources);
       use = logAccess.acquire(request.path(), request.scopeId());
     } catch (SourceScopes.Failure failure) {
@@ -406,9 +420,14 @@ final class DataEndpoint {
       throw new Refusal(400, "The log could not be read: " + e.getMessage(), null);
     }
     try (use) {
+      if (!earlier.isEmpty()) {
+        serveRecording(exchange, request, sources, use, earlier);
+        return;
+      }
       var log = use.log();
       var before = use.snapshot();
       var utc = request.utc() ? log.utcMapping() : null;
+      Placement placement = utc == null ? null : utc::at;
       long[] logWindow = null;
       if (request.utcWindow()) {
         var unplaced = utc.unavailableReason();
@@ -493,65 +512,285 @@ final class DataEndpoint {
         long count = buckets != null ? buckets.buckets().size() : values.size();
         rows += count;
         estimatedBytes += buckets != null ? count * 56 : size(values, valueType);
-        if (utc != null) estimatedBytes += utcSize(request, values, buckets, count, utc);
-        var basis = utc == null ? null : utcBasis(utc, values, buckets);
+        if (utc != null) estimatedBytes += utcSize(request, values, buckets, count, placement);
+        var basis = utc == null ? null : utcBasis(utc.basis(), placement, values, buckets);
         if (basis != null && request.utcWindow()) unplaced(basis, utc, series);
         prepared.add(new Prepared(series, values, valueType, buckets,
             EntryData.sampling(log, series, presentation),
             rev != null && rev.unit() != null ? rev.unit() : EntryData.unitFromName(name), rev,
-            EntryData.decodingMetadata(log, series), basis));
+            EntryData.decodingMetadata(log, series), basis, series.values().size()));
       }
-      if (estimatedBytes > maxBytes) {
-        var refusal = new Refusal(413, "The response would be about " + estimatedBytes + " bytes ("
-            + rows + " rows), over the cap of " + maxBytes,
-            "Narrow the window with start_time and end_time, or pass max_points to bucket");
-        refusal.body.addProperty("rows", rows);
-        refusal.body.addProperty("bytes", estimatedBytes);
-        refusal.body.addProperty("max_bytes", maxBytes);
-        throw refusal;
-      }
-      boolean bucketed = request.maxPoints() != null;
-      if (request.format().equals("arrow") && !bucketed) {
-        var first = prepared.get(0).valueType();
-        for (var p : prepared) {
-          if (!p.valueType().equals(first)) {
-            throw new Refusal(400, "An Arrow stream has one schema, and " + p.series().name()
-                + " (" + describe(p.valueType()) + ") does not share the value type of "
-                + prepared.get(0).series().name() + " (" + describe(first) + ")",
-                "Request entries of different types separately, or pass max_points, whose "
-                    + "buckets have one shape for every numeric entry");
-          }
-        }
-      }
+      respond(exchange, request, sources, use, log, before, prepared, estimatedBytes, rows, revValidators, placement, null);
+    }
+  }
 
-      // A cached reply is still a read of this exact owner/scope/content. Recheck after
-      // preparing values so replacement or revoked admission cannot publish stale data.
-      checkSource(request, sources);
-      // A capture still recording is read as its writer's published prefix, which has no
-      // snapshot: appending does not change what this request read.
-      if (before != null && !before.sameAs(FileSnapshot.of(use.path()))) throw new Refusal(409, "The log changed during this data request", "Reopen the selected source");
-      var etag = etag(before, exchange.getRequestURI().getRawQuery(), revValidators);
-      var ifNoneMatch = exchange.getRequestHeaders().getFirst("If-None-Match");
-      if (etag != null && ifNoneMatch != null && matches(ifNoneMatch, etag)) {
-        exchange.getResponseHeaders().set("ETag", etag);
-        exchange.sendResponseHeaders(304, -1);
-        exchange.close();
-        return;
-      }
-
-      var headers = exchange.getResponseHeaders();
-      headers.set("Content-Type", request.format().equals("arrow") ? ARROW_TYPE : "text/csv; charset=utf-8");
-      headers.set("Cache-Control", "private, max-age=0, must-revalidate");
-      if (etag != null) headers.set("ETag", etag);
-      exchange.sendResponseHeaders(200, 0);
-      try (var out = new BufferedOutputStream(exchange.getResponseBody(), 1 << 16)) {
-        if (request.format().equals("arrow")) {
-          writeArrow(out, log, request, prepared, before, use.replica(), utc);
-        } else {
-          writeCsv(out, log, request, prepared, before, use.replica(), utc);
+  /**
+   * The rest of a request once its entries are prepared: the size cap, the Arrow schema's one
+   * value type, the source and the file checked again, the validator, and the response.
+   */
+  private void respond(HttpExchange exchange, Request request, SourceResolver sources,
+      org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot use, LogData log, FileSnapshot before,
+      List<Prepared> prepared, long estimatedBytes, long rows, List<EntryData.RevValidator> revValidators,
+      Placement utc, Recorded recorded) throws IOException, Refusal {
+    if (estimatedBytes > maxBytes) {
+      var refusal = new Refusal(413, "The response would be about " + estimatedBytes + " bytes ("
+          + rows + " rows), over the cap of " + maxBytes,
+          "Narrow the window with start_time and end_time, or pass max_points to bucket");
+      refusal.body.addProperty("rows", rows);
+      refusal.body.addProperty("bytes", estimatedBytes);
+      refusal.body.addProperty("max_bytes", maxBytes);
+      throw refusal;
+    }
+    boolean bucketed = request.maxPoints() != null;
+    if (request.format().equals("arrow") && !bucketed) {
+      var first = prepared.get(0).valueType();
+      for (var p : prepared) {
+        if (!p.valueType().equals(first)) {
+          throw new Refusal(400, "An Arrow stream has one schema, and " + p.series().name()
+              + " (" + describe(p.valueType()) + ") does not share the value type of "
+              + prepared.get(0).series().name() + " (" + describe(first) + ")",
+              "Request entries of different types separately, or pass max_points, whose "
+                  + "buckets have one shape for every numeric entry");
         }
       }
     }
+
+    // A cached reply is still a read of this exact owner/scope/content. Recheck after
+    // preparing values so replacement or revoked admission cannot publish stale data.
+    checkSource(request, sources);
+    // A capture still recording is read as its writer's published prefix, which has no
+    // snapshot: appending does not change what this request read.
+    if (before != null && !before.sameAs(FileSnapshot.of(use.path()))) throw new Refusal(409, "The log changed during this data request", "Reopen the selected source");
+    var etag = etag(before, exchange.getRequestURI().getRawQuery(), revValidators);
+    var ifNoneMatch = exchange.getRequestHeaders().getFirst("If-None-Match");
+    if (etag != null && ifNoneMatch != null && matches(ifNoneMatch, etag)) {
+      exchange.getResponseHeaders().set("ETag", etag);
+      exchange.sendResponseHeaders(304, -1);
+      exchange.close();
+      return;
+    }
+
+    var headers = exchange.getResponseHeaders();
+    headers.set("Content-Type", request.format().equals("arrow") ? ARROW_TYPE : "text/csv; charset=utf-8");
+    headers.set("Cache-Control", "private, max-age=0, must-revalidate");
+    if (etag != null) headers.set("ETag", etag);
+    exchange.sendResponseHeaders(200, 0);
+    try (var out = new BufferedOutputStream(exchange.getResponseBody(), 1 << 16)) {
+      if (request.format().equals("arrow")) {
+        writeArrow(out, log, request, prepared, before, use.replica(), utc, recorded);
+      } else {
+        writeCsv(out, log, request, prepared, before, use.replica(), utc, recorded);
+      }
+    }
+  }
+
+  // ---- a recording of several files ----
+
+  /** A file of a recording, read: its use, its log, and its snapshot, null while it records. */
+  private record Part(org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot use, LogData log, FileSnapshot before) {}
+
+  /**
+   * {@code capture=current} once the window reaches closed files of the session as well as the
+   * open one, as {@link DataRecording} describes: each entry's samples from every file in time
+   * order, presented as one file's are and placed in UTC by the recording's clock. A nominated
+   * file that cannot be read is listed with why, and the others answer.
+   */
+  private void serveRecording(HttpExchange exchange, Request request, SourceResolver sources,
+      org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot open,
+      List<org.triplehelix.wpilogmcp.capture.LiveCapture.SessionFile> earlier) throws IOException, Refusal {
+    var parts = new ArrayList<Part>();
+    var skipped = new JsonArray();
+    try {
+      for (var file : earlier) {
+        try {
+          // A closed file of the recording is read for what the request names: its load starts no REV synchronization.
+          var use = logAccess.acquireWithoutRevSync(file.path().toString());
+          parts.add(new Part(use, use.log(), use.snapshot()));
+        } catch (IOException unreadable) {
+          var json = new JsonObject();
+          json.addProperty("path", file.path().toString());
+          json.addProperty("reason", "Unreadable: " + unreadable.getMessage());
+          skipped.add(json);
+        }
+      }
+      // Oldest first, by each file's last record; the open file runs on after them.
+      parts.sort(java.util.Comparator.comparingDouble((Part p) -> p.log().maxTimestamp()).thenComparing(p -> p.log().path()));
+      parts.add(new Part(open, open.log(), open.snapshot()));
+      answerRecording(exchange, request, sources, parts, skipped);
+    } finally {
+      for (var part : parts) if (part.use() != open) part.use().close();
+    }
+  }
+
+  private void answerRecording(HttpExchange exchange, Request request, SourceResolver sources, List<Part> parts,
+      JsonArray skipped) throws IOException, Refusal {
+    int n = parts.size();
+    var ends = new long[n];
+    for (int k = 0; k < n; k++) ends[k] = micros(parts.get(k).log().maxTimestamp());
+    DataRecording.Clock clock = null;
+    List<long[]> window = null;
+    if (request.utc()) {
+      var clocks = new ArrayList<UtcTimeMapping>();
+      for (var part : parts) clocks.add(part.log().utcMapping());
+      clock = new DataRecording.Clock(clocks, ends);
+      if (request.utcWindow()) {
+        if (!clock.places()) {
+          var own = clock.clock(n - 1);
+          var refusal = new Refusal(422, "No file of this recording can be placed in UTC: " + own.unavailableReason().get(),
+              "Read it by start_time and end_time, in the log's own seconds");
+          refusal.body.add("utc_basis", basisJson(own.basis()));
+          throw refusal;
+        }
+        window = clock.window(request.startUtc(), request.endUtc());
+      }
+    }
+    var prepared = new ArrayList<Prepared>();
+    long estimatedBytes = 0, rows = 0;
+    for (var name : request.names()) {
+      if (name.startsWith(EntryData.REV_PREFIX))
+        throw new Refusal(400, "capture=current reads the recording's WPILOG entries; " + name
+            + " is a REV signal, read by its log's path", "GET /data/entries?path=<log>&names=" + name);
+      var pieces = new ArrayList<List<TimestampedValue>>();
+      var found = new ArrayList<EntryData.Series>();
+      EntryData.Series last = null;
+      LogData lastLog = null;
+      ArrowType first = null;
+      long sampleCount = 0;
+      String absent = null;
+      for (var part : parts) {
+        EntryData.Series series;
+        try {
+          series = EntryData.resolve(part.log(), name);
+        } catch (IllegalArgumentException missing) {
+          absent = missing.getMessage();
+          continue;
+        }
+        if (request.maxPoints() != null && !series.numeric() && !"boolean".equals(series.type())) {
+          throw new Refusal(400, "max_points buckets numeric entries; " + name + " is " + series.type() + " in "
+              + part.log().path(), "Ask for a numeric field inside it (get_entry_info lists them), "
+              + "or leave max_points out to read every sample");
+        }
+        var type = EntryData.arrowType(part.log(), series);
+        if (first == null) first = type;
+        else if (request.format().equals("arrow") && request.maxPoints() == null && !type.equals(first)) {
+          throw new Refusal(400, "An Arrow stream has one schema, and " + name + " in " + part.log().path() + " ("
+              + describe(type) + ") does not share the value type of the same entry in an earlier file ("
+              + describe(first) + ")", "Pass max_points, whose buckets have one shape, or ask for CSV");
+        }
+        pieces.add(recorded(part.log(), series, request, window));
+        found.add(series);
+        sampleCount += series.values().size();
+        last = series;
+        lastLog = part.log();
+      }
+      if (last == null) {
+        throw new Refusal(404, absent, "list_entries lists the log's entries; get_entry_info "
+            + "lists an entry's numeric field paths");
+      }
+      // One series of the recording, so an angle unwraps once across its files.
+      var series = new EntryData.Series(last.name(), last.entry(), last.field(), last.type(),
+          DataRecording.merge(pieces), last.numeric());
+      EntryData.Prepared presentation;
+      try {
+        presentation = EntryData.prepareMicros(lastLog, series, Long.MIN_VALUE, Long.MAX_VALUE, request.angle());
+      } catch (IllegalArgumentException invalid) {
+        throw new Refusal(400, invalid.getMessage(), "Select a numeric entry or scalar field for angle presentation");
+      }
+      var values = presentation.values();
+      Buckets.Result buckets = null;
+      ArrowType valueType = EntryData.arrowType(lastLog, last);
+      if (request.maxPoints() != null) {
+        var numeric = series.numeric() ? values : asNumbers(values);
+        Double start = request.startTime(), end = request.endTime();
+        if (request.utcWindow()) {
+          start = window.isEmpty() ? null : window.get(0)[0] / 1e6;
+          long high = window.isEmpty() ? Long.MAX_VALUE : window.get(window.size() - 1)[1];
+          end = high == Long.MAX_VALUE ? null : high / 1e6;
+        }
+        buckets = numeric.size() > request.maxPoints() ? Buckets.of(numeric, start, end, request.maxPoints()) : null;
+        if (!series.numeric()) {
+          values = numeric;
+          valueType = new ArrowType.Float64();
+        }
+      }
+      if (presentation.angle()) valueType = new ArrowType.Float64();
+      long count = buckets != null ? buckets.buckets().size() : values.size();
+      rows += count;
+      estimatedBytes += buckets != null ? count * 56 : size(values, valueType);
+      JsonObject basis = null;
+      if (clock != null) {
+        estimatedBytes += utcSize(request, values, buckets, count, clock);
+        basis = utcBasis(clock.clock(n - 1).basis(), clock, values, buckets);
+        if (request.utcWindow()) unplaced(basis, clock, found);
+      }
+      prepared.add(new Prepared(series, values, valueType, buckets, EntryData.sampling(lastLog, last.entry(), pieces),
+          EntryData.unitFromName(name), null, EntryData.decodingMetadata(lastLog, last), basis, sampleCount));
+    }
+    // A closed file that changed while it was read is refused, as a single file is.
+    for (var part : parts.subList(0, n - 1)) {
+      if (part.before() != null && !part.before().sameAs(FileSnapshot.of(part.use().path())))
+        throw new Refusal(409, "A log changed during this data request: " + part.log().path(), "Ask again");
+    }
+    var files = new JsonArray();
+    double min = Double.POSITIVE_INFINITY, max = Double.NEGATIVE_INFINITY;
+    for (int k = 0; k < n; k++) {
+      var log = parts.get(k).log();
+      var file = new JsonObject();
+      file.addProperty("index", k);
+      file.addProperty("path", log.path());
+      if (k == n - 1) file.addProperty("recording", true);
+      else file.addProperty("end_sec", log.maxTimestamp());
+      if (clock != null) file.add("utc_basis", basisJson(clock.clock(k).basis()));
+      files.add(file);
+      min = Math.min(min, log.minTimestamp());
+      max = Math.max(max, log.maxTimestamp());
+    }
+    var open = parts.get(n - 1);
+    respond(exchange, request, sources, open.use(), open.log(), open.before(), prepared, estimatedBytes, rows,
+        List.of(), clock, new Recorded(files, skipped, min, max));
+  }
+
+  /**
+   * An entry's samples in one file of a recording, as recorded: inside the UTC window's robot
+   * times, inside the window in the log's seconds, which the files share, or all of them.
+   */
+  private static List<TimestampedValue> recorded(LogData log, EntryData.Series series, Request request,
+      List<long[]> window) {
+    if (!request.utcWindow()) return EntryData.prepare(log, series, request.startTime(), request.endTime(), null).recordedValues();
+    var out = new ArrayList<TimestampedValue>();
+    long first = micros(log.minTimestamp()), last = micros(log.maxTimestamp());
+    for (var interval : window) {
+      if (interval[1] < first || interval[0] > last) continue;
+      out.addAll(EntryData.prepareMicros(log, series, interval[0], interval[1], null).recordedValues());
+    }
+    return out;
+  }
+
+  /**
+   * How many of an entry's samples, in every file of a recording, its clock places nowhere, and
+   * why: a dashboard's response says what a UTC window cannot hold, as for one file.
+   */
+  private static void unplaced(JsonObject basis, DataRecording.Clock clock, List<EntryData.Series> series) {
+    long count = 0;
+    var hit = new ArrayList<DataRecording.Clock.Unplaced>();
+    for (var stretch : clock.unplaced()) {
+      long here = 0;
+      for (var one : series) here += between(one, stretch.fromUs(), stretch.toUs());
+      if (here > 0) hit.add(stretch);
+      count += here;
+    }
+    basis.addProperty("unplaced_sample_count", count);
+    basis.addProperty("unplaced_reason", DataRecording.Clock.reasons(hit));
+  }
+
+  /** How many of a series' samples lie between two times on its log's clock, both included. */
+  private static long between(EntryData.Series series, long fromUs, long toUs) {
+    if (series.samples() != null) {
+      var samples = series.samples();
+      return org.triplehelix.wpilogmcp.read.TimeWindows.bound(samples.size(), i -> samples.timeUs(i) <= toUs)
+          - org.triplehelix.wpilogmcp.read.TimeWindows.bound(samples.size(), i -> samples.timeUs(i) < fromUs);
+    }
+    return series.values().stream().filter(tv -> tv.timestampUs() >= fromUs && tv.timestampUs() <= toUs).count();
   }
 
   // ---- robot ranges ----
@@ -1169,7 +1408,7 @@ final class DataEndpoint {
 
   /** CSV expands arrays into rows, so their repeated UTC cells must also count toward the cap. */
   private static long utcSize(Request request, List<TimestampedValue> values,
-      Buckets.Result buckets, long count, UtcTimeMapping utc) {
+      Buckets.Result buckets, long count, Placement utc) {
     if (request.format().equals("arrow")) return count * 9; // int64 plus rounded-up validity
     long bytes = 0;
     for (int i = 0; i < count; i++) {
@@ -1232,9 +1471,9 @@ final class DataEndpoint {
   }
 
   /** Count emitted coordinates, not expanded CSV array rows, and retain a reason for each null. */
-  private static JsonObject utcBasis(UtcTimeMapping utc, List<TimestampedValue> values,
+  private static JsonObject utcBasis(UtcTimeMapping.Basis basis, Placement utc, List<TimestampedValue> values,
       Buckets.Result buckets) {
-    var out = basisJson(utc.basis());
+    var out = basisJson(basis);
     var reasons = new LinkedHashMap<String, Long>();
     int count = buckets == null ? values.size() : buckets.buckets().size();
     for (int i = 0; i < count; i++) {
@@ -1324,10 +1563,14 @@ final class DataEndpoint {
   // ---- the metadata both formats carry ----
 
   private JsonObject inputs(LogData log, Request request, List<Prepared> prepared,
-      FileSnapshot snapshot, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) {
+      FileSnapshot snapshot, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica, Recorded recorded) {
     var inputs = new JsonObject();
     inputs.addProperty("log", log.path());
     if (request.currentCapture()) inputs.addProperty("capture", "current");
+    if (recorded != null) {
+      inputs.add("files", recorded.files());
+      inputs.add("skipped", recorded.skipped());
+    }
     if (replica != null) inputs.add("replica", org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJsonTree(replica));
     var entries = new JsonArray();
     for (var p : prepared) entries.add(p.series().name());
@@ -1361,7 +1604,7 @@ final class DataEndpoint {
       e.addProperty("value_type", describe(p.valueType()));
       e.addProperty("sampling", p.sampling());
       if (p.unit() != null) e.addProperty("unit", p.unit());
-      e.addProperty("sample_count", p.series().values().size());
+      e.addProperty("sample_count", p.sampleCount());
       p.decoding().entrySet().forEach(field -> e.add(field.getKey(), field.getValue()));
       e.addProperty("total_in_range", p.values().size());
       e.addProperty("bucketed", p.buckets() != null);
@@ -1388,14 +1631,14 @@ final class DataEndpoint {
   }
 
   private Map<String, String> schemaMetadata(LogData log, Request request, List<Prepared> prepared,
-      FileSnapshot snapshot, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica) {
+      FileSnapshot snapshot, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica, Recorded recorded) {
     var metadata = new LinkedHashMap<String, String>();
     metadata.put("server", "wpilog-mcp");
     metadata.put("server_version", Version.VERSION);
-    metadata.put("inputs", gson.toJson(inputs(log, request, prepared, snapshot, replica)));
+    metadata.put("inputs", gson.toJson(inputs(log, request, prepared, snapshot, replica, recorded)));
     var range = new JsonObject();
-    range.addProperty("start", log.minTimestamp());
-    range.addProperty("end", log.maxTimestamp());
+    range.addProperty("start", recorded == null ? log.minTimestamp() : recorded.minSec());
+    range.addProperty("end", recorded == null ? log.maxTimestamp() : recorded.maxSec());
     metadata.put("time_range_sec", gson.toJson(range));
     metadata.put("entries", gson.toJson(entriesMetadata(prepared)));
     metadata.put("bucketed", String.valueOf(request.maxPoints() != null));
@@ -1418,7 +1661,7 @@ final class DataEndpoint {
 
   private void writeArrow(OutputStream out, LogData log, Request request, List<Prepared> prepared,
       FileSnapshot before, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica,
-      UtcTimeMapping utc) throws IOException {
+      Placement utc, Recorded recorded) throws IOException {
     boolean bucketed = request.maxPoints() != null;
     var fields = new ArrayList<>(bucketed ? BUCKET_FIELDS : List.of(
         new Field("timestamp", new ArrowType.TimestampMicros(), false),
@@ -1426,7 +1669,7 @@ final class DataEndpoint {
     if (utc != null) fields.add(1, new Field("timestamp_utc", new ArrowType.TimestampMicros("UTC"), true));
     int offset = utc == null ? 0 : 1;
     var writer = new ArrowStreamWriter(out, fields);
-    writer.writeSchema(schemaMetadata(log, request, prepared, before, replica));
+    writer.writeSchema(schemaMetadata(log, request, prepared, before, replica, recorded));
     var columns = new ArrayList<ColumnBuilder>();
     for (var f : fields) columns.add(ColumnBuilder.of(f.type()));
     for (var p : prepared) {
@@ -1476,7 +1719,7 @@ final class DataEndpoint {
     writer.finish();
   }
 
-  private static void appendTime(List<ColumnBuilder> columns, long logUs, UtcTimeMapping utc) {
+  private static void appendTime(List<ColumnBuilder> columns, long logUs, Placement utc) {
     columns.get(0).append(logUs);
     if (utc != null) columns.get(1).append(utc.at(logUs).epochMicros());
   }
@@ -1490,10 +1733,10 @@ final class DataEndpoint {
 
   private void writeCsv(OutputStream out, LogData log, Request request, List<Prepared> prepared,
       FileSnapshot before, org.triplehelix.wpilogmcp.store.ReplicaReads.Facts replica,
-      UtcTimeMapping utc) throws IOException {
+      Placement utc, Recorded recorded) throws IOException {
     Writer w = new OutputStreamWriter(out, StandardCharsets.UTF_8);
     w.write("# wpilog-mcp " + Version.VERSION + "\n");
-    w.write("# inputs: " + gson.toJson(inputs(log, request, prepared, before, replica)) + "\n");
+    w.write("# inputs: " + gson.toJson(inputs(log, request, prepared, before, replica, recorded)) + "\n");
     w.write("# entries: " + gson.toJson(entriesMetadata(prepared)) + "\n");
     boolean first = true;
     for (var p : prepared) {
@@ -1563,7 +1806,7 @@ final class DataEndpoint {
     CsvRow comma() { row.append(','); return this; }
 
     /** The UTC cell and its comma when the response has the column; an empty cell where the clock places no time. */
-    CsvRow utc(UtcTimeMapping utc, long logUs) {
+    CsvRow utc(Placement utc, long logUs) {
       if (utc == null) return this;
       var epoch = utc.at(logUs).epochMicros();
       if (epoch != null) UTC_FORMAT.formatTo(instant(epoch), row);

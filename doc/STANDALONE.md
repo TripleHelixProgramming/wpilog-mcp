@@ -1277,10 +1277,27 @@ GET /data/sessions?robot=<id>[&start_utc=<instant>][&end_utc=<instant>][&store=<
 
 `path` is the log, as `list_available_logs` lists it. `capture=current` names instead the capture
 this server is recording when the request arrives, so a dashboard follows it across a rollover or a
-new session without knowing the file; `inputs.log` names the file it read, and `inputs.capture` is
+new session without knowing the file; `inputs.log` names the open file, and `inputs.capture` is
 `current`. With nothing recording it answers `404` with the reason, `last_session` (the newest
 session's captured file, as `list_sessions` names it) and `ended_at`. It is refused beside `path`
-or a source qualification. `names` is a comma-separated list of one or more of: an entry; an entry with a field path appended (`/Drive/Pose.translation.x`, as `get_statistics` takes it); or a REV log signal's key as `list_revlog_signals` gives it (`REV/SparkMax_3/AppliedOutput`). `start_time` and `end_time` are seconds, as every tool takes them. `max_points` buckets by the same rule as `read_entry`'s `max_points` (see [TOOLS.md](TOOLS.md#read_entry)): at most that many buckets of equal duration over the window, each with its count, minimum, maximum, mean, first, and last.
+or a source qualification.
+
+**The session as one recording.** `capture=current` also reads the closed files of the open
+session that the window reaches: a rollover and a same-boot reconnect each close a file and
+continue the session in the next, as the store's manifest of the session lists them. A peer's
+capture of the same boot is not one of them. The session's files share the robot's clock, so
+`timestamp_sec` and a window in seconds mean the same in each. In UTC a time is placed by the
+clock of the file that was recording then: each closed file's up to its last record, the next
+file's after it. A reconnect's file starts with the values the robot re-sends, at their original
+times; both copies answer, at the same time. An angle unwraps once across the files. The
+closed files' times on the pit's clock only nominate them, within two hours of a UTC window, and
+at most 64 files answer, more being refused with `413`. Then `inputs.files` lists the files read,
+oldest first, each closed one with `end_sec`, where its stretch of the robot's clock ends, the
+open one with `recording`, and each with its clock's `utc_basis` when UTC is asked;
+`inputs.skipped` lists a closed file that could not be read, with why. A file without a clock
+leaves its stretch unplaced, counted in each entry's `utc_basis`, and a UTC window is refused with
+`422` only when no file of the session can be placed. A REV signal is refused here: read it by
+its log's `path`. A reboot begins a new session, which `capture=current` does not reach. `names` is a comma-separated list of one or more of: an entry; an entry with a field path appended (`/Drive/Pose.translation.x`, as `get_statistics` takes it); or a REV log signal's key as `list_revlog_signals` gives it (`REV/SparkMax_3/AppliedOutput`). `start_time` and `end_time` are seconds, as every tool takes them. `max_points` buckets by the same rule as `read_entry`'s `max_points` (see [TOOLS.md](TOOLS.md#read_entry)): at most that many buckets of equal duration over the window, each with its count, minimum, maximum, mean, first, and last.
 
 WPILOG bucket membership and first/last order use original integer microseconds; equal original
 timestamps retain file order. Explicit second bounds round to the nearest microsecond, and the

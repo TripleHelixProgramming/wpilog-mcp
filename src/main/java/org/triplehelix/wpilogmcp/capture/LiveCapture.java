@@ -188,18 +188,70 @@ public final class LiveCapture implements LogStore.Observer {
     return known.sessions().values().stream()
         .sorted(java.util.Comparator.comparing(Held::started).reversed().thenComparing(v -> v.session().id()))
         .map(item -> {
-      var s = item.session(); Path directory = item.directory();
-      String relative = s.openCapture() != null ? s.openCapture().path() : s.files().stream().findFirst().map(StoreManifest.LogFile::path).orElse(null);
-      if (relative != null) {
-        Path moved = resolve(directory.resolve(relative));
-        for (int i = 0; i < Path.of(relative).getNameCount(); i++) moved = moved.getParent();
-        directory = moved;
-      }
+      Path directory = directory(item);
       var parts = root.relativize(directory);
       var robot = parts.getNameCount() >= 2 && parts.getName(0).toString().equals("robots") ? known.robots().get(parts.getName(1).toString()) : null;
-      return new SessionView(directory, s, robot);
+      return new SessionView(directory, item.session(), robot);
     }).toList();
   }
+
+  /** A session's folder now: its manifest's, followed through a move of the files it names. */
+  private Path directory(Held item) {
+    var s = item.session(); Path directory = item.directory();
+    String relative = s.openCapture() != null ? s.openCapture().path() : s.files().stream().findFirst().map(StoreManifest.LogFile::path).orElse(null);
+    if (relative != null) {
+      Path moved = resolve(directory.resolve(relative));
+      for (int i = 0; i < Path.of(relative).getNameCount(); i++) moved = moved.getParent();
+      directory = moved;
+    }
+    return directory;
+  }
+
+  /** A closed file of the session recording now: where it is, and its records' span on the robot's clock. */
+  public record SessionFile(Path path, long minUs, long maxUs, String startedAt, String endedAt) {}
+
+  /** The capture recording now: its open file, and the closed files of its session, oldest first. */
+  public record Recording(Path open, List<SessionFile> earlier) {}
+
+  /**
+   * The capture recording now, or null when nothing records. A rollover and a same-boot reconnect
+   * each close a file and continue the session in the next, so the session's published manifest
+   * lists the closed ones. Only this recorder's own files count: a peer's capture of the same boot
+   * is filed under the session's peer folder, and it records the same minutes. Until the store's
+   * next update lists a file just closed, the manifest still names it open; it is closed once
+   * another file records.
+   */
+  public Recording recording() {
+    var status = current;
+    if (status == null || !status.open()) return null;
+    Path open = resolve(status.path());
+    var earlier = new ArrayList<SessionFile>();
+    for (var held : catalog.sessions().values()) {
+      Path folder = directory(held);
+      if (!folder.equals(open.getParent())) continue;
+      var session = held.session();
+      for (var file : session.files()) {
+        var provenance = file.provenance();
+        if (!"wpilog".equals(file.kind()) || provenance == null || !provenance.captured()
+            || !provenance.copiedFrom().isEmpty() || Path.of(file.path()).getNameCount() != 1) continue;
+        Path path = resolve(folder.resolve(file.path()));
+        if (!path.equals(open)) earlier.add(new SessionFile(path, micros(file.minTimestampSec()),
+            micros(file.maxTimestampSec()), file.startedAt(), file.endedAt()));
+      }
+      var named = session.openCapture();
+      if (named != null && Path.of(named.path()).getNameCount() == 1) {
+        Path path = resolve(folder.resolve(named.path()));
+        if (!path.equals(open) && earlier.stream().noneMatch(f -> f.path().equals(path)))
+          earlier.add(new SessionFile(path, micros(named.minTimestampSec()), micros(named.maxTimestampSec()),
+              session.startedAt(), null));
+      }
+      break;
+    }
+    earlier.sort(java.util.Comparator.comparingLong(SessionFile::maxUs).thenComparing(f -> f.path().toString()));
+    return new Recording(open, List.copyOf(earlier));
+  }
+
+  private static long micros(double seconds) { return Math.round(seconds * 1e6); }
 
   public CompletableFuture<Change> waitFor(String session, String topic, int timeoutMs) {
     var result = new CompletableFuture<Change>(); var wait = new Wait(session, topic, result);

@@ -98,7 +98,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Every value the open capture recorded, read from its file by measured UTC. Each panel is one entry: the band runs from each bucket's minimum to its maximum, the line is its mean, and zooming in narrows the buckets until every sample shows. The window reaches back no further than the open file.\n\nFill the boxes with entries exactly as the capture names them, in the units each box states. A panel the server refuses shows only its status code: **404** means nothing is recording or the box names no entry of the capture, **422** means the recording cannot be placed in UTC yet, and **400** means a box is empty or names something that is not a number. The sampled dashboard shows whether a session is open."
+        "content": "Every value the capture recorded in this session, read from its files by measured UTC. Each panel is one entry: the band runs from each bucket's minimum to its maximum, the line is its mean, and zooming in narrows the buckets until every sample shows. The window reaches back across a rollover or a reconnect to the session's start, not across a reboot.\n\nFill the boxes with entries exactly as the capture names them, in the units each box states. A panel the server refuses shows only its status code: **404** means nothing is recording or the box names no entry of the capture, **422** means the recording cannot be placed in UTC yet, and **400** means a box is empty or names something that is not a number. The sampled dashboard shows whether a session is open."
       }
     },
     {
