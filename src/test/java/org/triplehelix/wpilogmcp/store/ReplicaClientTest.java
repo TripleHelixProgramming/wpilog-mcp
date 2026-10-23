@@ -45,11 +45,12 @@ class ReplicaClientTest {
       } finally { http.stop(0); }
     }
   }
+  /** The growing offer is an import, since a mirror skips every capture before any growing check. */
   @Test void aPeerCannotHideItsGrowingFlagDuringWireDecoding() throws Exception {
     var http = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     http.createContext("/replicas/v1", exchange -> {
       String value = exchange.getRequestURI().getPath().endsWith("handshake") ? hello() : exchange.getRequestURI().getPath().endsWith("close") ? "{}"
-          : "{\"inventory_id\":\"" + SESSION + "\",\"catalog_epoch\":\"" + MASTER + "\",\"catalog_revision\":1,\"total\":1,\"next_cursor\":null,\"offers\":[{\"identity\":{\"master_store_id\":\"" + MASTER + "\",\"file_id\":\"" + MASTER + "\",\"file_version\":\"" + SESSION + "\"},\"name\":\"capture.wpilog\",\"sha256\":\"" + "a".repeat(64) + "\",\"size_bytes\":100,\"kind\":\"wpilog\",\"completion_basis\":\"closed_capture\",\"verification_claim\":\"verified\",\"growing\":true}]}";
+          : "{\"inventory_id\":\"" + SESSION + "\",\"catalog_epoch\":\"" + MASTER + "\",\"catalog_revision\":1,\"total\":1,\"next_cursor\":null,\"offers\":[{\"identity\":{\"master_store_id\":\"" + MASTER + "\",\"file_id\":\"" + MASTER + "\",\"file_version\":\"" + SESSION + "\"},\"name\":\"growing.wpilog\",\"sha256\":\"" + "a".repeat(64) + "\",\"size_bytes\":100,\"kind\":\"wpilog\",\"completion_basis\":\"completed_import\",\"verification_claim\":\"verified\",\"growing\":true}]}";
       exchange.getRequestBody().readAllBytes(); byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
       exchange.sendResponseHeaders(200, bytes.length); try (var output = exchange.getResponseBody()) { output.write(bytes); }
     }); http.start();

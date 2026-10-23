@@ -2539,8 +2539,9 @@ Evidence: `/private/tmp/wpilog-visualization-stage3-review19/validation.md`.
 ### Consolidated data path (owner decision, 2026-10-17)
 
 **Historical routing and mirror policy:** the [2026-10-18 source and mirror decisions](SOURCE_AND_MIRROR_PLAN.md)
-supersede the mandatory laptop data path and exclusion of finalized pit captures described
-here. Current code still reflects this checkpoint. Its clock facts, ownership work and
+supersede the mandatory laptop data path described here. Its exclusion of finalized pit captures
+stands: read as superseded by the 2026-10-18 plan, it was restored by the maintainer on
+2026-10-23. Current code still reflects this checkpoint. Its clock facts, ownership work and
 validation evidence are retained; the new design uses direct remote access, not the earlier
 laptop-server relay.
 

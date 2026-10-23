@@ -966,11 +966,11 @@ servers:
 
 Scope and pins govern new acquisition only. Unknown date evidence does not match the date
 window. Pins are explicit acquisition inclusions and cannot bypass capacity. Master deletion,
-clock advance, narrowed filters and reduced capacity never authorize automatic removal. Finalized
-captures and completed rollover members are eligible even while the next member grows; active
-bytes are excluded. Existing captures, clock records, system-text prefixes, manifests and partial
-journals remain intact. New system-text prefix transfers remain disabled pending immutable
-version admission.
+clock advance, narrowed filters and reduced capacity never authorize automatic removal. A mirror
+never copies a capture, finished or still recording; it copies each capture's clock record, and a
+laptop records live data from the pit's gateway itself. Existing captures, clock records,
+system-text prefixes, manifests and partial journals remain intact. New system-text prefix
+transfers remain disabled pending immutable version admission.
 
 Format 2 is an explicit upgrade, not an automatic rewrite on read or startup. Migration hashes
 finalized payloads and checks their receipt boundaries before publishing the new header. It retains
@@ -1016,8 +1016,8 @@ The marker retains both receipt hashes while replacing a receipt, so a failed re
 erase an earlier completed capture's pending publication.
 It also retains a safe failure code and first/latest failure times. Old markers without those
 fields report `CAUSE_NOT_RECORDED` with null times; diagnostic-write failure leaves the latest
-safe cause in memory with `cause_durable: false`. A count warning is not evidence that the
-mirror's catalog includes every completed capture. The separate
+safe cause in memory with `cause_durable: false`. A count warning is not evidence that every
+completed capture has entered this store's catalog. The separate
 [remote publication status route](../STANDALONE.md#remote-replica-publication-status) explains
 pending sessions with retryable `PUBLICATION_PENDING`; the local mirror summary continues to
 describe its own replica catalog. Existing immutable inventory and file admission stay unchanged.

@@ -72,6 +72,9 @@ final class ReplicaReconciler {
           String key = offer.identity().fileId() + ":" + offer.identity().fileVersion();
           if (previousKey != null && key.compareTo(previousKey) <= 0) throw new IOException("PROTOCOL_MISMATCH: duplicate or unordered offer");
           previousKey = key; if (++count > total) throw new IOException("PROTOCOL_MISMATCH: catalog exceeds its stated total");
+          // A mirror copies what the pit pulled or was given, and its captures' clock records, never
+          // a capture itself: a laptop records live data from the pit's gateway itself.
+          if ("closed_capture".equals(offer.completionBasis())) continue;
           var placement = offer.placement();
           var catalog = store.replicaHeader().replicas();
           boolean held = catalog.files().stream().anyMatch(f -> offer.identity().equals(f.identity()));

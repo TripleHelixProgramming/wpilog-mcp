@@ -10,8 +10,9 @@ A proposal for the next large piece of wpilog-mcp: a program that runs in the sh
 
 **Next design, 2026-10-18:** [Explorer sources and mirror implementation plan](../SOURCE_AND_MIRROR_PLAN.md)
 owns the next source and mirror checkpoints. Its agreed behavior supersedes automatic
-scope/cap eviction, mandatory laptop capture for visualization, exclusion of finalized pit
-captures, and the prohibition on mirrors supplying peers. Download scope controls acquisition;
+scope/cap eviction, mandatory laptop capture for visualization, and the prohibition on mirrors
+supplying peers; the exclusion of finalized pit captures, read as superseded too, was restored on
+2026-10-23. Download scope controls acquisition;
 cleanup is explicit and a full mirror pauses downloads. Peer writes remain exclusively owned
 by the mirror engine, with separate provisional and master-confirmed states. The older
 specification and implementation records below are preserved; these changes are planned.

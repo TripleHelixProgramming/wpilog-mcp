@@ -32,7 +32,7 @@ initial engineering limits in subsequent sections are proposals for implementati
 | Saved definitions | Views and templates live in a library on the connected server, outside recording stores. They can be saved while reading a mirror or ordinary directory. |
 | Mirror ownership | Ordinary import, capture, inbox and agent workflows do not write mirror contents. Peer admission, replacement and explicit cleanup all run through the mirror engine. Manually placed files are reported as unmanaged, not adopted as replica content. |
 | Download scope | Users choose an explicit scope, optionally everything. Robot, event and date criteria select new downloads. Changing or aging out of that scope does not delete collected recordings. |
-| Growing recordings | Copy each finalized file when available, including completed rollover members while the next member is growing. Active recording bytes are read from the explicitly selected remote source. |
+| Growing recordings | Copy each finalized file when available. A mirror never copies a capture, finished or still recording: the maintainer restored that 2026-10-17 rule on 2026-10-23, after this answer had been read as replacing it. Captures and active recording bytes are read from the explicitly selected remote source. |
 | Master deletion | Retain local copies when the master deletes or stops listing them. |
 | Capacity and cleanup | At the storage limit, preserve existing files and pause new downloads. Resume when space is available or the budget increases. Cleanup is explicit. No age-based or oldest-first eviction is implied. |
 | Provisional recordings | Finalized peer files can be browsed, plotted and analyzed immediately, with provisional status visible in Explorer and MCP results. Master disagreement can replace provisional content after the correct copy is safely available. |
@@ -69,14 +69,16 @@ not independently certify those fixes or their test reports.
 | Persistent server identity | [`ServerIdentity`](../src/main/java/org/triplehelix/wpilogmcp/visualization/ServerIdentity.java) already supplies a UUID and separate state directory. Reuse them; distinguish persistent identity from a process epoch and from a connection address. |
 | Content and location | [`StoreReadCatalog.resolveContent`](../src/main/java/org/triplehelix/wpilogmcp/read/catalog/StoreReadCatalog.java#L239) searches stores sharing an origin; recording resolution requires exactly one such store. Qualify both operations with the selected serving scope. |
 | Existing source schema | [`contracts-v1.json`](../src/main/resources/visualization/contracts-v1.json) has recorded origin/hash, unmanaged locator and anchored session forms. Preserve their evidence, but add an explicit serving owner and scope through a versioned contract. |
-| Mirror retention | [`MirrorSync.run`](../src/main/java/org/triplehelix/wpilogmcp/store/MirrorSync.java#L94) and `choose` perform scope/cap eviction. `copyable` excludes the master's own captures. Retain collected files and admit all eligible finalized recording members, including captures. |
+| Mirror retention | [`MirrorSync.run`](../src/main/java/org/triplehelix/wpilogmcp/store/MirrorSync.java#L94) and `choose` perform scope/cap eviction. `copyable` excludes the master's own captures. Retain collected files and admit eligible finalized files; captures stay excluded, as restored on 2026-10-23. |
 | Transfer versus authority | [`StoreManifest`](../src/main/java/org/triplehelix/wpilogmcp/store/StoreManifest.java) and the transfer journal carry `verified` facts. Introduce separate authoritative confirmation; do not reinterpret a successful peer transfer as master verification. |
 | Peer exclusions | [`StoreSync`](../src/main/java/org/triplehelix/wpilogmcp/store/StoreSync.java#L83) refuses mirrors as target and source. Add a mirror-specific offer/admission path; ordinary union sync must still not become a mirror writer. |
 | Mutation and I/O | [`LogStore.mirror`](../src/main/java/org/triplehelix/wpilogmcp/store/LogStore.java#L675) runs `MirrorSync` inside `mutate`, under the store queue and cross-process lock. Separate network transfer and hashing from short publication turns. Complete futures outside the lock. |
 | Existing placement | [`MirrorSync.Local.verified`](../src/main/java/org/triplehelix/wpilogmcp/store/MirrorSync.java#L573) uses staged files, a pending journal and move reservations. Preserve the recovery intent while making verified objects immutable and publication generation-aware. |
 
-The 2026-10-17 consolidated path's mandatory laptop capture, exclusion of finalized pit
-captures, and prohibition on remote visualization are superseded requirements. Existing
+The 2026-10-17 consolidated path's mandatory laptop capture and prohibition on remote
+visualization are superseded requirements. Its exclusion of finalized pit captures was read as
+superseded by the growing-recordings answer; the maintainer restored it on 2026-10-23, in the
+maintainer's words "Skip captures", so mirrors never copy a capture. Existing
 captures, mirrors, clock records and independent recording services must survive migration.
 Do not revive the earlier laptop-server relay as the implementation of direct access.
 
@@ -407,8 +409,9 @@ still includes it. Define filter semantics in the configuration schema: robot se
 is conjunctive with the selected event/date expression; offer an explicit all-recordings
 scope. A filter decides new admissions, never whether a held file survives.
 
-All finalized captures within scope become eligible, including rollover members from a
-still-open recording. Report both local member coverage and the master's recording state;
+Captures are not eligible, finished or still recording: the maintainer restored the 2026-10-17
+exclusion on 2026-10-23, and a mirror copies each capture's clock record instead. Where a
+mirror reports a recording, report both local member coverage and the master's recording state;
 holding every currently finalized member does not mean the growing recording is complete.
 Do not copy a master's entire session manifest and imply that missing members are local.
 
@@ -564,7 +567,7 @@ partially migrated client from silently choosing a source or changing retention 
 | M1 Source contracts and selection — committed | Add `SourceScopes` and schema-2 source validation; qualify `StoreReadCatalog`, `RecordedSources`, shared read admission and MCP guidance. Adapt `LogRequiringTool` and exceptional multi-input routes. Preserve `VerifiedContentHashes` ownership. | Two stores with the same origin/hash stay distinct. Multiple choices refuse unqualified data requests. Explicit choices survive reorder, rename and unavailable neighbors. Legacy ambiguity is reported. No numerical changes. |
 | M2 Server visualization library | Add `VisualizationLibrary`; adapt `VisualizationWorkspace`, `VisualizationMetadata`, `TemplateMetadata`, native save references and strict tool schemas. Add idempotent legacy migration. | Save against a mirror and an ordinary folder with no writable log store. Crash/retry cannot duplicate saves or advance the wrong working revision. Originals survive migration. Quotas include receipts and in-flight work. |
 | M3 Direct connections and remote visualization | Add a shared extension connection registry/context; replace local assumptions in `explorer.ts`, `recordedPreview.ts`, `recordedClient.ts`, `dataClient.ts`, follow/health adapters and agent registration. Add shared operation admission in HTTP/MCP. | Remote-only GUI and agent workflows work with the laptop daemon stopped and zero local recordings; local-only works with the pit unavailable. Inactive roots make no calls. Simultaneous views never cross owners. Legacy offline fallback becomes explicit. |
-| M4 Mirror identity and preservation | Introduce format-2 file/version and replica records, master catalog receipts, acquisition-only scope, strict capacity reservation and explicit cleanup/exclusions. Adapt `StoreManifest`, `MirrorSync`, `MirrorService`, configuration and mirror routes. | Master deletions, clock advance, narrowed scope and capacity pressure delete nothing automatically. Closed captures/rollover members are eligible. Active bytes are excluded. Old mirrors migrate without lost files or false verification. |
+| M4 Mirror identity and preservation | Introduce format-2 file/version and replica records, master catalog receipts, acquisition-only scope, strict capacity reservation and explicit cleanup/exclusions. Adapt `StoreManifest`, `MirrorSync`, `MirrorService`, configuration and mirror routes. | Master deletions, clock advance, narrowed scope and capacity pressure delete nothing automatically. Captures, closed or active, are excluded, as restored on 2026-10-23. Old mirrors migrate without lost files or false verification. |
 | M5 Transfer and publication ownership | Split `LogStore.mirror` into short state turns and bounded I/O workers; implement immutable generations, resumable staging, journals and read-lease retirement. | Cancellation, every injected crash boundary, full disk, blocked reads and shutdown preserve the incumbent. Verified objects never get overwritten. Timed-out work remains charged and cannot later publish. |
 | M6 Peer offers and reconciliation | Add the paged replica protocol to server and client adapters. Permit mirror supply through this protocol, with provisional claims, first-candidate conflict handling and master reconciliation. | Three synthetic servers propagate provisional data without promoting it; identical transfers deduplicate, conflicting candidates are refused, master correction changes only provisional content, and there is no upstream submission. |
 | M7 Discovery and configuration UX | Add discovery adapter/provider, manual endpoints and bounded handshake inventory; generalize single-mirror runtime ownership if needed for multiple configured mirrors. Fix service wire fields and evaluate dependency/platform behavior. | Discovery loss, address changes, duplicate announcements and foreign masters cannot retarget a mirror. Manual endpoints work without discovery. Disposing a window does not stop server-owned synchronization. Native platforms prove provider support. |
@@ -901,8 +904,7 @@ closes. Limits are 4096 replica records, 32768 inspected paths and 4 MiB per hea
 accounted bounds, not measured heap or filesystem allocation claims.
 
 Acquisition uses explicit `all` or robot AND (event OR known date) predicates; it never selects
-files for deletion. Finalized captures/rollover members are eligible while active members are
-excluded. Capacity accounts incumbent payloads, journal partials, metadata and reservations with
+files for deletion. Captures are excluded, finished or active, as restored on 2026-10-23. Capacity accounts incumbent payloads, journal partials, metadata and reservations with
 checked arithmetic; metadata headroom is inside the cap. Migration reserves its backup, intent
 and temporary marker bytes before publication. Pins cannot bypass admission.
 

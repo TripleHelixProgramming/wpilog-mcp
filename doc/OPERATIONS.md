@@ -873,7 +873,7 @@ The replica summary's catalog capacity shows record and exclusion counts, each w
 4,096 limit. Its near-limit flag turns on at 3,277 of either count. This warns before
 count-based admission fails; encoded metadata limits and payload space are separate.
 Missing capacity facts mean unavailable, not zero. The warning does not authorize deleting
-held copies or prove that every completed capture has entered the mirror's catalog.
+held copies or prove that every completed capture has entered the pit's own catalog.
 
 For master migration, use the local job route described in
 [Explicit replica-format migration](STANDALONE.md#explicit-replica-format-migration). The checkpoint

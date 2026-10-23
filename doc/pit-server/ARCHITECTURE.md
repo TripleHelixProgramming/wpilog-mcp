@@ -584,8 +584,8 @@ A format-2 retry retains its established UUIDs. The metadata and path-count limi
 oversized migration without truncating old facts. Native power-loss durability is not yet proven.
 
 Scope is an acquisition predicate. Robot filters combine with event OR date evidence, and
-explicit `all` includes unknown dates. Closed captures and rollover members are eligible;
-active members are excluded. Capacity counts held, partial, metadata and reserved logical bytes,
+explicit `all` includes unknown dates. A capture is never acquired, closed or active; its clock
+record is. Capacity counts held, partial, metadata and reserved logical bytes,
 with metadata headroom inside the cap. Replacement must fit beside the incumbent and pins
 cannot bypass admission. Cleanup previews identify exact entries, exclusions and affected views. M5 executes revision-bound
 cleanup with durable receipts and read-lease retirement through the common publication owner. No admission decision deletes

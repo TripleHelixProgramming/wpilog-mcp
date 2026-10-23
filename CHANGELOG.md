@@ -14,11 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block described an eager cache unused by ordinary reads. REV cache fields remain.
 
 - Automatic mirror synchronization now uses the format-2 replica protocol. Previously
-  scope and capacity could evict collected files and the writer excluded finalized captures.
-  Legacy mirrors now require explicit format-2 migration; old files, pins and journals survive
-  without treating transfer verification as master confirmation. Acquisition scope, bounded
-  metadata/disk admission and explicit cleanup replace automatic eviction. Format-2 mirrors
-  pull finalized versions from manual or discovered peers and confirm authority directly with their master. Older binaries refuse format 2.
+  scope and capacity could evict collected files. Legacy mirrors now require explicit format-2
+  migration; old files, pins and journals survive without treating transfer verification as
+  master confirmation. Acquisition scope, bounded metadata/disk admission and explicit cleanup
+  replace automatic eviction. Format-2 mirrors pull finalized versions from manual or discovered
+  peers and confirm authority directly with their master. Like the legacy mirror, they copy what
+  the pit pulled or was given and each capture's clock record, never a capture. Older binaries refuse format 2.
 
 - MCP log discovery now requires an explicit source when multiple stores or directories are
   configured, instead of preferring an import destination or blending roots. `list_source_scopes`
@@ -717,6 +718,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file keeps its bytes and stays readable while the next file records, both files are published,
   and nothing is left pending; on the previous build it fails at the reconnect's file. Four planted
   mistakes each fail it.
+- A format-2 mirror is checked to copy an import and a capture's clock record byte for byte and
+  never the capture, and the peer test of a growing offer now offers an import, since a capture is
+  skipped before that check. A planted mistake that copies captures again fails it.
 - The recorder's buffer is checked against an output that writes each record as it comes, byte
   for byte and offset for offset, with buffers smaller than one record and larger than the whole
   file, through a write that fails halfway, a record larger than the buffer, a resumed file and a
