@@ -116,6 +116,11 @@ final class ImportStage implements AutoCloseable {
           recoverDirectory(io, path, beforeLock);
           return FileVisitResult.SKIP_SUBTREE;
         }
+        // Another recovery, or a creator retiring its stage, may remove an entry once it is listed.
+        @Override public FileVisitResult visitFileFailed(Path path, IOException failure) throws IOException {
+          if (failure instanceof java.nio.file.NoSuchFileException) return FileVisitResult.CONTINUE;
+          throw failure;
+        }
       });
     }
   }
@@ -125,11 +130,17 @@ final class ImportStage implements AutoCloseable {
    * handle, even this process's own, so a read through another one failed: before the lock for a
    * stage still in use, and after it for this recoverer's own lock. One abandoned stage then broke
    * every later import, sync and pull into the store. An initialized marker has the magic's exact
-   * size, which needs no read.
+   * size, which needs no read. A stage another recovery removes while this one examines it is
+   * gone, not a failure: a store's startup recovery and an import's own can walk the same stage.
    */
   private static void recoverDirectory(StoreFiles io, Path directory, BeforeRecovery beforeLock) throws IOException {
-    var marker = io.check(directory.resolve(OWNER));
-    if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS) || Files.size(marker) != MAGIC.length()) return;
+    Path marker;
+    try {
+      marker = io.check(directory.resolve(OWNER));
+      if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS) || Files.size(marker) != MAGIC.length()) return;
+    } catch (java.nio.file.NoSuchFileException gone) {
+      return;
+    }
     beforeLock.ready(marker);
     try (var channel = FileChannel.open(marker, StandardOpenOption.READ, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
          var held = channel.tryLock()) {

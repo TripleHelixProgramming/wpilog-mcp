@@ -235,6 +235,36 @@ class ImportStagingHardeningTest {
     assertTrue(Files.exists(retained), "Retiring a stage between discovery and lock acquisition preserves its unmanaged copy");
   }
 
+  @Test void aStageAnotherRecoveryRemovesWhileThisOneChecksItIsSkipped() throws Exception {
+    var root = Files.createDirectories(directory.resolve("store"));
+    var parent = Files.createDirectories(root.resolve("unassigned").resolve("synthetic").resolve("robot"));
+    var stages = List.of(parent.resolve(".import-staging-first"), parent.resolve(".import-staging-second"));
+    for (var stage : stages) {
+      Files.createDirectory(stage);
+      Files.writeString(stage.resolve(".owner.lock"), "wpilog-import-stage-v1");
+      Files.writeString(stage.resolve("partial.wpilog"), "synthetic partial bytes");
+    }
+    // The first marker checked vanishes with its stage during the check, as when a concurrent
+    // recovery collects it first; the real check then fails as this one does.
+    var removed = new java.util.concurrent.atomic.AtomicReference<Path>();
+    var security = new SecurityValidator() {
+      @Override public void validate(Path path) throws java.io.IOException {
+        if (path.getFileName() != null && path.getFileName().toString().equals(".owner.lock")
+            && removed.compareAndSet(null, path.getParent())) {
+          try (var paths = Files.walk(path.getParent())) {
+            for (var gone : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(gone);
+          }
+          throw new java.nio.file.NoSuchFileException(path.toString());
+        }
+        super.validate(path);
+      }
+    };
+    security.addAllowedDirectory(directory);
+    ImportStage.recover(new StoreFiles(root, security));
+    assertNotNull(removed.get(), "A stage vanished while its marker was checked");
+    for (var stage : stages) assertFalse(Files.exists(stage), "The other abandoned stage is still recovered: " + stage);
+  }
+
   @Test void reopeningAStoreRecoversAbandonedStagesWithoutSubmittingAnImport() throws Exception {
     var security = new SecurityValidator();
     security.addAllowedDirectory(directory);
