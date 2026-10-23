@@ -822,10 +822,11 @@ final class DataEndpoint {
   }
 
   /**
-   * A placed file: what the catalog nominated, the log read, and its UTC span inside the window; a
-   * WPILOG's clock, and a REV log's anchor, the index of the WPILOG that places it, with the alignment.
+   * A placed file: what the catalog nominated, the log read, and its UTC span inside the window; how
+   * a WPILOG's times are placed, by its own clock or its recording's, and a REV log's anchor, the
+   * index of the WPILOG that places it, with the alignment.
    */
-  private record Placed(DataRanges.Candidate candidate, String log, long startUtc, long endUtc, UtcTimeMapping utc,
+  private record Placed(DataRanges.Candidate candidate, String log, long startUtc, long endUtc, Placement utc,
       int anchor, org.triplehelix.wpilogmcp.sync.SyncResult alignment) {}
 
   /** A sample of a range: its measured UTC, the placed file it came from, and its value there. */
@@ -903,8 +904,17 @@ final class DataEndpoint {
       problems = DataRanges.problems(lease.value(), stores);
       var candidates = DataRanges.candidates(stores, request.robot(), !request.capturesOnly(),
           !request.captureNames().isEmpty(), request.anyRev(), request.startUtc(), request.endUtc());
+      // The files of one recording share its robot clock and are read as capture=current reads them.
+      var recordings = new LinkedHashMap<org.triplehelix.wpilogmcp.store.CaptureRecording, List<DataRanges.Candidate>>();
       for (var candidate : candidates) {
-        if (candidate.role() != DataRanges.Role.REV) readWpilog(request, candidate, placed, skipped, samples, files, types);
+        if (candidate.recording() != null) recordings.computeIfAbsent(candidate.recording(), k -> new ArrayList<>()).add(candidate);
+      }
+      var read = new java.util.HashSet<org.triplehelix.wpilogmcp.store.CaptureRecording>();
+      for (var candidate : candidates) {
+        if (candidate.role() == DataRanges.Role.REV) continue;
+        var recording = candidate.recording() == null ? null : recordings.get(candidate.recording());
+        if (recording == null || recording.size() < 2) readWpilog(request, candidate, placed, skipped, samples, files, types);
+        else if (read.add(candidate.recording())) readRecording(request, recording, placed, skipped, samples, files, types);
       }
       if (request.anyRev()) readRev(lease.value(), stores, candidates, request, placed, skipped, samples, files, types);
     }
@@ -994,7 +1004,7 @@ final class DataEndpoint {
         return;
       }
       int index = placed.size();
-      placed.add(new Placed(candidate, log.path(), span[0], span[1], utc, -1, null));
+      placed.add(new Placed(candidate, log.path(), span[0], span[1], utc::at, -1, null));
       for (int i = 0; i < request.entries(); i++) {
         if (request.rev(i)) continue;
         String name = request.name(candidate.role(), i);
@@ -1042,6 +1052,123 @@ final class DataEndpoint {
       // A finished file that changed while it was read is refused, as a single file is.
       if (before != null && !before.sameAs(FileSnapshot.of(use.path())))
         throw new Refusal(409, "A log changed during this data request: " + log.path(), "Ask again");
+    }
+  }
+
+  /**
+   * The files of one recording in a range, read as {@code capture=current} reads a session: they
+   * share the robot's clock, and in UTC a time is placed by the clock of the file that was
+   * recording then, each file's up to its last record ({@link DataRecording.Clock}), so a value a
+   * reconnect's file repeats at its original time keeps the time the closed file gave it.
+   */
+  private void readRecording(RangeRequest request, List<DataRanges.Candidate> recording, List<Placed> placed,
+      JsonArray skipped, List<List<RangeSample>> samples, List<JsonArray> files, List<ArrowType> types)
+      throws IOException, Refusal {
+    record Read(DataRanges.Candidate candidate, org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot use,
+        LogData log, FileSnapshot before) {}
+    var reads = new ArrayList<Read>();
+    try {
+      for (var candidate : recording) {
+        try {
+          var use = logAccess.acquireWithoutRevSync(candidate.path().toString());
+          reads.add(new Read(candidate, use, use.log(), use.snapshot()));
+        } catch (IOException unreadable) {
+          skipped.add(skippedFile(candidate, "Unreadable: " + unreadable.getMessage()));
+        }
+      }
+      // Oldest first, by each file's last record, where its stretch of the robot's clock ends.
+      reads.sort(java.util.Comparator.comparingDouble((Read r) -> r.log().maxTimestamp()).thenComparing(r -> r.log().path()));
+      int n = reads.size();
+      if (n == 0) return;
+      var clocks = new ArrayList<UtcTimeMapping>();
+      var ends = new long[n];
+      for (int k = 0; k < n; k++) {
+        clocks.add(reads.get(k).log().utcMapping());
+        ends[k] = micros(reads.get(k).log().maxTimestamp());
+      }
+      var clock = new DataRecording.Clock(clocks, ends);
+      var window = clock.window(request.startUtc(), request.endUtc());
+      for (int k = 0; k < n; k++) {
+        var read = reads.get(k);
+        var log = read.log();
+        long first = micros(log.minTimestamp()), last = micros(log.maxTimestamp());
+        // Its span: the recording's UTC of its first and last records inside the window.
+        Long from = null, to = null;
+        for (var interval : window) {
+          long low = Math.max(interval[0], first), high = Math.min(interval[1], last);
+          if (low > high) continue;
+          var start = clock.at(low).epochMicros();
+          var end = clock.at(high).epochMicros();
+          if (start != null && (from == null || start < from)) from = start;
+          if (end != null && (to == null || end > to)) to = end;
+        }
+        if (from == null || to == null) {
+          var own = clocks.get(k).unavailableReason();
+          skipped.add(skippedFile(read.candidate(), own.isPresent() ? "Not placed in UTC: " + own.get() : "Outside the window"));
+          continue;
+        }
+        int index = placed.size();
+        placed.add(new Placed(read.candidate(), log.path(), Math.max(from, request.startUtc()), Math.min(to, request.endUtc()),
+            clock, -1, null));
+        for (int i = 0; i < request.entries(); i++) {
+          if (request.rev(i)) continue;
+          String name = request.name(DataRanges.Role.CAPTURE, i);
+          if (name == null) continue;
+          var facts = new JsonObject();
+          facts.addProperty("file", index);
+          facts.addProperty("entry", name);
+          files.get(i).add(facts);
+          EntryData.Series series;
+          try {
+            series = EntryData.resolve(log, name);
+          } catch (IllegalArgumentException missing) {
+            facts.addProperty("missing", missing.getMessage());
+            continue;
+          }
+          if (request.maxPoints() != null && !series.numeric() && !"boolean".equals(series.type())) {
+            throw new Refusal(400, "max_points buckets numeric entries; " + name + " is " + series.type()
+                + " in " + log.path(), "Ask for a numeric field inside it, or leave max_points out to read every sample");
+          }
+          var raw = new ArrayList<TimestampedValue>();
+          for (var interval : window) {
+            long low = Math.max(interval[0], first), high = Math.min(interval[1], last);
+            if (low <= high) raw.addAll(EntryData.prepareMicros(log, series, low, high, null).recordedValues());
+          }
+          EntryData.Prepared presentation;
+          try {
+            // The file's samples as one series, so an angle unwraps across the stretches it holds.
+            presentation = EntryData.prepareMicros(log, new EntryData.Series(series.name(), series.entry(), series.field(),
+                series.type(), raw, series.numeric()), Long.MIN_VALUE, Long.MAX_VALUE, request.angle());
+          } catch (IllegalArgumentException invalid) {
+            throw new Refusal(400, invalid.getMessage(), "Select a numeric entry or scalar field for angle presentation");
+          }
+          var type = request.maxPoints() != null || presentation.angle() ? new ArrowType.Float64() : EntryData.arrowType(log, series);
+          if (types.get(i) == null) types.set(i, type);
+          else if (request.format().equals("arrow") && !types.get(i).equals(type)) {
+            throw new Refusal(400, "An Arrow stream has one schema, and " + name + " in " + log.path() + " ("
+                + describe(type) + ") does not share the value type of the same entry in an earlier file ("
+                + describe(types.get(i)) + ")", "Pass max_points, whose buckets have one shape, or ask for CSV");
+          }
+          var values = presentation.values();
+          if (request.maxPoints() != null && !series.numeric()) values = asNumbers(values);
+          int kept = 0;
+          for (var tv : values) {
+            var at = clock.at(tv.timestampUs()).epochMicros();
+            if (at == null || at < request.startUtc() || at > request.endUtc()) continue;
+            samples.get(i).add(new RangeSample(at, index, tv));
+            kept++;
+          }
+          facts.addProperty("type", series.type());
+          facts.addProperty("sample_count", kept);
+        }
+      }
+      // A finished file that changed while it was read is refused, as a single file is.
+      for (var read : reads) {
+        if (read.before() != null && !read.before().sameAs(FileSnapshot.of(read.use().path())))
+          throw new Refusal(409, "A log changed during this data request: " + read.log().path(), "Ask again");
+      }
+    } finally {
+      for (var read : reads) read.use().close();
     }
   }
 
@@ -1169,9 +1296,11 @@ final class DataEndpoint {
   }
 
   /**
-   * Two of the robot's logs, or recordings of two sessions, that cover the same minutes are refused
-   * together, since nothing merges them. The files of one recording are read in order, as one: a
-   * same-boot reconnect's file starts with values that the closed file already holds.
+   * Two of the robot's logs, or two recordings, that cover the same minutes are refused together,
+   * since nothing merges them. The files of one recording are read in order, as one: a same-boot
+   * reconnect's file starts with values that the closed file already holds. One recording is one
+   * original capture start on its first collecting store, not one session, which peer sync can give
+   * two recordings.
    */
   private static void refuseOverlaps(List<Placed> placed) throws Refusal {
     for (int a = 0; a < placed.size(); a++) {
@@ -1180,8 +1309,8 @@ final class DataEndpoint {
         var y = placed.get(b);
         // REV logs are checked entry by entry as they are read: two buses' logs answer different signals.
         if (x.candidate().role() != y.candidate().role() || x.candidate().role() == DataRanges.Role.REV) continue;
-        if (x.candidate().role() == DataRanges.Role.CAPTURE
-            && java.util.Objects.equals(x.candidate().sessionId(), y.candidate().sessionId())) continue;
+        if (x.candidate().role() == DataRanges.Role.CAPTURE && x.candidate().recording() != null
+            && x.candidate().recording().equals(y.candidate().recording())) continue;
         if (x.startUtc() <= y.endUtc() && y.startUtc() <= x.endUtc()) {
           var refusal = new Refusal(409, "Two of the robot's " + (x.candidate().role() == DataRanges.Role.ROBOT_LOG
               ? "logs" : "recordings") + " cover the same minutes, and nothing merges them: " + x.log() + " and " + y.log(),

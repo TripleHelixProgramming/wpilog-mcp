@@ -37,9 +37,13 @@ final class DataRanges {
     Role(String wire) { this.wire = wire; }
   }
 
-  /** A nominated file: its role, its session, whether it is the capture still recording, and its catalog record. */
+  /**
+   * A nominated file: its role, its session, whether it is the capture still recording, its catalog
+   * record, and for a capture its recording, which the files of one recording share; a session id
+   * cannot prove a shared robot clock after consolidation.
+   */
   record Candidate(Path path, Role role, String storeId, String robotId, String sessionId, boolean open,
-      Long startedUs, StoreCatalog.StoredFile stored) {}
+      Long startedUs, StoreCatalog.StoredFile stored, org.triplehelix.wpilogmcp.store.CaptureRecording recording) {}
 
   /**
    * The stores a request reads: the one it names, or the only one. Several stores and no choice
@@ -119,8 +123,10 @@ final class DataRanges {
         Long end = recording ? null : epochMicros(file.file().endedAt());
         if (start != null && start > endUtc + NOMINATION_MARGIN_US) continue;
         if (end != null && end < startUtc - NOMINATION_MARGIN_US) continue;
+        var captured = role != Role.CAPTURE || store.header() == null ? null : org.triplehelix.wpilogmcp.store.CaptureRecording
+            .of(file.file().provenance(), org.triplehelix.wpilogmcp.store.RecordedClocks.origin(store)).orElse(null);
         found.add(new Candidate(file.path(), role, store.header() == null ? null : store.header().id(),
-            file.robot().id(), file.session() == null ? null : file.session().id(), recording, start, file));
+            file.robot().id(), file.session() == null ? null : file.session().id(), recording, start, file, captured));
       }
     }
     if (!known) {

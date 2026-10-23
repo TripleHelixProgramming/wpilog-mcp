@@ -474,7 +474,11 @@ Proposed on 2026-10-23, and its six questions answered the same day: as proposed
 refined two points. The files of one recording are read in order, as one recording, rather than
 refused as two files over the same minutes, since a same-boot reconnect now continues the
 recording in its next file, which starts with the values the robot re-sends on reconnecting. A
-server with several stores needs `store=<id>`, as there is no default store.
+server with several stores needs `store=<id>`, as there is no default store. A third followed the
+same day, in the maintainer's words "Yes to all": the files of one recording are placed as
+`capture=current` places a session, a time by the clock of the file that was recording then, in
+place of each file by its own clock, so both dashboards give a reconnect's repeated values one
+time.
 
 ### What a person sees
 
@@ -615,6 +619,11 @@ On 2026-10-23, the server's reads and the dashboard's listings:
    and a range's logs load without starting REV synchronization. Eight tests, on a session whose
    recording's clock reads half a second later than its roboRIO log's, so the two anchors give two
    answers; ten planted mistakes, each of which fails them.
+6. **One recording, one clock rule.** A range reads the files of one recording, one capture
+   start on its first collecting store, on the recording's clock, as `capture=current` does; only
+   those files are spared the overlap refusal, where before the files of one session were, which
+   peer sync can give two recordings. Three tests, each with clocks that tell the rules apart, and
+   five planted mistakes, each of which fails them.
 
 Built tests: a range over three files whose clocks the fixture sets, against rows worked out from
 the fixture alone, through a roboRIO log whose catalog time is an hour off, a sample before a

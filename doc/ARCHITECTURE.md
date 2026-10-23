@@ -656,7 +656,11 @@ a synchronization apart.
 
 A robot range chooses its files from the store's catalog and places each by its own clock, as
 one file is placed; the catalog's times, from the pit's clock, a log's own clock or a file's name,
-only nominate a file. A REV signal in a range is placed only through an alignment the store
+only nominate a file. The files of one recording are placed as `capture=current` places a session,
+so the live and recorded dashboards give a reconnect's repeated values one time. A recording is one
+capture start on its first collecting store: a session id would not do, since peer sync can file
+two recordings in one session, of one boot or of two, and only one recording's files share a
+clock. A REV signal in a range is placed only through an alignment the store
 recorded, with a WPILOG of the REV log's session that the range placed, and only the signals
 asked for are decoded: a request never correlates, since a correlation costs seconds a file and
 would make a dashboard's refresh pay for a measurement. For the same reason a range, and a

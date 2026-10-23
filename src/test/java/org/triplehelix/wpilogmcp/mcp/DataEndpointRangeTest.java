@@ -119,6 +119,13 @@ class DataEndpointRangeTest {
         true, 0, 100, iso(startUs), iso(endUs), Provenance.CAPTURED.equals(kind) ? "pit_clock" : "filename", false, null);
   }
 
+  /** A capture of the recording that started at {@code recordingStart}, filed at its path in a session's folder. */
+  private static LogFile recording(Path session, Path path, String recordingStart, long startUs, long endUs) throws IOException {
+    var provenance = new Provenance(Provenance.CAPTURED, null, path.getFileName().toString(), recordingStart, false);
+    return new LogFile(session.relativize(path).toString().replace('\\', '/'), sha256(path), Files.size(path), "wpilog",
+        provenance, true, 0, 100, iso(startUs), iso(endUs), "pit_clock", false, null);
+  }
+
   private static String sha256(Path path) throws IOException {
     try {
       return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
@@ -327,6 +334,64 @@ class DataEndpointRangeTest {
     var rows = csv.rows().get(PIT);
     assertEquals(81 + 11, rows.size(), "Both files of the recording, the repeated value included");
     for (int i = 1; i < rows.size(); i++) assertTrue(utc(rows.get(i - 1).get(0)) <= utc(rows.get(i).get(0)), "in UTC order");
+  }
+
+  @Test void theFilesOfOneRecordingArePlacedByTheClockOfTheFileRecordingThen() throws Exception {
+    fixture();
+    // The reconnect's file: its clock reads a quarter second later than the closed file's, and it
+    // starts with the value at 81 s re-sent at its original time, then holds 85 to 91 s.
+    double[] times = concat(new double[] {81}, seconds(85, 91));
+    var next = log(folder(root, "c").resolve("capture-2.wpilog"), PIT_CLOCK, 89.25, times, PIT, times, t -> 13 + t / 1000);
+    session(root, "c", List.of(file(c, Provenance.CAPTURED, W + micros(90), W + micros(170)),
+        file(next, Provenance.CAPTURED, W + micros(170), W + micros(180.25))), null, W + micros(90), W + micros(180.25), "pit_clock");
+    var csv = csv(get(HttpTransport.DATA_PATH, range(W + micros(160), W + micros(185), "source", "capture", "capture_names", PIT)));
+    var expected = new ArrayList<Expected>();
+    for (int t = 71; t <= 81; t++) expected.add(new Expected(W + micros(89 + t), c.toString(), 13 + t / 1000.0));
+    // The repeated value keeps the time the closed file gave it, not the next file's 170.25 s.
+    expected.add(new Expected(W + micros(170), next.toString(), 13 + 81 / 1000.0));
+    for (int t = 85; t <= 91; t++) expected.add(new Expected(W + micros(89.25 + t), next.toString(), 13 + t / 1000.0));
+    var paths = files(csv);
+    assertEquals(List.of(c.toString(), next.toString()), paths);
+    var rows = csv.rows().get(PIT);
+    assertEquals(expected.size(), rows.size(), rows.toString());
+    for (int i = 0; i < rows.size(); i++) {
+      var row = rows.get(i); var e = expected.get(i);
+      assertEquals(e.utcUs(), utc(row.get(0)), "row " + i);
+      assertEquals(e.file(), paths.get(Integer.parseInt(row.get(1))), "row " + i);
+      assertEquals(e.value(), Double.parseDouble(row.get(3)), 0, "row " + i);
+    }
+    var second = csv.inputs().getAsJsonArray("files").get(1).getAsJsonObject();
+    assertEquals(W + micros(170), utc(second.get("start_utc").getAsString()), "Its first record, where the closed file placed it");
+    assertEquals(W + micros(180.25), utc(second.get("end_utc").getAsString()));
+  }
+
+  @Test void twoRecordingsOfOneSessionArePlacedEachByItsOwnClock() throws Exception {
+    fixture();
+    // Peer sync can file a recording of another boot in the same session: its robot clock started
+    // again, so its times overlap the first recording's, though its minutes do not.
+    var other = log(folder(root, "c").resolve("other/capture-1.wpilog"), PIT_CLOCK, 180, seconds(1, 10), PIT, seconds(1, 10), t -> 20 + t / 1000);
+    session(root, "c", List.of(file(c, Provenance.CAPTURED, W + micros(90), W + micros(170)),
+        recording(folder(root, "c"), other, "2026-01-01T00:03:00Z", W + micros(181), W + micros(190))), null,
+        W + micros(90), W + micros(190), "pit_clock");
+    var csv = csv(get(HttpTransport.DATA_PATH, range(W + micros(90), W + micros(215), "source", "capture", "capture_names", PIT)));
+    var rows = csv.rows().get(PIT);
+    assertEquals(81 + 10, rows.size());
+    for (int t = 1; t <= 81; t++) assertEquals(W + micros(89 + t), utc(rows.get(t - 1).get(0)), "the first recording at " + t + " s");
+    for (int t = 1; t <= 10; t++) assertEquals(W + micros(180 + t), utc(rows.get(80 + t).get(0)), "the second at " + t + " s");
+  }
+
+  @Test void twoRecordingsOfOneBootOverTheSameMinutesAreRefusedTogether() throws Exception {
+    fixture();
+    // A peer's capture of the same boot, in the same session: another recording of the same
+    // minutes, which nothing merges, though a session id would not tell the two apart.
+    var peer = log(folder(root, "c").resolve("peer/x/capture-1.wpilog"), PIT_CLOCK, 89, seconds(50, 60), PIT, seconds(50, 60), t -> 13 + t / 1000);
+    session(root, "c", List.of(file(c, Provenance.CAPTURED, W + micros(90), W + micros(170)),
+        recording(folder(root, "c"), peer, "2026-01-01T00:02:19Z", W + micros(139), W + micros(149))), null,
+        W + micros(90), W + micros(170), "pit_clock");
+    var body = refusal(get(HttpTransport.DATA_PATH, range(W + micros(90), W + micros(215), "source", "capture", "capture_names", PIT)), 409);
+    var both = new ArrayList<String>();
+    body.getAsJsonArray("files").forEach(f -> both.add(f.getAsString()));
+    assertEquals(Set.of(c.toString(), peer.toString()), Set.copyOf(both));
   }
 
   @Test void aFileWithoutAMeasuredClockIsListedAndSkipped() throws Exception {

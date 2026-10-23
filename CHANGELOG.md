@@ -461,6 +461,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recording `capture=current` reads do. Before, a range's first read of each log started the
   background synchronization a tool's read starts, which decodes every signal of each REV log
   recorded with it, for a request that named none.
+- A robot range places the files of one recording as `capture=current` places a session's: a
+  time by the clock of the file that was recording then. Before, each file was placed by its own
+  clock, so the value a reconnect's file repeats had a second time, a synchronization from the
+  first, and the history and live dashboards disagreed about it. A recording is now one capture
+  start on its first collecting store, not a session: the files of a session were spared the
+  overlap refusal, so a peer's recording of the same boot, which peer sync files in the same
+  session, was merged in rather than refused.
 
 ### Fixed
 
@@ -770,6 +777,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synchronization started; a REV log without an alignment, or without the signal, listed; two REV
   logs over one signal refused and two buses' logs both answering. Ten planted mistakes each fail
   them.
+- One recording's files in a range are checked with a reconnect's file whose clock reads a quarter
+  second later, so the two placement rules give different times; two recordings that peer sync
+  filed in one session, of two boots, each placed by its own clock; and a peer's recording of the
+  same boot refused. Five planted mistakes each fail them, the previous rule and the previous
+  exemption among them.
 - The recorder's buffer is checked against an output that writes each record as it comes, byte
   for byte and offset for offset, with buffers smaller than one record and larger than the whole
   file, through a write that fails halfway, a record larger than the buffer, a resumed file and a

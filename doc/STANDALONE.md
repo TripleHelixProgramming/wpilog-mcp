@@ -1348,7 +1348,9 @@ imported or was given, and a recording one the pit captured. A file's catalog ti
 it, within two hours of the range, the window the store uses to pair a pulled log with a session,
 since those times come from the pit's clock, a log's own clock or a file's name; each file is then
 placed by its own measured UTC, as one file is above, and its samples inside the range are read.
-At most 64 files are nominated; more are refused with `413` and the true count.
+The files of one recording are read as `capture=current` reads a session, a time placed by the
+clock of the file that was recording then. At most 64 files are nominated; more are refused with
+`413` and the true count.
 
 - **Which file answers.** By default (`source=robot_log`) a stretch of the range reads the
   roboRIO's log where one exists and the pit's recording otherwise, and a recording's samples
@@ -1359,10 +1361,12 @@ At most 64 files are nominated; more are refused with `413` and the true count.
   position; without `capture_names` no recording is read. `source=capture` reads the recordings
   alone and needs `capture_names`. A recording still open answers with what its writer has
   published.
-- **Nothing merges two files.** Two of the robot's roboRIO logs, or recordings of two sessions,
-  that cover the same minutes are refused together with `409`, naming both. The files of one
+- **Nothing merges two files.** Two of the robot's roboRIO logs, or two recordings, that cover
+  the same minutes are refused together with `409`, naming both. A recording is one capture start
+  on its first collecting store, not a session, in which peer sync can file two. The files of one
   recording are read in order, as one: a same-boot reconnect's file starts with the values the
-  robot re-sends on reconnecting, which can repeat the closed file's last ones.
+  robot re-sends on reconnecting, which repeat the closed file's last ones, and both copies answer
+  at the time the closed file gave them.
 - **What was not read.** A file without a measured clock, one outside the range or one that cannot
   be read is listed in `inputs.skipped` with the reason, and a manifest the catalog could not read
   in `inputs.catalog_problems`, so a blank stretch says why. With several stores configured,

@@ -1426,10 +1426,11 @@ recording** reads the recordings alone. The two name a signal differently (an Ad
 battery is `/SystemStats/BatteryVoltage` in its own log and
 `NT:/AdvantageKit/SystemStats/BatteryVoltage` in the recording), so each of the five panels has a
 box for each source, filled exactly as each names the entry. A table lists the robot's sessions in
-the range, and a row's link shows that session. Every file is placed by its own clock, and a
-stretch that no file covers is blank. A refused panel shows **400** for an empty box or one naming
-something that is not a number, **404** for an unknown robot or store, **409** when two of the
-robot's logs, or recordings of two sessions, cover the same minutes, and **413** when the range
+the range, and a row's link shows that session. Every file is placed by its own clock, the files
+of one recording as the recorded dashboard places them, and a stretch that no file covers is blank.
+A refused panel shows **400** for an empty box or one naming something that is not a number,
+**404** for an unknown robot or store, **409** when two of the robot's logs, or two recordings,
+cover the same minutes, and **413** when the range
 holds more than 64 files. A panel plots a REV signal when both of its boxes hold the signal's
 key (`REV/SparkMax_3/AppliedOutput`), placed through the REV log's recorded alignment with the
 roboRIO's log, or with the recording where no roboRIO log of its session is read. One entry across many
