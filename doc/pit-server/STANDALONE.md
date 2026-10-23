@@ -1413,8 +1413,25 @@ this server's ([the server's clock](#sessions-and-capture-files)). A panel the s
 shows only the status code, since Infinity does not pass the server's reason on: **404** when
 nothing is recording or the box names no entry of the capture, **422** when the recording cannot
 be placed in UTC yet, **400** when a box is empty or names something that is not a number. The
-dashboard's first panel says the same. Plotting stored history across sessions in this Grafana
-is proposed, not implemented; see [GRAFANA_PLAN.md](../GRAFANA_PLAN.md).
+dashboard's first panel says the same.
+
+**Pit / Robot history** plots a robot's history over Grafana's time range, from the store's files
+and the open recording, through the data endpoint's
+[robot ranges](../STANDALONE.md#the-data-endpoint). Its
+[dashboard](metrics/pit-history-dashboard.json) starts from a robot, chosen from the store's
+robots, and a source: **roboRIO log, else recording**, the default, reads each stretch from the
+roboRIO's own log where one was pulled and from the pit's recording otherwise, and **Pit
+recording** reads the recordings alone. The two name a signal differently (an AdvantageKit robot's
+battery is `/SystemStats/BatteryVoltage` in its own log and
+`NT:/AdvantageKit/SystemStats/BatteryVoltage` in the recording), so each of the five panels has a
+box for each source, filled exactly as each names the entry. A table lists the robot's sessions in
+the range, and a row's link shows that session. Every file is placed by its own clock, and a
+stretch that no file covers is blank. A refused panel shows **400** for an empty box or one naming
+something that is not a number, **404** for an unknown robot or store, **409** when two of the
+robot's logs, or recordings of two sessions, cover the same minutes, and **413** when the range
+holds more than 64 files. REV signals are not plotted across a range yet. One entry across many
+sessions at once, such as a season, is the plan's next stage; see
+[GRAFANA_PLAN.md](../GRAFANA_PLAN.md).
 
 The configuration follows the official [Prometheus container setup](https://prometheus.io/docs/prometheus/latest/installation/)
 and [Grafana provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/).

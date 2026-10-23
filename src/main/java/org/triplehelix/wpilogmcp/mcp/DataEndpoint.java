@@ -91,6 +91,8 @@ final class DataEndpoint {
   private final org.triplehelix.wpilogmcp.read.server.ManagedLogAccess logAccess;
   /** The capture this server records, if any: {@code capture=current} reads its open file. */
   private final java.util.function.Supplier<org.triplehelix.wpilogmcp.capture.LiveCapture> captures;
+  /** The stores' catalog, the read API's own, which chooses a robot range's files. */
+  private final org.triplehelix.wpilogmcp.read.server.CatalogRecordingSource.Catalogs catalogs;
   private final Gson gson = new GsonBuilder().serializeNulls().create();
   private volatile long maxBytes = DEFAULT_MAX_BYTES;
 
@@ -99,10 +101,22 @@ final class DataEndpoint {
   }
 
   DataEndpoint(LogManager logManager, java.util.function.Supplier<org.triplehelix.wpilogmcp.capture.LiveCapture> captures) {
+    this(logManager, captures, () -> NO_CATALOG);
+  }
+
+  DataEndpoint(LogManager logManager, java.util.function.Supplier<org.triplehelix.wpilogmcp.capture.LiveCapture> captures,
+      org.triplehelix.wpilogmcp.read.server.CatalogRecordingSource.Catalogs catalogs) {
     this.logManager = logManager;
     this.logAccess = logManager.readAccess();
     this.captures = captures;
+    this.catalogs = catalogs;
   }
+
+  private static final org.triplehelix.wpilogmcp.read.server.CatalogRecordingSource.Lease NO_CATALOG =
+      new org.triplehelix.wpilogmcp.read.server.CatalogRecordingSource.Lease() {
+        @Override public org.triplehelix.wpilogmcp.read.catalog.StoreReadCatalog value() { return null; }
+        @Override public void close() {}
+      };
 
   /** The size cap, in bytes. */
   void setMaxBytes(long maxBytes) {
@@ -110,7 +124,7 @@ final class DataEndpoint {
   }
 
   /** A refusal with a status and a JSON body. */
-  private static final class Refusal extends Exception {
+  static final class Refusal extends Exception {
     final int status;
     final JsonObject body;
 
@@ -157,8 +171,9 @@ final class DataEndpoint {
       return;
     }
     try {
-      var request = parse(exchange.getRequestURI().getRawQuery());
-      serve(exchange, request, sources);
+      String raw = exchange.getRequestURI().getRawQuery();
+      if (query(raw).containsKey("robot")) serveRange(exchange, parseRange(raw));
+      else serve(exchange, parse(raw), sources);
     } catch (Refusal r) {
       if (r.status == 503) exchange.getResponseHeaders().set("Retry-After", "2");
       sendJson(exchange, r.status, r.body);
@@ -198,12 +213,7 @@ final class DataEndpoint {
       throw new Refusal(400, "The query needs one path: the log file, as list_available_logs "
           + "gives it", "GET /data/entries?path=<log>&names=<entry>[,<entry>...]");
     }
-    var names = new ArrayList<String>();
-    for (var value : q.getOrDefault("names", List.of())) {
-      for (var name : value.split(",")) {
-        if (!name.isBlank()) names.add(name.strip());
-      }
-    }
+    var names = names(q, "names");
     if (names.isEmpty()) {
       throw new Refusal(400, "The query needs names: one or more entries, or entries with a "
           + "field path appended, comma separated", "names=/SystemStats/BatteryVoltage");
@@ -220,29 +230,15 @@ final class DataEndpoint {
           + "end_utc, as instants; not both", null);
     if (startUtc != null && endUtc != null && endUtc < startUtc)
       throw new Refusal(400, "end_utc " + one(q, "end_utc") + " is before start_utc " + one(q, "start_utc"), null);
-    Integer maxPoints = null;
-    var maxPointsText = q.getOrDefault("max_points", List.of());
-    if (!maxPointsText.isEmpty()) {
-      try {
-        maxPoints = Integer.parseInt(maxPointsText.get(0).strip());
-      } catch (NumberFormatException e) {
-        throw new Refusal(400, "max_points must be a whole number, not " + maxPointsText.get(0), null);
-      }
-      if (maxPoints < 1) throw new Refusal(400, "max_points must be at least 1", null);
-    }
-    var format = q.getOrDefault("format", List.of("arrow")).get(0).strip().toLowerCase(Locale.ROOT);
-    if (!format.equals("arrow") && !format.equals("csv")) {
-      throw new Refusal(400, "format must be arrow or csv, not " + format, null);
-    }
+    Integer maxPoints = maxPoints(q);
+    var format = format(q);
     String utc = one(q, "utc");
     if (utc != null && !utc.equals("true") && !utc.equals("false"))
       throw new Refusal(400, "utc must be true or false", null);
     boolean utcWindow = startUtc != null || endUtc != null;
     if (utcWindow && "false".equals(utc))
       throw new Refusal(400, "start_utc and end_utc choose the window by UTC, so utc cannot be false", null);
-    String angle = one(q, "angle");
-    try { EntryData.validateAngle(angle); }
-    catch (IllegalArgumentException invalid) { throw new Refusal(400, invalid.getMessage(), null); }
+    String angle = angle(q);
     String scope = one(q, "scope_id"), reference = one(q, "source_ref");
     JsonObject source = null;
     try {
@@ -261,6 +257,46 @@ final class DataEndpoint {
       throw new Refusal(400, "capture=current reads this server's own recording, which no source qualification names", null);
     return new Request(capture == null ? paths.get(0) : null, capture != null, List.copyOf(names), start, end,
         startUtc, endUtc, maxPoints, format, scope, source, utcWindow || "true".equals(utc), angle);
+  }
+
+  /** Entries, comma separated or repeated, in the order asked. */
+  private static List<String> names(Map<String, List<String>> q, String key) {
+    var names = new ArrayList<String>();
+    for (var value : q.getOrDefault(key, List.of())) {
+      for (var name : value.split(",")) {
+        if (!name.isBlank()) names.add(name.strip());
+      }
+    }
+    return List.copyOf(names);
+  }
+
+  private static Integer maxPoints(Map<String, List<String>> q) throws Refusal {
+    Integer maxPoints = null;
+    var maxPointsText = q.getOrDefault("max_points", List.of());
+    if (!maxPointsText.isEmpty()) {
+      try {
+        maxPoints = Integer.parseInt(maxPointsText.get(0).strip());
+      } catch (NumberFormatException e) {
+        throw new Refusal(400, "max_points must be a whole number, not " + maxPointsText.get(0), null);
+      }
+      if (maxPoints < 1) throw new Refusal(400, "max_points must be at least 1", null);
+    }
+    return maxPoints;
+  }
+
+  private static String format(Map<String, List<String>> q) throws Refusal {
+    var format = q.getOrDefault("format", List.of("arrow")).get(0).strip().toLowerCase(Locale.ROOT);
+    if (!format.equals("arrow") && !format.equals("csv")) {
+      throw new Refusal(400, "format must be arrow or csv, not " + format, null);
+    }
+    return format;
+  }
+
+  private static String angle(Map<String, List<String>> q) throws Refusal {
+    String angle = one(q, "angle");
+    try { EntryData.validateAngle(angle); }
+    catch (IllegalArgumentException invalid) { throw new Refusal(400, invalid.getMessage(), null); }
+    return angle;
   }
 
   /**
@@ -516,6 +552,592 @@ final class DataEndpoint {
         }
       }
     }
+  }
+
+  // ---- robot ranges ----
+
+  /**
+   * A robot range: the robot's files over a UTC window, chosen by {@link DataRanges} and each read
+   * by its own clock. With {@code source=robot_log}, the default, a stretch reads the roboRIO's log
+   * where one exists and the pit's recording otherwise, which needs each entry's name in both, since
+   * the two name one signal differently: {@code names} for the roboRIO's logs and
+   * {@code capture_names} for the recordings, paired by position. {@code source=capture} reads the
+   * recordings alone.
+   */
+  private record RangeRequest(String robot, String store, boolean capturesOnly, List<String> names,
+      List<String> captureNames, long startUtc, long endUtc, Integer maxPoints, String format, String angle) {
+    int entries() { return capturesOnly ? captureNames.size() : names.size(); }
+    String label(int entry) { return names.isEmpty() ? captureNames.get(entry) : names.get(entry); }
+    String name(DataRanges.Role role, int entry) {
+      var chosen = role == DataRanges.Role.ROBOT_LOG ? names : captureNames;
+      return chosen.isEmpty() ? null : chosen.get(entry);
+    }
+  }
+
+  /** A placed file: what the catalog nominated, the log read, and its UTC span inside the window. */
+  private record Placed(DataRanges.Candidate candidate, String log, long startUtc, long endUtc) {}
+
+  /** A sample of a range: its measured UTC, the placed file it came from, and its value there. */
+  private record RangeSample(long utcUs, int file, TimestampedValue value) {}
+
+  /** One entry of a range: its samples from every file in UTC order, bucketed when asked. */
+  private record RangeEntry(String label, String robotLogName, String captureName, List<RangeSample> samples,
+      Buckets.Result buckets, JsonArray files, ArrowType valueType) {}
+
+  private static RangeRequest parseRange(String rawQuery) throws Refusal {
+    if (rawQuery != null && rawQuery.length() > 65536) throw new Refusal(413, "Data query exceeds 64 KiB", null);
+    var q = query(rawQuery);
+    String robot = one(q, "robot");
+    if (robot == null || robot.isBlank())
+      throw new Refusal(400, "robot names a robot by its id or serial number", "GET /data/robots lists the store's robots");
+    for (var other : List.of("path", "capture", "start_time", "end_time", "source_ref", "scope_id")) {
+      if (q.containsKey(other))
+        throw new Refusal(400, "A robot range chooses its files by UTC; " + other + " cannot be combined with robot", null);
+    }
+    String source = one(q, "source");
+    if (source != null && !source.equals("robot_log") && !source.equals("capture"))
+      throw new Refusal(400, "source must be robot_log or capture, not " + source, null);
+    boolean capturesOnly = "capture".equals(source);
+    var names = names(q, "names");
+    var captureNames = names(q, "capture_names");
+    if (capturesOnly ? captureNames.isEmpty() : names.isEmpty()) {
+      throw new Refusal(400, capturesOnly
+          ? "source=capture needs capture_names: the entries as the pit's recordings name them"
+          : "A robot range needs names: the entries as the roboRIO's logs name them",
+          "names=/SystemStats/BatteryVoltage&capture_names=NT:/AdvantageKit/SystemStats/BatteryVoltage");
+    }
+    if (!names.isEmpty() && !captureNames.isEmpty() && names.size() != captureNames.size())
+      throw new Refusal(400, "names and capture_names pair by position, so they need as many entries each, not "
+          + names.size() + " and " + captureNames.size(), null);
+    // A REV signal is placed through a REV log's recorded alignment with one WPILOG, which a range
+    // does not choose yet: it is refused rather than reported missing from every file.
+    for (var name : java.util.stream.Stream.concat(names.stream(), captureNames.stream()).toList()) {
+      if (name.startsWith(EntryData.REV_PREFIX))
+        throw new Refusal(400, "A robot range reads WPILOG entries; " + name + " is a REV signal, read by its log's path",
+            "GET /data/entries?path=<log>&names=" + name);
+    }
+    Long startUtc = instant(q, "start_utc", true);
+    Long endUtc = instant(q, "end_utc", false);
+    if (startUtc == null || endUtc == null)
+      throw new Refusal(400, "A robot range needs start_utc and end_utc",
+          "start_utc=2026-10-23T14:00:00Z&end_utc=2026-10-23T15:00:00Z");
+    if (endUtc < startUtc)
+      throw new Refusal(400, "end_utc " + one(q, "end_utc") + " is before start_utc " + one(q, "start_utc"), null);
+    String utc = one(q, "utc");
+    if (utc != null && !utc.equals("true"))
+      throw new Refusal(400, "A robot range places every file by its UTC, so utc can only be true", null);
+    return new RangeRequest(robot.strip(), one(q, "store"), capturesOnly, names, captureNames, startUtc, endUtc,
+        maxPoints(q), format(q), angle(q));
+  }
+
+  private void serveRange(HttpExchange exchange, RangeRequest request) throws IOException, Refusal {
+    List<DataRanges.Candidate> candidates;
+    JsonArray problems;
+    try (var lease = catalogs.acquire()) {
+      var stores = DataRanges.stores(lease.value(), request.store());
+      problems = DataRanges.problems(lease.value(), stores);
+      candidates = DataRanges.candidates(stores, request.robot(), !request.capturesOnly(),
+          !request.captureNames().isEmpty(), request.startUtc(), request.endUtc());
+    }
+    var placed = new ArrayList<Placed>();
+    var skipped = new JsonArray();
+    int count = request.entries();
+    var samples = new ArrayList<List<RangeSample>>();
+    var files = new ArrayList<JsonArray>();
+    var types = new ArrayList<ArrowType>();
+    for (int i = 0; i < count; i++) { samples.add(new ArrayList<>()); files.add(new JsonArray()); types.add(null); }
+    for (var candidate : candidates) {
+      org.triplehelix.wpilogmcp.read.server.ManagedReadSnapshot use;
+      try {
+        use = logAccess.acquire(candidate.path().toString(), null);
+      } catch (IOException unreadable) {
+        skipped.add(skippedFile(candidate, "Unreadable: " + unreadable.getMessage()));
+        continue;
+      }
+      try (use) {
+        var log = use.log();
+        var before = use.snapshot();
+        var utc = log.utcMapping();
+        var unplaced = utc.unavailableReason();
+        if (unplaced.isPresent()) {
+          skipped.add(skippedFile(candidate, "Not placed in UTC: " + unplaced.get()));
+          continue;
+        }
+        var window = logWindow(utc, request.startUtc(), request.endUtc());
+        var span = window == null ? null : span(log, utc, window, request);
+        if (span == null) {
+          skipped.add(skippedFile(candidate, "Outside the window"));
+          continue;
+        }
+        int index = placed.size();
+        placed.add(new Placed(candidate, log.path(), span[0], span[1]));
+        for (int i = 0; i < count; i++) {
+          String name = request.name(candidate.role(), i);
+          if (name == null) continue;
+          var facts = new JsonObject();
+          facts.addProperty("file", index);
+          facts.addProperty("entry", name);
+          files.get(i).add(facts);
+          EntryData.Series series;
+          try {
+            series = EntryData.resolve(log, name);
+          } catch (IllegalArgumentException missing) {
+            facts.addProperty("missing", missing.getMessage());
+            continue;
+          }
+          if (request.maxPoints() != null && !series.numeric() && !"boolean".equals(series.type())) {
+            throw new Refusal(400, "max_points buckets numeric entries; " + name + " is " + series.type()
+                + " in " + log.path(), "Ask for a numeric field inside it, or leave max_points out to read every sample");
+          }
+          EntryData.Prepared presentation;
+          try {
+            presentation = EntryData.prepareMicros(log, series, window[0], window[1], request.angle());
+          } catch (IllegalArgumentException invalid) {
+            throw new Refusal(400, invalid.getMessage(), "Select a numeric entry or scalar field for angle presentation");
+          }
+          var type = request.maxPoints() != null || presentation.angle() ? new ArrowType.Float64() : EntryData.arrowType(log, series);
+          if (types.get(i) == null) types.set(i, type);
+          else if (request.format().equals("arrow") && !types.get(i).equals(type)) {
+            throw new Refusal(400, "An Arrow stream has one schema, and " + name + " in " + log.path() + " ("
+                + describe(type) + ") does not share the value type of the same entry in an earlier file ("
+                + describe(types.get(i)) + ")", "Pass max_points, whose buckets have one shape, or ask for CSV");
+          }
+          var values = presentation.values();
+          if (request.maxPoints() != null && !series.numeric()) values = asNumbers(values);
+          int kept = 0;
+          for (var tv : values) {
+            var at = utc.at(tv.timestampUs()).epochMicros();
+            if (at == null || at < request.startUtc() || at > request.endUtc()) continue;
+            samples.get(i).add(new RangeSample(at, index, tv));
+            kept++;
+          }
+          facts.addProperty("type", series.type());
+          facts.addProperty("sample_count", kept);
+        }
+        // A finished file that changed while it was read is refused, as a single file is.
+        if (before != null && !before.sameAs(FileSnapshot.of(use.path())))
+          throw new Refusal(409, "A log changed during this data request: " + log.path(), "Ask again");
+      }
+    }
+    refuseOverlaps(placed);
+    var covered = placed.stream().filter(p -> p.candidate().role() == DataRanges.Role.ROBOT_LOG).toList();
+    var entries = new ArrayList<RangeEntry>();
+    long rows = 0, estimatedBytes = 0;
+    if (request.format().equals("arrow") && request.maxPoints() == null) {
+      ArrowType first = null;
+      for (int i = 0; i < count; i++) {
+        if (types.get(i) == null) continue;
+        if (first == null) first = types.get(i);
+        else if (!types.get(i).equals(first)) {
+          throw new Refusal(400, "An Arrow stream has one schema, and " + request.label(i) + " (" + describe(types.get(i))
+              + ") does not share the value type of the first entry (" + describe(first) + ")",
+              "Request entries of different types separately, or pass max_points");
+        }
+      }
+    }
+    for (int i = 0; i < count; i++) {
+      var list = samples.get(i);
+      // A recording's samples within a roboRIO log's span are left to that log: nothing merges them.
+      list.removeIf(s -> placed.get(s.file()).candidate().role() == DataRanges.Role.CAPTURE && within(covered, s.utcUs()));
+      list.sort(java.util.Comparator.comparingLong(RangeSample::utcUs));
+      Buckets.Result buckets = null;
+      if (request.maxPoints() != null && list.size() > request.maxPoints()) {
+        var relative = new ArrayList<TimestampedValue>(list.size());
+        for (var sample : list) {
+          relative.add(new TimestampedValue((sample.utcUs() - request.startUtc()) / 1e6, sample.value().value()));
+        }
+        buckets = Buckets.of(relative, 0.0, (request.endUtc() - request.startUtc()) / 1e6, request.maxPoints());
+      }
+      long n = buckets != null ? buckets.buckets().size() : list.size();
+      rows += n;
+      if (request.maxPoints() != null) estimatedBytes += n * 88;
+      else for (var sample : list) estimatedBytes += 48 + sizeOf(sample.value().value());
+      entries.add(new RangeEntry(request.label(i), request.name(DataRanges.Role.ROBOT_LOG, i),
+          request.name(DataRanges.Role.CAPTURE, i), list, buckets, files.get(i),
+          types.get(i) == null ? new ArrowType.Float64() : types.get(i)));
+    }
+    if (estimatedBytes > maxBytes) {
+      var refusal = new Refusal(413, "The response would be about " + estimatedBytes + " bytes ("
+          + rows + " rows), over the cap of " + maxBytes, "Narrow the window, or pass max_points to bucket");
+      refusal.body.addProperty("rows", rows);
+      refusal.body.addProperty("bytes", estimatedBytes);
+      refusal.body.addProperty("max_bytes", maxBytes);
+      throw refusal;
+    }
+    var inputs = rangeInputs(request, placed, skipped, stretches(request, placed, covered));
+    inputs.add("catalog_problems", problems);
+    var described = rangeEntries(entries);
+    var headers = exchange.getResponseHeaders();
+    headers.set("Content-Type", request.format().equals("arrow") ? ARROW_TYPE : "text/csv; charset=utf-8");
+    // Several files and perhaps a recording still growing: no validator stands for them all.
+    headers.set("Cache-Control", "private, no-store");
+    exchange.sendResponseHeaders(200, 0);
+    try (var out = new BufferedOutputStream(exchange.getResponseBody(), 1 << 16)) {
+      if (request.format().equals("arrow")) writeRangeArrow(out, request, inputs, described, entries);
+      else writeRangeCsv(out, request, inputs, described, entries);
+    }
+  }
+
+  private static JsonObject skippedFile(DataRanges.Candidate candidate, String reason) {
+    var skipped = new JsonObject();
+    skipped.addProperty("path", candidate.path().toString());
+    skipped.addProperty("source", candidate.role().wire);
+    skipped.addProperty("reason", reason);
+    return skipped;
+  }
+
+  /**
+   * A placed file's span: the UTC of its first and last placed records inside the window, or null
+   * when none lie in it. Records before the clock's first reading have no UTC and are not counted.
+   */
+  private static long[] span(LogData log, UtcTimeMapping utc, long[] window, RangeRequest request) {
+    long first = Math.max(Math.max(window[0], utc.firstLogMicros()), micros(log.minTimestamp()));
+    long last = Math.min(window[1], micros(log.maxTimestamp()));
+    if (last < first) return null;
+    Long from = utc.at(first).epochMicros(), to = utc.at(last).epochMicros();
+    if (from == null || to == null || to < request.startUtc() || from > request.endUtc()) return null;
+    return new long[] {Math.max(from, request.startUtc()), Math.min(to, request.endUtc())};
+  }
+
+  /**
+   * Two of the robot's logs, or recordings of two sessions, that cover the same minutes are refused
+   * together, since nothing merges them. The files of one recording are read in order, as one: a
+   * same-boot reconnect's file starts with values that the closed file already holds.
+   */
+  private static void refuseOverlaps(List<Placed> placed) throws Refusal {
+    for (int a = 0; a < placed.size(); a++) {
+      for (int b = a + 1; b < placed.size(); b++) {
+        var x = placed.get(a);
+        var y = placed.get(b);
+        if (x.candidate().role() != y.candidate().role()) continue;
+        if (x.candidate().role() == DataRanges.Role.CAPTURE
+            && java.util.Objects.equals(x.candidate().sessionId(), y.candidate().sessionId())) continue;
+        if (x.startUtc() <= y.endUtc() && y.startUtc() <= x.endUtc()) {
+          var refusal = new Refusal(409, "Two of the robot's " + (x.candidate().role() == DataRanges.Role.ROBOT_LOG
+              ? "logs" : "recordings") + " cover the same minutes, and nothing merges them: " + x.log() + " and " + y.log(),
+              "Narrow the time range to one of them, or read each by its path");
+          var both = new JsonArray();
+          both.add(x.log());
+          both.add(y.log());
+          refusal.body.add("files", both);
+          throw refusal;
+        }
+      }
+    }
+  }
+
+  private static boolean within(List<Placed> spans, long utcUs) {
+    for (var span : spans) if (span.startUtc() <= utcUs && utcUs <= span.endUtc()) return true;
+    return false;
+  }
+
+  /** Which file answers each stretch of the window: a roboRIO log where one exists, else a recording. */
+  private static JsonArray stretches(RangeRequest request, List<Placed> placed, List<Placed> covered) {
+    record Stretch(long start, long end, int file, String source) {}
+    var stretches = new ArrayList<Stretch>();
+    for (int i = 0; i < placed.size(); i++) {
+      var p = placed.get(i);
+      if (p.candidate().role() == DataRanges.Role.ROBOT_LOG) {
+        stretches.add(new Stretch(p.startUtc(), p.endUtc(), i, p.candidate().role().wire));
+        continue;
+      }
+      // A recording answers only where no roboRIO log does.
+      long from = p.startUtc();
+      var cuts = covered.stream().filter(c -> c.startUtc() <= p.endUtc() && c.endUtc() >= p.startUtc())
+          .sorted(java.util.Comparator.comparingLong(Placed::startUtc)).toList();
+      for (var cut : cuts) {
+        if (cut.startUtc() > from) stretches.add(new Stretch(from, cut.startUtc() - 1, i, p.candidate().role().wire));
+        from = Math.max(from, cut.endUtc() + 1);
+      }
+      if (from <= p.endUtc()) stretches.add(new Stretch(from, p.endUtc(), i, p.candidate().role().wire));
+    }
+    stretches.sort(java.util.Comparator.comparingLong(Stretch::start).thenComparingInt(Stretch::file));
+    var out = new JsonArray();
+    for (var stretch : stretches) {
+      var json = new JsonObject();
+      json.addProperty("file", stretch.file());
+      json.addProperty("source", stretch.source());
+      json.addProperty("start_utc", utcText(stretch.start()));
+      json.addProperty("end_utc", utcText(stretch.end()));
+      out.add(json);
+    }
+    return out;
+  }
+
+  private JsonObject rangeInputs(RangeRequest request, List<Placed> placed, JsonArray skipped, JsonArray stretches) {
+    var inputs = new JsonObject();
+    inputs.addProperty("robot", request.robot());
+    if (request.store() != null) inputs.addProperty("store", request.store());
+    inputs.addProperty("source", request.capturesOnly() ? "capture" : "robot_log");
+    var window = new JsonObject();
+    window.addProperty("start_utc", utcText(request.startUtc()));
+    window.addProperty("end_utc", utcText(request.endUtc()));
+    inputs.add("window", window);
+    if (request.maxPoints() != null) inputs.addProperty("max_points", request.maxPoints());
+    inputs.addProperty("utc", true);
+    if (request.angle() != null) inputs.addProperty("angle", request.angle());
+    var list = new JsonArray();
+    for (int i = 0; i < placed.size(); i++) {
+      var p = placed.get(i);
+      var file = new JsonObject();
+      file.addProperty("index", i);
+      file.addProperty("path", p.log());
+      file.addProperty("source", p.candidate().role().wire);
+      file.addProperty("session_id", p.candidate().sessionId());
+      if (p.candidate().open()) file.addProperty("recording", true);
+      file.addProperty("start_utc", utcText(p.startUtc()));
+      file.addProperty("end_utc", utcText(p.endUtc()));
+      list.add(file);
+    }
+    inputs.add("files", list);
+    inputs.add("skipped", skipped);
+    inputs.add("stretches", stretches);
+    return inputs;
+  }
+
+  private static JsonArray rangeEntries(List<RangeEntry> entries) {
+    var out = new JsonArray();
+    for (var e : entries) {
+      var json = new JsonObject();
+      json.addProperty("name", e.label());
+      if (e.robotLogName() != null) json.addProperty("robot_log_name", e.robotLogName());
+      if (e.captureName() != null) json.addProperty("capture_name", e.captureName());
+      var unit = EntryData.unitFromName(e.label());
+      if (unit != null) json.addProperty("unit", unit);
+      json.addProperty("value_type", describe(e.valueType()));
+      json.addProperty("total_in_range", e.samples().size());
+      json.addProperty("bucketed", e.buckets() != null);
+      if (e.buckets() != null) {
+        json.addProperty("bucket_sec", e.buckets().bucketSec());
+        json.addProperty("bucket_count", e.buckets().buckets().size());
+      }
+      json.add("files", e.files());
+      out.add(json);
+    }
+    return out;
+  }
+
+  private void writeRangeCsv(OutputStream out, RangeRequest request, JsonObject inputs, JsonArray described,
+      List<RangeEntry> entries) throws IOException {
+    Writer w = new OutputStreamWriter(out, StandardCharsets.UTF_8);
+    w.write("# wpilog-mcp " + Version.VERSION + "\n");
+    w.write("# inputs: " + gson.toJson(inputs) + "\n");
+    w.write("# entries: " + gson.toJson(described) + "\n");
+    boolean first = true;
+    var row = new CsvRow(w);
+    for (var e : entries) {
+      if (!first) w.write("\n");
+      first = false;
+      w.write("# entry: " + e.label() + "\n");
+      if (e.buckets() != null) {
+        w.write("timestamp_utc,count,min,max,mean,first,last\n");
+        for (int i = 0; i < e.buckets().buckets().size(); i++) {
+          var b = e.buckets().buckets().get(i);
+          row.epoch(request.startUtc() + e.buckets().startUs(i)).number(b.count()).comma().cell(b.min()).comma()
+              .cell(b.max()).comma().cell(b.mean()).comma().number(b.first()).comma().number(b.last()).end();
+        }
+      } else if (request.maxPoints() != null) {
+        w.write("timestamp_utc,count,min,max,mean,first,last\n");
+        for (var sample : e.samples()) {
+          double v = ((Number) sample.value().value()).doubleValue();
+          Double finite = Double.isFinite(v) ? v : null;
+          row.epoch(sample.utcUs()).number(1).comma().cell(finite).comma().cell(finite).comma().cell(finite).comma()
+              .number(v).comma().number(v).end();
+        }
+      } else {
+        // Each row keeps its own file's time, timestamp_sec, beside the UTC the file's clock gives it.
+        var columns = EntryData.csvColumns(e.samples().stream().map(RangeSample::value).toList());
+        w.write("timestamp_utc,file," + String.join(",", columns) + "\n");
+        for (var sample : e.samples()) {
+          for (var cells : EntryData.csvRows(sample.value(), columns)) {
+            w.write(utcText(sample.utcUs()) + "," + sample.file() + "," + String.join(",", cells) + "\n");
+          }
+        }
+      }
+    }
+    w.flush();
+  }
+
+  private static final List<Field> RANGE_BUCKET_FIELDS = List.of(
+      new Field("timestamp_utc", new ArrowType.TimestampMicros("UTC"), false),
+      new Field("count", new ArrowType.Int64(), false),
+      new Field("min", new ArrowType.Float64(), true),
+      new Field("max", new ArrowType.Float64(), true),
+      new Field("mean", new ArrowType.Float64(), true),
+      new Field("first", new ArrowType.Float64(), false),
+      new Field("last", new ArrowType.Float64(), false));
+
+  private void writeRangeArrow(OutputStream out, RangeRequest request, JsonObject inputs, JsonArray described,
+      List<RangeEntry> entries) throws IOException {
+    boolean bucketed = request.maxPoints() != null;
+    var fields = bucketed ? RANGE_BUCKET_FIELDS : List.of(
+        new Field("timestamp_utc", new ArrowType.TimestampMicros("UTC"), false),
+        new Field("file", new ArrowType.Int64(), false),
+        new Field("timestamp", new ArrowType.TimestampMicros(), false),
+        new Field("value", entries.get(0).valueType(), true));
+    var metadata = new LinkedHashMap<String, String>();
+    metadata.put("server", "wpilog-mcp");
+    metadata.put("server_version", Version.VERSION);
+    metadata.put("inputs", gson.toJson(inputs));
+    metadata.put("entries", gson.toJson(described));
+    metadata.put("bucketed", String.valueOf(bucketed));
+    var writer = new ArrowStreamWriter(out, fields);
+    writer.writeSchema(metadata);
+    var columns = new ArrayList<ColumnBuilder>();
+    for (var f : fields) columns.add(ColumnBuilder.of(f.type()));
+    for (var e : entries) {
+      var tag = Map.of("entry", e.label());
+      if (e.buckets() != null) {
+        for (int i = 0; i < e.buckets().buckets().size(); i++) {
+          var b = e.buckets().buckets().get(i);
+          columns.get(0).append(request.startUtc() + e.buckets().startUs(i));
+          columns.get(1).append((long) b.count());
+          columns.get(2).append(b.min());
+          columns.get(3).append(b.max());
+          columns.get(4).append(b.mean());
+          columns.get(5).append(b.first());
+          columns.get(6).append(b.last());
+          if (columns.get(0).length() >= BATCH_ROWS) writer.writeBatch(columns, tag);
+        }
+      } else if (bucketed) {
+        for (var sample : e.samples()) {
+          double v = ((Number) sample.value().value()).doubleValue();
+          Double finite = Double.isFinite(v) ? v : null;
+          columns.get(0).append(sample.utcUs());
+          columns.get(1).append(1L);
+          columns.get(2).append(finite);
+          columns.get(3).append(finite);
+          columns.get(4).append(finite);
+          columns.get(5).append(v);
+          columns.get(6).append(v);
+          if (columns.get(0).length() >= BATCH_ROWS) writer.writeBatch(columns, tag);
+        }
+      } else {
+        for (var sample : e.samples()) {
+          columns.get(0).append(sample.utcUs());
+          columns.get(1).append((long) sample.file());
+          columns.get(2).append(sample.value().timestampUs());
+          columns.get(3).append(sample.value().value());
+          if (columns.get(0).length() >= BATCH_ROWS) writer.writeBatch(columns, tag);
+        }
+      }
+      writer.writeBatch(columns, tag);
+    }
+    writer.finish();
+  }
+
+  // ---- the catalog, for a dashboard's choices ----
+
+  /** {@code GET /data/robots}: a store's robots, a CSV row each, for a dashboard's robot choice. */
+  void handleRobots(HttpExchange exchange) throws IOException {
+    if (!onlyGet(exchange)) return;
+    try {
+      var q = query(exchange.getRequestURI().getRawQuery());
+      var rows = new StringBuilder("robot_id,serial_number,name,basis,store_id\n");
+      try (var lease = catalogs.acquire()) {
+        var stores = DataRanges.stores(lease.value(), one(q, "store"));
+        var problems = DataRanges.problems(lease.value(), stores);
+        if (!problems.isEmpty()) rows.insert(0, "# catalog_problems: " + gson.toJson(problems) + "\n");
+        for (var store : stores) {
+          for (var directory : store.robots()) {
+            var robot = directory.robot();
+            if (robot == null) continue;
+            rows.append(cell(robot.id())).append(',').append(cell(robot.serialNumber())).append(',')
+                .append(cell(robot.name())).append(',').append(cell(robot.basis())).append(',')
+                .append(cell(store.header() == null ? null : store.header().id())).append('\n');
+          }
+        }
+      }
+      sendCsv(exchange, rows);
+    } catch (Refusal r) {
+      sendJson(exchange, r.status, r.body);
+    }
+  }
+
+  /**
+   * {@code GET /data/sessions}: one robot's sessions over an optional UTC range, a CSV row each,
+   * from the catalog alone. Each time is the session's own, labeled with its basis: measured from a
+   * log's wall clock, the pit's clock for a capture, or a file's name or modification time.
+   */
+  void handleSessions(HttpExchange exchange) throws IOException {
+    if (!onlyGet(exchange)) return;
+    try {
+      var q = query(exchange.getRequestURI().getRawQuery());
+      String robot = one(q, "robot");
+      if (robot == null || robot.isBlank())
+        throw new Refusal(400, "robot names a robot by its id or serial number", "GET /data/robots lists the store's robots");
+      Long startUtc = instant(q, "start_utc", true), endUtc = instant(q, "end_utc", false);
+      record Row(long start, String text) {}
+      var found = new ArrayList<Row>();
+      boolean known = false;
+      JsonArray problems;
+      try (var lease = catalogs.acquire()) {
+        var stores = DataRanges.stores(lease.value(), one(q, "store"));
+        problems = DataRanges.problems(lease.value(), stores);
+        for (var store : stores) {
+          for (var directory : store.robots()) known |= DataRanges.matches(directory.robot(), robot.strip());
+          for (var directory : store.sessions()) {
+            var session = directory.session();
+            if (session == null || !DataRanges.matches(directory.robot(), robot.strip())) continue;
+            Long start = DataRanges.epochMicros(session.startedAt());
+            boolean recording = session.openCapture() != null;
+            Long end = recording ? null : DataRanges.epochMicros(session.endedAt());
+            if (endUtc != null && start != null && start > endUtc) continue;
+            if (startUtc != null && end != null && end < startUtc) continue;
+            boolean robotLogs = session.files().stream().anyMatch(f -> "wpilog".equals(f.kind())
+                && (f.provenance() == null || !f.provenance().captured()));
+            boolean captures = recording || session.files().stream().anyMatch(f -> f.provenance() != null && f.provenance().captured());
+            String sources = robotLogs && captures ? "both" : robotLogs ? "robot_log" : captures ? "capture" : "";
+            var text = new StringBuilder();
+            text.append(cell(session.id())).append(',').append(cell(session.startedAt())).append(',')
+                .append(cell(recording ? null : session.endedAt())).append(',')
+                .append(start == null ? "" : String.valueOf(Math.floorDiv(start, 1000))).append(',')
+                .append(end == null ? "" : String.valueOf(Math.floorDiv(end, 1000))).append(',')
+                .append(cell(session.startBasis())).append(',').append(cell(session.event())).append(',')
+                .append(cell(session.matchType())).append(',')
+                .append(session.matchNumber() == null ? "" : session.matchNumber().toString()).append(',')
+                .append(sources).append(',').append(session.files().size() + (recording ? 1 : 0)).append(',')
+                .append(recording).append('\n');
+            found.add(new Row(start == null ? Long.MAX_VALUE : start, text.toString()));
+          }
+        }
+      }
+      if (!known) {
+        throw new Refusal(404, "The store knows no robot " + robot.strip() + ", by id or serial number",
+            "GET /data/robots lists the store's robots");
+      }
+      found.sort(java.util.Comparator.comparingLong(Row::start));
+      var rows = new StringBuilder();
+      if (!problems.isEmpty()) rows.append("# catalog_problems: ").append(gson.toJson(problems)).append('\n');
+      rows.append("session_id,started_at,ended_at,start_ms,end_ms,time_basis,event,match_type,match_number,sources,files,recording\n");
+      found.forEach(r -> rows.append(r.text()));
+      sendCsv(exchange, rows);
+    } catch (Refusal r) {
+      sendJson(exchange, r.status, r.body);
+    }
+  }
+
+  private static boolean onlyGet(HttpExchange exchange) throws IOException {
+    if ("GET".equals(exchange.getRequestMethod())) return true;
+    exchange.getResponseHeaders().set("Allow", "GET");
+    exchange.sendResponseHeaders(405, -1);
+    exchange.close();
+    return false;
+  }
+
+  /** A CSV cell: empty for null, quoted when it holds a comma, a quote or a line break. */
+  static String cell(String value) {
+    if (value == null) return "";
+    if (value.indexOf(',') < 0 && value.indexOf('"') < 0 && value.indexOf('\n') < 0 && value.indexOf('\r') < 0) return value;
+    return '"' + value.replace("\"", "\"\"") + '"';
+  }
+
+  private static void sendCsv(HttpExchange exchange, CharSequence body) throws IOException {
+    byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+    exchange.getResponseHeaders().set("Content-Type", "text/csv; charset=utf-8");
+    exchange.getResponseHeaders().set("Cache-Control", "private, no-store");
+    exchange.sendResponseHeaders(200, bytes.length);
+    try (var out = exchange.getResponseBody()) { out.write(bytes); }
   }
 
   private void checkSource(Request request, SourceResolver sources) throws Refusal {
@@ -945,6 +1567,12 @@ final class DataEndpoint {
       if (utc == null) return this;
       var epoch = utc.at(logUs).epochMicros();
       if (epoch != null) UTC_FORMAT.formatTo(instant(epoch), row);
+      return comma();
+    }
+
+    /** A UTC cell from epoch microseconds, and its comma. */
+    CsvRow epoch(long epochUs) {
+      UTC_FORMAT.formatTo(instant(epochUs), row);
       return comma();
     }
 

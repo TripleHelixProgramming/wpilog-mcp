@@ -61,6 +61,9 @@ public class HttpTransport {
   private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(5);
   /** The data endpoint's path, beside the MCP endpoint and /health. */
   public static final String DATA_PATH = "/data/entries";
+  /** A store's robots, and one robot's sessions, as CSV for a dashboard's choices. */
+  public static final String DATA_ROBOTS_PATH = "/data/robots";
+  public static final String DATA_SESSIONS_PATH = "/data/sessions";
   private static final Duration DRAIN_POLL_INTERVAL = Duration.ofMillis(20);
 
   private final Gson gson;
@@ -121,7 +124,8 @@ public class HttpTransport {
    * request: the field is declared below and set when capture starts.
    */
   private final DataEndpoint dataEndpoint =
-      new DataEndpoint(org.triplehelix.wpilogmcp.log.LogManager.getInstance(), () -> this.liveCapture.get());
+      new DataEndpoint(org.triplehelix.wpilogmcp.log.LogManager.getInstance(), () -> this.liveCapture.get(),
+          () -> this.readEndpoint.catalog());
   private final org.triplehelix.wpilogmcp.store.StoreRegistry stores =
       org.triplehelix.wpilogmcp.log.LogManager.getInstance().stores();
   private java.util.function.Supplier<java.util.List<org.triplehelix.wpilogmcp.store.DiskSpaceBudgets.Snapshot>>
@@ -354,6 +358,8 @@ public class HttpTransport {
       else visualizationControl.handle(exchange);
     });
     server.createContext(DATA_PATH, streaming.handle(counted(this::handleData)));
+    server.createContext(DATA_ROBOTS_PATH, streaming.handle(counted(exchange -> handleListing(exchange, dataEndpoint::handleRobots))));
+    server.createContext(DATA_SESSIONS_PATH, streaming.handle(counted(exchange -> handleListing(exchange, dataEndpoint::handleSessions))));
     server.createContext(ReadEndpoint.PATH, streaming.handle(counted(this::handleRead)));
     var nextFollow = followStreaming.handle(counted(this::handleFollow));
     var controlFollow = streaming.handle(counted(this::handleFollow));
@@ -954,6 +960,18 @@ public class HttpTransport {
       }
     } catch (IllegalArgumentException invalid) { sendError(exchange, 400, "Invalid data query"); return; }
     dataEndpoint.handle(exchange, source -> toolRegistry.visualizations().sources.resolve(source));
+  }
+
+  /** The data listings read only the catalog, with the data endpoint's Origin check. */
+  private void handleListing(HttpExchange exchange, com.sun.net.httpserver.HttpHandler listing) throws IOException {
+    var origin = exchange.getRequestHeaders().getFirst("Origin");
+    if (origin != null && !isAllowedOrigin(origin)) {
+      sendError(exchange, 403, "Forbidden: invalid origin");
+      return;
+    }
+    try { DataEndpoint.query(exchange.getRequestURI().getRawQuery()); }
+    catch (IllegalArgumentException invalid) { sendError(exchange, 400, "Invalid data query"); return; }
+    listing.handle(exchange);
   }
 
   /** Native reads share the existing Origin and configured-directory admission policies. */

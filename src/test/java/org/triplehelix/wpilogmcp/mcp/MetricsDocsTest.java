@@ -108,4 +108,73 @@ class MetricsDocsTest {
     assertEquals(variables.size(), plots, "One panel for each entry box");
     assertTrue(Files.readString(Path.of("doc/pit-server/STANDALONE.md")).contains("metrics/pit-recording-dashboard.json"));
   }
+
+  /**
+   * The history dashboard reads a robot over Grafana's range through the same pinned Infinity:
+   * its robot choice is the store's robots, every panel names its entry in both sources, each box
+   * starts empty, and the sessions table links each row to that session's range.
+   */
+  @Test void theHistoryDashboardReadsARobotOverGrafanasRange() throws Exception {
+    var yaml = new org.yaml.snakeyaml.Yaml(); var base = Path.of("doc/pit-server/metrics");
+    Map<String, Object> compose = yaml.load(Files.readString(base.resolve("compose.yaml")));
+    var grafana = (Map<?, ?>) ((Map<?, ?>) compose.get("services")).get("grafana");
+    assertTrue(((List<?>) grafana.get("volumes")).contains("./pit-history-dashboard.json:/etc/grafana/dashboards/pit-history-dashboard.json:ro"));
+    Map<String, Object> provisioned = yaml.load(Files.readString(base.resolve("provisioning/datasources/pit.yaml")));
+    var infinity = ((List<?>) provisioned.get("datasources")).stream().map(d -> (Map<?, ?>) d)
+        .filter(d -> "yesoreyeram-infinity-datasource".equals(d.get("type"))).findFirst().orElseThrow();
+    var dashboard = JsonParser.parseString(Files.readString(base.resolve("pit-history-dashboard.json"))).getAsJsonObject();
+    assertEquals("wpilog-pit-history", dashboard.get("uid").getAsString());
+    var variables = new java.util.HashMap<String, com.google.gson.JsonObject>();
+    dashboard.getAsJsonObject("templating").getAsJsonArray("list").forEach(v -> variables.put(v.getAsJsonObject().get("name").getAsString(), v.getAsJsonObject()));
+    var robot = variables.get("robot");
+    assertEquals("query", robot.get("type").getAsString());
+    assertEquals(infinity.get("uid"), robot.getAsJsonObject("datasource").get("uid").getAsString());
+    var robots = robot.getAsJsonObject("query").getAsJsonObject("infinityQuery");
+    assertEquals(HttpTransport.DATA_ROBOTS_PATH, robots.get("url").getAsString());
+    assertEquals("csv", robots.get("type").getAsString());
+    assertEquals("#", robots.getAsJsonObject("csv_options").get("comment").getAsString());
+    var sources = new java.util.HashSet<String>();
+    variables.get("source").getAsJsonArray("options").forEach(o -> sources.add(o.getAsJsonObject().get("value").getAsString()));
+    assertEquals(java.util.Set.of("robot_log", "capture"), sources);
+    assertEquals("robot_log", variables.get("source").getAsJsonObject("current").get("value").getAsString(), "The roboRIO's log by default");
+    variables.values().stream().filter(v -> v.get("type").getAsString().equals("textbox")).forEach(v ->
+        assertEquals("", v.getAsJsonObject("current").get("value").getAsString(), "An entry box starts empty: the server proposes no entry"));
+    int plots = 0; boolean table = false;
+    for (var panel : dashboard.getAsJsonArray("panels")) {
+      var value = panel.getAsJsonObject();
+      String type = value.get("type").getAsString();
+      if (type.equals("text")) continue;
+      var target = value.getAsJsonArray("targets").get(0).getAsJsonObject();
+      assertEquals(infinity.get("uid"), value.getAsJsonObject("datasource").get("uid").getAsString());
+      assertEquals("csv", target.get("type").getAsString());
+      assertEquals("backend", target.get("parser").getAsString());
+      assertEquals("#", target.getAsJsonObject("csv_options").get("comment").getAsString());
+      var params = new java.util.HashMap<String, String>();
+      target.getAsJsonObject("url_options").getAsJsonArray("params")
+          .forEach(p -> params.put(p.getAsJsonObject().get("key").getAsString(), p.getAsJsonObject().get("value").getAsString()));
+      assertEquals("$robot", params.get("robot"));
+      assertEquals("${__from:date:iso}", params.get("start_utc"));
+      assertEquals("${__to:date:iso}", params.get("end_utc"));
+      if (type.equals("table")) {
+        table = true;
+        assertEquals(HttpTransport.DATA_SESSIONS_PATH, target.get("url").getAsString());
+        var link = value.getAsJsonObject("fieldConfig").getAsJsonObject("defaults").getAsJsonArray("links").get(0).getAsJsonObject();
+        assertTrue(link.get("url").getAsString().contains("from=${__data.fields.start_ms}&to=${__data.fields.end_ms}"), link.toString());
+        continue;
+      }
+      plots++;
+      assertEquals(HttpTransport.DATA_PATH, target.get("url").getAsString());
+      assertEquals("$source", params.get("source"));
+      assertEquals("csv", params.get("format"));
+      assertTrue(Integer.parseInt(params.get("max_points")) > 0, "A panel always asks for buckets");
+      assertTrue(variables.containsKey(params.get("names").substring(1)), "The roboRIO's name comes from its box");
+      assertTrue(variables.containsKey(params.get("capture_names").substring(1)), "The recording's name comes from its box");
+      var columns = new java.util.HashMap<String, String>();
+      target.getAsJsonArray("columns").forEach(c -> columns.put(c.getAsJsonObject().get("selector").getAsString(), c.getAsJsonObject().get("type").getAsString()));
+      assertEquals(Map.of("timestamp_utc", "timestamp", "min", "number", "max", "number", "mean", "number"), columns);
+    }
+    assertTrue(table, "A sessions table helps find a range");
+    assertEquals(5, plots);
+    assertTrue(Files.readString(Path.of("doc/pit-server/STANDALONE.md")).contains("metrics/pit-history-dashboard.json"));
+  }
 }

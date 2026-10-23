@@ -2,8 +2,11 @@
 
 Status: proposed on 2026-10-21 at the maintainer's request, and its [decisions](#decisions)
 answered the same day. Stage 1 was [built](#stage-1-built-so-far) on 2026-10-22: the server's
-reads, the gate, which they pass, and the recorded dashboard. Two answers differ from the proposal: a
-dashboard starts from a robot and a time range, and live panels on the open capture come first.
+reads, the gate, which they pass, and the recorded dashboard. Stage 2's
+[design](#stage-2-design-history-by-robot-and-time) was answered on 2026-10-23 as proposed, and
+its server reads and dashboard are [built](#stage-2-built-so-far); REV signals in a range are
+still to build. Two answers differ from the proposal: a dashboard starts from a robot and a time
+range, and live panels on the open capture come first.
 The designs those answers need are agreed before they are built. The first stage's design is
 [proposed below](#stage-1-design-the-open-capture); the maintainer answered its six questions
 on 2026-10-21.
@@ -461,6 +464,166 @@ Building the gate found three things.
    the maintainer confirmed it in words the same day. It is built: the writer's work on a pose
    record went from 62 to 271 ns, and on four module states to 635 ns, against about 4.1 µs to
    write the record ([the column plan](COLUMN_CACHE_PLAN.md#struct-fields-recorded)).
+
+## Stage 2 design: history by robot and time
+
+Proposed on 2026-10-23, and its six questions answered the same day: as proposed. Building it
+refined two points. The files of one recording are read in order, as one recording, rather than
+refused as two files over the same minutes, since a same-boot reconnect now continues the
+recording in its next file, which starts with the values the robot re-sends on reconnecting. A
+server with several stores needs `store=<id>`, as there is no default store.
+
+### What a person sees
+
+A third dashboard, **Pit / Robot history**, sits beside the sampled and recorded ones. Its top
+row holds a robot, chosen from the store's robots by name and serial, a source, and Grafana's
+own time range. A table lists the robot's sessions in that range: when each started and ended,
+its event and match, and whether it holds the roboRIO's log, the pit's recording or both.
+Clicking a row sets the time range to that session. Below it, each panel plots one entry over
+the whole range, as a band from each bucket's minimum to its maximum with the mean, across every
+file the range covers, on one axis of measured UTC. Zooming in asks again with a narrower window,
+down to single samples, as on the recorded dashboard.
+
+### The code before stage 2
+
+- A request to `/data/entries` reads one file: it takes one `path`, or `capture=current`.
+  Nothing takes a robot, a session or a time range across files, and nothing chooses between a
+  roboRIO log and a recording of the same minutes.
+- The store's catalog lists robots, sessions and files as one nested JSON document with
+  absolute paths, up to 16 MiB, and takes no parameters. The store door's session listing
+  filters by robot and by an earliest end, but gives paths relative to the store. Neither is a
+  flat table that Infinity reads directly.
+- A robot is its serial number. Until a capture learns the serial, the capture is filed under
+  the robot's address and moved once the serial is known; the local test store holds one robot
+  under two addresses, its mDNS name and its IP address. Event, match and team are facts of a
+  session, from the logged FMS entries.
+- A roboRIO log pulled after a capture joins the capture's session only when cross-correlation
+  places it within 250 ms; otherwise it gets a session of its own, and nothing in the store says
+  that the two cover the same minutes.
+- A session read through the read API joins a session's files on one log clock and merges
+  them, without UTC. A dashboard keeps its sources apart, so that read does not fit.
+- REV signals through `/data/entries` decode every signal of each REV log and start REV
+  synchronization when the robot log loads, though a store's REV logs then take their recorded
+  offsets. Only the REV read route decodes one signal at a time, and it has no window, no UTC
+  and no CSV.
+- The two sources name one signal differently. In the team's AdvantageKit roboRIO log the
+  battery is `/SystemStats/BatteryVoltage`; in the pit's recording of the same robot it is
+  `NT:/AdvantageKit/SystemStats/BatteryVoltage`, because AdvantageKit publishes every logged key
+  under `/AdvantageKit` and the recorder marks NetworkTables topics with `NT:`. One name reads
+  one source.
+
+### The proposal
+
+1. **The server chooses the files.** `/data/entries` takes `robot`, `source`, `start_utc` and
+   `end_utc` in place of `path`. It reads every finished file of that robot whose provenance is
+   the source's: the roboRIO's logs, pulled, imported or uploaded, or the pit's recordings. A
+   file is a candidate when its catalog times overlap the window widened by two hours, the
+   window the store already uses to pair a pulled log with a session; it is then placed by its
+   own measured UTC and windowed exactly, as a single file is today. The response lists every
+   file it read, with its span, and every candidate it skipped, with the reason: no measured
+   clock, no such entry, outside the window. Two files of the source that overlap inside the
+   window are refused together, with both names, not merged. At most 64 files answer one
+   request, the session read's limit; more are refused with the true count.
+2. **Buckets span the window.** A bucket takes the samples of the file that covers its time; a
+   stretch that no file covers gives empty buckets, as a gap inside one file does today.
+3. **The source picker** is a dashboard choice of roboRIO log or pit recording, roboRIO log by
+   default, passed as `source`. How a panel names its entry in each source is question 2.
+4. **The sessions table** reads a new CSV route listing one robot's sessions over a UTC range,
+   one row per session: its id, its start and end, in measured UTC where a file is placed and in
+   catalog time otherwise, labeled, its event and match, and the sources it holds. A second CSV
+   route lists the robots for the robot choice. Both read the catalog, never the files' values.
+5. **REV signals** in a robot range come from the REV logs the store has aligned to a file of
+   the source in that range, through the recorded alignment, decoding only the requested
+   signal. A REV log without a recorded alignment is listed as skipped and never correlated
+   during a request.
+6. **The open capture** is question 5.
+
+### Questions for the maintainer
+
+1. **How a range picks its files.** For: any range wider than one file. Case: Saturday 9:00 to
+   12:00 holds six matches and two practice sessions; the six match logs and the two practice
+   logs were pulled from the roboRIO, and the pit recorded both practice sessions. With the
+   roboRIO source a panel reads eight files and plots them in one band; with the pit recording,
+   two. Proposed: the proposal's rules, an overlap inside one source refused and never merged,
+   and 64 files at most. What would change: a wider limit answers a whole event in one request
+   but makes its first answer slower; merging an overlap would hide which file a value came from.
+2. **Names that differ between sources.** For: switching a dashboard between the roboRIO log and
+   the pit recording. Case: the battery panel's box holds `/SystemStats/BatteryVoltage`; switched
+   to the pit recording, no file holds that name, and the panel shows the refusal until the box
+   holds `NT:/AdvantageKit/SystemStats/BatteryVoltage`. Choices: (a) each panel has one box for
+   each source, and the picker chooses which is read; (b) one box, and the server translates by
+   AdvantageKit's published convention, `NT:/AdvantageKit/<key>` in a recording for `<key>` in
+   an AdvantageKit log, only when both files carry AdvantageKit's own metadata; (c) one box,
+   retyped when the source changes. Proposed: (a), since it names every entry exactly, as the
+   rule that the server proposes nothing asks, and a dashboard is set up once.
+3. **The default where both sources exist.** The answer of 2026-10-21 reads "defaulting to the
+   roboRIO's log where one exists and to the capture otherwise". For: a range in which only some
+   roboRIO logs have been pulled. Case: Thursday's practice sessions 1 to 3 were pulled and
+   session 4 not yet, and the pit recorded all four. Chosen per range, the roboRIO source reads
+   whenever the range holds any roboRIO log, and session 4 stays blank until it is pulled.
+   Chosen per stretch, each stretch reads its roboRIO log where one exists and the recording
+   otherwise, so sessions 1 to 3 come from the roboRIO and session 4 from the pit, and the
+   response labels the source of each stretch; each panel then needs both names, which question
+   2's (a) or (b) gives. Proposed: per stretch, labeled, if question 2 gives each panel both
+   names, and per range otherwise.
+4. **Whether a sessions table helps.** For: finding a range without knowing its times. Case: a
+   mentor wants Friday's third practice session; the table lists Friday's sessions with their
+   times, and a click sets the range. Proposed: yes, with the two CSV routes. What would change:
+   without it, a person sets the range by hand, from the catalog or the Explorer.
+5. **The open capture in a history range.** For: a range that ends now. Case: "last 3 hours" on
+   a practice day while the robot is recording. Proposed: the pit recording source includes the
+   open capture's published prefix, as `capture=current` reads it, so the range runs to the last
+   flush; the roboRIO source holds finished files only, since a roboRIO log is pulled after the
+   robot stops. What would change: finished files only would leave the current session to the
+   recorded dashboard.
+6. **REV logs without a recorded alignment.** For: REV panels. Case: a REV log placed before its
+   roboRIO log was matched has no recorded alignment, and correlating it during a request costs
+   seconds a file. Proposed: listed as skipped and never correlated during a request; the store
+   aligns it when it places the files, as it does today. What would change: correlating on
+   demand fills the panel but makes a dashboard's refresh pay for the measurement.
+
+### Stage 2: built so far
+
+On 2026-10-23, the server's reads and the dashboard's listings:
+
+1. **Robot ranges.** `/data/entries` takes `robot`, `start_utc` and `end_utc` in place of `path`,
+   with `names` as the roboRIO's logs name each entry and `capture_names` as the recordings do,
+   paired by position, and `source=capture` for the recordings alone. The catalog nominates the
+   files, each is placed by its own clock, a stretch reads the roboRIO's log where one exists and
+   the recording otherwise, and the response lists the files, the stretches, the files skipped and
+   why, and the manifests the catalog could not read. Buckets span the range in UTC.
+2. **The listings.** `/data/robots` and `/data/sessions` answer in CSV from the catalog alone,
+   each session's times labeled with their basis.
+3. **The history dashboard.** **Pit / Robot history** in the Compose example: the robot from
+   `/data/robots`, the source, a sessions table whose rows set the range, and the five robot
+   panels, each with a box for each source's name, every box empty to start. CI's metrics check
+   provisions it and sends a panel's own query through Grafana to a server with no store, which
+   refuses it.
+
+Built tests: a range over three files whose clocks the fixture sets, against rows worked out from
+the fixture alone, through a roboRIO log whose catalog time is an hour off, a sample before a
+clock's first reading, buckets checked against the bucket rule worked apart from the server, the
+recordings alone, two overlapping roboRIO logs refused, the two files of one recording read in
+order, a file with no clock skipped, an open recording, a manifest the catalog cannot read,
+every refusal, the file limit, and both listings. Twelve planted mistakes were run; eleven fail
+them, and the twelfth, placing a sample from before the clock's first reading, cannot change an
+answer, since the window already starts at that reading. The dashboard's structure is checked as
+the recorded dashboard's is, and three planted mistakes fail it. Still to build: REV signals in a
+range, which a range refuses until then, and the metrics check against a fixture store whose
+clocks are known, which needs CI's Docker to run.
+
+### Tests that must fail first
+
+- A robot range over files built in the test with known clocks: the right files read, in order,
+  each sample once, both ends of the window included, a gap empty; a file without a clock listed
+  and skipped; two overlapping files of one source refused with both names; the file limit
+  refused with its true count. A planted off-by-one at a file's edge and a planted merge of an
+  overlap must each fail them.
+- The sessions and robots routes against a store built in the test, every row checked by hand.
+- REV in a range: only the requested signal decoded, counted, and no synchronization started; a
+  REV log without an alignment listed and skipped.
+- CI's metrics check provisions the history dashboard and sends a panel's own query through
+  Grafana against a fixture store whose clocks are known.
 
 ## Tests
 

@@ -38,6 +38,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `/data/entries` reads a robot over a UTC range: `robot`, `start_utc` and `end_utc` in place of
+  `path`. The server chooses the robot's files from the store's catalog, places each by its own
+  measured clock, and answers as one table in UTC; by default a stretch reads the roboRIO's log
+  where one exists and the pit's recording otherwise, with each entry named as each source names
+  it (`names`, `capture_names`), and `source=capture` reads the recordings alone. Two files of one
+  source that cover the same minutes are refused together, never merged, except the files of one
+  recording, which are read in order; files that cannot be placed, and manifests the catalog could
+  not read, are listed with the reason. `/data/robots` and `/data/sessions` list a store's robots
+  and one robot's sessions as CSV, from the catalog alone, for a dashboard's choices. Before, a
+  request read one file, so a dashboard over a robot's history needed one query for every file.
+- The Compose example's Grafana gains a history dashboard, **Pit / Robot history**: a robot,
+  chosen from the store's robots, and a source over Grafana's time range, a table of the robot's
+  sessions whose rows link to their own range, and five panels drawn as bands from each bucket's
+  minimum to its maximum with the mean. Each panel has an entry box for each source, since the
+  roboRIO's own log and the pit's recording name a signal differently, and every box starts
+  empty. Its first panel says what each refusal means. CI's metrics check provisions it and sends a
+  panel's own query through Grafana, which the server, configured without a store, refuses.
+  Before, Grafana showed the open capture and sampled latest values, never stored history.
 - Every capture records its server's wall clock as `/Daemon/Clock/EpochTimeMicros`: after each
   NetworkTables time synchronization, the next value logged takes a reading at its own robot
   time, so a robot that publishes no wall clock can still be placed in UTC, live and in its

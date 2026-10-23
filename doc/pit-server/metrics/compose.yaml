@@ -22,6 +22,7 @@ services:
       - ./provisioning:/etc/grafana/provisioning:ro
       - ./pit-dashboard.json:/etc/grafana/dashboards/pit-dashboard.json:ro
       - ./pit-recording-dashboard.json:/etc/grafana/dashboards/pit-recording-dashboard.json:ro
+      - ./pit-history-dashboard.json:/etc/grafana/dashboards/pit-history-dashboard.json:ro
       - grafana-data:/var/lib/grafana
 volumes:
   prometheus-data:

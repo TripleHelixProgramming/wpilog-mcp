@@ -1,0 +1,1208 @@
+{
+  "uid": "wpilog-pit-history",
+  "title": "Robot history",
+  "tags": [
+    "wpilog-mcp"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 40,
+  "version": 1,
+  "refresh": "",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "editable": true,
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "robot",
+        "label": "Robot",
+        "type": "query",
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "pit-recording"
+        },
+        "query": {
+          "queryType": "infinity",
+          "query": "",
+          "infinityQuery": {
+            "refId": "variable",
+            "type": "csv",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "/data/robots",
+            "url_options": {
+              "method": "GET",
+              "data": ""
+            },
+            "csv_options": {
+              "comment": "#"
+            },
+            "columns": [
+              {
+                "selector": "robot_id",
+                "text": "robot_id",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "refresh": 1,
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "sort": 1,
+        "description": "A robot of the store, by the id its folder has: its serial number once known."
+      },
+      {
+        "name": "source",
+        "label": "Source",
+        "type": "custom",
+        "query": "roboRIO log, else recording : robot_log, Pit recording : capture",
+        "current": {
+          "text": "roboRIO log, else recording",
+          "value": "robot_log"
+        },
+        "options": [
+          {
+            "text": "roboRIO log, else recording",
+            "value": "robot_log",
+            "selected": true
+          },
+          {
+            "text": "Pit recording",
+            "value": "capture",
+            "selected": false
+          }
+        ],
+        "hide": 0,
+        "description": "roboRIO log, else recording: each stretch from the roboRIO's own log where one was pulled, and from the pit's recording otherwise. Pit recording: the recordings alone."
+      },
+      {
+        "name": "battery_rio",
+        "label": "Battery, roboRIO log (volts)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the roboRIO's own log names it, such as /SystemStats/BatteryVoltage in an AdvantageKit log."
+      },
+      {
+        "name": "battery_pit",
+        "label": "Battery, recording (volts)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the pit's recording names it: NT: and the topic, such as NT:/AdvantageKit/SystemStats/BatteryVoltage."
+      },
+      {
+        "name": "can_rio",
+        "label": "CAN utilization, roboRIO log (fraction)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the roboRIO's own log names it, such as /SystemStats/BatteryVoltage in an AdvantageKit log."
+      },
+      {
+        "name": "can_pit",
+        "label": "CAN utilization, recording (fraction)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the pit's recording names it: NT: and the topic, such as NT:/AdvantageKit/SystemStats/BatteryVoltage."
+      },
+      {
+        "name": "loop_rio",
+        "label": "Loop duration, roboRIO log (seconds)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the roboRIO's own log names it, such as /SystemStats/BatteryVoltage in an AdvantageKit log."
+      },
+      {
+        "name": "loop_pit",
+        "label": "Loop duration, recording (seconds)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the pit's recording names it: NT: and the topic, such as NT:/AdvantageKit/SystemStats/BatteryVoltage."
+      },
+      {
+        "name": "cpu_rio",
+        "label": "Robot CPU, roboRIO log (fraction)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the roboRIO's own log names it, such as /SystemStats/BatteryVoltage in an AdvantageKit log."
+      },
+      {
+        "name": "cpu_pit",
+        "label": "Robot CPU, recording (fraction)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the pit's recording names it: NT: and the topic, such as NT:/AdvantageKit/SystemStats/BatteryVoltage."
+      },
+      {
+        "name": "disk_rio",
+        "label": "Robot free disk, roboRIO log (bytes)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the roboRIO's own log names it, such as /SystemStats/BatteryVoltage in an AdvantageKit log."
+      },
+      {
+        "name": "disk_pit",
+        "label": "Robot free disk, recording (bytes)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "The entry as the pit's recording names it: NT: and the topic, such as NT:/AdvantageKit/SystemStats/BatteryVoltage."
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "Reading this dashboard",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "A robot's history over the time range, read from the store by each file's own measured clock. With **roboRIO log, else recording**, each stretch reads the roboRIO's own log where one was pulled and the pit's recording otherwise; **Pit recording** reads the recordings alone. Each panel is one entry: the band runs from each bucket's minimum to its maximum, the line is its mean, and zooming in narrows the buckets until every sample shows. The table lists the robot's sessions in the range; a row's link shows that session.\n\nThe two sources name one signal differently, so each panel has a box for each, filled exactly as each names the entry. A panel the server refuses shows only its status code: **400** means a box is empty or names something that is not a number, **404** means the robot or its store is unknown, **409** means two of the robot's logs, or recordings of two sessions, cover the same minutes, and **413** means the range holds more than 64 files: narrow it. A stretch no file covers is blank."
+      }
+    },
+    {
+      "type": "table",
+      "title": "Sessions",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "pit-recording"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 6
+      },
+      "description": "The robot's sessions in the range, from the store's catalog alone: each time is the session's own, with its basis.",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "pit-recording"
+          },
+          "type": "csv",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/data/sessions",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "robot",
+                "value": "$robot"
+              },
+              {
+                "key": "start_utc",
+                "value": "${__from:date:iso}"
+              },
+              {
+                "key": "end_utc",
+                "value": "${__to:date:iso}"
+              }
+            ]
+          },
+          "csv_options": {
+            "comment": "#"
+          },
+          "columns": [
+            {
+              "selector": "started_at",
+              "text": "started_at",
+              "type": "string"
+            },
+            {
+              "selector": "ended_at",
+              "text": "ended_at",
+              "type": "string"
+            },
+            {
+              "selector": "time_basis",
+              "text": "time_basis",
+              "type": "string"
+            },
+            {
+              "selector": "event",
+              "text": "event",
+              "type": "string"
+            },
+            {
+              "selector": "match_type",
+              "text": "match_type",
+              "type": "string"
+            },
+            {
+              "selector": "match_number",
+              "text": "match_number",
+              "type": "string"
+            },
+            {
+              "selector": "sources",
+              "text": "sources",
+              "type": "string"
+            },
+            {
+              "selector": "files",
+              "text": "files",
+              "type": "number"
+            },
+            {
+              "selector": "recording",
+              "text": "recording",
+              "type": "string"
+            },
+            {
+              "selector": "start_ms",
+              "text": "start_ms",
+              "type": "number"
+            },
+            {
+              "selector": "end_ms",
+              "text": "end_ms",
+              "type": "number"
+            },
+            {
+              "selector": "session_id",
+              "text": "session_id",
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "links": [
+            {
+              "title": "Show this session",
+              "url": "/d/wpilog-pit-history?${__all_variables}&from=${__data.fields.start_ms}&to=${__data.fields.end_ms}"
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "start_ms"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "end_ms"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Battery",
+      "description": "Each file's samples by its own measured clock; the band is each bucket's minimum to maximum and the line its mean. The log file is the record; this is a view of it.",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "pit-recording"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "pit-recording"
+          },
+          "type": "csv",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/data/entries",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "robot",
+                "value": "$robot"
+              },
+              {
+                "key": "source",
+                "value": "$source"
+              },
+              {
+                "key": "names",
+                "value": "$battery_rio"
+              },
+              {
+                "key": "capture_names",
+                "value": "$battery_pit"
+              },
+              {
+                "key": "format",
+                "value": "csv"
+              },
+              {
+                "key": "start_utc",
+                "value": "${__from:date:iso}"
+              },
+              {
+                "key": "end_utc",
+                "value": "${__to:date:iso}"
+              },
+              {
+                "key": "max_points",
+                "value": "1000"
+              }
+            ]
+          },
+          "csv_options": {
+            "comment": "#"
+          },
+          "columns": [
+            {
+              "selector": "timestamp_utc",
+              "text": "time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "min",
+              "text": "min",
+              "type": "number"
+            },
+            {
+              "selector": "max",
+              "text": "max",
+              "type": "number"
+            },
+            {
+              "selector": "mean",
+              "text": "mean",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "volt",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max"
+            },
+            "properties": [
+              {
+                "id": "custom.fillBelowTo",
+                "value": "min"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mean"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "CAN utilization",
+      "description": "Each file's samples by its own measured clock; the band is each bucket's minimum to maximum and the line its mean. The log file is the record; this is a view of it.",
+      "gridPos": {
+        "x": 8,
+        "y": 12,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "pit-recording"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "pit-recording"
+          },
+          "type": "csv",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/data/entries",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "robot",
+                "value": "$robot"
+              },
+              {
+                "key": "source",
+                "value": "$source"
+              },
+              {
+                "key": "names",
+                "value": "$can_rio"
+              },
+              {
+                "key": "capture_names",
+                "value": "$can_pit"
+              },
+              {
+                "key": "format",
+                "value": "csv"
+              },
+              {
+                "key": "start_utc",
+                "value": "${__from:date:iso}"
+              },
+              {
+                "key": "end_utc",
+                "value": "${__to:date:iso}"
+              },
+              {
+                "key": "max_points",
+                "value": "1000"
+              }
+            ]
+          },
+          "csv_options": {
+            "comment": "#"
+          },
+          "columns": [
+            {
+              "selector": "timestamp_utc",
+              "text": "time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "min",
+              "text": "min",
+              "type": "number"
+            },
+            {
+              "selector": "max",
+              "text": "max",
+              "type": "number"
+            },
+            {
+              "selector": "mean",
+              "text": "mean",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max"
+            },
+            "properties": [
+              {
+                "id": "custom.fillBelowTo",
+                "value": "min"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mean"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Loop duration",
+      "description": "Each file's samples by its own measured clock; the band is each bucket's minimum to maximum and the line its mean. The log file is the record; this is a view of it.",
+      "gridPos": {
+        "x": 16,
+        "y": 12,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "pit-recording"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "pit-recording"
+          },
+          "type": "csv",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/data/entries",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "robot",
+                "value": "$robot"
+              },
+              {
+                "key": "source",
+                "value": "$source"
+              },
+              {
+                "key": "names",
+                "value": "$loop_rio"
+              },
+              {
+                "key": "capture_names",
+                "value": "$loop_pit"
+              },
+              {
+                "key": "format",
+                "value": "csv"
+              },
+              {
+                "key": "start_utc",
+                "value": "${__from:date:iso}"
+              },
+              {
+                "key": "end_utc",
+                "value": "${__to:date:iso}"
+              },
+              {
+                "key": "max_points",
+                "value": "1000"
+              }
+            ]
+          },
+          "csv_options": {
+            "comment": "#"
+          },
+          "columns": [
+            {
+              "selector": "timestamp_utc",
+              "text": "time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "min",
+              "text": "min",
+              "type": "number"
+            },
+            {
+              "selector": "max",
+              "text": "max",
+              "type": "number"
+            },
+            {
+              "selector": "mean",
+              "text": "mean",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max"
+            },
+            "properties": [
+              {
+                "id": "custom.fillBelowTo",
+                "value": "min"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mean"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Robot CPU",
+      "description": "Each file's samples by its own measured clock; the band is each bucket's minimum to maximum and the line its mean. The log file is the record; this is a view of it.",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "pit-recording"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "pit-recording"
+          },
+          "type": "csv",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/data/entries",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "robot",
+                "value": "$robot"
+              },
+              {
+                "key": "source",
+                "value": "$source"
+              },
+              {
+                "key": "names",
+                "value": "$cpu_rio"
+              },
+              {
+                "key": "capture_names",
+                "value": "$cpu_pit"
+              },
+              {
+                "key": "format",
+                "value": "csv"
+              },
+              {
+                "key": "start_utc",
+                "value": "${__from:date:iso}"
+              },
+              {
+                "key": "end_utc",
+                "value": "${__to:date:iso}"
+              },
+              {
+                "key": "max_points",
+                "value": "1000"
+              }
+            ]
+          },
+          "csv_options": {
+            "comment": "#"
+          },
+          "columns": [
+            {
+              "selector": "timestamp_utc",
+              "text": "time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "min",
+              "text": "min",
+              "type": "number"
+            },
+            {
+              "selector": "max",
+              "text": "max",
+              "type": "number"
+            },
+            {
+              "selector": "mean",
+              "text": "mean",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max"
+            },
+            "properties": [
+              {
+                "id": "custom.fillBelowTo",
+                "value": "min"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mean"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Robot free disk",
+      "description": "Each file's samples by its own measured clock; the band is each bucket's minimum to maximum and the line its mean. The log file is the record; this is a view of it.",
+      "gridPos": {
+        "x": 8,
+        "y": 20,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "pit-recording"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "pit-recording"
+          },
+          "type": "csv",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/data/entries",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "robot",
+                "value": "$robot"
+              },
+              {
+                "key": "source",
+                "value": "$source"
+              },
+              {
+                "key": "names",
+                "value": "$disk_rio"
+              },
+              {
+                "key": "capture_names",
+                "value": "$disk_pit"
+              },
+              {
+                "key": "format",
+                "value": "csv"
+              },
+              {
+                "key": "start_utc",
+                "value": "${__from:date:iso}"
+              },
+              {
+                "key": "end_utc",
+                "value": "${__to:date:iso}"
+              },
+              {
+                "key": "max_points",
+                "value": "1000"
+              }
+            ]
+          },
+          "csv_options": {
+            "comment": "#"
+          },
+          "columns": [
+            {
+              "selector": "timestamp_utc",
+              "text": "time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "min",
+              "text": "min",
+              "type": "number"
+            },
+            {
+              "selector": "max",
+              "text": "max",
+              "type": "number"
+            },
+            {
+              "selector": "mean",
+              "text": "mean",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max"
+            },
+            "properties": [
+              {
+                "id": "custom.fillBelowTo",
+                "value": "min"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "min"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mean"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ]
+}

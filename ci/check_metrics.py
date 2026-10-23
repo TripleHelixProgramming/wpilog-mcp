@@ -85,6 +85,23 @@ def recording_refusal(dashboard):
     return error
 
 
+def history_refusal(dashboard):
+    # With no store configured, a history panel's own query, sent through Grafana, comes back refused
+    # by the server for want of a store: the robot, the source and both entry boxes reach it.
+    panel = next(p for p in dashboard['panels'] if p['type'] == 'timeseries')
+    query = copy.deepcopy(panel['targets'][0])
+    filled = {'${__from:date:iso}': '2026-01-01T00:00:00Z', '${__to:date:iso}': '2026-01-01T00:05:00Z',
+              '$robot': 'SYNTHETIC', '$source': 'robot_log'}
+    for param in query['url_options']['params']:
+        value = param['value']
+        param['value'] = filled.get(value, '/synthetic-unpublished' if value.startswith('$') else value)
+    answer = post(GRAFANA + '/api/ds/query', {'queries': [query], 'from': 'now-5m', 'to': 'now'})
+    error = answer.get('results', {}).get('A', {}).get('error', '')
+    if '404' not in error:
+        raise AssertionError('The history panel was not refused for want of a store: ' + json.dumps(answer))
+    return error
+
+
 def preload_images(compose):
     # Shared CI egress can exhaust Docker Hub's anonymous quota. Fetch the same versions
     # from Prometheus's own registry and Google's Docker Hub cache, retaining Compose's tags.
@@ -143,9 +160,15 @@ def main():
             plots = [p for p in recording['panels'] if p['type'] == 'timeseries']
             assert len(plots) == 5 and all(p['datasource']['uid'] == 'pit-recording' for p in plots), recording['panels']
             refusal = until('recorded panel through Infinity', lambda: recording_refusal(recording))
+            history = until('Grafana history dashboard', lambda: json.loads(get(
+                GRAFANA + '/api/dashboards/uid/wpilog-pit-history', True))['dashboard'])
+            history_plots = [p for p in history['panels'] if p['type'] == 'timeseries']
+            assert len(history_plots) == 5 and all(p['datasource']['uid'] == 'pit-recording' for p in history_plots), history['panels']
+            history_answer = until('history panel through Infinity', lambda: history_refusal(history))
             (output / 'result.json').write_text(json.dumps({'promtool': 'passed', 'scrape': 'passed', 'dashboard_panels': 12,
                 'queries': 12, 'grafana_datasource': 'passed', 'infinity_version': version, 'recorded_panels': len(plots),
-                'recorded_refusal': refusal}, indent=2) + '\n', encoding='utf-8')
+                'recorded_refusal': refusal, 'history_panels': len(history_plots), 'history_refusal': history_answer},
+                indent=2) + '\n', encoding='utf-8')
         finally:
             try:
                 with (output / 'containers.log').open('w') as containers:

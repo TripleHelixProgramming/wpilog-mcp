@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
-from ci.check_metrics import grafana_sample, pinned_infinity, preload_images, recording_refusal
+from ci.check_metrics import grafana_sample, history_refusal, pinned_infinity, preload_images, recording_refusal
 
 
 class MetricsReadinessTest(unittest.TestCase):
@@ -85,3 +85,24 @@ class RecordedDashboardTest(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, 'not refused'):
                 recording_refusal(self.dashboard())
 
+
+class HistoryDashboardTest(unittest.TestCase):
+    def dashboard(self):
+        with open('doc/pit-server/metrics/pit-history-dashboard.json', encoding='utf-8') as file:
+            return json.load(file)
+
+    def test_the_panels_query_carries_its_robot_source_and_both_boxes(self):
+        answer = {'results': {'A': {'error': 'unsuccessful HTTP response\nstatus code : 404 Not Found'}}}
+        with patch('ci.check_metrics.post', return_value=answer) as send:
+            self.assertIn('404', history_refusal(self.dashboard()))
+            params = {p['key']: p['value'] for p in send.call_args.args[1]['queries'][0]['url_options']['params']}
+            self.assertEqual('SYNTHETIC', params['robot'])
+            self.assertEqual('robot_log', params['source'])
+            self.assertEqual('/synthetic-unpublished', params['names'])
+            self.assertEqual('/synthetic-unpublished', params['capture_names'])
+            self.assertEqual('2026-01-01T00:00:00Z', params['start_utc'])
+
+    def test_a_history_panel_that_answers_is_not_taken_for_the_refusal(self):
+        with patch('ci.check_metrics.post', return_value={'results': {'A': {'frames': []}}}):
+            with self.assertRaisesRegex(AssertionError, 'not refused'):
+                history_refusal(self.dashboard())

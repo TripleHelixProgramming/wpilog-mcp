@@ -1270,6 +1270,9 @@ An `http` server also serves every sample of an entry in one request, for a scri
 ```
 GET /data/entries?path=<log>&names=<entry>[,<entry>...][&start_time=<s>][&end_time=<s>][&max_points=<n>][&format=arrow|csv][&utc=true|false][&angle=radians|degrees]
 GET /data/entries?capture=current&names=<entry>[,<entry>...][&start_utc=<instant>][&end_utc=<instant>][...]
+GET /data/entries?robot=<id>&start_utc=<instant>&end_utc=<instant>&names=<entry>[,...][&capture_names=<entry>[,...]][&source=robot_log|capture][&store=<id>][...]
+GET /data/robots[?store=<id>]
+GET /data/sessions?robot=<id>[&start_utc=<instant>][&end_utc=<instant>][&store=<id>]
 ```
 
 `path` is the log, as `list_available_logs` lists it. `capture=current` names instead the capture
@@ -1320,6 +1323,55 @@ panel shows why it is blank. With `max_points` the buckets span the window in th
 seconds, from the first microsecond whose UTC is in it to the last. A loaded log keeps its
 mapping, and a capture still recording extends it with each new reading, so a refresh does not
 read the clock entry again.
+
+**A robot over a time range.** `robot`, in place of `path`, names a robot of a store by its id or
+serial number, and `start_utc` and `end_utc`, both required, the range. The server chooses the
+files from the store's catalog: the robot's WPILOGs, a roboRIO log being one the store pulled,
+imported or was given, and a recording one the pit captured. A file's catalog times only nominate
+it, within two hours of the range, the window the store uses to pair a pulled log with a session,
+since those times come from the pit's clock, a log's own clock or a file's name; each file is then
+placed by its own measured UTC, as one file is above, and its samples inside the range are read.
+At most 64 files are nominated; more are refused with `413` and the true count.
+
+- **Which file answers.** By default (`source=robot_log`) a stretch of the range reads the
+  roboRIO's log where one exists and the pit's recording otherwise, and a recording's samples
+  inside a roboRIO log's span are left out. The two name one signal differently (an AdvantageKit
+  robot's battery is `/SystemStats/BatteryVoltage` in its own log and
+  `NT:/AdvantageKit/SystemStats/BatteryVoltage` in the pit's recording), so `names` gives the
+  entries as the roboRIO's logs name them and `capture_names` as the recordings do, paired by
+  position; without `capture_names` no recording is read. `source=capture` reads the recordings
+  alone and needs `capture_names`. A recording still open answers with what its writer has
+  published.
+- **Nothing merges two files.** Two of the robot's roboRIO logs, or recordings of two sessions,
+  that cover the same minutes are refused together with `409`, naming both. The files of one
+  recording are read in order, as one: a same-boot reconnect's file starts with the values the
+  robot re-sends on reconnecting, which can repeat the closed file's last ones.
+- **What was not read.** A file without a measured clock, one outside the range or one that cannot
+  be read is listed in `inputs.skipped` with the reason, and a manifest the catalog could not read
+  in `inputs.catalog_problems`, so a blank stretch says why. With several stores configured,
+  `store=<id>` is required, since there is no default store; the refusal lists the ids.
+- **The response.** `inputs` adds the robot, the source, `files` (each with its `index`, `path`,
+  `source`, `session_id`, `recording` for an open one, and its placed `start_utc` and `end_utc`),
+  `skipped`, `stretches` (which file answers from when to when) and `catalog_problems`. Each
+  entry's metadata gives `robot_log_name`, `capture_name`, `value_type`, `total_in_range` and,
+  per file, `entry`, `type` and `sample_count`, or `missing` with the reason. With `max_points`,
+  buckets span the range in UTC and every row is `timestamp_utc,count,min,max,mean,first,last`.
+  Without it, a CSV row is `timestamp_utc,file,timestamp_sec,...`: `file` indexes `inputs.files`
+  and `timestamp_sec` is the file's own time. Arrow carries the same columns, with `timestamp` in
+  the file's microseconds in place of `timestamp_sec`. A range has no `ETag`.
+- It cannot be combined with `path`, `capture`, `start_time`, `end_time` or a source
+  qualification, and `utc`, if given, must be `true`. A REV signal is read by its log's `path`
+  for now, since a range does not yet choose which WPILOG places a REV log; a range refuses one.
+
+**Robots and sessions.** `GET /data/robots` lists a store's robots, a CSV row each:
+`robot_id,serial_number,name,basis,store_id`. `GET /data/sessions` lists one robot's sessions
+that overlap the range given, from the catalog alone:
+`session_id,started_at,ended_at,start_ms,end_ms,time_basis,event,match_type,match_number,sources,files,recording`.
+Each time is the session's own, with its basis in `time_basis`: `logged:<entry>` when a log's
+wall clock measured it, `pit_clock` for a capture, and `filename` or `modification_time` when
+neither did. `sources` is `robot_log`, `capture` or `both`; a session still recording has an
+empty `ended_at` and `recording` true. Both listings take `store=<id>` as a range does, and begin
+with a `# catalog_problems:` line when the catalog could not read a manifest.
 
 The wall-clock inverse used by [`search_system_logs`](TOOLS.md#search_system_logs) shares
 the exact mapping arithmetic and ambiguity checks, rounding only its final robot-seconds
