@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 
 /** The real supervisor check must run independently and retain the journal even on failure. */
 class ServiceWiringTest {
-  @Test void linuxRunsThePrintedUnitsAndProvesAnUnmanagedPlantIsRejected() throws Exception {
+  @Test void linuxRunsThePrintedUnitsAndProvesEachPlantIsRejected() throws Exception {
     Map<?, ?> ci = new org.yaml.snakeyaml.Yaml().load(Files.readString(Path.of(".github/workflows/ci.yml")));
     var job = (Map<?, ?>) ((Map<?, ?>) ci.get("jobs")).get("systemd");
     assertNotNull(job, "A real systemd job must exercise the printed units");
@@ -23,6 +23,7 @@ class ServiceWiringTest {
     String commands = steps.stream().map(s -> String.valueOf(s.get("run"))).collect(java.util.stream.Collectors.joining("\n"));
     assertTrue(commands.contains("./gradlew shadowJar")); assertFalse(commands.contains("./gradlew build"));
     assertTrue(commands.contains("ci/check_service.py")); assertTrue(commands.contains("--plant-unmanaged"));
+    assertTrue(commands.contains("--plant-no-restart"), "The restart check must be shown to catch a probe that restarts nothing");
     var upload = steps.stream().filter(s -> "actions/upload-artifact@v4".equals(s.get("uses"))).findFirst().orElseThrow();
     assertEquals("always()", upload.get("if"));
     assertTrue(((Map<?, ?>) upload.get("with")).get("path").toString().contains("build/reports/systemd"));

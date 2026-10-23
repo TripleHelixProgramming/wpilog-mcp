@@ -147,17 +147,20 @@ templates and the check itself. The job:
 1. Builds only the shadow JAR, creates the service account and installs the printed units.
 2. Checks launcher/JAR access as the service user, with modes in any refusal, and supplies the
    runner's JDK through `JAVA_HOME`.
-3. Starts the service and timer, checks managed/version health and the `stop` refusal, runs the
-   probe, and stops through systemd within 90 seconds.
-4. Repeats with only `--managed` removed and requires that the same verifier reject the plant.
+3. Starts the service and timer, checks managed/version health and the `stop` refusal, and runs the
+   probe.
+4. Stops the timer and pauses the server, whose port stays open but silent, as a hung server's
+   does. The probe must fail only after its retries, at least 30 seconds, and within 30 seconds
+   more its `OnFailure=` handler must leave a new server process answering health.
+5. Stops through systemd within 90 seconds.
+6. Repeats twice, once with only `--managed` removed and once with only the probe's `OnFailure=`
+   removed, and requires that the same verifier reject each plant.
 
 Journals, printed units and assertion results are uploaded even on failure. `ci/check_service.py`
 refuses to install on a developer machine: it requires root and a disposable GitHub Actions runner.
 The local Python check `python3 -m unittest ci.test_changes ci.test_check_service` proves filter
 fallbacks and the verifier's refusal predicates without systemd. macOS and Windows do not run
 systemd locally; their ordinary Java tests still cover the foreground command and ownership.
-The retry exhaustion and `OnFailure=` restart still need a real Linux-host check; the
-existing CI probe step alone does not exercise them.
 
 ### The metrics stack check
 

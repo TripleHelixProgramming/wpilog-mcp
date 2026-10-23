@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -24,16 +25,81 @@ def check_health(health, version):
         raise AssertionError(f'Expected version {version}, got {health.get("version")!r}')
 
 
-def split_units(text):
+def unit_names(name):
+    base = f'wpilog-mcp-{name}'
+    return dict(unit=f'{base}.service', probe=f'{base}-health.service', timer=f'{base}-health.timer',
+                restart=f'{base}-restart.service')
+
+
+def split_units(text, name):
     files = {}
     for part in text.split('# file: ')[1:]:
-        name, body = part.split('\n', 1)
-        if not name.startswith('wpilog-mcp-') or '/' in name or '\\' in name:
-            raise AssertionError('Unexpected unit filename: ' + name)
-        files[name] = body
-    if len(files) != 3:
-        raise AssertionError('Expected the printed service, probe service and timer')
+        filename, body = part.split('\n', 1)
+        if not filename.startswith('wpilog-mcp-') or '/' in filename or '\\' in filename:
+            raise AssertionError('Unexpected unit filename: ' + filename)
+        files[filename] = body
+    if set(files) != set(unit_names(name).values()):
+        raise AssertionError('Expected the service, its health probe and timer, and the restart service; got '
+                             + (', '.join(sorted(files)) or 'none'))
     return files
+
+
+# Each plant removes one thing the verifier must notice. An edit that finds nothing proves nothing.
+PLANTS = {'unmanaged': ('unit', ' --managed', ''), 'no-restart': ('probe', '\nOnFailure=', '\n#OnFailure=')}
+
+
+def plant_units(units, name, plant):
+    if plant is None:
+        return units
+    role, old, new = PLANTS[plant]
+    filename = unit_names(name)[role]
+    if old not in units[filename]:
+        raise AssertionError(f'The {plant} plant found nothing to change in {filename}')
+    return {**units, filename: units[filename].replace(old, new, 1)}
+
+
+def main_pid(unit):
+    shown = subprocess.run(['systemctl', 'show', '--property=MainPID', '--value', unit],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    return int(shown or 0)
+
+
+def health_of(port):
+    with urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=2) as response:
+        return json.load(response)
+
+
+def check_restart(unit, probe, port, version):
+    """A server that stops answering is restarted. A paused process keeps its port open but silent,
+    as a hung server does: the probe must use up its retries and fail, and its OnFailure= handler
+    must leave a new process answering."""
+    paused = main_pid(unit)
+    if paused <= 0:
+        raise AssertionError('The service has no main process to pause')
+    os.kill(paused, signal.SIGSTOP)
+    started = time.monotonic()
+    probed = subprocess.run(['systemctl', 'start', probe], capture_output=True, text=True)
+    probe_seconds = time.monotonic() - started
+    if probed.returncode == 0:
+        raise AssertionError('The health probe passed against a paused server')
+    # Three attempts of at most 5 s, 10 s apart: a failure in under 30 s skipped the retries.
+    if probe_seconds < 30:
+        raise AssertionError(f'The probe failed after {probe_seconds:.1f} s, before using its retries: {probed.stderr}')
+    deadline = time.monotonic() + 30
+    while True:
+        current = main_pid(unit)
+        if current > 0 and current != paused:
+            try:
+                health = health_of(port)
+                break
+            except (OSError, urllib.error.URLError):
+                pass
+        if time.monotonic() >= deadline:
+            raise AssertionError(f'systemd did not restart the paused server (PID {paused}) after its probe failed')
+        time.sleep(0.2)
+    check_health(health, version)
+    return dict(paused_pid=paused, restarted_pid=current, probe_failed_after_seconds=round(probe_seconds, 1),
+                answered_after_seconds=round(time.monotonic() - started, 1))
 
 
 def run(args, **kwargs):
@@ -62,16 +128,15 @@ def check_program_access(launcher, jar):
     return facts
 
 
-def verify(jar, planted):
+def verify(jar, plant):
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.geteuid() != 0:
         raise RuntimeError('This installs a test service: run only as root on a disposable GitHub Actions runner')
     report = Path('build/reports/systemd').resolve()
     report.mkdir(parents=True, exist_ok=True)
-    label = 'unmanaged-plant' if planted else 'service'
+    label = f'{plant}-plant' if plant else 'service'
     name = 'ci-service'
-    unit = f'wpilog-mcp-{name}.service'
-    timer = f'wpilog-mcp-{name}-health.timer'
-    probe = f'wpilog-mcp-{name}-health.service'
+    names = unit_names(name)
+    unit, timer, probe, restart = names['unit'], names['timer'], names['probe'], names['restart']
     java = shutil.which('java')
     if not java:
         raise RuntimeError('Java must be on PATH')
@@ -91,12 +156,10 @@ def verify(jar, planted):
     # The printer embeds the config path; the resulting files are installed without rewriting it.
     text = run([java, '-jar', jar, 'service-unit', name, '--config', config], capture_output=True).stdout
     (report / f'{label}-units.txt').write_text(text)
-    units = split_units(text)
-    if planted:
-        units[unit] = units[unit].replace(' --managed', '')
+    units = plant_units(split_units(text, name), name, plant)
     for filename, content in units.items():
         (Path('/etc/systemd/system') / filename).write_text(content)
-    result = dict(version=version, plant=planted)
+    result = dict(version=version, plant=plant)
     start = time.monotonic()
     try:
         result['program_access'] = check_program_access(Path('/opt/wpilog-mcp/bin/wpilog-mcp'),
@@ -127,6 +190,9 @@ def verify(jar, planted):
         run(['systemctl', 'is-active', '--quiet', unit])
         run(['systemctl', 'start', probe])
         run(['systemctl', 'is-active', '--quiet', timer])
+        # The timer would race the probe started below; the probe and its handler are under test.
+        run(['systemctl', 'stop', timer])
+        result['restart'] = check_restart(unit, probe, port, version)
         stop_start = time.monotonic()
         run(['systemctl', 'stop', unit], timeout=90)
         result['stop_seconds'] = time.monotonic() - stop_start
@@ -142,13 +208,16 @@ def verify(jar, planted):
         result['seconds'] = time.monotonic() - start
         (report / f'{label}.json').write_text(json.dumps(result, indent=2) + '\n')
         with (report / f'{label}.journal').open('w') as output:
-            subprocess.run(['journalctl', '--no-pager', '-u', unit, '-u', timer, '-u', probe], stdout=output, stderr=subprocess.STDOUT)
-        subprocess.run(['systemctl', 'stop', timer, probe, unit], timeout=95)
+            subprocess.run(['journalctl', '--no-pager', '-u', unit, '-u', timer, '-u', probe, '-u', restart],
+                           stdout=output, stderr=subprocess.STDOUT)
+        subprocess.run(['systemctl', 'stop', timer, probe, restart, unit], timeout=95)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('jar', type=Path)
-    parser.add_argument('--plant-unmanaged', action='store_true')
+    plants = parser.add_mutually_exclusive_group()
+    plants.add_argument('--plant-unmanaged', action='store_true')
+    plants.add_argument('--plant-no-restart', action='store_true')
     options = parser.parse_args()
-    verify(options.jar.resolve(), options.plant_unmanaged)
+    verify(options.jar.resolve(), 'unmanaged' if options.plant_unmanaged else 'no-restart' if options.plant_no_restart else None)

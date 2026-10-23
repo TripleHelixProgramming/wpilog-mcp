@@ -892,6 +892,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- The systemd CI check installs all four printed units and proves the restart on a real Linux
+  host: it pauses the server, whose port stays open but silent, requires the health probe to fail
+  only after its retries, and requires systemd to leave a new process answering. A second plant,
+  with the probe's `OnFailure=` removed, must be rejected. Before, the check still expected the
+  three units printed before the restart service existed, so it failed as soon as CI ran it, and
+  nothing had exercised the restart on a real host.
+
 - The test that two simultaneous REV reconsideration requests share one turn now holds the import
   staging thread, where reconsideration has waited since it moved off the store queue, and also
   requires the shared request to be still pending. Before, it held the store queue, which
