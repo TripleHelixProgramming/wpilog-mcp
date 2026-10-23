@@ -704,6 +704,14 @@ responses and streams, cancel a request when it crosses them, and report the ref
 leaving the editor waiting. Tests should dispose during startup and feed oversized responses
 in small chunks.
 
+### 9.6 Recordings in Columns
+
+Write a recording as a column file instead of a WPILOG, since people analyze the robot's own log
+once it is pulled, and a recording's value is live data and data not yet off the robot.
+[RECORDING_FORMAT_PLAN.md](RECORDING_FORMAT_PLAN.md) sketches the format, the five ways capture
+files depend on being WPILOG today, and the questions it would raise; WPILOG files would be
+written on demand. Set aside on 2026-10-22 in favor of buffering the WPILOG writer's writes.
+
 ### 9.5 Recorded History in Grafana
 
 Plot stored sessions at full resolution in the Grafana that already shows the live metrics,
