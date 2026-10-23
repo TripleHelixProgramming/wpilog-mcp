@@ -633,8 +633,10 @@ and null-coordinate reasons. Reduced rows use exact bucket starts. `/read/v1` re
 native log and recorded session coordinates without a UTC option.
 
 A loaded log builds its mapping once and keeps it. A capture still recording keeps one set of
-valid readings for each clock entry, which the first view to ask past them extends by the clock's
-records added since; each view takes only the readings its own prefix holds, so its mapping is
+valid readings for each clock entry, which one view at a time extends by the clock's records
+added since, read from its column as numbers; views that ask at once wait for it rather than read
+the same records again, which a dashboard's panels would otherwise all do on the first refresh
+after a quiet stretch. Each view takes only the readings its own prefix holds, so its mapping is
 the one a fresh read of that prefix gives, and a view from before a clock step that began a new
 run reads its prefix afresh. The robot's own clock places a log when it has a valid reading;
 otherwise a `/Daemon/Clock/EpochTimeMicros` entry, the wall clock of the server that recorded

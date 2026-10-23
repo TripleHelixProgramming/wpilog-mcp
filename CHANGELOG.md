@@ -310,6 +310,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   why in a new `index_in_heap`. The file counts toward `diskcachesize` but is never evicted; it
   is deleted once the writer has moved on to another file and the index's last reader is done,
   and by the next start after a crash.
+- A data request allocates about half what it did, with every response byte for byte the same:
+  CSV rows are written from one buffer without making strings, a UTC cell is sized without being
+  formatted first, measured UTC is mapped in long arithmetic with the exact path kept for
+  overflow, and a recording's column blocks are read into a buffer each reader keeps. A UTC
+  window of 1,000 buckets on a recording went from 4.5 to 2.5 MB a request. Before, twelve live
+  panels refreshing together allocated 51 to 88 MB, over the live dashboard's 50 MB bound.
 - A recording's struct fields are read from columns too. The capture's writer decodes each struct
   record once, with the schemas a read of it would use, and keeps each numeric leaf, such as a
   pose's `.translation.x` or a module state's `[2].speed`, as a column beside its entry's. Before,
@@ -394,6 +400,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The first data request after a quiet stretch of a recording reads the clock's new readings from
+  its column as numbers, and requests that arrive together wait for one of them to read them
+  rather than each reading them again. Before, the first request after two quiet hours allocated
+  52 MB for its clock, and each panel of a dashboard asking at once did the same; now the first
+  allocates under 10 MB, most of it the readings the recording keeps.
 - The unreleased data endpoint now serves a capture that is still recording, as the prefix its
   writer had published, without an ETag. It compared file snapshots unconditionally, and a
   growing recording has none, so every such request ended in Internal error after decoding
@@ -675,6 +686,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- The CSV rows the data endpoint writes are pinned character for character against hand-worked
+  text, with empty cells for a bucket of no finite sample and for a time before the clock's first
+  reading, and the long arithmetic that maps each row's UTC against the exact path on random
+  clocks, ties on half a microsecond and products past a long included. Every fixture's data
+  responses were compared byte for byte with the previous build. Six planted mistakes each fail
+  them.
 - A recording's struct fields are checked against a decode of the same prefix, for every leaf and
   pooled path at sampled boundaries, through malformed records, arrays of changing length, values
   before their schema, nested schemas recorded late, an array wider than columns take, unsigned

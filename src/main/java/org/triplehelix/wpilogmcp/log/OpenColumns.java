@@ -445,6 +445,8 @@ public final class OpenColumns implements AutoCloseable {
     private long[] bits;
     private int[] ownRecords;
     private long[] ownBits;
+    /** The packed bytes of the block being decoded, kept for the next. */
+    private ByteBuffer packedBytes;
 
     LeafReader(Leaf leaf, int limit) {
       this.leaf = leaf;
@@ -469,7 +471,7 @@ public final class OpenColumns implements AutoCloseable {
       }
       var packed = (Packed) held;
       blocksRead.incrementAndGet();
-      var bytes = packed.bytes != null ? ByteBuffer.wrap(packed.bytes) : read(packed);
+      var bytes = packed.bytes != null ? ByteBuffer.wrap(packed.bytes) : (packedBytes = read(packed, packedBytes));
       bytes.order(ByteOrder.LITTLE_ENDIAN);
       if (ownRecords == null) {
         ownRecords = new int[BLOCK];
@@ -497,6 +499,8 @@ public final class OpenColumns implements AutoCloseable {
     /** This reader's own decode arrays, allocated on the first packed block. */
     private long[] ownSequences, ownTimes, ownOffsets, ownBits;
     private int[] ownSizes;
+    /** The packed bytes of the block being decoded, kept for the next. */
+    private ByteBuffer packedBytes;
 
     Reader(Series series, int limit) {
       this.series = series;
@@ -533,7 +537,7 @@ public final class OpenColumns implements AutoCloseable {
       }
       var packed = (Packed) held;
       blocksRead.incrementAndGet();
-      var bytes = packed.bytes != null ? ByteBuffer.wrap(packed.bytes) : read(packed);
+      var bytes = packed.bytes != null ? ByteBuffer.wrap(packed.bytes) : (packedBytes = read(packed, packedBytes));
       bytes.order(ByteOrder.LITTLE_ENDIAN);
       if (ownSequences == null) {
         ownSequences = new long[BLOCK];
@@ -552,9 +556,13 @@ public final class OpenColumns implements AutoCloseable {
     }
   }
 
-  /** One packed block from the scratch file, with one positional read. */
-  private ByteBuffer read(Packed packed) {
-    var out = ByteBuffer.allocate(packed.length);
+  /**
+   * One packed block from the scratch file, with one positional read, into {@code reuse} when it
+   * is large enough: a window's search and its passes read many blocks, each into the same bytes.
+   */
+  private ByteBuffer read(Packed packed, ByteBuffer reuse) {
+    var out = reuse != null && reuse.capacity() >= packed.length ? reuse.clear() : ByteBuffer.allocate(Math.max(packed.length, 8 << 10));
+    out.limit(packed.length);
     try {
       var open = channel;
       if (open == null) throw new IOException("The column file is not open");

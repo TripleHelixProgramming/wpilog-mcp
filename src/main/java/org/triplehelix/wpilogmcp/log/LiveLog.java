@@ -107,26 +107,66 @@ public final class LiveLog implements LogData, AutoCloseable {
    * whichever reads first past them, so no view reads the clock entry from its start again.
    */
   private static final class Clock {
+    /** Values read from the column between two turns under the lock. */
+    private static final int CHUNK = 4096;
     private final WallClock.ValidReadings readings = new WallClock.ValidReadings();
     private org.triplehelix.wpilogmcp.read.UtcTimeMapping last;
     private int lastLength = -1;
+    /** Set while one view reads values past the readings; the others wait for it. */
+    private boolean extending;
 
     /**
-     * The mapping of the entry's first {@code length} values, in log order; null when a jump
-     * after them began a new run and only a fresh read can give theirs.
+     * The mapping of the entry's first {@code length} values, in log order, read from its column
+     * of {@code kind} numbers; null when a jump after them began a new run and only a fresh read
+     * can give theirs. One view at a time reads the values past the readings, as numbers, a chunk
+     * at a time: a dashboard's panels ask together, and each reading the same new values as
+     * objects took 50 MB apiece on the first refresh after two hours.
      */
-    org.triplehelix.wpilogmcp.read.UtcTimeMapping mapping(String entry, String clock, List<TimestampedValue> values, int length) {
+    org.triplehelix.wpilogmcp.read.UtcTimeMapping mapping(String entry, String clock, NumericSamples samples,
+        Kind kind, int length) {
       int start;
       synchronized (this) {
         if (length == lastLength) return last;
+        while (extending && readings.values() < length) {
+          try {
+            wait();
+          } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while another call read the clock's new values", interrupted);
+          }
+        }
         start = readings.values();
+        if (start < length) {
+          extending = true;
+          readings.reserve(length - start);
+        }
       }
-      // Read outside the lock: a column's blocks may come from the scratch file.
-      var added = new TimestampedValue[Math.max(0, length - start)];
-      for (int i = 0; i < added.length; i++) added[i] = values.get(start + i);
+      if (start < length) {
+        try {
+          var times = new long[Math.min(CHUNK, length - start)];
+          var epochs = new long[times.length];
+          for (int at = start; at < length; ) {
+            int n = Math.min(times.length, length - at);
+            // Read outside the lock: a column's blocks may come from the scratch file.
+            for (int i = 0; i < n; i++) {
+              times[i] = samples.timeUs(at + i);
+              epochs[i] = kind == Kind.I64 ? samples.valueBits(at + i) : (long) samples.number(at + i);
+            }
+            synchronized (this) {
+              // As TimestampedValue.atMicros computes a decoded value's seconds.
+              for (int i = 0; i < n; i++) readings.add(times[i], times[i] / 1_000_000.0, epochs[i]);
+            }
+            at += n;
+          }
+        } finally {
+          synchronized (this) {
+            extending = false;
+            notifyAll();
+          }
+        }
+      }
       WallClock.Prefix prefix;
       synchronized (this) {
-        for (int i = readings.values() - start; i < added.length; i++) readings.add(added[i]);
         prefix = readings.prefixOf(length).orElse(null);
       }
       if (prefix == null) return null;
@@ -918,9 +958,11 @@ public final class LiveLog implements LogData, AutoCloseable {
     @Override public org.triplehelix.wpilogmcp.read.UtcTimeMapping utcMapping() {
       return org.triplehelix.wpilogmcp.read.UtcTimeMapping.choose(this, (name, clock) -> {
         var column = numericColumn(name, org.triplehelix.wpilogmcp.read.FieldPath.ROOT);
-        if (column.isPresent() && column.get().values() != null) {
+        var kind = seen.entries().get(name).columns.kind;
+        // A clock's numbers are integers or floating point; a boolean reads whole, as a log does.
+        if (column.isPresent() && kind != Kind.BOOL) {
           var mapping = clocks.computeIfAbsent(name, key -> new Clock())
-              .mapping(name, clock, column.get().values(), sampleCount(name));
+              .mapping(name, clock, column.get().samples(), kind, sampleCount(name));
           if (mapping != null) return mapping;
         }
         return org.triplehelix.wpilogmcp.read.UtcTimeMapping.of(name, clock, values().get(name));

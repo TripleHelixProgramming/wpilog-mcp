@@ -171,12 +171,20 @@ public final class WallClock {
 
     /** The next value of the clock's entry. */
     public void add(TimestampedValue value) {
+      if (value.value() instanceof Number number) add(value.timestampUs(), value.timestamp(), number.longValue());
+      else values++;
+    }
+
+    /**
+     * The next value of the clock's entry when it is a number: its log time, in microseconds and
+     * in the seconds a decoded value carries, and the number as {@code Number.longValue} gives
+     * it. A recording's clock is read this way from its column, with no object for each value.
+     */
+    public void add(long logUs, double logSeconds, long epoch) {
       int index = values++;
-      if (!(value.value() instanceof Number number)) return;
-      long epoch = number.longValue();
       if (count > 0) {
         double wallStep = (epoch - epochMicros[count - 1]) / 1e6;
-        double fpgaStep = value.timestamp() - previousLogTime;
+        double fpgaStep = logSeconds - previousLogTime;
         if (Math.abs(wallStep - fpgaStep) > JUMP_SEC) {
           logMicros = new long[16];
           epochMicros = new long[16];
@@ -191,12 +199,24 @@ public final class WallClock {
           epochMicros = java.util.Arrays.copyOf(epochMicros, 2 * count);
           origins = java.util.Arrays.copyOf(origins, 2 * count);
         }
-        logMicros[count] = value.timestampUs();
+        logMicros[count] = logUs;
         epochMicros[count] = epoch;
         origins[count] = index;
         count++;
-        previousLogTime = value.timestamp();
+        previousLogTime = logSeconds;
       }
+    }
+
+    /**
+     * Room for {@code more} readings beyond those kept, so a long extension grows the arrays once
+     * instead of doubling them through it. A prefix taken earlier keeps the arrays it saw.
+     */
+    public void reserve(int more) {
+      int needed = Math.addExact(count, more);
+      if (needed <= logMicros.length) return;
+      logMicros = java.util.Arrays.copyOf(logMicros, needed);
+      epochMicros = java.util.Arrays.copyOf(epochMicros, needed);
+      origins = java.util.Arrays.copyOf(origins, needed);
     }
 
     /** How many values have been added. */

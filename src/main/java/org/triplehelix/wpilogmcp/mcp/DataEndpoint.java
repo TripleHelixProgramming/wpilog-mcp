@@ -83,6 +83,9 @@ final class DataEndpoint {
   static final long DEFAULT_MAX_BYTES = 512L * 1024 * 1024;
   private static final DateTimeFormatter UTC_FORMAT =
       new DateTimeFormatterBuilder().appendInstant(6).toFormatter(Locale.ROOT);
+  /** Epochs whose UTC text has a four-digit year, 27 characters: years 1000 through 9999. */
+  private static final long FOUR_DIGIT_YEARS_FROM = epochMicros(Instant.parse("1000-01-01T00:00:00Z"));
+  private static final long FOUR_DIGIT_YEARS_TO = epochMicros(Instant.parse("9999-12-31T23:59:59.999999Z"));
 
   private final LogManager logManager;
   private final org.triplehelix.wpilogmcp.read.server.ManagedLogAccess logAccess;
@@ -549,8 +552,11 @@ final class DataEndpoint {
     long bytes = 0;
     for (int i = 0; i < count; i++) {
       long logUs = buckets == null ? values.get(i).timestampUs() : buckets.startUs(i);
-      // Four-digit years need 28 bytes including the comma; extended years need more.
-      int cellBytes = Math.max(28, utcText(utc.at(logUs).epochMicros()).length() + 1);
+      // Four-digit years need 28 bytes including the comma, counted without formatting each
+      // row's text; extended years need more.
+      var epoch = utc.at(logUs).epochMicros();
+      int cellBytes = epoch == null || epoch >= FOUR_DIGIT_YEARS_FROM && epoch <= FOUR_DIGIT_YEARS_TO
+          ? 28 : Math.max(28, utcText(epoch).length() + 1);
       long rows = 1;
       if (request.maxPoints() == null) {
         var value = values.get(i).value();
@@ -874,17 +880,20 @@ final class DataEndpoint {
       w.write("# entry: " + p.series().name() + "\n");
       if (p.buckets() != null) {
         w.write("timestamp_sec," + (utc == null ? "" : "timestamp_utc,") + "count,min,max,mean,first,last\n");
+        var row = new CsvRow(w);
         for (int i = 0; i < p.buckets().buckets().size(); i++) {
           var b = p.buckets().buckets().get(i);
-          w.write(b.start() + "," + utcCell(utc, p.buckets().startUs(i)) + b.count() + "," + cell(b.min()) + "," + cell(b.max()) + ","
-              + cell(b.mean()) + "," + b.first() + "," + b.last() + "\n");
+          row.number(b.start()).comma().utc(utc, p.buckets().startUs(i)).number(b.count()).comma().cell(b.min()).comma()
+              .cell(b.max()).comma().cell(b.mean()).comma().number(b.first()).comma().number(b.last()).end();
         }
       } else if (request.maxPoints() != null) {
         w.write("timestamp_sec," + (utc == null ? "" : "timestamp_utc,") + "count,min,max,mean,first,last\n");
+        var row = new CsvRow(w);
         for (var tv : p.values()) {
           double v = ((Number) tv.value()).doubleValue();
-          var finite = Double.isFinite(v) ? String.valueOf(v) : "";
-          w.write(tv.timestamp() + "," + utcCell(utc, tv.timestampUs()) + "1," + finite + "," + finite + "," + finite + "," + v + "," + v + "\n");
+          Double finite = Double.isFinite(v) ? v : null;
+          row.number(tv.timestamp()).comma().utc(utc, tv.timestampUs()).number(1).comma().cell(finite).comma().cell(finite).comma()
+              .cell(finite).comma().number(v).comma().number(v).end();
         }
       } else {
         var columns = EntryData.csvColumns(p.values());
@@ -908,18 +917,59 @@ final class DataEndpoint {
     w.flush();
   }
 
-  private static String utcCell(UtcTimeMapping utc, long logUs) {
-    return utc == null ? "" : utcText(utc.at(logUs).epochMicros()) + ",";
+  /**
+   * One CSV row, built in a buffer the response keeps, so that writing a row makes no strings of
+   * its own: a dashboard's refresh writes a thousand rows for each panel. Numbers are appended as
+   * {@code String.valueOf} spells them, so the text is the same.
+   */
+  private static final class CsvRow {
+    private final Writer out;
+    private final StringBuilder row = new StringBuilder(256);
+    private char[] chars = new char[256];
+
+    CsvRow(Writer out) {
+      this.out = out;
+    }
+
+    CsvRow number(double value) { row.append(value); return this; }
+    CsvRow number(long value) { row.append(value); return this; }
+    /** An empty cell for null. */
+    CsvRow cell(Double value) {
+      if (value != null) row.append(value.doubleValue());
+      return this;
+    }
+    CsvRow comma() { row.append(','); return this; }
+
+    /** The UTC cell and its comma when the response has the column; an empty cell where the clock places no time. */
+    CsvRow utc(UtcTimeMapping utc, long logUs) {
+      if (utc == null) return this;
+      var epoch = utc.at(logUs).epochMicros();
+      if (epoch != null) UTC_FORMAT.formatTo(instant(epoch), row);
+      return comma();
+    }
+
+    void end() throws IOException {
+      row.append('\n');
+      int length = row.length();
+      if (chars.length < length) chars = new char[2 * length];
+      row.getChars(0, length, chars, 0);
+      out.write(chars, 0, length);
+      row.setLength(0);
+    }
+  }
+
+  private static Instant instant(long epochUs) {
+    return Instant.ofEpochSecond(Math.floorDiv(epochUs, 1_000_000L), Math.floorMod(epochUs, 1_000_000L) * 1000);
+  }
+
+  private static long epochMicros(Instant instant) {
+    return Math.addExact(Math.multiplyExact(instant.getEpochSecond(), 1_000_000L), instant.getNano() / 1000);
   }
 
   private static String utcText(Long epochUs) {
-    return epochUs == null ? "" : UTC_FORMAT.format(Instant.ofEpochSecond(
-        Math.floorDiv(epochUs, 1_000_000L), Math.floorMod(epochUs, 1_000_000L) * 1000));
+    return epochUs == null ? "" : UTC_FORMAT.format(instant(epochUs));
   }
 
-  private static String cell(Double d) {
-    return d == null ? "" : String.valueOf(d);
-  }
 
   // ---- JSON ----
 

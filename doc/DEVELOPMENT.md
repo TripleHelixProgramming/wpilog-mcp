@@ -833,7 +833,11 @@ mapping must equal a fresh read of every sampled prefix, for views held while la
 it, through a clock set, a clock stepped an hour and an ambiguous clock; and a ten-second UTC
 window on a two-hour recording, counted, decodes at most 40 of its 1,400 column blocks. A struct
 field's window, counted the same way with every record cold, decodes none of the entry's records
-from the WPILOG and at most 100 of the 4,218 blocks its entry and leaves hold.
+from the WPILOG and at most 100 of the 4,218 blocks its entry and leaves hold. The CSV rows that
+Grafana reads are pinned character for character against text worked out by hand, with empty
+cells for a bucket of no finite sample and for a time before the clock's first reading, and the
+long arithmetic that maps each row's UTC is checked against the exact path on random clocks, ties
+on half a microsecond and products past a long included.
 
 ### Shared reader checks
 

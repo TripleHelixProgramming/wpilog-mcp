@@ -322,6 +322,34 @@ public final class UtcTimeMapping {
     if (low < count && logs[low] == logMicros)
       return new Mapping(epochs[low], null);
     long beforeLog = logs[low - 1], beforeEpoch = epochs[low - 1];
+    // A data request maps every row, so the usual case is worked in longs; it gives the exact
+    // answer below whenever no step overflows, and falls back to it otherwise.
+    try {
+      long delta = Math.subtractExact(logMicros, beforeLog);
+      if (low == count) return new Mapping(Math.addExact(beforeEpoch, delta), null);
+      long span = Math.subtractExact(logs[low], beforeLog);
+      long fraction = Math.multiplyExact(delta, Math.subtractExact(epochs[low], beforeEpoch));
+      return new Mapping(Math.addExact(beforeEpoch, halfEven(beforeEpoch, fraction, span)), null);
+    } catch (ArithmeticException overflow) {
+      return exactAt(logMicros, low);
+    }
+  }
+
+  /**
+   * The integer nearest {@code fraction / span}, with a tie going to whichever of the two makes
+   * {@code base} plus it even: rounding {@code base + fraction / span} half to even, as the exact
+   * path rounds the whole epoch, since {@code base} is an integer. {@code span} is positive.
+   */
+  private static long halfEven(long base, long fraction, long span) {
+    long quotient = Math.floorDiv(fraction, span);
+    long twice = Math.multiplyExact(2, Math.floorMod(fraction, span));
+    if (twice > span || twice == span && ((base + quotient) & 1) != 0) return quotient + 1;
+    return quotient;
+  }
+
+  /** The mapping of a time after reading {@code low - 1}, worked exactly whatever its size. */
+  Mapping exactAt(long logMicros, int low) {
+    long beforeLog = logs[low - 1], beforeEpoch = epochs[low - 1];
     var delta = BigInteger.valueOf(logMicros).subtract(BigInteger.valueOf(beforeLog));
     BigInteger epoch;
     if (low == count) {
@@ -337,6 +365,16 @@ public final class UtcTimeMapping {
     } catch (ArithmeticException outsideLong) {
       return new Mapping(null, "Mapped UTC timestamp is outside the signed 64-bit microsecond range");
     }
+  }
+
+  /** Where {@code logMicros} falls among the readings, as {@link #at} finds it; for tests. */
+  int position(long logMicros) {
+    int low = 0, high = count;
+    while (low < high) {
+      int middle = (low + high) >>> 1;
+      if (logs[middle] < logMicros) low = middle + 1; else high = middle;
+    }
+    return low;
   }
 
   private static BigInteger offset(long logMicros, long epochMicros) {

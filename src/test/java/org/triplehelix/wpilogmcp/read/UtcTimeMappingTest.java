@@ -50,6 +50,59 @@ class UtcTimeMappingTest {
     assertEquals(W + 1, thirds.at(2).epochMicros());
   }
 
+  /**
+   * The long arithmetic a data request maps each row with gives exactly the exact path's answer:
+   * on random readings of every rate, with spans small enough to tie on half a microsecond,
+   * gaps wide enough to overflow a long's product, and epochs near the end of the range, at
+   * times inside each segment, on each side of a reading and past the last.
+   */
+  @Test void longArithmeticMapsEveryTimeAsTheExactPathDoes() {
+    var random = new java.util.Random(23);
+    int compared = 0, ties = 0, overflows = 0;
+    for (int trial = 0; trial < 400; trial++) {
+      int n = 2 + random.nextInt(30);
+      long[] logs = new long[n], epochs = new long[n], steps = new long[n];
+      logs[0] = random.nextLong(-1_000_000_000_000L, 1_000_000_000_000L);
+      long climb = 0;
+      for (int i = 1; i < n; i++) {
+        long span = switch (random.nextInt(4)) {
+          case 0 -> 1 + random.nextInt(4);
+          case 1 -> 1 + random.nextInt(40_000);
+          case 2 -> 1 + random.nextLong(10_000_000_000L);
+          default -> 1 + random.nextLong(4_000_000_000_000L);
+        };
+        logs[i] = logs[i - 1] + span;
+        steps[i] = Math.max(1, Math.round(span * (0.5 + random.nextDouble() * 1.5))) + random.nextInt(3);
+        climb += steps[i];
+      }
+      // Some clocks end just short of the largest epoch, so a time past the last reading overflows.
+      epochs[0] = trial % 50 == 0 ? Long.MAX_VALUE - 1_000_000_000_000L - climb : W + random.nextLong(1_000_000_000_000L);
+      for (int i = 1; i < n; i++) epochs[i] = epochs[i - 1] + steps[i];
+      var mapping = UtcTimeMapping.of("clock", UtcTimeMapping.ROBOT_CLOCK, new WallClock.Prefix(logs, epochs, n));
+      assertNull(mapping.unavailableReason().orElse(null));
+      for (int query = 0; query < 60; query++) {
+        int segment = random.nextInt(n);
+        long base = logs[segment];
+        long next = segment + 1 < n ? logs[segment + 1] : base + 4_000_000_000_000L;
+        long time = query % 3 == 0 ? base + 1 : query % 3 == 1 ? next - 1 : base + 1 + random.nextLong(Math.max(1, next - base - 1));
+        int low = mapping.position(time);
+        if (low == 0 || low < n && logs[low] == time) continue;
+        var expected = mapping.exactAt(time, low);
+        assertEquals(expected, mapping.at(time), "time " + time + " after reading " + (low - 1) + " of trial " + trial);
+        compared++;
+        if (low < n) {
+          var span = java.math.BigInteger.valueOf(logs[low] - logs[low - 1]);
+          var product = java.math.BigInteger.valueOf(time - logs[low - 1]).multiply(java.math.BigInteger.valueOf(epochs[low] - epochs[low - 1]));
+          if (product.mod(span).shiftLeft(1).equals(span)) ties++;
+          if (product.bitLength() > 63) overflows++;
+        }
+      }
+    }
+    assertTrue(compared > 15_000, "times compared: " + compared);
+    assertTrue(ties > 50, "half-microsecond ties: " + ties);
+    assertTrue(overflows > 100, "products past a long: " + overflows);
+  }
+
   @Test void adjacentLargeLogCoordinatesRemainDistinct() {
     long large = 9_007_199_254_740_992L;
     var first = at(large, W);
