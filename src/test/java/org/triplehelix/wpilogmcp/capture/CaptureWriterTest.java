@@ -83,31 +83,44 @@ class CaptureWriterTest {
     }
   }
 
-  @Test void continuingClockResumesButResetAndExcessiveDriftStartNewSessions() throws Exception {
-    var loop = new ManualScheduler(); var paths = new ArrayList<Path>(); var resumes = new ArrayList<Boolean>();
+  /**
+   * A closed file is never written again, since the store may have published its hash: the same
+   * boot's reconnect continues its session in the next file, as a rollover does.
+   */
+  @Test void continuingClockContinuesTheSessionInItsNextFileButResetAndExcessiveDriftStartNewSessions() throws Exception {
+    var loop = new ManualScheduler(); var paths = new ArrayList<Path>();
+    var opened = new ArrayList<Path>(); var sessions = new ArrayList<CaptureWriter.Session>();
     var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, new CaptureWriter.Observer() {
       @Override public Path create(String address, Instant startedAt) {
         assertEquals("127.0.0.1", address); assertEquals(WALL.instant(), startedAt);
         var path = directory.resolve(paths.size() + ".wpilog"); paths.add(path); return path;
       }
-      @Override public void opened(CaptureWriter.Session session, boolean resumed) { resumes.add(resumed); }
+      @Override public void opened(CaptureWriter.Session session) { opened.add(session.path()); sessions.add(session); }
     });
     connect(writer, 100_000_000, 0);
     writer.value(TOPIC, new ValueFrame(17, 1, 2, 3L), 0); // Retained data does not decide boot identity.
     writer.disconnected();
+    byte[] closed = Files.readAllBytes(paths.get(0));
     connect(writer, 102_000_000, 2_000_000);
     writer.value(TOPIC, new ValueFrame(17, 102_000_000, 2, 4L), 2_000_000); writer.disconnected();
     connect(writer, 1_000_000, 3_000_000); writer.disconnected();
     connect(writer, 30_000_000, 4_000_000); writer.disconnected();
-    assertEquals(List.of(false, true, false, false), resumes); assertEquals(3, paths.size());
-    var reader = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(paths.get(0))));
-    var ids = new ArrayList<Integer>(); var clocks = new ArrayList<Integer>();
-    for (var record : reader) {
-      if (record.isStart()) (record.getStartData().name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY) ? clocks : ids).add(record.getStartData().entry);
+    var next = paths.get(0).resolveSibling("capture-2.wpilog");
+    assertEquals(List.of(paths.get(0), next, paths.get(1), paths.get(2)), opened, "Only a reset or drift asks for a new session");
+    assertSame(sessions.get(0), sessions.get(1), "The continuing clock keeps its session");
+    assertNotSame(sessions.get(1), sessions.get(2)); assertNotSame(sessions.get(2), sessions.get(3));
+    assertArrayEquals(closed, Files.readAllBytes(paths.get(0)), "A closed file is never written again");
+    assertEquals(List.of(3L), org.triplehelix.wpilogmcp.fixtures.CaptureRecords.integers(paths.get(0)));
+    assertEquals(List.of(4L), org.triplehelix.wpilogmcp.fixtures.CaptureRecords.integers(next));
+    for (var file : List.of(paths.get(0), next)) {
+      var reader = new DataLogReader(ByteBuffer.wrap(Files.readAllBytes(file)));
+      var ids = new ArrayList<Integer>(); var clocks = new ArrayList<Integer>();
+      for (var record : reader) {
+        if (record.isStart()) (record.getStartData().name.equals(org.triplehelix.wpilogmcp.log.WallClock.PIT_CLOCK_ENTRY) ? clocks : ids).add(record.getStartData().entry);
+      }
+      // Each file declares its entries from id 1, the recorder's clock at its first reading.
+      assertEquals(List.of(1), ids, file.toString()); assertEquals(List.of(2), clocks, file.toString());
     }
-    // Each opening declares the recorder's clock at its first reading, so the robot's ids skip it.
-    assertEquals(List.of(1, 3), ids); assertEquals(List.of(2, 4), clocks);
-    assertEquals(List.of(3L, 4L), org.triplehelix.wpilogmcp.fixtures.CaptureRecords.integers(paths.get(0)));
   }
 
   @Test void serviceForwardsPropertiesWithoutReplacingRecorderProvenance() throws Exception {
@@ -171,7 +184,7 @@ class CaptureWriterTest {
     var files = new ArrayList<Path>(); var loop = new ManualScheduler();
     var observer = new CaptureWriter.Observer() {
       @Override public Path create(String address, Instant start) { return directory.resolve("capture.wpilog"); }
-      @Override public void opened(CaptureWriter.Session session, boolean resumed) { files.add(session.path()); }
+      @Override public void opened(CaptureWriter.Session session) { files.add(session.path()); }
     };
     try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, observer, 512)) {
       connect(writer, 10_000_000, 0);
@@ -284,7 +297,7 @@ class CaptureWriterTest {
     var files = new ArrayList<Path>();
     var observer = new CaptureWriter.Observer() {
       @Override public Path create(String address, Instant start) { return directory.resolve("capture.wpilog"); }
-      @Override public void opened(CaptureWriter.Session session, boolean resumed) { files.add(session.path()); }
+      @Override public void opened(CaptureWriter.Session session) { files.add(session.path()); }
     };
     try (var writer = new CaptureWriter(WALL, new ManualScheduler(), CapturePolicy.ALL, observer, 256)) {
       connect(writer, 10_000_000, 0);

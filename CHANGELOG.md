@@ -417,6 +417,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the buffer that fails ends the session as a failed write, with no finish record naming an entry
   whose start was lost, and lets the recording's index go, so no call answers from records the file
   lost. The store also decides each entry's metadata role once, not for every value.
+- A robot that reconnects on the same boot now continues its capture session in the session's
+  next file, `capture-2.wpilog` and on, as a rollover does, instead of appending to the file it
+  closed. The store had already hashed that file, and a store with a format-2 replica catalog had
+  published the hash, so every read of the grown file was refused for a hash mismatch, the live
+  dashboard's included, and its publication stayed pending as an authority conflict through every
+  recovery pass. A closed capture file is now never written again. The next file starts with what
+  the robot sends on reconnecting, including its topics' last values at their original times.
 
 ### Fixed
 
@@ -706,6 +713,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- A same-boot reconnect after a published close is checked on a format-2 store: the published
+  file keeps its bytes and stays readable while the next file records, both files are published,
+  and nothing is left pending; on the previous build it fails at the reconnect's file. Four planted
+  mistakes each fail it.
 - The recorder's buffer is checked against an output that writes each record as it comes, byte
   for byte and offset for offset, with buffers smaller than one record and larger than the whole
   file, through a write that fails halfway, a record larger than the buffer, a resumed file and a

@@ -92,9 +92,9 @@ final class ReplayCapture implements AutoCloseable {
       public CompletableFuture<Void> abandoned(Path path, Instant endedAt, String reason) {
         return placement == null ? CompletableFuture.completedFuture(null) : placement.abandoned(path, endedAt, reason);
       }
-      public void opened(CaptureWriter.Session session, boolean resumed) throws java.io.IOException {
+      public void opened(CaptureWriter.Session session) throws java.io.IOException {
         if (!sessions.contains(session)) sessions.add(session);
-        if (!resumed) files.add(session.path()); if (placement != null) placement.opened(session, resumed);
+        files.add(session.path()); if (placement != null) placement.opened(session);
       }
       public void entry(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry) throws java.io.IOException {
         if (placement != null) placement.entry(session, entry);

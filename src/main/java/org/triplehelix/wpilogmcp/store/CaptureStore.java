@@ -124,24 +124,14 @@ public final class CaptureStore implements CaptureWriter.Observer {
         RobotIdentityStore.promote(io, store.root(), manager, null, identity, clock.instant());
       }
       if (previous != null) {
-        // Earlier close/rename precedes admission; clear the finished hash before reopening.
+        // Earlier close/rename precedes admission. The closed file keeps its hash: the writer
+        // continues the session in its next file beside it, which opened() then records.
         var original = previous.path();
         var path = Files.exists(original) ? original : io.read(store.root().resolve("store.json"), Header.class).moves().stream()
             .filter(m -> Path.of(m.originalPath()).equals(original)).reduce((a, b) -> b)
             .map(m -> store.root().resolve(m.movedTo())).orElse(original);
         path = io.check(path);
-        var manifest = path.getParent().resolve("session.json");
-        var old = io.read(manifest, Session.class);
-        reopening.put(path, old);
-        var provenance = new Provenance(Provenance.CAPTURED, null, path.getFileName().toString(), start.toString(), false,
-            null, List.of(), previous.writerIdentity());
-        String filename = path.getFileName().toString();
-        var files = old.files().stream().filter(f -> !f.path().equals(filename)).toList();
-        io.write(manifest, new Session(old.id(), old.startedAt(), old.endedAt(), old.startBasis(),
-            old.event(), old.matchType(), old.matchNumber(), old.teamNumber(), files,
-            new OpenCapture(path.getFileName().toString(), provenance, Files.size(path),
-                previous.minTimestampUs() / 1_000_000.0, previous.maxTimestampUs() / 1_000_000.0), null,
-            old.deviceIdentity(), old.identityConflicts(), old.conflicts(), old.captureStats(), old.systemLogs(), old.mergedSessionIds(), old.clocks()));
+        reopening.put(path.getParent(), io.read(path.getParent().resolve("session.json"), Session.class));
         return path;
       }
       var header = io.read(store.root().resolve("store.json"), Header.class);
@@ -168,7 +158,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
     var result = store.recordingAsync(io -> {
       var manifest = io.check(path).getParent().resolve("session.json");
       var old = io.read(manifest, Session.class);
-      var previous = reopening.remove(path);
+      var previous = reopening.remove(path.getParent());
       var files = new ArrayList<>(old.files());
       if (previous != null) previous.files().stream().filter(f -> f.path().equals(path.getFileName().toString()))
           .filter(f -> files.stream().noneMatch(current -> current.path().equals(f.path()))).forEach(files::add);
@@ -179,7 +169,7 @@ public final class CaptureStore implements CaptureWriter.Observer {
     });
     completion = result; return result;
   }
-  @Override public void opened(CaptureWriter.Session session, boolean resumed) { reopening.remove(session.path()); update(session, true); }
+  @Override public void opened(CaptureWriter.Session session) { reopening.remove(session.path().getParent()); update(session, true); }
   @Override public void flushed(CaptureWriter.Session session) { update(session, false); }
   @Override public void closed(CaptureWriter.Session session) { update(session, true); }
   @Override public void identity(CaptureWriter.Session session) { update(session, true); }

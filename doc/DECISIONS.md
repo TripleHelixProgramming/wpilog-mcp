@@ -140,3 +140,5 @@ architectural decisions.
 | 2026-10-22 | standing | An open capture's column blocks are read with a positional read, not through a mapping the flush tick moves | [Record](COLUMN_CACHE_PLAN.md#the-recording-phase-built) |
 | 2026-10-22 | standing | Every capture records its server's clock as `/Daemon/Clock/EpochTimeMicros`, at the next value's time after each time synchronization, never forwarded | [Record](GRAFANA_PLAN.md#decisions-for-the-maintainer) |
 | 2026-10-22 | standing | While recording, the writer decodes each struct record once and records its numeric fields as columns, as finished column files hold them | [Record](GRAFANA_PLAN.md#decisions-for-the-maintainer) |
+| 2026-10-22 | standing | Recordings stay WPILOG files, written a flush tick's records at a time, so a process crash loses at most that tick's; column-format recordings are an idea for later | [Record](RECORDING_FORMAT_PLAN.md#recordings-in-columns) |
+| 2026-10-23 | standing | A same-boot reconnect continues the capture session in its next file; a closed capture file is never written again | [Record](pit-server/ARCHITECTURE.md#sessions-and-rollover) |

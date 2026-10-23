@@ -84,7 +84,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     }
     /** Identity updates preserve the current file; directory promotion follows close. */
     default void identity(Session session) throws IOException {}
-    default void opened(Session session, boolean resumed) throws IOException {}
+    /** A file of the session opened: its first, a rollover's, or one a same-boot reconnect continues in. */
+    default void opened(Session session) throws IOException {}
     default void entry(Session session, EntryInfo entry) throws IOException {}
     default void metadata(Session session, EntryInfo entry) throws IOException {}
     default void value(Session session, EntryInfo entry, ValueFrame value, WpilogOutput.Written written) throws IOException {}
@@ -137,7 +138,7 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     public Instant endedAt() { return endedAt; }
     public String address() { return address; }
     public boolean open() { return open; }
-    /** One file's writer incarnation survives a short reconnect, but never a rollover or new boot. */
+    /** Each file's own writer incarnation: a rollover and a same-boot reconnect each start the next file. */
     public String writerIdentity() { return writerIdentity; }
     public String endReason() { return endReason; }
     /** Whether the file stopped at a failed write, which may have lost records the live index holds. */
@@ -419,9 +420,13 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   }
   private void admitted(Opening request, Path path) throws IOException {
     if (request.previous == null) session = new Session(path, request.start, request.address, policy);
-    else { session = request.previous; session.relocate(path); }
+    else {
+      // A closed file is never written again, since the store may have published its hash: the
+      // same boot's reconnect continues its session in the next file, as a rollover does.
+      session = request.previous; session.relocate(path); nextName();
+    }
     session.identity = request.identity; session.providers = providers; session.kernelClock = kernelClock;
-    openFile(request.previous != null); nextReportUs = nowUs() + REPORT_PERIOD_US;
+    openFile(); nextReportUs = nowUs() + REPORT_PERIOD_US;
     if (reopenAfterDisk) {
       for (var before : List.copyOf(contexts.values())) {
         room(WpilogOutput.startSize(before.name(), before.type(), before.metadata(), serverUs), 0);
@@ -679,17 +684,16 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     }
   }
 
-  private void openFile(boolean append) throws IOException {
-    output = outputs.open(session.path(), session.nextEntry, append);
-    if (!append) progress.written();
+  private void openFile() throws IOException {
+    output = outputs.open(session.path(), session.nextEntry, false);
+    progress.written();
     progress.recording();
     forceThread = Executors.newSingleThreadExecutor(r -> {
       var thread = new Thread(r, "capture-flush"); thread.setDaemon(true); return thread;
     });
-    session.files.removeIf(f -> f.name().equals(session.path().getFileName().toString()));
     session.open = true; session.endedAt = null; session.sizeBytes = output.writtenBytes();
     session.observedAtUs = nowUs(); session.observedAt = wallNow();
-    observer.opened(session, append);
+    observer.opened(session);
     clockEntry = null; clockPending = haveClock; lastClockUs = Long.MIN_VALUE;
     scheduleFlush(output);
     writeIdentity();
@@ -794,6 +798,13 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     nextFile();
   }
 
+  /** The session's next file, beside its last one, with its own writer incarnation and entry ids. */
+  private void nextName() {
+    session.path = session.path().resolveSibling("capture-" + ++session.fileNumber + ".wpilog");
+    session.writerIdentity = java.util.UUID.randomUUID().toString();
+    session.nextEntry = 1; session.minUs = Long.MAX_VALUE; session.maxUs = Long.MIN_VALUE;
+  }
+
   private void nextFile() throws IOException {
     long declarations = topics.values().stream().mapToLong(t -> WpilogOutput.startSize(
         t.entry.name(), t.entry.type(), rolloverMetadata(t), serverUs)
@@ -801,10 +812,8 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
     if (12 + declarations + contextDeclarations() + identitySize() + (long) activeEntries() * FINISH_RESERVE_BYTES > maxFileBytes) {
       throw new IOException("capture.max_file_bytes cannot hold identity and active declarations");
     }
-    session.path = session.path().resolveSibling("capture-" + ++session.fileNumber + ".wpilog");
-    session.writerIdentity = java.util.UUID.randomUUID().toString();
-    session.nextEntry = 1; session.minUs = Long.MAX_VALUE; session.maxUs = Long.MIN_VALUE;
-    openFile(false);
+    nextName();
+    openFile();
     for (var topic : topics.values()) {
       var before = topic.entry;
       String metadata = rolloverMetadata(topic);

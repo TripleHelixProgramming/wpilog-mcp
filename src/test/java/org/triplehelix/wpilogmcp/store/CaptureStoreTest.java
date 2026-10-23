@@ -79,10 +79,17 @@ class CaptureStoreTest {
         assertEquals(new com.google.gson.JsonPrimitive(identities.get(f.get("path").getAsString())),
             f.getAsJsonObject("provenance").get("writer_identity"));
       }
-      String last = identities.get(writer.session().path().getFileName().toString());
+      String closedName = writer.session().path().getFileName().toString(), last = identities.get(closedName);
+      // The same boot reconnects: its session continues in the next file, a writer incarnation of
+      // its own, and the closed file keeps the proof it was closed with.
       connect(writer, loop, 11_000_000, 1_000_000); placement.completion().get();
+      assertNotEquals(closedName, writer.session().path().getFileName().toString());
       json = com.google.gson.JsonParser.parseString(Files.readString(writer.session().path().resolveSibling("session.json"))).getAsJsonObject();
-      assertEquals(new com.google.gson.JsonPrimitive(last), json.getAsJsonObject("open_capture").getAsJsonObject("provenance").get("writer_identity"));
+      String continued = json.getAsJsonObject("open_capture").getAsJsonObject("provenance").get("writer_identity").getAsString();
+      assertFalse(identities.containsValue(continued), "The next file is a new writer incarnation");
+      var closedFile = java.util.stream.StreamSupport.stream(json.getAsJsonArray("files").spliterator(), false).map(f -> f.getAsJsonObject())
+          .filter(f -> f.get("path").getAsString().equals(closedName)).findFirst().orElseThrow();
+      assertEquals(last, closedFile.getAsJsonObject("provenance").get("writer_identity").getAsString());
       writer.disconnected(); placement.completion().get();
       connect(writer, loop, 1_000_000, 2_000_000); placement.completion().get();
       json = com.google.gson.JsonParser.parseString(Files.readString(writer.session().path().resolveSibling("session.json"))).getAsJsonObject();
@@ -91,7 +98,11 @@ class CaptureStoreTest {
     }
   }
 
-  @Test void resumedAdmissionKeepsTheWriterProofBeforeTheFileIsReopened() throws Exception {
+  /**
+   * A same-boot reconnect's admission leaves the closed file as it was published: the next file
+   * opens beside it, and an abandoned admission keeps the closed file's hash and writer proof.
+   */
+  @Test void aContinuedAdmissionLeavesTheClosedFileAndItsWriterProofUntouched() throws Exception {
     var manager = LogManager.getInstance(); var store = manager.stores().store(directory.resolve("resume-proof"));
     var placement = store.captures(WALL); var loop = new ManualScheduler();
     var index = new org.triplehelix.wpilogmcp.capture.CaptureIndex(placement, manager, 0);
@@ -101,16 +112,21 @@ class CaptureStoreTest {
         identity = ((org.triplehelix.wpilogmcp.log.LiveLog.View) use.log()).captureIdentity();
       }
       writer.disconnected(); placement.completion().get();
+      var manifest = writer.session().path().resolveSibling("session.json"); String before = Files.readString(manifest);
       var path = placement.createAsync(writer.session().address(), writer.session().startedAt(), writer.session(), null).get();
       try {
-        var manifest = com.google.gson.JsonParser.parseString(Files.readString(path.resolveSibling("session.json"))).getAsJsonObject();
-        assertEquals(new com.google.gson.JsonPrimitive(identity), manifest.getAsJsonObject("open_capture")
-            .getAsJsonObject("provenance").get("writer_identity"));
-      } finally { placement.abandoned(path, WALL.instant(), "fixture cancelled resume").get(); }
+        assertEquals(writer.session().path(), path, "Admission names where the session's last file is now");
+        assertEquals(before, Files.readString(manifest), "Nothing changes until the next file opens");
+      } finally { placement.abandoned(path, WALL.instant().plusSeconds(60), "fixture cancelled reconnect").get(); }
+      var after = com.google.gson.JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
+      var was = com.google.gson.JsonParser.parseString(before).getAsJsonObject();
+      assertEquals(was.get("files"), after.get("files"), "The closed file keeps its hash and size");
+      assertEquals(identity, after.getAsJsonArray("files").get(0).getAsJsonObject().getAsJsonObject("provenance").get("writer_identity").getAsString());
+      assertEquals(was.get("ended_at"), after.get("ended_at"), "An abandoned reconnect does not move the session's end");
     }
   }
 
-  @Test void openClosedResumeAndSameSecondSessionsKeepTheirFactsAndBytes() throws Exception {
+  @Test void openClosedContinuedAndSameSecondSessionsKeepTheirFactsAndBytes() throws Exception {
     directory = directory.toRealPath();
     var security = new SecurityValidator(); security.addAllowedDirectory(directory);
     try (var stores = new StoreRegistry(security)) {
@@ -139,14 +155,21 @@ class CaptureStoreTest {
         assertTrue(closed.openCaptures().isEmpty()); assertEquals(1, closed.files().size());
         var file = closed.files().get(0); assertEquals(StoreFiles.hash(file.path()), file.file().sha256());
         assertEquals(Files.size(file.path()), file.file().sizeBytes());
+        String firstHash = file.file().sha256();
         connect(writer, loop, 11_000_000, 1_000_000);
         writer.value(VALUE, new ValueFrame(1, 11_000_000, 2, 6L), 1_000_000); writer.disconnected(); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
-        closed = StoreCatalog.read(root, security); assertEquals(1, closed.files().size());
-        assertEquals(first.session().id(), closed.files().get(0).session().id());
-        assertEquals(11, closed.files().get(0).file().maxTimestampSec());
+        // The same boot reconnected: the session continues in its next file, and the closed one keeps its bytes and hash.
+        closed = StoreCatalog.read(root, security); assertEquals(2, closed.files().size());
+        var byName = new java.util.HashMap<String, StoreCatalog.StoredFile>();
+        closed.files().forEach(f -> byName.put(f.path().getFileName().toString(), f));
+        assertEquals(firstHash, byName.get("capture.wpilog").file().sha256()); assertEquals(firstHash, StoreFiles.hash(byName.get("capture.wpilog").path()));
+        assertEquals(10, byName.get("capture.wpilog").file().maxTimestampSec());
+        var continued = byName.get("capture-2.wpilog");
+        assertEquals(first.session().id(), continued.session().id()); assertEquals(11, continued.file().maxTimestampSec());
+        assertEquals(StoreFiles.hash(continued.path()), continued.file().sha256());
         connect(writer, loop, 1_000_000, 2_000_000); writer.disconnected(); placement.completion().get(10, java.util.concurrent.TimeUnit.SECONDS);
         assertEquals("142233Z_2", writer.session().path().getParent().getFileName().toString());
-        assertEquals(2, StoreCatalog.read(root, security).files().size());
+        assertEquals(3, StoreCatalog.read(root, security).files().size());
         assertEquals(1, StoreCatalog.read(root, security).header().formatVersion());
       }
     }
@@ -201,10 +224,13 @@ class CaptureStoreTest {
           assertEquals(2, attempts.get());
         }
         assertEquals("142233Z_TEST_Q7", writer.session().path().getParent().getFileName().toString());
-        var finished = StoreCatalog.read(root, security); assertEquals(1, finished.files().size());
-        assertEquals(12, finished.files().get(0).file().maxTimestampSec());
-        assertEquals(StoreFiles.hash(writer.session().path()), finished.files().get(0).file().sha256());
-        assertTrue(Files.exists(writer.session().path())); assertFalse(Files.exists(before));
+        var finished = StoreCatalog.read(root, security);
+        // A reconnect on the same boot continued the session in its next file.
+        assertEquals(windowsRefusal ? 2 : 1, finished.files().size());
+        var original = finished.files().stream().filter(f -> f.path().getFileName().toString().equals("capture.wpilog")).findFirst().orElseThrow();
+        assertEquals(12, original.file().maxTimestampSec());
+        assertEquals(StoreFiles.hash(original.path()), original.file().sha256());
+        assertTrue(Files.exists(original.path())); assertFalse(Files.exists(before));
       }
     }
   }
@@ -221,7 +247,7 @@ class CaptureStoreTest {
       var outputFlushes = new java.util.concurrent.atomic.AtomicInteger();
       var observer = new CaptureWriter.Observer() {
         @Override public Path create(String address, Instant start) throws java.io.IOException { return placement.create(address, start); }
-        @Override public void opened(CaptureWriter.Session session, boolean resumed) throws java.io.IOException { placement.opened(session, resumed); }
+        @Override public void opened(CaptureWriter.Session session) throws java.io.IOException { placement.opened(session); }
         @Override public void value(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry,
             ValueFrame frame, org.triplehelix.wpilogmcp.capture.WpilogOutput.Written written) throws java.io.IOException {
           placement.value(session, entry, frame, written);

@@ -59,14 +59,12 @@ public final class CaptureIndex implements CaptureWriter.Observer {
     return placement.abandoned(path, endedAt, reason);
   }
   @Override public void identity(CaptureWriter.Session session) throws IOException { placement.identity(session); }
-  @Override public void opened(CaptureWriter.Session session, boolean resumed) throws IOException {
-    if (!resumed) {
-      // The previous file's index is never resumed once the writer has moved on.
-      if (live != null) live.discard();
-      live = new LiveLog(session.path(), hotWindowUs, robotNowUs, session.writerIdentity(), manager.openColumnPlacement());
-    }
+  @Override public void opened(CaptureWriter.Session session) throws IOException {
+    // Each file has its own index: a closed file, and so its index, is never written again.
+    if (live != null) live.discard();
+    live = new LiveLog(session.path(), hotWindowUs, robotNowUs, session.writerIdentity(), manager.openColumnPlacement());
     manager.beginCapture(live);
-    placement.opened(session, resumed);
+    placement.opened(session);
   }
   @Override public void entry(CaptureWriter.Session session, EntryInfo entry) throws IOException {
     live.announce(entry); placement.entry(session, entry);

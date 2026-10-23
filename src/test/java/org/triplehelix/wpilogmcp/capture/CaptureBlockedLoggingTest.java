@@ -102,7 +102,7 @@ class CaptureBlockedLoggingTest {
             @Override public Path create(String address, Instant start) {
               return directory.resolve("capture.wpilog");
             }
-            @Override public void opened(CaptureWriter.Session session, boolean resumed) {
+            @Override public void opened(CaptureWriter.Session session) {
               opened.add(session.path());
             }
           }, 450, (path, id, resume) -> new WpilogOutput(path, id, resume) {

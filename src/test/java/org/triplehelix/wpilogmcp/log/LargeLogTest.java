@@ -46,7 +46,7 @@ class LargeLogTest {
       var files = new ArrayList<Path>(); var first = temp.resolve("capture.wpilog");
       var index = new CaptureIndex(new CaptureWriter.Observer() {
         @Override public Path create(String address, Instant start) { return first; }
-        @Override public void opened(CaptureWriter.Session session, boolean resumed) { files.add(session.path()); }
+        @Override public void opened(CaptureWriter.Session session) { files.add(session.path()); }
       }, manager, 0);
       var loop = new ManualScheduler(); long bound = (1L << 31) + (1L << 24);
       try (var writer = new CaptureWriter(Clock.systemUTC(), loop, CapturePolicy.ALL, index, bound)) {

@@ -82,7 +82,7 @@ class CaptureFidelityTest {
     var tracking = new CaptureWriter.Observer() {
       @Override public Path create(String address, Instant start) throws java.io.IOException { return delegate.create(address, start); }
       @Override public Path create(String address, Instant start, CaptureWriter.Session previous) throws java.io.IOException { return delegate.create(address, start, previous); }
-      @Override public void opened(CaptureWriter.Session session, boolean resumed) throws java.io.IOException { files.add(session.path()); delegate.opened(session, resumed); }
+      @Override public void opened(CaptureWriter.Session session) throws java.io.IOException { files.add(session.path()); delegate.opened(session); }
       @Override public void entry(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry) throws java.io.IOException { delegate.entry(session, entry); }
       @Override public void metadata(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry) throws java.io.IOException { delegate.metadata(session, entry); }
       @Override public void value(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry, ValueFrame value,

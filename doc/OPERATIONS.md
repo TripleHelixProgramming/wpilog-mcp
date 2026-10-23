@@ -810,7 +810,8 @@ More: [Troubleshooting](STANDALONE.md#troubleshooting) in the standalone guide a
 
 In the recording preview, read acquisition status beside follow progress. A large last-value
 age is normal for unchanged signals; “reconnecting” means the acquisition connection was lost.
-History can be finalized during a disconnect and resume under the same robot clock. The view
+History can be finalized during a disconnect; under the same robot clock the recording continues
+in its next file. The view
 keeps its anchor and does not switch to a new recording after a robot restart; open that new
 recording's overview deliberately.
 

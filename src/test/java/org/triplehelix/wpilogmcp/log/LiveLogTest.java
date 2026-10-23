@@ -133,7 +133,7 @@ class LiveLogTest {
     } finally { pool.shutdownNow(); manager.shutdown(); }
   }
 
-  @Test void mappedColdValuesSurviveGrowthRetirementAndResumeAfterEviction() throws Exception {
+  @Test void mappedColdValuesSurviveGrowthAndRetirementAndAReconnectOpensTheNextFile() throws Exception {
     var manager = new LogManager(); manager.addAllowedDirectory(directory);
     var path = directory.resolve("growth.wpilog"); var index = index(manager, path, 2_000_000);
     var loop = new ManualScheduler();
@@ -163,19 +163,22 @@ class LiveLogTest {
         assertInstanceOf(LazyParsedLog.class, loaded.log()); assertEquals(2201, loaded.log().sampleCount("NT:/x"));
         assertEquals(2200L, loaded.log().values().get("NT:/x").get(2200).value());
       }
-      // Use a continuing time-sync clock, independently of the deliberately accelerated data clock.
+      // A continuing time-sync clock, independently of the deliberately accelerated data clock,
+      // continues the session in its next file: the closed file is never written again.
       connect(writer, 11_000_000, 1_000_000);
-      try (var resumed = manager.acquire(path.toString())) {
-        assertEquals(0L, resumed.log().values().get("NT:/x").get(0).value());
-      }
+      var next = writer.session().path();
+      assertEquals(path.resolveSibling("capture-2.wpilog"), next);
       writer.value(X, new ValueFrame(1, 2_211_000_000L, 2, 2201L), 2201);
-      try (var resumed = manager.acquire(path.toString())) {
-        assertInstanceOf(LiveLog.View.class, resumed.log()); assertEquals(2202, resumed.log().sampleCount("NT:/x"));
-        assertEquals(0L, resumed.log().values().get("NT:/x").get(0).value());
-        assertEquals(2201L, resumed.log().values().get("NT:/x").get(2201).value());
+      try (var closed = manager.acquire(path.toString())) {
+        assertInstanceOf(LazyParsedLog.class, closed.log()); assertEquals(2201, closed.log().sampleCount("NT:/x"));
       }
-      writer.disconnected(); assertTrue(manager.release(path).released());
-      Files.move(path, directory.resolve("released.wpilog")); // Native Windows must have no mapped handle left.
+      try (var continued = manager.acquire(next.toString())) {
+        assertInstanceOf(LiveLog.View.class, continued.log()); assertEquals(1, continued.log().sampleCount("NT:/x"));
+        assertEquals(2201L, continued.log().values().get("NT:/x").get(0).value());
+      }
+      writer.disconnected(); assertTrue(manager.release(path).released()); assertTrue(manager.release(next).released());
+      // Native Windows must have no mapped handle left on either file.
+      Files.move(path, directory.resolve("released.wpilog")); Files.move(next, directory.resolve("released-2.wpilog"));
     } finally { manager.shutdown(); }
   }
 

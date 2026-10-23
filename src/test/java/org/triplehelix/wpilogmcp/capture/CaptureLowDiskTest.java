@@ -47,11 +47,11 @@ class CaptureLowDiskTest {
   private final class Placement implements CaptureWriter.Observer {
     final List<Path> paths = new ArrayList<>();
     final List<CaptureWriter.Session> closed = new ArrayList<>();
-    final List<Boolean> append = new ArrayList<>();
+    final List<Path> opened = new ArrayList<>();
     @Override public Path create(String address, Instant started) {
       var path = directory.resolve("capture-" + paths.size() + ".wpilog"); paths.add(path); return path;
     }
-    @Override public void opened(CaptureWriter.Session session, boolean resumed) { append.add(resumed); }
+    @Override public void opened(CaptureWriter.Session session) { opened.add(session.path()); }
     @Override public void closed(CaptureWriter.Session session) { closed.add(session); }
   }
   private static void connect(CaptureWriter writer) {
@@ -94,7 +94,7 @@ class CaptureLowDiskTest {
       wall.now = wall.now.plusSeconds(2); loop.elapse(2_000_000);
       writer.diskSpace(free(151L), POLICY);
       assertFalse(writer.diskPaused()); assertTrue(writer.ready());
-      assertEquals(List.of(false, false), placement.append, "Recovery creates a new file rather than appending over the gap");
+      assertEquals(placement.paths, placement.opened, "Recovery creates a new file rather than appending over the gap");
       assertEquals(Instant.parse("2026-10-20T01:00:03Z"), writer.session().startedAt());
       writer.value(TOPIC, new ValueFrame(17, 4_000_000, 2, 3L), 3_000_000);
       assertEquals(1, writer.diskDroppedValues());

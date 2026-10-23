@@ -114,6 +114,61 @@ class ReplicaMasterRecoveryTest {
     }
   }
 
+  /**
+   * A capture closed on a disconnect is published with its hash. The same boot's reconnect used to
+   * append to that file, so every read of it was refused for a hash mismatch and its second
+   * publication stayed pending as an authority conflict through every recovery; the reconnect now
+   * continues the session in the next file, and the published file keeps its bytes.
+   */
+  @Test void aSameBootReconnectAfterAPublishedCloseContinuesInTheNextFile() throws Exception {
+    var clock = java.time.Clock.fixed(java.time.Instant.parse("2026-10-19T00:00:00Z"), java.time.ZoneOffset.UTC);
+    var placement = store.captures(clock); var loop = new org.triplehelix.wpilogmcp.nt4.client.ManualScheduler();
+    var status = new java.util.concurrent.atomic.AtomicReference<CaptureStore.Status>(); placement.onStatus(status::set);
+    var robot = org.triplehelix.wpilogmcp.nt4.client.RobotAddress.uri("127.0.0.1", 5810, "synthetic");
+    var value = new org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce("/Value", 1, "int", null, new com.google.gson.JsonObject());
+    Path first, next; String published;
+    try (var writer = new org.triplehelix.wpilogmcp.capture.CaptureWriter(clock, loop, org.triplehelix.wpilogmcp.capture.CapturePolicy.ALL, placement)) {
+      writer.connected(robot, "networktables.first.wpi.edu"); writer.timeSync(10_000_000, 0);
+      writer.announce(value); loop.until(writer::ready);
+      writer.value(value, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 10_000_001, 2, 23L), 0); first = writer.session().path();
+      writer.disconnected(); placement.completion().get(); store.awaitImports();
+      published = StoreFiles.hash(first);
+      assertEquals(published, catalogHash(first), "The close published the file");
+      // The robot comes back on the same boot one second later.
+      writer.connected(robot, "networktables.first.wpi.edu"); writer.timeSync(11_000_000, 1_000_000);
+      writer.announce(value); loop.until(writer::ready);
+      next = writer.session().path();
+      assertEquals(first.resolveSibling("capture-2.wpilog"), next);
+      writer.value(value, new org.triplehelix.wpilogmcp.nt4.ValueFrame(1, 11_000_001, 2, 24L), 1_000_000);
+      loop.advance(250_000);
+      assertEquals(List.of(23L), values(first), "The published file stays readable while the next one records");
+      writer.disconnected();
+    }
+    placement.completion().get(); store.awaitImports();
+    assertEquals(published, StoreFiles.hash(first), "A published file is never written again");
+    assertEquals(StoreFiles.hash(next), catalogHash(next), "The next file is published when it closes");
+    assertEquals(published, catalogHash(first));
+    assertNull(status.get().replicaPublicationFailure());
+    assertFalse(Files.exists(first.resolveSibling(ReplicaMasters.CAPTURE_PENDING)));
+    assertEquals(List.of(23L), values(first)); assertEquals(List.of(24L), values(next));
+    var session = new StoreFiles(store.root(), manager.testGetSecurityValidator()).read(first.resolveSibling("session.json"), Session.class);
+    assertEquals(List.of("capture.wpilog", "capture-2.wpilog"), session.files().stream().map(LogFile::path).toList());
+    assertNull(session.openCapture());
+    assertDoesNotThrow(() -> store.recoverMasterPublication().get());
+    assertDoesNotThrow(() -> store.keepClocks().get(20, java.util.concurrent.TimeUnit.SECONDS));
+  }
+
+  private String catalogHash(Path file) throws Exception {
+    return store.replicaHeader().replicas().files().stream().filter(e -> store.root().resolve(e.path()).equals(file))
+        .map(ReplicaCatalog.Entry::sha256).findFirst().orElse(null);
+  }
+
+  private List<Object> values(Path file) throws Exception {
+    try (var read = manager.acquireReadOnly(file.toString())) {
+      return read.log().values().get("NT:/Value").stream().map(v -> v.value()).toList();
+    }
+  }
+
   @Test void changedCatalogPartsAreRefusedEvenWhenTheHeaderAndCacheAreUnchanged() throws Exception {
     var header = store.replicaHeader();
     var disk = com.google.gson.JsonParser.parseString(Files.readString(store.root().resolve("store.json"))).getAsJsonObject();

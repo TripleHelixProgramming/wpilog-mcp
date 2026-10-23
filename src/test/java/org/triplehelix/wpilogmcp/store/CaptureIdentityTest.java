@@ -49,7 +49,7 @@ class CaptureIdentityTest {
   }
   private SecurityValidator security() { var result = new SecurityValidator(); result.addAllowedDirectory(temp); return result; }
 
-  @Test void knownIdentityIsTheFirstContextAtStartAndResumeAndSurvivesReload() throws Exception {
+  @Test void knownIdentityIsTheFirstContextOfEveryFileAndSurvivesReload() throws Exception {
     var root = temp.resolve("store"); var security = security(); var loop = new ManualScheduler();
     try (var stores = new StoreRegistry(security)) {
       var placement = stores.store(root).captures(WALL); var index = new CaptureIndex(placement, LogManager.getInstance(), 0);
@@ -59,21 +59,29 @@ class CaptureIdentityTest {
         assertTrue(path.startsWith(root.resolve("robots").resolve("SYNTHETIC-A")));
         writer.value(VALUE, new ValueFrame(1, 10_000_000, 2, 7L), 0);
         writer.disconnected(); placement.completion().get(10, TimeUnit.SECONDS);
+        // The same boot reconnects: the session continues in its next file, which starts with it too.
         connect(writer, loop, 12_000_000, 2_000_000); writer.value(VALUE, new ValueFrame(1, 12_000_000, 2, 9L), 2_000_000);
-        try (var use = LogManager.getInstance().acquire(path.toString())) {
+        var next = writer.session().path(); assertEquals(path.resolveSibling("capture-2.wpilog"), next);
+        try (var use = LogManager.getInstance().acquire(next.toString())) {
           assertEquals("/Daemon/Robot/Identity", use.log().entries().keySet().iterator().next());
           var values = use.log().values().get("/Daemon/Robot/Identity");
-          assertEquals(List.of(10.0, 12.0), values.stream().map(TimestampedValue::timestamp).toList());
-          assertEquals(identity.json(), JsonParser.parseString((String) values.get(1).value()));
+          assertEquals(List.of(12.0), values.stream().map(TimestampedValue::timestamp).toList());
+          assertEquals(identity.json(), JsonParser.parseString((String) values.get(0).value()));
         }
-        writer.disconnected(); placement.completion().get(10, TimeUnit.SECONDS); LogManager.getInstance().release(path);
-        try (var reader = new ScopedLogReader(path); var log = new LazyParsedLog(path.toString(), reader.reader(), 1 << 20)) {
-          assertEquals(List.of(10.0, 12.0), log.values().get("/Daemon/Robot/Identity").stream().map(TimestampedValue::timestamp).toList());
-          assertEquals("json", log.entries().get("/Daemon/Robot/Identity").type());
+        writer.disconnected(); placement.completion().get(10, TimeUnit.SECONDS);
+        LogManager.getInstance().release(path); LogManager.getInstance().release(next);
+        for (var file : List.of(path, next)) {
+          try (var reader = new ScopedLogReader(file); var log = new LazyParsedLog(file.toString(), reader.reader(), 1 << 20)) {
+            assertEquals(List.of(file.equals(path) ? 10.0 : 12.0),
+                log.values().get("/Daemon/Robot/Identity").stream().map(TimestampedValue::timestamp).toList(), file.toString());
+            assertEquals("json", log.entries().get("/Daemon/Robot/Identity").type());
+          }
         }
-        var stored = StoreCatalog.read(root, security).files().get(0);
-        assertEquals(identity, stored.session().deviceIdentity()); assertEquals("device", stored.robot().basis());
-        assertEquals("SYNTHETIC-A", stored.robot().serialNumber()); assertEquals(1, stored.robot().contacts().size());
+        var stored = StoreCatalog.read(root, security).files(); assertEquals(2, stored.size());
+        for (var file : stored) {
+          assertEquals(identity, file.session().deviceIdentity()); assertEquals("device", file.robot().basis());
+          assertEquals("SYNTHETIC-A", file.robot().serialNumber()); assertEquals(1, file.robot().contacts().size());
+        }
       }
     }
   }
@@ -289,7 +297,7 @@ class CaptureIdentityTest {
     }
   }
 
-  @Test void identityLearnedDuringADisconnectIsRecordedOnResume() throws Exception {
+  @Test void identityLearnedDuringADisconnectIsRecordedOnReconnect() throws Exception {
     var root = temp.resolve("store");
     try (var stores = new StoreRegistry(security())) {
       var placement = stores.store(root).captures(WALL);

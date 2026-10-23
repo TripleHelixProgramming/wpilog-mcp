@@ -298,7 +298,7 @@ headers, and exclude declarations, control changes, identity context and schema 
 An optional `capture` configuration starts this listener beside the HTTP server. Missing robots do
 not delay HTTP startup. Shutdown drains tool calls, closes the capture, then retires log readers.
 The capture store uses the existing store queue, path validation, move reservations, and manifests.
-Creation, including removal of a resumed file's old hash, runs asynchronously on the store queue.
+Creation runs asynchronously on the store queue.
 Capture admission uses that queue's priority lane. If another process holds `store.lock`,
 capture retries with 5–50 ms backoff outside the owner until its admission deadline; imports
 still refuse contention immediately. A retry checks the deadline before entering publication;
@@ -333,8 +333,8 @@ asynchronous directory move can race a rollover open or a mapping growth. Addres
 robot basis `address`, since an endpoint is not a stated robot identity.
 
 Each file's `provenance.writer_identity` comes from the capture writer and is shared with the
-live index. It survives short disconnect/resume, finalization, recovery and copies; rollover and
-new writers get fresh identities. Closed-file facts and pending manifest updates capture it
+live index. It survives finalization, recovery and copies; each new file, whether a rollover, a
+same-boot reconnect or a new session, gets a fresh identity. Closed-file facts and pending manifest updates capture it
 immutably, so a later rollover cannot overwrite an earlier file's proof. Publication uses the
 existing metadata handoff and adds no per-value store work. Native follows compare the proof
 through finalization; a legacy missing proof requires an explicit new bootstrap.
@@ -352,7 +352,7 @@ Robot identity uses the resolver's metadata roles for `/SystemStats/SerialNumber
 first 2000 records; import inspection can find later identity. A log's own logged serial wins over a
 connection's device serial, and disagreements are recorded in the manifest and server log.
 `capture/context` reads the HAL's sources, records the device evidence as the first JSON context
-entry at file start and again on resume, and the store remembers addresses and SSH key history by
+entry at the start of every file, and the store remembers addresses and SSH key history by
 serial. An address or host key can change; neither replaces the serial.
 
 `robot_candidates` is only a hint: an exact logged team, sorted entry name/type set, or REV CAN
@@ -396,8 +396,12 @@ place for later writers and is catalog metadata.
 #### Sessions and rollover
 
 Session continuity uses time-sync replies, rather than old retained topic timestamps. A continuing
-clock resumes the closed file with fresh entry ids. A reset or a discrepancy beyond five seconds
-starts a new session. Flushes and five-minute topic cost reports run on the same injectable event
+clock continues the session in its next file, as a rollover does, because a closed file is never
+written again: the store has hashed it, and on a format-2 store published that hash, which its own
+reads are checked against. Appending to it made every later read of it fail and left its
+publication pending. The next file starts with whatever the robot sends on reconnecting, including
+its topics' last values at their original times, which can lie within the closed file's span. A
+reset or a discrepancy beyond five seconds starts a new session. Flushes and five-minute topic cost reports run on the same injectable event
 loop. Exclusion and thinning are explicit policy, and thinned entries record their period.
 
 Each capture file is bounded by `capture.max_file_bytes` (default 1 GiB), including reserved
@@ -501,10 +505,10 @@ before unmapping it. The write channel remains open beside the mapping on Window
 
 The manager pins active captures outside its evictable cache and supplies a fresh prefix per call,
 without file-change checks or after-call discard. At close the same index enters the ordinary cache;
-eviction releases its mappings after in-flight uses. A later load uses `LazyParsedLog`. The writer
-keeps the last session's index available for clock-continuous resumption and remaps it if evicted;
-its columns' file is deleted once the writer has moved on to another file and the index's last
-reader has finished, and the startup sweep removes the files an earlier process left.
+eviction releases its mappings after in-flight uses. A later load uses `LazyParsedLog`. Each file
+has its own index, which is never written again once its file closes; its columns' file is deleted
+once the writer has moved on to another file and the index's last reader has finished, and the
+startup sweep removes the files an earlier process left.
 Cold reads use the same long-addressed windows as finished logs, including records past 2 GiB.
 Another process reading a growing capture uses the incremental scan described under Loading;
 it has no access to this writer-owned live index.
@@ -670,8 +674,8 @@ FPGA time; corrected wall-clock evidence comes from pulled-log `systemTime`. The
 mapping must use its actual event clock; its streaming half awaits the runtime module probe.
 
 `ClockNote` carries both offsets, both bounds and both JVM start identities without diagnosing the
-cause. A sink failure latches stand-down for that session, including a reconnect/resume; a new
-session resets it. This avoids retrying a delivery whose partial write is unknown.
+cause. A sink failure latches stand-down for that session, including across a same-boot
+reconnect; a new session resets it. This avoids retrying a delivery whose partial write is unknown.
 [PIT_SERVER_PLAN.md §8.3](PIT_SERVER_PLAN.md#83-the-robot-programs-jvm) records the JDK 17
 chunk-clock evidence and the measurement still required before JFR streaming.
 

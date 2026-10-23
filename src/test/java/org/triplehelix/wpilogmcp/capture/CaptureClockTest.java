@@ -124,7 +124,7 @@ class CaptureClockTest {
     try (var writer = new CaptureWriter(moving(loop), loop, CapturePolicy.ALL, new CaptureWriter.Observer() {
       @Override public Path create(String address, Instant start) { return directory.resolve("small.wpilog"); }
       // A rollover names its own next file; each one opens here.
-      @Override public void opened(CaptureWriter.Session session, boolean resumed) { files.add(session.path()); }
+      @Override public void opened(CaptureWriter.Session session) { files.add(session.path()); }
     }, 512)) {
       writer.connected(URI.create("ws://127.0.0.1:5810/nt/test"), "networktables.first.wpi.edu");
       writer.timeSync(10_000_000, 0);
@@ -169,7 +169,7 @@ class CaptureClockTest {
     var opens = new java.util.concurrent.atomic.AtomicInteger();
     try (var writer = new CaptureWriter(moving(loop), loop, CapturePolicy.ALL, new CaptureWriter.Observer() {
       @Override public Path create(String address, Instant start) { return directory.resolve("failed-close-" + files.size() + ".wpilog"); }
-      @Override public void opened(CaptureWriter.Session session, boolean resumed) { files.add(session.path()); }
+      @Override public void opened(CaptureWriter.Session session) { files.add(session.path()); }
     }, 1 << 20, (path, id, resume) -> new WpilogOutput(path, id, resume) {
       final boolean first = opens.getAndIncrement() == 0;
       @Override public void finish(int entry, long timestampUs) throws java.io.IOException {

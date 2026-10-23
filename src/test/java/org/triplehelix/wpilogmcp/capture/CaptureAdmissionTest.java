@@ -55,7 +55,7 @@ class CaptureAdmissionTest {
     public CompletableFuture<Void> abandoned(Path path, Instant ended, String reason) {
       abandoned.add(reason); return CompletableFuture.completedFuture(null);
     }
-    public void opened(CaptureWriter.Session session, boolean resumed) { opened++; }
+    public void opened(CaptureWriter.Session session) { opened++; }
     /** The robot's values: the recorder's own clock readings are not what admission drains. */
     public void value(CaptureWriter.Session session, org.triplehelix.wpilogmcp.log.EntryInfo entry,
         ValueFrame frame, WpilogOutput.Written written) {

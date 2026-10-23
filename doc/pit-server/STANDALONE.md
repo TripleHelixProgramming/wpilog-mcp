@@ -421,7 +421,7 @@ doubling to 30 seconds; an NT4 disconnection stands the provider down. One daemo
 JMX, and a separate five-second watchdog reports a stalled call. If RMI does not return, no
 replacement call or thread is started until it does; capture and shutdown never wait for it.
 Samples cannot cross sessions, including a reply queued before a reboot. A failed sample delivery
-stands the provider down for the session, including across an NT4 resume, with its reason; the
+stands the provider down for the session, including across a same-boot reconnect, with its reason; the
 next session admits polling again.
 
 **In the tools and the metrics.** `list_sessions`, the manifest and the metrics show the state and
@@ -440,7 +440,8 @@ shop establishes the runtime's modules.
 
 **Where a capture lives.** A capture is an ordinary `.wpilog` file under
 `robots/address-<address>/sessions/<UTC-date>/<HHmmss>Z/capture.wpilog`. A new robot clock starts
-a new session; a continuing clock resumes the session after a connection loss. The directory
+a new session; a continuing clock continues the session after a connection loss, in its next file,
+`capture-2.wpilog` and on, since a closed file is never written again. The directory
 gains the event and match after the file is closed and its readers released, on every platform,
 so its path stays stable during rollover and remapping. Once the robot's serial number is known,
 the address directory moves under it at session close (see [Robot identity](#robot-identity)).
@@ -449,7 +450,7 @@ the address directory moves under it at session close (see [Robot identity](#rob
 closed file gets its own SHA-256 and final size. Event and match facts appear in the store
 listing as soon as the queued fact update runs. Imports never stall the NT4 writer: manifest
 updates coalesce into one pending task, run on changed facts or at most every five seconds.
-Creation, including a resumed file's removal from the hashed list, is asynchronous. While the
+Creation is asynchronous. While the
 store is busy, capture retains arrival order and original timestamps within a 65,536-event and
 16 MiB event-accounting budget, with a 30-second admission deadline. Overflow or timeout logs
 an explicit recording failure and unrecorded pending-event count; any late session manifest keeps
@@ -548,8 +549,8 @@ The entry classes are in `edu.wpi.first.util.datalog`; `DataLogManager` and `Rob
 are in `edu.wpi.first.wpilibj`.
 
 **How identity is applied.** A logged serial wins for its file. Device evidence learned over SSH
-is stored by serial with its host-key history, and copied into `/Daemon/Robot/Identity` at
-capture start and resume. Identity learned in the middle of a session is written in place; at
+is stored by serial with its host-key history, and copied into `/Daemon/Robot/Identity` at the
+start of every capture file. Identity learned in the middle of a session is written in place; at
 session close the address directory moves under the serial, preserving the old paths, without
 waiting on the NT4 loop. New sessions use the known serial at once.
 
