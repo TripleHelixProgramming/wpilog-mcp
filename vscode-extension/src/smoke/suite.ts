@@ -54,8 +54,16 @@ async function smoke(): Promise<void> {
       }
       return undefined;
     };
-    // Listing local logs is the first request that needs the local server.
-    const item = await within(find(), "Logs tree listing");
+    // Listing local logs is the first request that needs the local server. A refresh (the server
+    // starting, an agent connecting) cancels a listing in flight, and the tree view asks again
+    // when told to; this check asks again too, until the fixture appears or a deadline passes.
+    let item: LogItem | undefined;
+    for (const deadline = Date.now() + 30_000; ;) {
+      walked.length = 0;
+      item = await within(find(), "Logs tree listing");
+      if (item || Date.now() > deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
     assert.ok(fs.existsSync(pidFile), "listing local logs starts the shared daemon in the isolated home");
     const [, port] = fs.readFileSync(pidFile, "utf8").split(/\r?\n/);
     assert.ok(Number(port) > 0, "start records the chosen port");
