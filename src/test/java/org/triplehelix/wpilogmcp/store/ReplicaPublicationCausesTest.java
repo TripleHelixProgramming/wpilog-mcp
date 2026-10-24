@@ -401,6 +401,9 @@ class ReplicaPublicationCausesTest {
     assertDoesNotThrow(() -> placement.completion().get(20, TimeUnit.SECONDS),
         "A publication-capacity refusal must not fail an already-recorded capture close");
     store.awaitImports();
+    // The close asks for its clock record after completing, and a worker every store shares writes it
+    // later. Waiting here keeps that write, and its publication, from landing after the test changes the store.
+    store.clocksSettled().get(20, TimeUnit.SECONDS);
     assertNotNull(status.get());
     assertNotNull(status.get().replicaPublicationFailure());
     try (var read = manager.acquireReadOnly(payload.toString())) {
