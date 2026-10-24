@@ -480,5 +480,24 @@ class ReplicaTransfersTest {
     assertEquals("published", store.replicaTransfers().transfer(policy, request, candidate, source(bytes)).get().state());
     assertEquals(2, store.replicaHeader().replicas().revision());
   }
+  @Test void aRecheckThatMustFirstRecoverReservesForTheRecoveryUnderItsOwnBudget() throws Exception {
+    // A recheck only reads and measures nothing, but finishing a transfer it finds interrupted writes.
+    byte[] bytes = payload(17), next = payload(22); var held = offer(bytes);
+    store.replicaTransfers().transfer(policy, id(), held, source(bytes)).get(10, TimeUnit.SECONDS);
+    store.replicaTransfers().confirm(policy, id(), confirmation(held)).get(10, TimeUnit.SECONDS);
+    store.replicaTransfers().boundary(name -> { if (name.equals("manifest")) throw new java.io.IOException("restart before receipt"); });
+    assertTrue(reason(store.replicaTransfers().transfer(policy, id(), offer(next), source(next))).contains("restart before receipt"));
+    store.close(); store = new LogStore(policy.folder(), manager.testGetSecurityValidator(), manager, StoreCatalog::read);
+    var owner = store.replicaTransfers(); var journal = store.root().resolve(ReplicaJournal.JOURNAL); var before = Files.readAllBytes(journal);
+    var small = new MirrorConfig(policy.origin(), policy.folder(), 14, 4095,
+        List.of(), List.of(), 30, 0, "all", 4096);
+    var refused = assertThrows(java.util.concurrent.ExecutionException.class,
+        () -> owner.reconcile(owner.reconciliationEpoch(small), () -> owner.unchanged(small, held)));
+    assertTrue(String.valueOf(refused.getCause().getMessage()).contains("CAPACITY_PAUSED"), refused.toString());
+    assertArrayEquals(before, Files.readAllBytes(journal));
+    assertTrue(owner.reconcile(owner.reconciliationEpoch(policy), () -> owner.unchanged(policy, held)));
+    var recovered = ReplicaJournal.read(store.root(), new StoreFiles(store.root(), manager.testGetSecurityValidator()));
+    assertNull(recovered.pending()); assertTrue(recovered.retired().isEmpty(), recovered.retired().toString());
+  }
 
 }

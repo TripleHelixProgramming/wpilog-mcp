@@ -765,6 +765,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Concurrent import-stage recovery:** when two recoveries walk the same abandoned import stage, such as a store's startup recovery beside an import's or a sync's own, the one that finds the stage already gone now skips it. Before, it could fail with `NoSuchFileException`, failing the import, sync or pull that ran it; full builds failed this way now and then.
 - **Extension, oversized replies:** a server reply over the extension's byte limit that arrived in one piece no longer escapes as an uncaught exception. The refusal settled the request and then destroyed it with the error, and on Node 20 and 22 the reply's socket had already been freed, so that error was thrown with no handler (Node 26 no longer does this). The MCP client and the follow client now destroy the request without the error once it is settled.
 - **Extension, store control and upload replies:** a store control reply over 8 MiB, or an upload reply over 1 MiB, is now refused as soon as it crosses the limit, and nothing more is read. Before, the request was only destroyed: a reply that had already arrived whole still ended, so the store client parsed the part under the limit and the upload resolved with it, and on Node 20 and 22 the destroy's error was thrown as an uncaught exception.
+- **Mirror reconciliation:** a held file's recheck, such as each one in the first reconciliation after a restart, no longer measures the whole mirror before and after it. Before, those measurements made a reconciliation's time grow with the square of the mirror's size: 300 held files took over ten minutes on Windows, where CI's runner timed out at 600 seconds; they now take 15 to 25 seconds in a Windows VM and about a second on Linux. A recheck that must first finish an interrupted transfer still measures the mirror and reserves for it.
 
 ### Security
 
@@ -931,10 +932,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows the setup's own failure. On Windows the setup had failed on the drive-check bug above, so
   the sweep had not run there since that bug came in.
 
-- Three tests wait longer, where Ubuntu's timings did not fit the Windows runner, which is 6 to 16
-  times slower on file-heavy store work: the capture admission and replica reconciliation tests'
-  completion waits, which matter only when a test hangs, and the inventory test's build deadline,
-  which must outlast the admission it interrupts (80 ms became 2 s). The placement test that kills
+- Two tests wait longer, where Ubuntu's timings did not fit the Windows runner, which is 6 to 16
+  times slower on file-heavy store work: the capture admission test's completion wait, which
+  matters only when a test hangs, and the inventory test's build deadline, which must outlast the
+  admission it interrupts (80 ms became 2 s). The placement test that kills
   a child holding a stage now waits for the child's lock to be released before the next placement,
   since Windows releases a dead process's file locks when resources allow, not when it exits.
 

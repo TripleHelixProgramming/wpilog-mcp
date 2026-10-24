@@ -2078,8 +2078,11 @@ renewal retains the exact selected supplier. `ReplicaReconciler` supplies the ex
 `ReplicaTransfers` owner, never an adapter-owned writer. It maintains a bounded fair retry per
 configured mirror. Unchanged confirmed versions reuse boundary/hash proofs without per-file
 confirmation, receipt or observation rewrites; coverage and last-sync are recorded once per pass.
-Cold proofs still use the bounded transfer workers. Replica metadata has four workers and its
-own 8 MiB response budget, separate from four payload workers and visualization reservations.
+Cold proofs still use the bounded transfer workers but leave the mirror unmeasured, since a proof
+only reads: measuring it for every proof made a cold pass grow with the square of the mirror's
+size. A proof that first finishes an interrupted transfer measures and reserves like any write.
+Replica metadata has four workers and its own 8 MiB response budget, separate from four payload
+workers and visualization reservations.
 Only the configured master's channel enters confirmation. Forwarded verification is provisional;
 contrary master evidence is durable before a separately reserved replacement. Complete observed
 master coverage has its own epoch, revision and timestamp and is never inferred from a truncated
