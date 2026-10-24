@@ -903,6 +903,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there now and then: the next sync found "A sync is already running for this store", or recovery
   kept a capture the dead child had owned. One helper serves them and the placement test.
 
+- The session expiry test now expires sessions as of a moment after its last request. Windows'
+  clock moved in steps of about a millisecond on the test machines, so the last request and an
+  expiry right after it could read the same instant, and the session, not idle before it, stayed:
+  the test failed on three of five Windows runs.
+
 - The bridge, JVM provider, import command and install refresh tests also take the ports they
   expect nothing to answer on from that per-fork slice. Before, each closed a system-chosen port
   and then relied on it staying empty, so a server in another test process could take it in

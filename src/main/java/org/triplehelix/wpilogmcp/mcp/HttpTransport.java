@@ -947,6 +947,13 @@ public class HttpTransport {
     return sessionManager.cleanupExpired(maximumIdle);
   }
 
+  /** As {@link #expireSessions(Duration)}, measured at a chosen moment. Windows' clock moves in steps
+   * of about a millisecond, so a test's last request and an expiry right after it can read the same
+   * instant, and a session last used then is not idle before it. */
+  int expireSessions(Duration maximumIdle, java.time.Instant now) {
+    return sessionManager.cleanupExpired(maximumIdle, now);
+  }
+
   private void handleData(HttpExchange exchange) throws IOException {
     var origin = exchange.getRequestHeaders().getFirst("Origin");
     if (origin != null && !isAllowedOrigin(origin)) {

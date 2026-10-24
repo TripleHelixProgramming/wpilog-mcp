@@ -931,7 +931,8 @@ class VisualizationEndpointTest {
     assertEquals(200, deleted.statusCode());
     assertEquals(windowId(session), call(route(a) + "/attach", new JsonObject()).get("attached_client_id").getAsString());
     assertEquals(windowId(session), call(route(b), null).get("attached_client_id").getAsString());
-    server.expireSessions(Duration.ZERO);
+    // Measured after the last request: on Windows' coarse clock it could read the same instant.
+    server.expireSessions(Duration.ZERO, java.time.Instant.now().plusSeconds(1));
     String expired = session; session = connect();
     assertEquals(404, raw(route(a) + "/attach", "{}", expired, null).statusCode());
     assertEquals(windowId(session), call(route(a) + "/attach", new JsonObject()).get("attached_client_id").getAsString());
