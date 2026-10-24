@@ -908,6 +908,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expiry right after it could read the same instant, and the session, not idle before it, stayed:
   the test failed on three of five Windows runs.
 
+- The session transfer test retries a read the server refuses as retryable, for up to 10 seconds,
+  as clients do. While the recorder rolls files over, a catalog read can see the store change on
+  each of its attempts; the slower Windows runner hit that on two of five runs.
+
 - The bridge, JVM provider, import command and install refresh tests also take the ports they
   expect nothing to answer on from that per-fork slice. Before, each closed a system-chosen port
   and then relied on it staying empty, so a server in another test process could take it in

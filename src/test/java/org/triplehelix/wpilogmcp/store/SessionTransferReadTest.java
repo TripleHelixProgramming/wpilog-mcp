@@ -69,14 +69,14 @@ class SessionTransferReadTest {
         });
         var view = inventory(origin, manager);
         String storeId = view.header().id(), sessionId = view.sessions().get(0).session().id();
-        try (var first = remote.openSession(storeId, sessionId, "capture.wpilog", SessionSnapshot.Overlap.KEEP_ALL)) {
+        try (var first = openRetrying(remote, storeId, sessionId, "capture.wpilog", SessionSnapshot.Overlap.KEEP_ALL)) {
           assertTrue(first.live(), "An HTTP session must use the recorder's managed prefix");
           assertTrue(first.sources().size() > 1, "The fixture must roll over, not just test one file");
           assertSeries(first, 100);
           publish(robot, 100, 200);
           received(capture, 200);
           assertSeries(first, 100); // Rollover retires the writer's view, not a reader's held prefix.
-          try (var second = remote.openSession(storeId, sessionId, "capture.wpilog", SessionSnapshot.Overlap.KEEP_ALL)) {
+          try (var second = openRetrying(remote, storeId, sessionId, "capture.wpilog", SessionSnapshot.Overlap.KEEP_ALL)) {
             assertSeries(second, 200);
           }
         }
@@ -119,6 +119,23 @@ class SessionTransferReadTest {
       return value != null && value.value().equals(7L * (count - 1));
     });
   }
+  /**
+   * Opens a session read as clients do: a refusal the server marks retryable is retried, here for
+   * 10 s. While the recorder rolls files over, a catalog read can see the store change on each of
+   * its attempts, which the slower Windows runner hit often enough to fail this test.
+   */
+  private static RemoteLogAccess.RemoteSnapshot openRetrying(RemoteLogAccess remote, String storeId, String sessionId, String anchor,
+      SessionSnapshot.Overlap overlap) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (true) {
+      try { return remote.openSession(storeId, sessionId, anchor, overlap); }
+      catch (org.triplehelix.wpilogmcp.read.ReadException refused) {
+        if (!refused.retryable() || System.nanoTime() > deadline) throw refused;
+        Thread.sleep(250);
+      }
+    }
+  }
+
   private static String url(HttpTransport http) { return "http://127.0.0.1:" + http.getPort(); }
   private static StoreCatalog.Snapshot inventory(LogStore store, LogManager manager) throws Exception {
     return StoreCatalog.read(store.root(), manager.testGetSecurityValidator());
@@ -141,7 +158,7 @@ class SessionTransferReadTest {
       assertSeries(local, 200);
     }
     try (var remote = new RemoteLogAccess(URI.create(url(http)));
-         var read = remote.openSession(facts.header().id(), session, anchor, SessionSnapshot.Overlap.KEEP_ALL)) {
+         var read = openRetrying(remote, facts.header().id(), session, anchor, SessionSnapshot.Overlap.KEEP_ALL)) {
       assertEquals(files, read.sources().size());
       // "live" describes a writer-owned prefix, which the origin may keep cached after close.
       // A receiving store has disk files only, even when its provenance says captured.
