@@ -146,6 +146,8 @@ class SystemPeerRecoveryHardeningTest {
       for (var path : List.of(staged, destination, metadata, receipt)) assertTrue(path.startsWith(root));
       process.destroyForcibly();
       assertTrue(process.waitFor(5, TimeUnit.SECONDS));
+      // Its sync ownership and stage markers share this name.
+      org.triplehelix.wpilogmcp.fixtures.ProcessLocks.awaitReleasedUnder(root, ".owner.lock");
       var pending = JsonParser.parseString(Files.readString(receipt)).getAsJsonObject();
       assertFalse(pending.get("committed").getAsBoolean());
       return new Crash(root, staged, destination, metadata, receipt);

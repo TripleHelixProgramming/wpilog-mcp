@@ -897,6 +897,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- The tests that kill a child process holding a lock now wait, at most 10 seconds, for Windows to
+  release it before they take it themselves. Windows releases a terminated process's file locks
+  when resources allow, not when it exits, so the peer recovery and capture recovery tests failed
+  there now and then: the next sync found "A sync is already running for this store", or recovery
+  kept a capture the dead child had owned. One helper serves them and the placement test.
+
 - The bridge, JVM provider, import command and install refresh tests also take the ports they
   expect nothing to answer on from that per-fork slice. Before, each closed a system-chosen port
   and then relied on it staying empty, so a server in another test process could take it in

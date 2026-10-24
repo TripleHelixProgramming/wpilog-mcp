@@ -287,7 +287,7 @@ class SystemPullPlacementTest {
         assertTrue(process.waitFor(5, TimeUnit.SECONDS));
         // Windows unlocks a dead process's files when resources allow, not when it exits; until
         // then the next placement rightly keeps the stage as live.
-        awaitUnlocked(abandonedStage.resolve(".owner.lock"));
+        org.triplehelix.wpilogmcp.fixtures.ProcessLocks.awaitReleased(abandonedStage.resolve(".owner.lock"));
         assertArrayEquals(PAYLOAD, Files.readAllBytes(fixture.prefix()));
         assertEquals(fixture.entry.localName(), fixture.local.verified(fixture.entry));
         assertFalse(Files.exists(abandonedStage), "The next placement recovers only the abandoned disposable stage");
@@ -302,19 +302,6 @@ class SystemPullPlacementTest {
       } finally {
         process.destroyForcibly(); process.waitFor(5, TimeUnit.SECONDS);
       }
-    }
-  }
-
-  /** Waits until a lock on the file can be taken, that is, until the OS released a dead owner's lock. */
-  private static void awaitUnlocked(Path file) throws Exception {
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-    while (true) {
-      try (var channel = java.nio.channels.FileChannel.open(file, java.nio.file.StandardOpenOption.WRITE);
-           var lock = channel.tryLock()) {
-        if (lock != null) return;
-      }
-      assertTrue(System.nanoTime() < deadline, "The dead child's stage lock was still held 10 s after it exited: " + file);
-      Thread.sleep(10);
     }
   }
 

@@ -326,6 +326,7 @@ class CaptureRecoveryTest {
       }
       startup(root); assertNotNull(manifest(file).openCapture());
     } finally { child.destroyForcibly(); assertTrue(child.waitFor(10, TimeUnit.SECONDS)); }
+    org.triplehelix.wpilogmcp.fixtures.ProcessLocks.awaitReleased(CaptureLease.lockPath(file));
     startup(root); assertNull(manifest(file).openCapture());
   }
 
