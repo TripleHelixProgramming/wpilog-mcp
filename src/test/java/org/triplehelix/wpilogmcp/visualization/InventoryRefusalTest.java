@@ -110,6 +110,15 @@ class InventoryRefusalTest {
     }
   }
 
+  /** The transport releases a reply's reservation after its socket write, which can come after the
+   * client has the reply; wait for it, bounded, rather than read it the moment the reply arrives.
+   * A reservation that is never released still fails, five seconds later. */
+  private static void assertReservationsReleased(Harness h) throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (h.inventories.responseBytes() != 0 && System.nanoTime() < deadline) Thread.sleep(5);
+    assertEquals(0, h.inventories.responseBytes());
+  }
+
   @org.junit.jupiter.api.Test void inventoryBatchHasASeparateAggregateReplyCap() throws Exception {
     try (var h = new Harness(false)) {
       h.registry.registerTool(new ToolRegistry.Tool() {
@@ -124,7 +133,7 @@ class InventoryRefusalTest {
       assertEquals(413, response.statusCode()); assertTrue(response.body().length() < 4096);
       assertRefusal(JsonParser.parseString(response.body()).getAsJsonObject(), false);
       assertTrue(response.body().contains("may have executed"), "A batch is not a transaction; refusal must not invite a blind retry");
-      assertEquals(0, h.inventories.responseBytes());
+      assertReservationsReleased(h);
       assertEquals(8 << 20, h.registry.visualizations().capabilities().getAsJsonObject("recording_inventory_limits").get("max_mcp_batch_reply_bytes").getAsInt());
     }
   }
@@ -154,7 +163,7 @@ class InventoryRefusalTest {
         assertEquals(8 << 20, response.body().getBytes(StandardCharsets.UTF_8).length);
         assertEquals(expected, response.body());
       }
-      assertEquals(0, h.inventories.responseBytes());
+      assertReservationsReleased(h);
     }
   }
 

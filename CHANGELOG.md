@@ -897,6 +897,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- The inventory refusal tests wait, at most five seconds, for a refused batch's reply reservations
+  to be released. The server releases them after writing its reply, so a client can hold the reply
+  first; the tests read the count the moment the reply arrived, and the Windows runner once saw
+  2 MiB still held. A reservation that is never released still fails them.
+
 - The tests that kill a child process holding a lock now wait, at most 10 seconds, for Windows to
   release it before they take it themselves. Windows releases a terminated process's file locks
   when resources allow, not when it exits, so the peer recovery and capture recovery tests failed
