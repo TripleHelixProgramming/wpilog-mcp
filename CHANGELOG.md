@@ -897,6 +897,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- The metrics-stack check tries a refused image pull twice more, ten seconds apart, before it
+  fails. Before, one 503 Service Unavailable from Quay for the Prometheus image failed a CI run
+  whose tests had all passed.
+
 - The inventory refusal tests wait, at most five seconds, for a refused batch's reply reservations
   to be released. The server releases them after writing its reply, so a client can hold the reply
   first; the tests read the count the moment the reply arrived, and the Windows runner once saw
