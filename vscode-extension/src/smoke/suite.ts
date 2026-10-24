@@ -104,9 +104,9 @@ async function smoke(): Promise<void> {
     await vscode.workspace.getConfiguration("wpilog-mcp").update("pitServerUrl", url, vscode.ConfigurationTarget.Global);
     await within(vscode.commands.executeCommand("wpilog-mcp.registerPitWithClaudeCode"), "pit registration command");
     const args = JSON.parse(fs.readFileSync(process.env.WPILOG_SMOKE_CALLS!, "utf8"));
-    assert.deepEqual(args, ["mcp", "add", "--scope", "user", "wpilog-pit", "--",
-      path.join(testHome, ".wpilog-mcp", "bin", "wpilog-mcp"), "connect", "--url", url],
-    "only a user-scope URL bridge reaches Claude; no key, password, headers or local log paths");
+    // Since direct connections the pit is registered as Claude Code's own HTTP server: no launcher.
+    assert.deepEqual(args, ["mcp", "add", "--scope", "user", "wpilog-pit", "--transport", "http", url],
+    "only a user-scope URL registration reaches Claude; no key, password, headers or local log paths");
     assert.ok(!fs.existsSync(path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, ".mcp.json")));
     record("pit command produces secret-free user-scope arguments");
     result.status = "ok";

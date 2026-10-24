@@ -22,8 +22,8 @@ const plants = [
     after: "if (rows.length) await this.table.replace(rows);", checks: 4, reason: /1 !== 3/ },
   { name: "data-store-command", file: "explorer.js", before: 'registerCommand("wpilog-mcp.explorer.syncDataStore",',
     after: 'registerCommand("wpilog-mcp.explorer.plantedMissingSyncCommand",', checks: 5, reason: /syncDataStore|not found/ },
-  { name: "pit-secret", file: "claudeRegistration.js", before: '"connect", "--url", url];',
-    after: '"connect", "--url", url, "password=synthetic-smoke-secret"];', checks: 6, reason: /only a user-scope URL bridge/ },
+  { name: "pit-secret", file: "claudeRegistration.js", before: '"--transport", "http", url];',
+    after: '"--transport", "http", url, "--header", "X-Password: synthetic-smoke-secret"];', checks: 6, reason: /only a user-scope URL registration/ },
 ];
 const results: object[] = [];
 for (const plant of plants) {
