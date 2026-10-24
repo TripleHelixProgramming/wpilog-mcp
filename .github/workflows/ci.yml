@@ -312,6 +312,9 @@ jobs:
             build/extension-smoke/**/claude-args.json
             build/extension-smoke/**/*.log
             build/extension-smoke/fixture/*.wpilog
+            # VS Code 1.101 names an MCP server's log after its label, "WPILog: This laptop [local]",
+            # and the upload refuses a colon in a path (NTFS cannot store one), failing the job.
+            !build/extension-smoke/**/*:*
           retention-days: 14
 
   robot-dependency-submission:
