@@ -905,6 +905,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails. Before, one 503 Service Unavailable from Quay for the Prometheus image failed a CI run
   whose tests had all passed.
 
+- The extension's follow broker wiring check reads the CI workflow with its line endings
+  normalized. A Windows checkout gives the file CRLF endings, so the check's pattern never matched
+  there; the extension's Windows tests had not run in CI before, since the Java tests failed first.
+
 - The expired mirror worker test sets its short idle timeout only once the transfer is blocked
   in its read. Idleness counts from a job's start, so on a slow Windows runner the job expired
   during its setup, before it read, and the test waited five seconds for a read that never came.
