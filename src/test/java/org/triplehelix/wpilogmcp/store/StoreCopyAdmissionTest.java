@@ -194,7 +194,6 @@ class StoreCopyAdmissionTest {
   @Test void expiredMirrorWorkerKeepsPhysicalAndLogicalChargesUntilTheOsReadUnwinds() throws Exception {
     var mirror = mirror(); byte[] bytes = Files.readAllBytes(ImportFixture.write(temp.resolve("input.wpilog"), 23));
     var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
-    mirror.store().replicaTransfers().idleTimeout(Duration.ofMillis(100));
     var future = mirror.store().replicaTransfers().transfer(mirror.policy(), id(), offer(mirror, bytes), offset -> new InputStream() {
       @Override public int read(byte[] target, int start, int length) throws IOException {
         entered.countDown();
@@ -205,6 +204,9 @@ class StoreCopyAdmissionTest {
     });
     try {
       assertTrue(entered.await(5, TimeUnit.SECONDS));
+      // Idleness counts from the job's start, so a short timeout set earlier could expire a slow
+      // runner's job during its setup, before it ever read; only the blocked read is meant to expire.
+      mirror.store().replicaTransfers().idleTimeout(Duration.ofMillis(100));
       var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> future.get(5, TimeUnit.SECONDS));
       assertTrue(failure.getCause().getMessage().contains("TRANSFER_TIMEOUT"));
       assertEquals(bytes.length, reserved()); assertTrue(mirror.store().replicaTransfers().active());
