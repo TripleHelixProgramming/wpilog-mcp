@@ -161,7 +161,9 @@ class CaptureBlockedLoggingTest {
         assertTrue(sink.entered.await(5, TimeUnit.SECONDS),
             "The real cost-summary output must reach the held stderr sink");
         var completed = following;
-        assertDoesNotThrow(() -> completed.get(200, TimeUnit.MILLISECONDS),
+        // The held stderr blocks these values until cleanup if logging can hold them, so a longer wait
+        // still tells the two apart; 200 ms was too short for a fresh JVM's reconnect on a slow runner.
+        assertDoesNotThrow(() -> completed.get(5, TimeUnit.SECONDS),
             "Blocked stderr prevented the close and following listener values from completing");
       } finally {
         releaseForce.countDown();

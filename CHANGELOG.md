@@ -909,6 +909,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in its read. Idleness counts from a job's start, so on a slow Windows runner the job expired
   during its setup, before it read, and the test waited five seconds for a read that never came.
 
+- The blocked-logging capture test gives the listener values that follow a close five seconds,
+  not 200 ms. Logging that a held stderr can stall holds them until the test's cleanup, so the
+  longer wait still catches it; a fresh JVM's reconnect took longer than 200 ms on Windows.
+
 - The replica publication tests wait for the clock record pass that a capture's close asks for.
   The close asks only after it completes, and one worker that every store shares writes the
   record later, so on Windows the record could be published after a test had restored the store's
