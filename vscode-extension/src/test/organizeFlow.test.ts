@@ -91,7 +91,9 @@ try {
 
 async function fixture(action: (explorer: import("../explorer").Explorer, listing: LogListing,
   source: string, target: string) => Promise<void>): Promise<void> {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wpilog-import-picker-"));
+  // The organizer stores and compares canonical paths, as the server reports them. On Windows the
+  // temporary folder can be a short 8.3 name (RUNNER~1) that only the native resolver expands.
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "wpilog-import-picker-")));
   const source = path.join(root, "source"), target = path.join(root, "chosen-store");
   fs.mkdirSync(source); fs.mkdirSync(target);
   const file = path.join(source, "fixture.wpilog"), rev = path.join(source, "fixture.revlog");

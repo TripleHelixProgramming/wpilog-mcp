@@ -909,6 +909,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalized. A Windows checkout gives the file CRLF endings, so the check's pattern never matched
   there; the extension's Windows tests had not run in CI before, since the Java tests failed first.
 
+- The extension's organize-flow tests resolve their temporary folder with the native resolver, as
+  the organizer resolves the folders it saves. On Windows CI the temporary folder is a short 8.3
+  name (RUNNER~1) that only the native resolver expands, so eight tests compared two spellings of
+  one folder.
+
 - The expired mirror worker test sets its short idle timeout only once the transfer is blocked
   in its read. Idleness counts from a job's start, so on a slow Windows runner the job expired
   during its setup, before it read, and the test waited five seconds for a read that never came.
