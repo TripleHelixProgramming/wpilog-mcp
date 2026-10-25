@@ -207,6 +207,12 @@ class ReadEndpointTest {
       assertEquals(409, response.statusCode());
       assertEquals("FILE_CHANGED", json(response).get("code").getAsString());
       assertEquals(new JsonPrimitive(expected), json(response).get("retryable"));
+      // The Java client reports the same decision the server sent.
+      try (var remote = new org.triplehelix.wpilogmcp.read.http.RemoteLogAccess(base)) {
+        var failure = assertThrows(ReadException.class, remote::catalog);
+        assertEquals(ReadProblem.Code.FILE_CHANGED, failure.code());
+        assertEquals(expected, failure.retryable());
+      }
     }
   }
 

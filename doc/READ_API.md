@@ -331,6 +331,9 @@ server's path verbatim; the returned snapshot's `serverPath()` and descriptor do
 uses catalog identity; `openSession(...)` selects a proven union, and `catalog()` returns the
 typed inventory. It checks stream completion,
 has bounded response reads and timeouts, follows no redirects, and accepts no URL credentials.
+A refusal is a `ReadException` with the server's code, message and `retryable` flag; a missing
+flag means false, a flag that is not a boolean is reported as `MALFORMED_RECORD`, and a busy reply
+(HTTP 503 or 429) is a retryable `BUSY`.
 The JDK HTTP client is sufficient; no Arrow reader dependency is needed for this Java adapter.
 
 REV requests name `companion_path` and `anchor_path`; query requests also name `signal` and

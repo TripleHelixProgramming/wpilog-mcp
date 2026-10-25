@@ -945,7 +945,8 @@ suite separately proves that a size refusal leaves the retained retry page intac
 `ReadEndpointTest`, `ReadWireTest`, `RemoteLogAccessTest` and `RevReadEndpointTest` cover the
 versioned read routes, exact typed values, projected/reduced Arrow shapes, multi-entry NDJSON
 and multipart Arrow, bounded leases, cancellation, completion proof and input/path admission.
-They also check retryable overload, schema errors and null-message failures. Read and store
+They also check that the Java client keeps the server's retry decision, retryable overload, schema
+errors and null-message failures. Read and store
 streaming admission are tested independently; the Python example test plants a decode problem
 and requires it to survive the terminal-status check. `StructSchemaDescriptionsTest` keeps schema provenance intact
 without trusting remote byte sizes. `ReadArrowTypesTest` pins the shared encoding owner.

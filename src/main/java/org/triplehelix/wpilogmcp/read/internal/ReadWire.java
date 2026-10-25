@@ -66,7 +66,7 @@ public final class ReadWire {
   /** An overload is retryable even when a proxy or an older server returns plain text. */
   public static ReadException responseFailure(int status, byte[] body) {
     if (status == 503 || status == 429)
-      return new ReadException(ReadProblem.Code.BUSY, "Remote reader is busy (HTTP " + status + "); retry later");
+      return new ReadException(ReadProblem.Code.BUSY, "Remote reader is busy (HTTP " + status + "); retry later", true);
     try { return failure(parse(body)); }
     catch (IOException | RuntimeException invalid) { return new ReadException(ReadProblem.Code.MALFORMED_RECORD,
         "Remote reader returned HTTP " + status + " without a valid error document", invalid); }
@@ -407,11 +407,20 @@ public final class ReadWire {
     if (!"end".equals(nullableText(end, "kind"))) throw new IOException("Read stream ended without its completion record");
     if (!"ok".equals(nullableText(end, "status"))) throw failure(end);
   }
+  /**
+   * A refusal keeps the server's retryable flag: clients decide by the flag, never by the message, and
+   * dropping it made every remote refusal look permanent. An older server's missing flag means false,
+   * and a flag that is not a boolean is an invalid response, as the extension reads it.
+   */
   public static ReadException failure(JsonObject object) {
     ReadProblem.Code code;
     try { code = ReadProblem.Code.valueOf(text(object, "code")); }
     catch (RuntimeException ignored) { code = ReadProblem.Code.MALFORMED_RECORD; }
-    return new ReadException(code, nullableText(object, "message") == null ? "Remote read refused" : text(object, "message"));
+    var flag = object.get("retryable");
+    if (flag != null && !(flag.isJsonPrimitive() && flag.getAsJsonPrimitive().isBoolean()))
+      return new ReadException(ReadProblem.Code.MALFORMED_RECORD, "Remote reader returned a retryable flag that is not a boolean");
+    return new ReadException(code, nullableText(object, "message") == null ? "Remote read refused" : text(object, "message"),
+        flag != null && flag.getAsBoolean());
   }
 
   /** The entire frame is bounded before publication: a failure cannot masquerade as a short batch. */

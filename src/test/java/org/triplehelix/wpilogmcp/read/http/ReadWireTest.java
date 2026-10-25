@@ -9,10 +9,12 @@ import org.triplehelix.wpilogmcp.read.internal.ReadWire;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonParser;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.triplehelix.wpilogmcp.log.struct.EnumValue;
+import org.triplehelix.wpilogmcp.read.ReadProblem;
 
 class ReadWireTest {
   @Test void longAndFloatingBitsNeverPassThroughAnApproximateJsonNumber() {
@@ -101,6 +103,30 @@ class ReadWireTest {
     assertThrows(java.io.IOException.class, () -> ReadWire.parse(new byte[] {'{', '"', 'x', '"', ':', '"', (byte) 0x80, '"', '}'}));
     assertThrows(java.io.IOException.class, () -> ReadWire.parse("{\"path\":\"a\",\"path\":\"b\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
   }
+  @Test void aRefusalKeepsTheServersRetryableFlagAndRefusesOneThatIsNotABoolean() {
+    String refusal = "{\"status\":\"error\",\"code\":\"FILE_CHANGED\",\"message\":\"Store changed; retry the read\"";
+    var retryable = ReadWire.failure(JsonParser.parseString(refusal + ",\"retryable\":true}").getAsJsonObject());
+    assertEquals(ReadProblem.Code.FILE_CHANGED, retryable.code());
+    assertEquals("Store changed; retry the read", retryable.getMessage());
+    assertTrue(retryable.retryable());
+    assertFalse(ReadWire.failure(JsonParser.parseString(refusal + ",\"retryable\":false}").getAsJsonObject()).retryable());
+    // An older server sends no flag, which means the refusal is permanent.
+    assertFalse(ReadWire.failure(JsonParser.parseString(refusal + "}").getAsJsonObject()).retryable());
+    for (String flag : List.of("\"true\"", "1", "null", "{}", "[]")) {
+      var invalid = ReadWire.failure(JsonParser.parseString(refusal + ",\"retryable\":" + flag + "}").getAsJsonObject());
+      assertEquals(ReadProblem.Code.MALFORMED_RECORD, invalid.code(), flag);
+      assertFalse(invalid.retryable(), flag);
+    }
+    var changed = ReadWire.responseFailure(409, (refusal + ",\"retryable\":true}").getBytes(StandardCharsets.UTF_8));
+    assertEquals(ReadProblem.Code.FILE_CHANGED, changed.code());
+    assertTrue(changed.retryable());
+    for (int status : List.of(503, 429)) {
+      var busy = ReadWire.responseFailure(status, "try later".getBytes(StandardCharsets.UTF_8));
+      assertEquals(ReadProblem.Code.BUSY, busy.code());
+      assertTrue(busy.retryable(), "HTTP " + status);
+    }
+  }
+
   @Test void unsigned64ValuesStayExactAndRejectValuesOutsideTheirRecordedRange() {
     var maximum = new java.math.BigInteger("18446744073709551615");
     var wire = ReadWire.value(maximum).getAsJsonObject();
