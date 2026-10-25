@@ -135,13 +135,18 @@ final class ReplicaTransfers implements AutoCloseable {
   void cancel() {
     generation.incrementAndGet(); var job = active.get(); if (job != null) job.result.cancel(true);
   }
+  /** A reconciliation that could not start: another job holds the owner, or it is closing. Nothing was
+   * started and a later attempt may succeed, so a caller retries instead of reporting a failure. */
+  static final class NotStarted extends IOException {
+    NotStarted(String message) { super(message); }
+  }
   /** The coordinator carries one cancellation epoch through every child job, including jobs
    * started after a network wait. Cancellation cannot accidentally grant the old loop a new epoch. */
-  long reconciliationEpoch(MirrorConfig requested) {
-    if (!busy.compareAndSet(false, true)) throw new IllegalStateException("BUSY: replica owner is occupied");
+  long reconciliationEpoch(MirrorConfig requested) throws NotStarted {
+    if (!busy.compareAndSet(false, true)) throw new NotStarted("BUSY: replica owner is occupied; retry");
     long epoch;
     try {
-      if (closed.get()) throw new IllegalStateException("CANCELLED: replica owner is closed");
+      if (closed.get()) throw new NotStarted("CANCELLED: replica owner is closed");
       if (!requested.equals(policy)) { policy = requested; generation.incrementAndGet(); }
       epoch = generation.get();
     } finally { busy.set(false); }

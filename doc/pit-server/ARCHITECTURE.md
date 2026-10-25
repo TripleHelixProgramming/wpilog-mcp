@@ -607,7 +607,10 @@ pit's line for line. Peer sync copies no records. A server that records into a s
 every capture the store holds, peer copies included, at its start; a store nothing records into has
 none, and its own searches read the captures.
 
-`MirrorService` publishes status snapshots; HTTP polling does not scan the mirror. Local controls
+`MirrorService` publishes status snapshots; HTTP polling does not scan the mirror. Its timer never
+stops: a tick that finds the transfer owner busy with another job starts nothing, leaves the status as
+it was, and the next tick retries. What the service is doing and the state it reports are one value, so
+a client that reads a completed state can always start the next job. Local controls
 configure an admitted folder, report the gate, migrate explicitly, page migrated file records and
 preview cleanup. Requests and replies are bounded to 64 KiB and 1 MiB. Imports and inboxes still
 refuse mirrors. Stored offsets remain the source of read alignment; migration never re-correlates

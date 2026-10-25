@@ -1437,6 +1437,9 @@ public final class LogStore implements AutoCloseable {
           .thenCompose(result -> result.state().equals("ready")
               ? ReplicaReconciler.run(this, config, clock, progress, replicaEpoch, discovered) : CompletableFuture.completedFuture(result))
           .whenComplete((result, error) -> { syncing.set(false); pending.decrementAndGet(); });
+    } catch (ReplicaTransfers.NotStarted notNow) {
+      // Busy is an answer, not a failure: a timer that threw here was never run again.
+      syncing.set(false); pending.decrementAndGet(); return CompletableFuture.failedFuture(notNow);
     } catch (RuntimeException e) { syncing.set(false); pending.decrementAndGet(); throw e; }
   }
 

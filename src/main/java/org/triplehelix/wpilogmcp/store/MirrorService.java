@@ -12,7 +12,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.triplehelix.wpilogmcp.config.MirrorConfig;
 
 /** A quiet, daemon-owned polling clock; no HTTP handler waits for the origin or the store queue. */
@@ -34,9 +34,15 @@ public final class MirrorService implements AutoCloseable {
   @FunctionalInterface interface OriginReader { StoreManifest.MirrorOrigin read() throws IOException; }
   private final OriginReader readOrigin;
   private final ScheduledExecutorService timer;
-  private final AtomicBoolean busy = new AtomicBoolean();
+  /**
+   * What the service is doing and the state it last reported, in one value. Admission moves an idle phase
+   * to a running one and completion moves it back with its state, so a client that reads a completed state
+   * can always start the next job. With a separate busy flag the state was published before the flag
+   * cleared, and a sync that threw before its handler was attached left the flag set for good.
+   */
+  private record Phase(boolean running, String state) {}
+  private final AtomicReference<Phase> phase = new AtomicReference<>(new Phase(false, "waiting"));
   private volatile boolean closed;
-  private volatile String state = "waiting";
   private volatile MirrorSync.Progress progress = new MirrorSync.Progress("waiting", 0, 0, null);
   private volatile MirrorSync.Result result;
   private volatile StoreManifest.MirrorOrigin origin;
@@ -58,19 +64,52 @@ public final class MirrorService implements AutoCloseable {
     this.readOrigin = readOrigin;
     timer = Executors.newSingleThreadScheduledExecutor(r -> { var t = new Thread(r, "store-mirror"); t.setDaemon(true); return t; });
   }
-  public void start() { timer.scheduleWithFixedDelay(this::syncNow, 0, config.intervalSec(), TimeUnit.SECONDS); }
-  public boolean active() { return busy.get() || store.replicaTransfers().active(); }
+  public void start() { timer.scheduleWithFixedDelay(this::tick, 0, config.intervalSec(), TimeUnit.SECONDS); }
+  /** A scheduled task that throws is never run again, so a tick catches everything; the next tick retries. */
+  void tick() {
+    try { syncNow(); }
+    catch (Throwable unexpected) {
+      org.slf4j.LoggerFactory.getLogger(MirrorService.class).warn("Mirror synchronization tick failed; the next tick retries: {}", unexpected.toString());
+    }
+  }
+  /** Admits one job and returns the phase it replaced, or null while a job runs or after close. */
+  private Phase admit(String running) {
+    while (true) {
+      var current = phase.get();
+      if (closed || current.running()) return null;
+      if (phase.compareAndSet(current, new Phase(true, running))) return current;
+    }
+  }
+  private void finish(String state) { phase.set(new Phase(false, state)); }
+  private static boolean notStarted(Throwable error) {
+    Throwable cause = error;
+    while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null) cause = cause.getCause();
+    return cause instanceof ReplicaTransfers.NotStarted;
+  }
+  /** The synchronization a sync runs, replaced only by tests that need it to throw. */
+  @FunctionalInterface interface Synchronizer {
+    CompletableFuture<MirrorSync.Result> run(java.util.function.Consumer<MirrorSync.Progress> progress);
+  }
+  private volatile Synchronizer synchronizer;
+  void synchronizer(Synchronizer replacement) { synchronizer = replacement; }
+  public boolean active() { return phase.get().running() || store.replicaTransfers().active(); }
   public MirrorConfig config() { return config; }
   public String id() { var seen = metadata; return seen == null ? null : seen.id(); }
   public CompletableFuture<MirrorSync.Result> syncNow() {
-    if (closed || !busy.compareAndSet(false, true)) return CompletableFuture.failedFuture(new IOException("Mirror synchronization is already running or stopped"));
-    state = "synchronizing";
-    return store.mirror(config, p -> progress = p, clock, StoreSync::http, discovered).whenComplete((value, error) -> {
+    var before = admit("synchronizing");
+    if (before == null) return CompletableFuture.failedFuture(new IOException("Mirror synchronization is already running or stopped"));
+    CompletableFuture<MirrorSync.Result> running;
+    try {
+      var replaced = synchronizer;
+      running = replaced != null ? replaced.run(p -> progress = p) : store.mirror(config, p -> progress = p, clock, StoreSync::http, discovered);
+    } catch (RuntimeException | Error failure) { finish("error"); return CompletableFuture.failedFuture(failure); }
+    return running.whenComplete((value, error) -> {
+      // An owner still busy with another job started nothing: the status stays as it was, and the next tick retries.
+      if (notStarted(error)) { finish(before.state()); return; }
+      String completed = "error";
       try {
-        String completed;
         if (error == null) { result = value; completed = value.state(); }
         else {
-          completed = "error";
           result = new MirrorSync.Result("error", origin == null ? null : origin.lastSync(), 0, java.util.List.of(),
               java.util.List.of(), java.util.List.of(), error.getCause() == null ? error.getMessage() : error.getCause().getMessage());
         }
@@ -78,10 +117,9 @@ public final class MirrorService implements AutoCloseable {
         metadata = store.replicaHeader();
         evidence = ReplicaJournal.read(store.root(), new StoreFiles(store.root(), store.replicaSecurity()));
         capacity = store.mirrorCapacity(config);
-        // Publish completion last: a polling client must see the matching durable sync time.
-        state = completed;
-      } catch (IOException e) { state = "error"; }
-      finally { busy.set(false); }
+      } catch (IOException e) { completed = "error"; }
+      // Publish completion last: a polling client must see the matching durable sync time.
+      finish(completed);
     });
   }
   public Status status() {
@@ -94,26 +132,29 @@ public final class MirrorService implements AutoCloseable {
         catalog == null ? 0 : (int) catalog.files().stream().filter(f -> f.verificationBasis().equals("legacy_unconfirmed")).count(),
         catalog == null ? 0 : (int) catalog.files().stream().filter(f -> f.verificationBasis().equals("verified")).count(),
         catalog == null ? 0 : catalog.exclusions().size(), catalog != null, ReplicaCatalogCapacity.of(catalog));
-    return new Status(state, config, last, age, active() ? p.remainingFiles() : 0, active() ? p.remainingBytes() : 0, result, seen, summary, store.replicaTransfers().active() && store.replicaTransfers().capacity() != null ? store.replicaTransfers().capacity() : capacity, operation,
+    return new Status(phase.get().state(), config, last, age, active() ? p.remainingFiles() : 0, active() ? p.remainingBytes() : 0, result, seen, summary, store.replicaTransfers().active() && store.replicaTransfers().capacity() != null ? store.replicaTransfers().capacity() : capacity, operation,
         evidence == null ? null : evidence.coverage(), id());
   }
 
   public CompletableFuture<ReplicaCatalog> migrate(String storeId) {
-    if (closed || !busy.compareAndSet(false, true)) return CompletableFuture.failedFuture(new IOException("Mirror is busy or stopped"));
-    state = "migrating";
-    var operation = store.migrateReplicas(storeId, config); migration = operation;
+    if (admit("migrating") == null) return CompletableFuture.failedFuture(new IOException("Mirror is busy or stopped"));
+    CompletableFuture<ReplicaCatalog> operation;
+    try { operation = store.migrateReplicas(storeId, config); }
+    catch (RuntimeException | Error failure) { finish("error"); return CompletableFuture.failedFuture(failure); }
+    migration = operation;
     if (closed) operation.cancel(false);
     return operation.whenComplete((catalog, error) -> {
-      if (closed) { busy.set(false); return; }
+      if (closed) { finish(phase.get().state()); return; }
+      String completed = "error";
       try {
         metadata = store.replicaHeader(); origin = metadata.origin();
         capacity = store.mirrorCapacity(config);
-        state = error == null ? "ready" : "error";
-        result = new MirrorSync.Result(state, origin == null ? null : origin.lastSync(), 0, java.util.List.of(),
+        completed = error == null ? "ready" : "error";
+        result = new MirrorSync.Result(completed, origin == null ? null : origin.lastSync(), 0, java.util.List.of(),
             java.util.List.of(), java.util.List.of(), error == null ? "Migration complete; finalized replica synchronization is ready"
                 : error.getMessage());
-      } catch (IOException failure) { state = "error"; }
-      finally { busy.set(false); }
+      } catch (IOException failure) { completed = "error"; }
+      finish(completed);
     });
   }
 
@@ -135,19 +176,20 @@ public final class MirrorService implements AutoCloseable {
     return maintain(request, () -> store.replicaTransfers().reinclude(config, request, epoch, revision, keys));
   }
   private CompletableFuture<?> maintain(String request, java.util.function.Supplier<CompletableFuture<ReplicaTransfers.Receipt>> action) throws IOException {
-    if (closed || !busy.compareAndSet(false, true)) throw new IOException("Mirror operation is already running or stopped");
-    state = "maintenance_running"; operation = new Operation(request, "running", null, null);
+    if (admit("maintenance_running") == null) throw new IOException("Mirror operation is already running or stopped");
+    operation = new Operation(request, "running", null, null);
     CompletableFuture<ReplicaTransfers.Receipt> pending;
-    try { pending = action.get(); } catch (RuntimeException invalid) { busy.set(false); state = "error"; throw invalid; }
+    try { pending = action.get(); } catch (RuntimeException | Error invalid) { finish("error"); throw invalid; }
     return pending.whenComplete((value, error) -> {
+      String completed = "error";
       try {
         metadata = store.replicaHeader(); origin = metadata.origin(); capacity = store.mirrorCapacity(config);
         evidence = ReplicaJournal.read(store.root(), new StoreFiles(store.root(), store.replicaSecurity()));
         if (error == null) operation = new Operation(request, value.state(), value.catalogRevision(), null);
         else { Throwable cause = error; while (cause.getCause() != null) cause = cause.getCause(); operation = new Operation(request, "error", null, cause.getMessage()); }
-        state = error == null ? "maintenance_complete" : "error";
-      } catch (IOException failure) { state = "error"; operation = new Operation(request, "error", null, failure.getMessage()); }
-      finally { busy.set(false); }
+        completed = error == null ? "maintenance_complete" : "error";
+      } catch (IOException failure) { operation = new Operation(request, "error", null, failure.getMessage()); }
+      finish(completed);
     });
   }
 
