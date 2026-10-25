@@ -43,7 +43,15 @@ import org.triplehelix.wpilogmcp.store.StoreManifest.*;
  */
 final class ReplicaTransfers implements AutoCloseable {
   static final int BLOCK_BYTES = 65_536;
-  private static final ThreadPoolExecutor WORKERS = new ThreadPoolExecutor(0, 2, 30, TimeUnit.SECONDS,
+  /**
+   * Two transfer jobs at a time across every mirror in the process, one per mirror. The limit counts
+   * jobs, not threads: a job returns its permit before it reports its result, so the caller it wakes
+   * can start the next job while the job's thread is still on its way back to the pool. A pool of two
+   * threads refused that next job whenever both threads were still finishing, which rechecks lasting
+   * a few milliseconds made common on a busy machine.
+   */
+  private static final java.util.concurrent.Semaphore PERMITS = new java.util.concurrent.Semaphore(2);
+  private static final ThreadPoolExecutor WORKERS = new ThreadPoolExecutor(0, Integer.MAX_VALUE, 30, TimeUnit.SECONDS,
       new SynchronousQueue<>(), task -> { var t = new Thread(task, "replica-transfer"); t.setDaemon(true); return t; });
   private static final java.util.concurrent.ScheduledExecutorService DEADLINES = Executors.newScheduledThreadPool(2,
       task -> { var t = new Thread(task, "replica-deadline"); t.setDaemon(true); return t; });
@@ -168,6 +176,11 @@ final class ReplicaTransfers implements AutoCloseable {
     long admitted = expected == null ? generation.get() : expected;
     if (!requested.equals(policy)) { policy = requested; admitted = generation.incrementAndGet(); }
     var job = new Job(admitted); active.set(job);
+    if (!PERMITS.tryAcquire()) {
+      active.compareAndSet(job, null); busy.set(false);
+      job.result.completeExceptionally(new IOException("BUSY: two replica workers are occupied; retry"));
+      return job.result;
+    }
     try {
       WORKERS.execute(() -> {
         job.thread = Thread.currentThread(); Receipt value = null; Throwable failure = null; boolean measures = accounts;
@@ -198,17 +211,19 @@ final class ReplicaTransfers implements AutoCloseable {
           }
         } catch (Throwable thrown) { failure = thrown; }
         finally {
-          deadline.cancel(false); Thread.interrupted(); job.phase.set(3);
-          if (measures) try { measure(requested); }
-          catch (IOException ignored) { /* Retain the last conservative reservation snapshot on an unreadable catalog. */ }
-          active.compareAndSet(job, null); busy.set(false);
+          try {
+            deadline.cancel(false); Thread.interrupted(); job.phase.set(3);
+            if (measures) try { measure(requested); }
+            catch (IOException ignored) { /* Retain the last conservative reservation snapshot on an unreadable catalog. */ }
+            active.compareAndSet(job, null); busy.set(false);
+          } finally { PERMITS.release(); } // Before the result wakes its caller, who may start the next job at once.
         }
         // No lease, file lock or accounting monitor is inherited by observers or continuations.
         if (job.published != null) store.replicaPublished(job.published);
         if (failure == null) job.result.complete(value); else job.result.completeExceptionally(failure);
       });
     } catch (java.util.concurrent.RejectedExecutionException full) {
-      active.compareAndSet(job, null); busy.set(false);
+      PERMITS.release(); active.compareAndSet(job, null); busy.set(false);
       job.result.completeExceptionally(new IOException("BUSY: two replica workers are occupied; retry", full));
     }
     return job.result;

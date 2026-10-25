@@ -480,6 +480,34 @@ class ReplicaTransfersTest {
     assertEquals("published", store.replicaTransfers().transfer(policy, request, candidate, source(bytes)).get().state());
     assertEquals(2, store.replicaHeader().replicas().revision());
   }
+  @Test void aFinishedJobNoLongerHoldsAWorkerWhileItsThreadReturnsToThePool() throws Exception {
+    // A job's result wakes its caller while the job's thread is still finishing. A dependent that blocks
+    // keeps that thread there, as a busy machine can; with two such threads, the next job used to be
+    // refused as if two transfers were running.
+    var hold = new java.util.concurrent.CountDownLatch(1);
+    try {
+      for (int i = 0; i < 2; i++) {
+        byte[] bytes = payload(40 + i);
+        var gate = new java.util.concurrent.CountDownLatch(1); var entered = new java.util.concurrent.CountDownLatch(1);
+        var job = store.replicaTransfers().transfer(policy, id(), offer(bytes), offset -> new ByteArrayInputStream(bytes, (int) offset, bytes.length - (int) offset) {
+          @Override public synchronized int read(byte[] buffer, int start, int count) {
+            entered.countDown(); while (gate.getCount() > 0) try { gate.await(); } catch (InterruptedException ignored) { }
+            return super.read(buffer, start, count);
+          }
+        });
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        var finishing = new java.util.concurrent.CountDownLatch(1);
+        job.whenComplete((receipt, failure) -> {
+          finishing.countDown();
+          try { hold.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        gate.countDown();
+        assertTrue(finishing.await(5, TimeUnit.SECONDS), "the job's own thread runs the dependent and stays there");
+        assertEquals("published", job.getNow(null).state());
+      }
+      assertEquals("recovered", store.replicaTransfers().recover(policy).get(5, TimeUnit.SECONDS).state());
+    } finally { hold.countDown(); }
+  }
   @Test void aRecheckThatMustFirstRecoverReservesForTheRecoveryUnderItsOwnBudget() throws Exception {
     // A recheck only reads and measures nothing, but finishing a transfer it finds interrupted writes.
     byte[] bytes = payload(17), next = payload(22); var held = offer(bytes);

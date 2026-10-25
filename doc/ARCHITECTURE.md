@@ -2081,6 +2081,8 @@ confirmation, receipt or observation rewrites; coverage and last-sync are record
 Cold proofs still use the bounded transfer workers but leave the mirror unmeasured, since a proof
 only reads: measuring it for every proof made a cold pass grow with the square of the mirror's
 size. A proof that first finishes an interrupted transfer measures and reserves like any write.
+The two transfer workers are two permits for jobs, not two threads: a finished job returns its
+permit before it reports, so the caller it wakes can start the next job at once.
 Replica metadata has four workers and its own 8 MiB response budget, separate from four payload
 workers and visualization reservations.
 Only the configured master's channel enters confirmation. Forwarded verification is provisional;
