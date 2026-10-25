@@ -70,7 +70,11 @@ class CaptureAdmissionProviderTest {
             writer.connected(address, Nt4Client.V40); writer.timeSync(1_000_000, 0);
             var topic = new Announce("/anchor", 1, "int", null, new JsonObject()); writer.announce(topic);
             writer.value(topic, new ValueFrame(1, 1_000_001, 2, 1L), 1);
-            pending.complete(output); loop.one(); assertNotNull(writer.session()); assertFalse(writer.ready());
+            pending.complete(output);
+            // Other threads post to this loop too, such as a tail's line delivery or the device identity
+            // the store records, so the admission's completion need not be the next task.
+            for (int task = 0; writer.session() == null && task < 100; task++) loop.one();
+            assertNotNull(writer.session()); assertFalse(writer.ready());
             loop.advance(100_000); // A provider tick between replay slices must not consume its tail buffer.
             loop.drain(); assertTrue(writer.ready()); loop.advance(100_000); loop.drain();
             writer.disconnected();

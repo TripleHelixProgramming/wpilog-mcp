@@ -905,6 +905,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails. Before, one 503 Service Unavailable from Quay for the Prometheus image failed a CI run
   whose tests had all passed.
 
+- The tail admission test runs the capture loop's queued tasks until the admission's completion
+  opens the session, instead of exactly one. Other threads post to that loop too, such as a tail's
+  line delivery or the device identity the store records, and once on Ubuntu CI another task ran
+  first, so the test found no session.
+
 - The extension's follow broker wiring check reads the CI workflow with its line endings
   normalized. A Windows checkout gives the file CRLF endings, so the check's pattern never matched
   there; the extension's Windows tests had not run in CI before, since the Java tests failed first.
