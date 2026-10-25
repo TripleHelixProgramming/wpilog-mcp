@@ -423,7 +423,9 @@ automatic Move needs the person's explicit completed-file handoff acknowledgment
 not proof that a writer closed its file. Growing copies produce later immutable versions.
 
 Bounded receipts under `.local-ingestion/` record source path/version, result, destination, hash
-and time, including duplicate origins without replacing a payload's first provenance. Receipts
+and time, including duplicate origins without replacing a payload's first provenance. A deferred
+file gets no receipt, since one would outlive its passing cause and keep a restart from trying
+it again; it waits as the inbox's deferrals do. Receipts
 are metadata, excluded from unmanaged files and peer payload transfers. Unchanged receipts avoid
 rehashing or correlation after idle scans and restart. They hide sources only while the verified
 manifested destination remains available. The default listing uses this policy before counts or
@@ -568,7 +570,7 @@ Store locks must be regular paths, never symbolic links, even to targets inside 
 
 The inbox uses a daemon polling thread every three seconds over known inboxes. Store discovery walks configured directories at watcher startup and at most once a minute thereafter; listing scans also pass along the stores they discover. With no configured store it does no imports. Size and modification time must match across two looks at least three seconds apart, and are checked again after waiting in the store queue.
 
-Files move through the existing importer, and successes and refusals get JSON-lines receipts in `inbox/imported.log`. Unchanged refusals are not retried until restart. Duplicate content remains in the inbox with its stored destination explained, as the importer leaves duplicate sources intact. The listing reports inbox paths, sizes, and waiting/importing/refused state separately from unmanaged files.
+Files move through the existing importer, and successes and refusals get JSON-lines receipts in `inbox/imported.log`. Unchanged refusals are not retried until restart. A deferral is not a refusal: the importer decides it by the failure's type where the cause is known (a busy store, the space recording keeps free, a file another move or readers hold, or the store stopping), never from a reason's words. The file returns to waiting and is tried again five seconds after the poll that admitted it, each later wait twice as long, at most a minute. Refused for good, a log that arrived while the store was briefly busy was never imported. Duplicate content remains in the inbox with its stored destination explained, as the importer leaves duplicate sources intact. The listing reports inbox paths, sizes, and waiting/importing/refused state separately from unmanaged files.
 
 The command stages in `inbox/.transfer-<id>/`, with an external transfer lock acquired before directory creation, then publishes `inbox/batch-<id>/` by atomic rename. Hidden entries are never walked for imports or listed. The next poll removes an unlocked abandoned transfer and writes a receipt; a slow active copy retains its lock. A batch sidecar `batch.json` carries `stated_robot`, and its stamp participates in settling and retry. A malformed sidecar refuses the batch; loose files have no stated identity.
 

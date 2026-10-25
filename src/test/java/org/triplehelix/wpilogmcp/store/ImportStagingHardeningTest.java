@@ -429,7 +429,7 @@ class ImportStagingHardeningTest {
           }).get(5, TimeUnit.SECONDS);
         } catch (Exception failure) { throw new java.util.concurrent.CompletionException(failure); }
       }).get(10, TimeUnit.SECONDS);
-      assertEquals("refused", result.files().get(0).status(),
+      assertEquals("deferred", result.files().get(0).status(),
           "A newly eligible session invalidates the earlier placement decision even when source bytes are unchanged");
       assertTrue(result.files().get(0).reason().contains("candidates"), result.toString());
       assertEquals(1, StoreCatalog.readManaged(store.root(), security).files().size(),
@@ -462,7 +462,7 @@ class ImportStagingHardeningTest {
           Files.writeString(identity, json.toString());
         } catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
       }).get(10, TimeUnit.SECONDS);
-      assertEquals("refused", result.files().get(0).status(),
+      assertEquals("deferred", result.files().get(0).status(),
           "A portable robot name must not bypass identity rechecks by resembling a staging directory");
       assertTrue(result.files().get(0).reason().contains("candidates"), result.toString());
       assertEquals(1, StoreCatalog.readManaged(store.root(), security).files().size());

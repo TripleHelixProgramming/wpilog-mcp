@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -23,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
+import org.triplehelix.wpilogmcp.log.LogFileAccess;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.tools.CoreTools;
@@ -223,6 +226,53 @@ class StoreInboxTest {
     store.awaitImports();
     assertFalse(Files.exists(file));
     assertEquals(1, receipts().size());
+  }
+
+  @Test void aFileTheStoreLockHoldsBackIsDeferredThenImportedAfterItsWait() throws Exception {
+    var file = ImportFixture.write(root.resolve("inbox").resolve("busy.wpilog"), 4);
+    long first = LOOK + StoreInbox.FIRST_DEFERRAL.toNanos(), second = first + 2 * StoreInbox.FIRST_DEFERRAL.toNanos();
+    // Held by this process, the lock refuses the inbox's import as another process's lock does.
+    try (var channel = FileChannel.open(root.resolve("store.lock"), StandardOpenOption.WRITE); var lock = channel.lock()) {
+      store.inbox().poll(0);
+      store.inbox().poll(LOOK); store.awaitImports();
+      var entry = inboxEntry();
+      assertEquals("waiting", entry.get("state").getAsString(), "A deferred file waits, with its reason; no new state appears");
+      assertTrue(entry.get("reason").getAsString().contains("Store lock is held"), entry.toString());
+      assertEquals("deferred", JsonParser.parseString(receipts().get(0)).getAsJsonObject().get("status").getAsString());
+      store.inbox().poll(first - 1); store.awaitImports();
+      assertEquals(1, receipts().size(), "Not tried again before five seconds");
+      store.inbox().poll(first); store.awaitImports();
+      assertEquals(2, receipts().size(), "Tried again at five seconds, and deferred again");
+      store.inbox().poll(second - 1); store.awaitImports();
+      assertEquals(2, receipts().size(), "The second wait is twice as long");
+    }
+    store.inbox().poll(second); store.awaitImports();
+    assertFalse(Files.exists(file), "Moved into the store once the lock was free");
+    // The fixture names no robot, so the store keeps it unassigned: stored, not refused.
+    assertEquals("unassigned", JsonParser.parseString(receipts().get(2)).getAsJsonObject().get("status").getAsString());
+  }
+
+  @Test void aDeferredFileWaitsFiveSecondsThenTwiceAsLongUpToAMinute() {
+    var delays = new java.util.ArrayList<Long>();
+    for (var delay = StoreInbox.nextDeferral(null); delays.size() < 6; delay = StoreInbox.nextDeferral(delay)) delays.add(delay.toSeconds());
+    assertEquals(List.of(5L, 10L, 20L, 40L, 60L, 60L), delays);
+  }
+
+  @Test void onlyAConditionThatPassesOnItsOwnIsDeferred() throws Exception {
+    assertTrue(store.deferred(new StoreBusyException(StoreBusyException.Condition.LOCK_HELD, "held")));
+    assertTrue(store.deferred(new java.util.concurrent.CompletionException(new LogFileAccess.InUse("Another import is moving: x"))));
+    try (var moving = LogFileAccess.reserveMove(List.of(root))) {
+      var read = assertThrows(LogFileAccess.BeingMoved.class, () -> LogFileAccess.read(root.resolve("store.json")).close());
+      assertTrue(store.deferred(read), "A read that meets another import's move can succeed once the move ends");
+    }
+    try (var owner = new DiskSpaceBudgets(filesystem -> 2L << 30)) {
+      var reserve = assertThrows(DiskSpaceBudgets.Refused.class, () -> owner.store(root).reserveCopy(1));
+      assertEquals("CAPTURE_DISK_RESERVE", reserve.code());
+      assertTrue(store.deferred(reserve), "The space recording keeps free can come back");
+    }
+    assertFalse(store.deferred(new IOException("File has no WPILOG or REV record header")));
+    assertFalse(store.deferred(new IOException("Store lock is held by another import (store.lock); retry when it finishes")),
+        "A reason's words are not its type");
   }
 
   @Test void refusalRemainsVisibleWithOneReceiptUntilTheFileChanges() throws Exception {

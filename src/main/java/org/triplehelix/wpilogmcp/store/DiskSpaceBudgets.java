@@ -178,7 +178,8 @@ public final class DiskSpaceBudgets implements AutoCloseable {
           return new Reservation(budget, bytes);
         }
       }
-      throw new IOException("Disk-space accounting changed during measurement; retry admission");
+      throw new StoreBusyException(StoreBusyException.Condition.RECORD_CHANGING,
+          "Disk-space accounting changed during measurement; retry admission");
     }
   }
 

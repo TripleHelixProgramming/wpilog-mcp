@@ -72,6 +72,26 @@ public final class LogStore implements AutoCloseable {
   }
   public record Progress(String phase, Path path, int completed, int total) {}
   public record Outcome(Path originalPath, String status, Path path, String reason) {}
+
+  /**
+   * A refusal a later attempt can overcome is deferred, not refused: a busy store (its lock held,
+   * its metadata changing), the reserve kept free for recording, a file another move, a writer or
+   * readers hold, or this store stopping. It is decided by type where the cause was known, never
+   * from a reason: the inbox and local ingestion once kept every refusal for good.
+   */
+  public boolean deferred(Throwable failure) {
+    if (importsStopped.get() || StoreBusyException.in(failure) != null) return true;
+    var cause = failure;
+    while ((cause instanceof java.util.concurrent.CompletionException
+        || cause instanceof java.util.concurrent.ExecutionException) && cause.getCause() != null)
+      cause = cause.getCause();
+    return cause instanceof LogFileAccess.InUse || cause instanceof LogFileAccess.BeingMoved
+        || cause instanceof DiskSpaceBudgets.Refused refused && refused.code().equals("CAPTURE_DISK_RESERVE");
+  }
+
+  private Outcome outcome(Path original, Path retained, Throwable failure) {
+    return new Outcome(original, deferred(failure) ? "deferred" : "refused", retained, failure.getMessage());
+  }
   public record SameRobot(String serialNumber, List<Path> directories) {}
   public record Result(List<Outcome> files, List<SameRobot> sameRobots) {}
   public record Reconsideration(int considered, int imported, int remaining, List<Outcome> files) {
@@ -415,7 +435,7 @@ public final class LogStore implements AutoCloseable {
       var after = importStamps();
       if (before.equals(after)) { catalog.stamps = after; return catalog; }
     }
-    throw new IOException("Store metadata changed during import preparation; retry");
+    throw new StoreBusyException(StoreBusyException.Condition.RECORD_CHANGING, "Store metadata changed during import preparation; retry");
   }
 
   private void refreshImportCatalog(ImportCatalog catalog) throws IOException {
@@ -424,7 +444,8 @@ public final class LogStore implements AutoCloseable {
     if (catalog.proof != null) {
       var now = importProof(latest, catalog.inputs, catalog.selectedRobots, catalog.statedRobot);
       if (!catalog.proof.remainsValid(now))
-        throw new IOException("Import candidates or duplicate receipts changed after preparation; retry");
+        throw new StoreBusyException(StoreBusyException.Condition.RECORD_CHANGING,
+            "Import candidates or duplicate receipts changed after preparation; retry");
       catalog.proof = now;
     }
     if (!changed) return;
@@ -562,7 +583,8 @@ public final class LogStore implements AutoCloseable {
         });
       } catch (ImportCatalogChanged changed) {
         if (attempt == 2)
-          throw new IOException("Store metadata changed during three publication attempts; retry the import", changed);
+          throw new StoreBusyException(StoreBusyException.Condition.RECORD_CHANGING,
+              "Store metadata changed during three publication attempts; retry the import", changed);
       }
     }
     throw new AssertionError("Bounded import attempts must return or refuse");
@@ -1744,7 +1766,7 @@ public final class LogStore implements AutoCloseable {
         inspected.add(ImportInspection.read(source, parser));
         batchHashes.add(hash);
       } catch (IOException | IllegalArgumentException e) {
-        outcomes.add(new Outcome(source, "refused", null, e.getMessage()));
+        outcomes.add(outcome(source, null, e));
       }
     }
 
@@ -1857,7 +1879,7 @@ public final class LogStore implements AutoCloseable {
           found.add(real);
         }
       } catch (IOException e) {
-        outcomes.add(new Outcome(path, "refused", null, e.getMessage()));
+        outcomes.add(outcome(path, null, e));
       }
     }
     return List.copyOf(found);
@@ -2212,7 +2234,7 @@ public final class LogStore implements AutoCloseable {
           try { mover.discardCopy(retained); retained = null; }
           catch (IOException cleanup) { failure.addSuppressed(cleanup); }
         }
-        outcomes.add(new Outcome(placement.input().path(), "refused", retained, failure.getMessage()));
+        outcomes.add(outcome(placement.input().path(), retained, failure));
       }
     } finally {
       // Only this worker owns its temporary bytes. A cancelled OS copy keeps that ownership
@@ -2466,7 +2488,7 @@ public final class LogStore implements AutoCloseable {
     try {
       for (var path : paths) {
         var result = logManager.release(path);
-        if (!result.released()) throw new IOException(result.reason());
+        if (!result.released()) throw new LogFileAccess.InUse(result.reason());
       }
       return reservation;
     } catch (IOException | RuntimeException e) {

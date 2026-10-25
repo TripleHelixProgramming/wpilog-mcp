@@ -21,7 +21,11 @@ public class StoreBusyException extends IOException {
   private final Condition condition;
 
   public StoreBusyException(Condition condition, String message) {
-    super(message);
+    this(condition, message, null);
+  }
+
+  public StoreBusyException(Condition condition, String message, Throwable cause) {
+    super(message, cause);
     this.condition = Objects.requireNonNull(condition);
   }
 

@@ -53,6 +53,15 @@ test("202 is followed through queued and running to done, every 500 ms, with com
   assert.deepEqual(sameRobotMessages(result), [`Robot serial SERIAL appears in ${result.same_robots[0].directories.join(" and ")}. These directories remain separate.`]);
 });
 
+test("a deferred file is counted only when there is one, and its details keep the reason", () => {
+  const deferred: ImportResult = { files: [...result.files,
+    { status: "deferred", original_path: "busy", path: null, reason: "Store lock is held by another import (store.lock); retry when it finishes" }],
+    same_robots: [] };
+  assert.equal(resultSummary(deferred), "1 imported, 1 present, 1 unassigned, 1 refused, 1 deferred");
+  assert.equal(resultDetails(deferred)[4], "deferred: busy\nStore lock is held by another import (store.lock); retry when it finishes");
+  assert.equal(resultSummary(result), "1 imported, 1 present, 1 unassigned, 1 refused", "Without one, the summary reads as before");
+});
+
 test("a 403 preserves the server's error and inbox hint without retrying", async () => {
   let calls = 0;
   await endpoint((req, res) => { calls++; json(res, 403, { error: "Import paths must be inside configured log directories", hint: "Copy outside files into the store's inbox/ folder" }); }, async mcp => {

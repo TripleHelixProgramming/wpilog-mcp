@@ -67,11 +67,23 @@ public final class LocalIngestion implements AutoCloseable {
   public static final class ConflictException extends IOException {
     public ConflictException(String message) { super(message); }
   }
+  /** A deferred file also waits until {@code retryAt}; {@code backoff} is its last delay. Any other state clears both. */
   private record Observed(Source source, Stamp stamp, long since, String state,
-      String destination, String reason, String hash) {
+      String destination, String reason, String hash, long retryAt, java.time.Duration backoff) {
+    Observed(Source source, Stamp stamp, long since, String state, String destination, String reason, String hash) {
+      this(source, stamp, since, state, destination, reason, hash, 0, null);
+    }
     Observed state(String value, String destination, String reason, String hash) {
       return new Observed(source, stamp, since, value, destination, reason, hash);
     }
+    /** Admission keeps the deferral, so the next one doubles its wait. */
+    Observed importing() { return new Observed(source, stamp, since, "importing", null, null, null, retryAt, backoff); }
+    /** Waiting again, with the reason; tried once {@code now} reaches {@code retryAt}. */
+    Observed deferred(String why, long now) {
+      var next = StoreInbox.nextDeferral(backoff);
+      return new Observed(source, stamp, since, "waiting", null, why, null, now + next.toNanos(), next);
+    }
+    boolean due(long now) { return backoff == null || now - retryAt >= 0; }
   }
   private record Receipt(String owner, String source, String originalPath, Stamp stamp,
       String state, String destination, String reason, String sha256, String at) {}
@@ -470,7 +482,7 @@ public final class LocalIngestion implements AutoCloseable {
       var source = sources.get(index);
       if (!source.enabled() || sourceErrors.containsKey(source.path())) continue;
       var ready = observed.entrySet().stream().filter(e -> e.getValue().source().equals(source)
-          && e.getValue().state().equals("waiting") && FileStability.settled(now, e.getValue().since()))
+          && e.getValue().state().equals("waiting") && FileStability.settled(now, e.getValue().since()) && e.getValue().due(now))
           .sorted(Map.Entry.comparingByKey()).limit(BATCH_FILES).toList();
       if (ready.isEmpty()) continue;
       var ticket = begin(current);
@@ -479,7 +491,7 @@ public final class LocalIngestion implements AutoCloseable {
       var captured = new LinkedHashMap<Path, Observed>();
       ready.forEach(e -> {
         captured.put(e.getKey(), e.getValue());
-        observed.replace(e.getKey(), e.getValue(), e.getValue().state("importing", null, null, null));
+        observed.replace(e.getKey(), e.getValue(), e.getValue().importing());
       });
       try {
         var store = registry.store(Path.of(current.store()));
@@ -509,8 +521,11 @@ public final class LocalIngestion implements AutoCloseable {
           if (failure != null) {
             reconsiderNeeded.set(true);
             error = message(failure);
-            captured.forEach((path, old) -> observed.computeIfPresent(path, (p, value) ->
-                value.state().equals("importing") ? old.state("waiting", null, error, null) : value));
+            // A busy store waits out its backoff; any other failure is tried at the next look, as before.
+            boolean deferred = store.deferred(failure);
+            long at = clock.getAsLong();
+            captured.forEach((path, old) -> observed.computeIfPresent(path, (p, value) -> !value.state().equals("importing") ? value
+                : deferred ? old.deferred(error, at) : old.state("waiting", null, error, null)));
           }
           finish(ticket, failure);
         });
@@ -560,6 +575,11 @@ public final class LocalIngestion implements AutoCloseable {
       for (var outcome : result.files()) {
         var old = captured.get(outcome.originalPath());
         if (old == null) continue;
+        if (outcome.status().equals("deferred")) {
+          // Never a receipt: one would outlive the passing cause, and a restart would not try again.
+          if (policy.revision() == revision) observed.put(outcome.originalPath(), old.deferred(outcome.reason(), clock.getAsLong()));
+          continue;
+        }
         String hash = outcome.path() == null || !successful(outcome.status()) ? null
             : StoreCatalog.finalizedHash(store.root(), outcome.path(), security);
         String destination = outcome.path() == null ? null : outcome.path().toString();

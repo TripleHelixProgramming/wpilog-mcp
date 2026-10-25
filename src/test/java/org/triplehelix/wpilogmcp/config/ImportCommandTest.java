@@ -174,6 +174,18 @@ class ImportCommandTest {
     assertTrue(Files.exists(destination.resolve("store.json")));
   }
 
+  @Test void aFileAnotherImportIsMovingIsDeferredAndTheCommandReportsFailure() throws Exception {
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused();
+    try (var moving = org.triplehelix.wpilogmcp.log.LogFileAccess.reserveMove(List.of(source))) {
+      assertEquals(1, run(port), "A file not imported fails the command, deferred or refused: " + text());
+    }
+    var receipt = text().lines().filter(line -> line.startsWith("result "))
+        .map(line -> JsonParser.parseString(line.substring(7)).getAsJsonObject())
+        .reduce((first, last) -> last).orElseThrow();
+    assertEquals("deferred", receipt.getAsJsonArray("files").get(0).getAsJsonObject().get("status").getAsString(), text());
+    assertTrue(Files.exists(source), "A deferred file stays where it was");
+  }
+
   @ParameterizedTest
   @ValueSource(strings = {"0.0.0.0", "::"})
   void wildcardBindUsesLoopbackToReachTheNamedServer(String bind) throws Exception {

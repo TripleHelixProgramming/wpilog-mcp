@@ -710,7 +710,9 @@ wpilog-mcp import --robot practice ~/riologs/downloads     # name the robot when
 
 Files are copied (`--move` moves them), identified by content, hashed, loaded to check them,
 and placed by robot and session. The output lists each file as imported, present (a duplicate,
-left at its source), unassigned (no robot or session known yet) or refused, with the reason.
+left at its source), unassigned (no robot or session known yet), deferred (kept out by a
+condition that passes on its own, such as another process holding the store's lock; run the
+import again later) or refused, with the reason.
 If Move cannot remove the original after committing a verified copy, the result still reports
 the import and explains why the original remains.
 The command probes the configured port and reported server name, including a systemd-managed
@@ -736,7 +738,9 @@ overlap, and the manifest says so.
 
 Drop files into `<store>/inbox/`. The owning server imports each file once its size has been
 stable for three seconds, and writes one line per file to `inbox/imported.log` with the
-outcome. A refused file stays there with its reason until it changes. A folder with a
+outcome. A refused file stays there with its reason until it changes. A deferred file waits
+with its reason and is tried again after five seconds, then 10, 20 and 40, then every minute,
+until the store is free. A folder with a
 `batch.json` naming `stated_robot` imports as one batch for that robot.
 
 #### 7.3 Assigning a file to a robot

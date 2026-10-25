@@ -37,16 +37,24 @@ import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 
 /**
  * Polling works on network drives where WatchService misses writes. A refusal is retried only
- * after the file or its batch metadata changes, so an unsupported file cannot flood receipts.
+ * after the file or its batch metadata changes, so an unsupported file cannot flood receipts. A
+ * deferral, a refusal a later attempt can overcome such as a busy store, returns the file to
+ * waiting and tries it again after five seconds, doubling to a minute; refused for good, a log
+ * that arrived while the store was briefly busy was never imported.
  * Hidden transfers are never candidates: only a published batch may acquire a stated robot.
  */
 public final class StoreInbox {
   static final Duration SETTLE_TIME = FileStability.SETTLE_TIME;
+  static final Duration FIRST_DEFERRAL = Duration.ofSeconds(5), LAST_DEFERRAL = Duration.ofSeconds(60);
   private static final Gson BATCH_JSON = new GsonBuilder().setStrictness(Strictness.STRICT).create();
   public record Entry(Path path, long size, String state, String reason, String statedRobot) {}
   private record Batch(Path directory, Stamp stamp, String robot, String refusal) {}
   private record Observed(Stamp stamp, Batch batch) {}
-  private record Seen(Observed observed, long at, String state, String reason) {}
+  /** A deferred file also waits until {@code retryAt}; {@code backoff} is its last delay, cleared by a change. */
+  private record Seen(Observed observed, long at, String state, String reason, long retryAt, Duration backoff) {
+    Seen(Observed observed, long at, String state, String reason) { this(observed, at, state, reason, 0, null); }
+    boolean due(long now) { return backoff == null || now - retryAt >= 0; }
+  }
   private record Receipt(String at, Path originalPath, String status, Path path, String reason) {}
 
   private final java.util.concurrent.atomic.AtomicBoolean cleanupQueued = new java.util.concurrent.atomic.AtomicBoolean();
@@ -90,7 +98,7 @@ public final class StoreInbox {
     for (var group : groups.entrySet()) {
       var ready = group.getValue().stream().filter(path -> {
         var old = seen.get(path);
-        return old.state().equals("waiting") && FileStability.settled(now, old.at());
+        return old.state().equals("waiting") && FileStability.settled(now, old.at()) && old.due(now);
       }).toList();
       if (ready.isEmpty()) continue;
       // Loose files need not wait for unrelated loose drops. A published directory is one batch.
@@ -100,7 +108,7 @@ public final class StoreInbox {
       })) continue;
       for (var path : ready) {
         var old = seen.get(path);
-        seen.put(path, new Seen(old.observed(), old.at(), "importing", null));
+        seen.put(path, new Seen(old.observed(), old.at(), "importing", null, old.retryAt(), old.backoff()));
       }
       var batch = group.getKey();
       observe(store.importPrepared(new LogStore.Request(ready, true, batch.robot()), p -> {}, request -> {
@@ -121,11 +129,11 @@ public final class StoreInbox {
           if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
             refusal = "Inbox accepts regular files, not symbolic links or special files";
           }
-          if (refusal != null) finish(new LogStore.Outcome(path, "refused", null, refusal));
+          if (refusal != null) finish(new LogStore.Outcome(path, "refused", null, refusal), now);
           else stable.add(path);
         }
         return new LogStore.Request(stable, true, batch.robot());
-      }, result -> result.files().forEach(this::finish)), ready);
+      }, result -> result.files().forEach(outcome -> finish(outcome, now))), ready, now);
     }
   }
 
@@ -147,19 +155,30 @@ public final class StoreInbox {
   /** The offline command consumes its published batch with the same receipts as the daemon. */
   public CompletableFuture<LogStore.Result> importReady(List<Path> ready,
       String robot, Consumer<LogStore.Progress> progress) {
+    long admitted = System.nanoTime();
     return observe(store.importPrepared(new LogStore.Request(ready, true, robot), progress,
-        r -> r, result -> result.files().forEach(this::finish)), ready);
+        r -> r, result -> result.files().forEach(outcome -> finish(outcome, admitted))), ready, admitted);
   }
 
-  private CompletableFuture<LogStore.Result> observe(CompletableFuture<LogStore.Result> future, List<Path> ready) {
+  private CompletableFuture<LogStore.Result> observe(CompletableFuture<LogStore.Result> future, List<Path> ready, long admitted) {
     return future.whenComplete((result, error) -> {
       if (error != null) {
-        for (var path : ready) finish(new LogStore.Outcome(path, "refused", null, error.getMessage()));
+        // The whole import failed: the store's lock held by another process is the usual cause.
+        String status = store.deferred(error) ? "deferred" : "refused";
+        for (var path : ready) finish(new LogStore.Outcome(path, status, null, error.getMessage()), admitted);
       }
     });
   }
 
-  private void finish(LogStore.Outcome outcome) {
+  /** The first deferral waits five seconds, each later one twice as long, never more than a minute. */
+  static Duration nextDeferral(Duration previous) {
+    if (previous == null) return FIRST_DEFERRAL;
+    var doubled = previous.multipliedBy(2);
+    return doubled.compareTo(LAST_DEFERRAL) < 0 ? doubled : LAST_DEFERRAL;
+  }
+
+  /** {@code admitted} is the poll that started the import; a deferral's wait counts from it. */
+  private void finish(LogStore.Outcome outcome, long admitted) {
     var path = outcome.originalPath();
     String reason = outcome.reason();
     if (outcome.status().equals("present")) {
@@ -177,10 +196,15 @@ public final class StoreInbox {
       reason = (reason == null ? "" : reason + "; ") + "Could not write inbox/imported.log";
     }
     final String finalReason = reason;
-    if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
-      seen.computeIfPresent(path, (p, old) -> new Seen(old.observed(), old.at(), "refused", finalReason));
-    } else {
+    if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
       seen.remove(path);
+    } else if (outcome.status().equals("deferred")) {
+      seen.computeIfPresent(path, (p, old) -> {
+        var backoff = nextDeferral(old.backoff());
+        return new Seen(old.observed(), old.at(), "waiting", finalReason, admitted + backoff.toNanos(), backoff);
+      });
+    } else {
+      seen.computeIfPresent(path, (p, old) -> new Seen(old.observed(), old.at(), "refused", finalReason));
     }
   }
 
@@ -215,7 +239,7 @@ public final class StoreInbox {
         try (var walk = Files.walk(io.check(transfer))) {
           for (var path : walk.sorted(Comparator.reverseOrder()).toList()) Files.delete(path);
         }
-        finish(new LogStore.Outcome(transfer, "removed", null, "Removed incomplete inbox transfer; originals were retained"));
+        finish(new LogStore.Outcome(transfer, "removed", null, "Removed incomplete inbox transfer; originals were retained"), System.nanoTime());
       } catch (OverlappingFileLockException e) {
         continue;
       } catch (IOException e) {

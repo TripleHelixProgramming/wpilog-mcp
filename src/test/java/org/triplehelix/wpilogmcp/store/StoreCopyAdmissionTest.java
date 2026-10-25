@@ -121,7 +121,7 @@ class StoreCopyAdmissionTest {
     assertTrue(unwound.await(5, TimeUnit.SECONDS)); assertEquals(0, reserved());
   }
 
-  @Test void copiedImportRefusesBeforeMoverCopyAndKeepsTheOriginalBytes() throws Exception {
+  @Test void copiedImportDefersBeforeMoverCopyAndKeepsTheOriginalBytes() throws Exception {
     byte[] bytes = Files.readAllBytes(ImportFixture.write(temp.resolve("input.wpilog"), 17));
     var source = temp.resolve("input.wpilog"); var copies = new AtomicInteger();
     var mover = new LogStore.Mover() {
@@ -135,7 +135,8 @@ class StoreCopyAdmissionTest {
       free.set(bytes.length + 99L);
       var result = selected.importPaths(new LogStore.Request(List.of(source), true, null), progress -> {})
           .get(10, TimeUnit.SECONDS);
-      assertEquals("refused", result.files().get(0).status());
+      // The space kept free for recording can come back, so the copy is deferred rather than refused.
+      assertEquals("deferred", result.files().get(0).status());
       assertTrue(result.files().get(0).reason().contains("capture's reserve"), result.toString());
       assertEquals(0, copies.get()); assertArrayEquals(bytes, Files.readAllBytes(source)); assertEquals(0, reserved());
     }

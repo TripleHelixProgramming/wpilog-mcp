@@ -71,8 +71,21 @@ public final class LogFileAccess {
 
   private static void refuseReserved(Path path) throws LogFileException {
     if (moving.stream().anyMatch(path::startsWith)) {
-      throw new LogFileException("Log is being moved by an import: " + path + ". Retry after the import finishes.");
+      throw new BeingMoved("Log is being moved by an import: " + path + ". Retry after the import finishes.");
     }
+  }
+
+  /** A read met another import's move of the file; once that move finishes, a later read can succeed. */
+  public static final class BeingMoved extends LogFileException {
+    BeingMoved(String message) { super(message); }
+  }
+
+  /**
+   * Another move, a writer or readers hold the file for now. Nothing is wrong with it, and a later
+   * try can succeed, so an import defers it instead of refusing it for good.
+   */
+  public static final class InUse extends IOException {
+    public InUse(String message) { super(message); }
   }
 
   /** A reservation survives the wait for holders and the rename; closing it admits readers again. */
@@ -82,7 +95,7 @@ public final class LogFileAccess {
     synchronized (LogFileAccess.class) {
       for (var path : real) {
         if (moving.stream().anyMatch(p -> p.startsWith(path) || path.startsWith(p))) {
-          throw new IOException("Another import is moving: " + path);
+          throw new InUse("Another import is moving: " + path);
         }
       }
       moving.addAll(real);
@@ -99,7 +112,7 @@ public final class LogFileAccess {
     var lease = reserveMove(paths);
     try {
       for (var path : paths) {
-        if (!awaitFree(path, Duration.ZERO)) throw new IOException("Log is still held by active readers: " + path);
+        if (!awaitFree(path, Duration.ZERO)) throw new InUse("Log is still held by active readers: " + path);
       }
       return lease;
     } catch (IOException | RuntimeException e) {
