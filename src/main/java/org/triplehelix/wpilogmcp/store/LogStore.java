@@ -800,6 +800,10 @@ public final class LogStore implements AutoCloseable {
   @FunctionalInterface interface PublicationRecoveryProbe { void observed(Path marker) throws IOException; }
   private volatile PublicationRecoveryProbe publicationRecoveryProbe = marker -> {};
   void publicationRecoveryProbe(PublicationRecoveryProbe probe) { publicationRecoveryProbe = Objects.requireNonNull(probe); }
+  private volatile StoreWalk.Probe publicationWalkProbe = entry -> {};
+  void publicationWalkProbe(StoreWalk.Probe probe) { publicationWalkProbe = Objects.requireNonNull(probe); }
+  private volatile int publicationFolderLimit = ReplicaPublications.MAX_OBSERVATIONS;
+  void publicationFolderLimit(int limit) { publicationFolderLimit = limit; }
   @FunctionalInterface interface PublicationStartProbe { void selected(String storeId) throws IOException; }
   private volatile PublicationStartProbe publicationStartProbe = identity -> {};
   void publicationStartProbe(PublicationStartProbe probe) { publicationStartProbe = Objects.requireNonNull(probe); }
@@ -888,16 +892,30 @@ public final class LogStore implements AutoCloseable {
     try {
       publicationMutation(identity, files -> { ReplicaMasters.recover(root, files); return null; }, ignored -> {});
     } catch (IOException unsafe) { failure = unsafe; }
-    int inspected = 0, observed = 0;
+    // The bound counts the folders a marker is written in, session folders, and any other folder
+    // where one is found: a store's other files cost the walk a listing, never an inspection.
+    int folders = 0, observed = 0, limit = publicationFolderLimit;
     publicationWalks.incrementAndGet();
-    try (var paths = Files.walk(root)) {
-      var iterator = paths.iterator();
-      while (iterator.hasNext()) {
+    try (var walk = new StoreWalk(root, publicationWalkProbe)) {
+      for (var entry = walk.next(); entry != null; entry = walk.next()) {
         ensureImporting();
-        var marker = iterator.next();
-        if (++inspected > ReplicaPublications.MAX_OBSERVATIONS)
-          throw new IOException("RESOURCE_LIMIT: capture publication recovery exceeds32768 paths");
-        if (!marker.getFileName().toString().equals(ReplicaMasters.CAPTURE_PENDING)) continue;
+        var marker = entry.path();
+        String name = marker.getFileName().toString();
+        boolean pending = name.equals(ReplicaMasters.CAPTURE_PENDING);
+        if (entry.vanished() && !pending) {
+          // A manifest write renames its temporary file over the manifest once the walk has listed
+          // it. Anything else that moves, a session folder above all, may carry a marker past the
+          // walk, so the pass is not complete, but it is worth trying again.
+          if (!(name.startsWith(".manifest-") && name.endsWith(".tmp")))
+            failure = worse(failure, new StoreBusyException(StoreBusyException.Condition.RECORD_CHANGING,
+                "Store changed during capture publication recovery"));
+          continue;
+        }
+        if (entry.directory() ? sessionFolder(marker) : pending && !sessionFolder(marker.getParent())) {
+          if (++folders > limit)
+            throw new IOException("RESOURCE_LIMIT: capture publication recovery exceeds " + limit + " session folders");
+        }
+        if (!pending) continue;
         try {
           var candidate = ReplicaMasters.inspectCapture(root, io, marker);
           publicationRecoveryProbe.observed(marker);
@@ -914,15 +932,15 @@ public final class LogStore implements AutoCloseable {
             removed = Files.notExists(io.check(marker)) && StoreCatalog.isStore(root)
                 && identity.equals(io.read(root.resolve("store.json"), Header.class).id());
           } catch (IOException | RuntimeException unavailable) { /* Keep the original failed-read evidence. */ }
-          if (!removed && failure == null) failure = missing;
+          if (!removed) failure = worse(failure, missing);
         } catch (IOException | RuntimeException invalid) {
-          if (failure == null) failure = invalid instanceof IOException checked ? checked
-              : new IOException("Invalid capture publication recovery", invalid);
+          failure = worse(failure, invalid instanceof IOException checked ? checked
+              : new IOException("Invalid capture publication recovery", invalid));
         }
       }
     } catch (IOException | RuntimeException incomplete) {
-      if (failure == null) failure = incomplete instanceof IOException checked ? checked
-          : new IOException("Capture publication enumeration could not finish", incomplete);
+      failure = worse(failure, incomplete instanceof IOException checked ? checked
+          : new IOException("Capture publication enumeration could not finish", incomplete));
     }
     var finalFailure = failure;
     publicationState(() -> replicaPublications.finish(finalFailure == null,
@@ -939,6 +957,19 @@ public final class LogStore implements AutoCloseable {
       throw new PublicationPendingException(replicaPublicationFailure);
     }
     replicaPublicationFailure = null;
+  }
+
+  /** An unsafe failure outranks a busy one, so a store at work never hides corrupt recovery. */
+  static IOException worse(IOException kept, IOException next) {
+    return kept == null || kept instanceof StoreBusyException && !(next instanceof StoreBusyException) ? next : kept;
+  }
+
+  /** {@code robots/<robot>/sessions/<day>/<session>}: the folders whose receipts carry markers. */
+  private boolean sessionFolder(Path directory) {
+    if (directory == null || !directory.startsWith(root)) return false;
+    var parts = root.relativize(directory);
+    return parts.getNameCount() == 5 && parts.getName(0).toString().equals("robots")
+        && parts.getName(2).toString().equals("sessions");
   }
 
   @FunctionalInterface private interface PublicationStep { void run() throws IOException; }
@@ -1133,11 +1164,12 @@ public final class LogStore implements AutoCloseable {
         var pendingPublications = new ArrayList<ReplicaPublications.Event>();
         String observedStoreId = null;
         try {
+          // The store was occupied for the whole deadline: busy, so a caller may try again later.
           if (deadlineNanos != 0 && System.nanoTime() >= deadlineNanos)
-            throw new IOException("Capture admission deadline expired before its store turn");
+            throw new StoreBusyException(StoreBusyException.Condition.QUEUE_BUSY, "Capture admission deadline expired before its store turn");
           try (var lock = StoreLock.acquire(root, security)) {
             if (deadlineNanos != 0 && System.nanoTime() >= deadlineNanos)
-              throw new IOException("Capture admission deadline expired while acquiring store.lock");
+              throw new StoreBusyException(StoreBusyException.Condition.QUEUE_BUSY, "Capture admission deadline expired while acquiring store.lock");
             var io = new StoreFiles(root, security, (path, record) -> publications.add(Map.entry(path, record)));
             io.publicationEvents(pendingPublications::add, publicationClock);
             io.annotationProbe(publicationAnnotationProbe);

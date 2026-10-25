@@ -10,8 +10,11 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
@@ -20,10 +23,13 @@ import java.time.ZoneOffset;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -138,6 +144,59 @@ class CapturePublicationStartupTest {
       assertFalse(Files.exists(path), "An intent without its committed receipt remains a rolled-back attempt");
       assertNotEquals("startup_failed", service.live().captureProgress().reason());
     });
+  }
+
+  @Test void aStoreLockHeldWhileRecoveryRunsDelaysCaptureUntilItIsReleased() throws Exception {
+    // Held by this process, the lock refuses the store's own turns as another process's lock does.
+    try (var channel = FileChannel.open(store.root().resolve("store.lock"), StandardOpenOption.WRITE)) {
+      var passes = new AtomicInteger();
+      var held = new AtomicReference<FileLock>();
+      ReplicaPublicationFixture.onPublicationStart(store, () -> { if (passes.incrementAndGet() == 1) held.set(channel.lock()); });
+      withService(service -> {
+        var started = service.start();
+        awaitReason(service, "waiting_for_store");
+        assertEquals("lock_held", service.live().captureProgress().cause());
+        assertFalse(started.isDone(), "A busy store delays capture instead of stopping it");
+        held.get().release();
+        assertDoesNotThrow(() -> started.get(10, TimeUnit.SECONDS));
+        assertEquals("not_started", service.live().captureProgress().reason(), "Capture starts as if it had never waited");
+        assertNull(service.live().captureProgress().cause());
+        assertTrue(passes.get() >= 2, "Recovery ran again once the lock was free");
+      });
+    }
+  }
+
+  @Test void stoppingWhileCaptureWaitsForItsStoreEndsTheWaitAtOnce() throws Exception {
+    try (var channel = FileChannel.open(store.root().resolve("store.lock"), StandardOpenOption.WRITE)) {
+      var held = new AtomicReference<FileLock>();
+      ReplicaPublicationFixture.onPublicationStart(store, () -> { if (held.get() == null) held.set(channel.lock()); });
+      var started = new AtomicReference<CompletableFuture<Void>>();
+      try {
+        withService(service -> {
+          service.firstStoreRetry(Duration.ofSeconds(60));
+          started.set(service.start());
+          awaitReason(service, "waiting_for_store");
+        });
+        // The service is closed: its startup is over now, not when the next try was due.
+        assertDoesNotThrow(() -> started.get().get(2, TimeUnit.SECONDS));
+      } finally {
+        if (held.get() != null) held.get().release();
+      }
+    }
+  }
+
+  @Test void aBusyStoreIsTriedAgainAfterOneSecondDoublingToThirtySeconds() {
+    var delays = new java.util.ArrayList<Long>();
+    for (var delay = CaptureService.FIRST_STORE_RETRY; delays.size() < 7; delay = CaptureService.nextStoreRetry(delay))
+      delays.add(delay.toSeconds());
+    assertEquals(List.of(1L, 2L, 4L, 8L, 16L, 30L, 30L), delays);
+  }
+
+  /** Capture's published status reaches {@code reason}; the deadline only guards against a hang. */
+  private static void awaitReason(CaptureService service, String reason) throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (!reason.equals(service.live().captureProgress().reason()) && System.nanoTime() < deadline) Thread.sleep(5);
+    assertEquals(reason, service.live().captureProgress().reason());
   }
 
   @FunctionalInterface private interface Check { void run(CaptureService service) throws Exception; }

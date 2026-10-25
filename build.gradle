@@ -372,7 +372,7 @@ def readerOwners = [
     'log/LogFileAccess', 'log/FileSnapshot', 'log/LogFileException', 'log/TimestampedValue',
     'log/RobotCandidates', 'log/LogData', 'log/NumericColumn', 'log/WallClock', 'log/subsystems/EntryDecoder', 'log/subsystems/BinaryReader',
     'log/subsystems/SecurityValidator', 'config/ClientLeases',
-    'store/StoreCatalog', 'store/StoreManifest', 'store/ReplicaCatalog', 'store/ReplicaJournal', 'store/ReplicaMasters', 'store/ReplicaPublications', 'store/ReplicaReads', 'store/StoreFiles', 'store/StoreJson', 'store/FileNameEncoding', 'store/CaptureRecording',
+    'store/StoreCatalog', 'store/StoreManifest', 'store/ReplicaCatalog', 'store/ReplicaJournal', 'store/ReplicaMasters', 'store/StoreBusyException', 'store/ReplicaPublications', 'store/ReplicaReads', 'store/StoreFiles', 'store/StoreJson', 'store/FileNameEncoding', 'store/CaptureRecording',
     'store/SystemLogState', 'store/SystemLogFiles', 'store/SystemLogIndex', 'store/ClockRecords', 'store/RecordedClocks',
     'store/StoreTransferInventory', 'capture/CaptureLease', 'capture/CaptureStats',
     'capture/TopicCost', 'capture/context/DeviceIdentity', 'capture/context/ProviderStatus',

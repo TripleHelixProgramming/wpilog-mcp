@@ -351,17 +351,13 @@ class ReplicaPublicationCausesTest {
     assertNull(store.publicationStatus().totalPendingCount());
   }
 
-  @Test void theActualRecoveryWalkerStopsAfterItsAdvertisedPathBound() throws Exception {
+  @Test void theActualRecoveryWalkerStopsAfterItsAdvertisedSessionFolderBound() throws Exception {
     store.awaitImports();
     store.publicationsSettled().get(20, TimeUnit.SECONDS);
-    long baselinePaths;
-    try (var paths = Files.walk(store.root())) { baselinePaths = paths.count(); }
-    var unrelated = Files.createDirectory(store.root().resolve("walker-bound"));
-    // Exactly 32,769 new paths: one directory and 32,768 empty synthetic files.
-    for (int i = 0; i < 32768; i++) Files.createFile(unrelated.resolve("file-" + i));
-    try (var paths = Files.walk(store.root())) {
-      assertEquals(baselinePaths + 32769L, paths.count(), "The synthetic fixture's path count is independently known");
-    }
+    var day = Files.createDirectories(store.root().resolve("robots").resolve(robotFolder()).resolve("sessions").resolve("2099-01-01"));
+    // The bound counts session folders, not paths: one more than it allows, beside the imported session.
+    for (long i = sessionFolders(); i <= 32768; i++) Files.createDirectory(day.resolve("walker-bound-" + i));
+    assertEquals(32769L, sessionFolders(), "The synthetic fixture's session folder count is independently known");
     long before = store.publicationWalks();
     var failure = assertThrows(java.util.concurrent.ExecutionException.class,
         () -> store.recoverMasterPublication().get(30, TimeUnit.SECONDS));
@@ -374,6 +370,20 @@ class ReplicaPublicationCausesTest {
     assertEquals("Pending publication inventory exceeds its metadata bound.", result.failureMessage());
     assertEquals(0, result.knownPendingCount());
     assertNull(result.totalPendingCount(), "Exceeding the traversal bound cannot prove that no pending receipts exist");
+  }
+
+  private String robotFolder() throws java.io.IOException {
+    try (var robots = Files.list(store.root().resolve("robots"))) {
+      return robots.filter(Files::isDirectory).findFirst().orElseThrow().getFileName().toString();
+    }
+  }
+
+  /** robots/robot/sessions/day/session folders, counted from the file system alone. */
+  private long sessionFolders() throws java.io.IOException {
+    try (var paths = Files.find(store.root().resolve("robots"), 4, (path, attributes) -> attributes.isDirectory()
+        && store.root().relativize(path).getNameCount() == 5 && store.root().relativize(path).getName(2).toString().equals("sessions"))) {
+      return paths.count();
+    }
   }
 
   private static void await(CountDownLatch latch) throws java.io.IOException {

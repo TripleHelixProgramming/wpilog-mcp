@@ -36,6 +36,12 @@ public final class CaptureService implements AutoCloseable {
   private final org.triplehelix.wpilogmcp.store.CaptureStore placement;
   private volatile java.util.concurrent.CompletableFuture<Void> starting;
   private final java.util.concurrent.atomic.AtomicBoolean stopping = new java.util.concurrent.atomic.AtomicBoolean();
+  /** Completed by close: a startup waiting to try its store again stops waiting at once. */
+  private final java.util.concurrent.CompletableFuture<Void> stopped = new java.util.concurrent.CompletableFuture<>();
+  /** A busy store is tried again after a second, then twice as long each time, at most 30 seconds. */
+  static final Duration FIRST_STORE_RETRY = Duration.ofSeconds(1), LAST_STORE_RETRY = Duration.ofSeconds(30);
+  private volatile Duration firstStoreRetry = FIRST_STORE_RETRY;
+  void firstStoreRetry(Duration delay) { firstStoreRetry = java.util.Objects.requireNonNull(delay); }
 
   public CaptureService(CaptureConfig config, LogManager manager) throws IOException {
     this(config, manager, Clock.systemUTC(), ClientScheduler.daemon());
@@ -139,9 +145,12 @@ public final class CaptureService implements AutoCloseable {
     // The initial publication enters the same ordered listener before client.start() does.
     // Joining it here would couple store recovery to a listener that the caller may not yet run.
     if (diskMonitor != null) diskMonitor.start();
-    starting = placement.recoverAsync().thenCompose(ignored -> store.refreshStatus()
-        .exceptionally(CaptureService::publicationMayRemainPending)).thenRun(() -> {
-      if (!stopping.get()) { watchdog.start(); if (providers != null) providers.start(); client.start(); if (pull != null) pull.start(); }
+    starting = whenStoreSettles(placement::recoverAsync, firstStoreRetry).thenCompose(ignored -> whenStoreSettles(
+        () -> store.refreshStatus().exceptionally(CaptureService::publicationMayRemainPending), firstStoreRetry)).thenRun(() -> {
+      if (!stopping.get()) {
+        writer.storeSettled();
+        watchdog.start(); if (providers != null) providers.start(); client.start(); if (pull != null) pull.start();
+      }
       // Captures closed before this start, and those recovery just closed, get their clock records.
       if (!stopping.get()) store.keepClocks();
     }).whenComplete((ignored, error) -> {
@@ -152,6 +161,35 @@ public final class CaptureService implements AutoCloseable {
       }
     });
     return starting;
+  }
+
+  /**
+   * Runs one startup step until it succeeds. A busy store passes on its own (another process
+   * holding store.lock, a queue occupied past the turn's deadline, a record rewritten while it
+   * was read), so the step is tried again and status says capture is waiting for its store, and
+   * why. Every other failure stays fatal, as decided for unsafe or corrupt recovery; capture used
+   * to stop on a busy store too, until the server restarted. Stopping ends the wait at once.
+   */
+  private java.util.concurrent.CompletableFuture<Void> whenStoreSettles(
+      java.util.function.Supplier<java.util.concurrent.CompletableFuture<Void>> step, Duration delay) {
+    if (stopping.get()) return java.util.concurrent.CompletableFuture.completedFuture(null);
+    return step.get().handle((ignored, error) -> {
+      if (error == null) return java.util.concurrent.CompletableFuture.<Void>completedFuture(null);
+      var busy = org.triplehelix.wpilogmcp.store.StoreBusyException.in(error);
+      if (busy == null) return java.util.concurrent.CompletableFuture.<Void>failedFuture(error);
+      if (stopping.get()) return java.util.concurrent.CompletableFuture.<Void>completedFuture(null);
+      writer.waitingForStore(busy.condition().name().toLowerCase(java.util.Locale.ROOT));
+      org.slf4j.LoggerFactory.getLogger(CaptureService.class).warn(
+          "Capture is waiting for its store ({}); trying again in {} ms", busy.getMessage(), delay.toMillis());
+      var wait = java.util.concurrent.CompletableFuture.runAsync(() -> {},
+          java.util.concurrent.CompletableFuture.delayedExecutor(delay.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS));
+      return java.util.concurrent.CompletableFuture.anyOf(wait, stopped).thenCompose(woken -> whenStoreSettles(step, nextStoreRetry(delay)));
+    }).thenCompose(java.util.function.Function.identity());
+  }
+
+  static Duration nextStoreRetry(Duration delay) {
+    var doubled = delay.multipliedBy(2);
+    return doubled.compareTo(LAST_STORE_RETRY) < 0 ? doubled : LAST_STORE_RETRY;
   }
 
   /** Only a completed safe receipt sweep may defer publication; a message is not that proof. */
@@ -166,6 +204,7 @@ public final class CaptureService implements AutoCloseable {
 
   @Override public void close() {
     if (!stopping.compareAndSet(false, true)) return;
+    stopped.complete(null);
     watchdog.close();
     if (diskMonitor != null) diskMonitor.stopSampling();
     live.stop();

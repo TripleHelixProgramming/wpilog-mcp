@@ -668,11 +668,15 @@ and the pending legacy copy integrations.
 
 `capture` contains `configured_count` and a `captures` array, currently zero or one row. Each
 row reports `state` (`waiting_admission`, `recording` or `stopped`), a finite `reason` when
-stopped, nullable `last_write_age_ms`, `longest_listener_loop_stall_us`, and
-`longest_store_queue_turn_us`. Before the first completed write, the age is null. Reasons
-distinguish not started, waiting for a clock or topic, disconnection, admission failure, write
-failure, startup failure, low disk, close and shutdown. No path, robot identity, recorder
-identifier or raw error message is included. The two maxima cover observations since the
+stopped, a `cause` that is null except while startup waits for its store, nullable
+`last_write_age_ms`, `longest_listener_loop_stall_us`, and `longest_store_queue_turn_us`. Before
+the first completed write, the age is null. Reasons distinguish not started, waiting for the
+store, waiting for a clock or topic, disconnection, admission failure, write failure, startup
+failure, low disk, close and shutdown. While the reason is `waiting_for_store`, the cause is
+`lock_held` (another process holds the store lock), `queue_busy` (the store's queue stayed
+occupied past the turn's deadline) or `record_changing` (a receipt or folder changed while
+recovery read it), and startup tries again after a second, doubling to 30 seconds. No path,
+robot identity, recorder identifier or raw error message is included. The two maxima cover observations since the
 preceding health probe, shared by all callers; a racing completion is not lost and an ongoing
 stall remains visible across probes. The store maximum measures the mutation action and
 currently excludes a blocked completion-report callback; see

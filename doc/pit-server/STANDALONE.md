@@ -1008,10 +1008,12 @@ source or an already committed file. Capture remains
 independent of catalog capacity: a completed recording stays in its session receipt with a
 `.replica-publication.json` recovery marker if publication fails. `list_sessions` reports
 `replica_publication_failure` for the current capture, and the server logs the failure. Store
-initialization and explicit recovery retry those markers with a 32768-path inspection limit.
+initialization and explicit recovery retry those markers, walking at most 32768 session folders.
 Read-only status and metrics use the published inventory without starting recovery or waiting
 for the store queue. A complete, safe receipt sweep with publication failures permits capture
-startup, including after restart; malformed intents and unsafe receipt paths still stop it.
+startup, including after restart; malformed intents and unsafe receipt paths still stop it. A
+busy store delays startup instead: capture tries again after a second, doubling to 30 seconds,
+and `/health` reports `waiting_for_store` with its `cause`.
 The marker retains both receipt hashes while replacing a receipt, so a failed replacement cannot
 erase an earlier completed capture's pending publication.
 It also retains a safe failure code and first/latest failure times. Old markers without those

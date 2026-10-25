@@ -88,7 +88,8 @@ server starts at once and the client retries until the robot answers.
    `listening` on its port, or `waiting` with a `cause` (usually another program on the port).
    `capture.captures[].state` distinguishes `waiting_admission`, `recording` and `stopped`;
    a stopped row carries a `reason` while process `status` stays `ok`. `low_disk` resumes
-   automatically above the configured floor plus margin. For `startup_failed`,
+   automatically above the configured floor plus margin, and `waiting_for_store` once the store
+   is free; its `cause` says what held it. For `startup_failed`,
    `admission_failed` or `write_failed`, read the private server log for details.
    `last_write_age_ms` is null before a completed write; a high age alone is not proof of
    missing samples because some topics publish only changes.

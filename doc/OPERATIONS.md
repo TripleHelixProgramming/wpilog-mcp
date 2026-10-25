@@ -56,6 +56,10 @@ ephemeral identity and a reason. This does not create a log store; the recorded 
 If HTTP is healthy but recording has stopped, inspect `capture.captures[].state` and `reason`.
 `low_disk` resumes automatically when free space is above the configured floor plus margin;
 `startup_failed`, `admission_failed` and `write_failed` have details in the private server log.
+`waiting_for_store` resumes by itself once the store is free. Its `cause` says why: `lock_held`
+means another process holds the store lock, often an import run from the command line;
+`queue_busy` and `record_changing` mean the server's own store work was in the way. Capture tries
+again after a second, then every 2, 4, 8 and 16 seconds, then every 30 seconds.
 `last_write_age_ms` is null before a completed write. A high age alone does not prove missing
 data: a topic may publish only when it changes. Stopped capture keeps process health `ok` and
 does not by itself activate the systemd restart handler.

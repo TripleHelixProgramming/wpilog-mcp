@@ -2045,8 +2045,10 @@ not arbitrary exception or marker text. Failed diagnostic persistence leaves the
 capture intact and reports `cause_durable: false`; restart can recover only durable facts.
 
 `ReplicaPublications` publishes immutable pending facts from the store owner. Initial and
-explicit recovery enumerate off that owner, bounded to 32,768 paths; one short metadata turn
-rechecks each candidate's receipt witness before retrying publication. Payload hashes and tree
+explicit recovery enumerate off that owner, bounded to 32,768 session folders, the folders a
+marker is written in, plus any other folder where one is found; the store's other files cost the
+walk a listing, never an inspection. One short metadata turn rechecks each candidate's receipt
+witness before retrying publication. Payload hashes and tree
 walks stay outside the turn. In a folder that holds no store, the initial pass takes no lock and
 creates no file: it records that there is no store, and reports a store this process knew about
 that has since vanished. Live outcomes take precedence over stale sweep observations.
@@ -2055,6 +2057,15 @@ limits; these are accounting limits, not measured heap. Incomplete or failed rec
 reports a fabricated total of zero. Only a complete safe recovery may classify its remaining
 failure as publication-only. CaptureService tolerates that class while preserving fatal
 startup for unsafe or corrupt recovery; explicit recovery still reports the failure.
+
+A busy store is neither unsafe nor publication-only: another process holds the store lock, the
+queue stayed occupied past a turn's deadline, or a receipt changed while recovery read it. Capture
+startup used to stop on these until the server restarted. It now tries again after a second,
+doubling to at most 30 seconds, until recovery succeeds or capture stops, and its status says it
+is waiting for its store and why. The walk takes no lock, so an entry can vanish once listed. A
+temporary manifest renamed over its manifest is skipped. Anything else that moves, a session
+folder above all, may carry a marker past the walk, so the pass is incomplete and busy rather
+than complete. An unsafe failure in the same pass outranks a busy one.
 
 `POST /replicas/v1/status` reads this owner publication, including true pending totals and
 safe causes. Its optional exact session lookup reaches entries outside the bounded summary
@@ -2095,8 +2106,8 @@ preflight checks count and encoded budgets before moving bytes or replacing a re
 durable intent bridges receipt and header replacement, with exact prepared receipt hash recovery.
 Capture writes instead retain a per-session `.replica-publication.json` marker if catalog publication
 fails. The capture completion barrier still succeeds and status reports deferred publication; the
-next recording never waits for a full catalog to recover. Explicit recovery scans at most 32768
-paths and reports a remaining limit or I/O failure. A pending import intent refuses a catalog build
+next recording never waits for a full catalog to recover. Explicit recovery walks at most 32,768
+session folders and reports a remaining limit or I/O failure. A pending import intent refuses a catalog build
 until its store owner recovers. Explicit store move aliases preserve logical identity; equal bytes elsewhere
 are not aliases. Closed clock companions retain independent identities and capture relationships,
 and transfer validation uses `ClockRecords`. Provenance, clock/matching and placement claims

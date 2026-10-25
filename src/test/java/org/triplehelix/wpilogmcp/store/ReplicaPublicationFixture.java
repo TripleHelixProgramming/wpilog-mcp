@@ -64,4 +64,10 @@ public final class ReplicaPublicationFixture {
     store.awaitImports();
     return captured;
   }
+
+  /** Runs {@code action} as each later publication recovery pass selects its store, before its first turn. */
+  public static void onPublicationStart(LogStore store, PassStart action) {
+    store.publicationStartProbe(identity -> action.run());
+  }
+  @FunctionalInterface public interface PassStart { void run() throws java.io.IOException; }
 }

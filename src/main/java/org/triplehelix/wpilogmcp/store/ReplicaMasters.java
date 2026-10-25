@@ -51,8 +51,8 @@ final class ReplicaMasters {
   /** Each capture receipt owns its recovery marker, so a failed publication cannot serialize
    * admission of the next recording behind a full catalog. Remember the currently committed
    * receipt too: a crash replacing its successor must not erase an earlier pending publication.
-   * Markers are bounded individually;
-   * the explicit recovery sweep inspects at most 32768 paths, never on the NT event loop. */
+   * Markers are bounded individually; the explicit recovery sweep walks at most 32768 session
+   * folders, never on the NT event loop. */
   static void prepareCapture(Path root, StoreFiles io, Path path, Object value, Path serialized) throws IOException {
     if (!(value instanceof StoreManifest.Session session)) return;
     boolean completed = session.files().stream().anyMatch(f -> f.verified() && f.sha256() != null
@@ -106,10 +106,15 @@ final class ReplicaMasters {
     if (committed != null && (committed.equals(pending.sha256()) || committed.equals(pending.previousSha256()))) {
       session = io.read(receipt, StoreManifest.Session.class);
       validateCaptureReceipt(io, receipt, session);
-      if (!committed.equals(StoreFiles.hash(receipt))) throw new IOException("Capture receipt changed during inspection");
+      if (!committed.equals(StoreFiles.hash(receipt))) throw changing("Capture receipt changed during inspection");
     }
-    if (!markerHash.equals(StoreFiles.hash(marker))) throw new IOException("Capture intent changed during inspection");
+    if (!markerHash.equals(StoreFiles.hash(marker))) throw changing("Capture intent changed during inspection");
     return new CaptureObservation(marker, receipt, pending, session, markerHash, committed);
+  }
+
+  /** A receipt or intent rewritten under a reader is a writer at work, not damage: read it again later. */
+  private static StoreBusyException changing(String message) {
+    return new StoreBusyException(StoreBusyException.Condition.RECORD_CHANGING, message);
   }
 
   /** Bounded metadata hashes are rechecked under store.lock; tree/payload reads stay off-owner. */
@@ -118,11 +123,11 @@ final class ReplicaMasters {
     if (!Files.isRegularFile(io.check(observed.marker()))
         || Files.size(observed.marker()) > StoreFiles.MAX_MANIFEST_BYTES
         || !observed.markerHash().equals(StoreFiles.hash(observed.marker())))
-      throw new IOException("Capture intent changed before publication");
+      throw changing("Capture intent changed before publication");
     io.check(observed.receipt());
     String committed = Files.exists(observed.receipt()) && Files.size(observed.receipt()) <= StoreFiles.MAX_MANIFEST_BYTES
         ? StoreFiles.hash(observed.receipt()) : null;
-    if (!Objects.equals(committed, observed.receiptHash())) throw new IOException("Capture receipt changed before publication");
+    if (!Objects.equals(committed, observed.receiptHash())) throw changing("Capture receipt changed before publication");
     if (observed.session() != null) {
       validateCaptureReceipt(io, observed.receipt(), observed.session());
       try { published(root, io, observed.receipt(), observed.session()); }
