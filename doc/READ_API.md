@@ -494,8 +494,10 @@ Boundary or expected-hash changes force verification; current path/catalog check
 snapshot-boundary checks still run. This does not detect edits that preserve all observed
 filesystem attributes. Concurrent cold misses may duplicate hash I/O without a shared I/O lock.
 A stale/foreign cursor is `INVALID_REQUEST`; an expired, deleted or restarted lease is HTTP 410
-`CURSOR_EXPIRED`. An already admitted wait cancelled by DELETE or shutdown ends with HTTP 410
-`CLOSED`. Rebootstrap the same source explicitly after losing a cursor or the retained client
+`CURSOR_EXPIRED`. An already admitted wait or page cancelled by DELETE or shutdown ends with HTTP
+410 `CLOSED`, whatever the shutdown released beneath it first; a native read admitted before a
+shutdown receives 503 `CLOSED`, as a request arriving during it does. Rebootstrap the same source
+explicitly after losing a cursor or the retained client
 frontier, and surface unavailable history rather than silently retargeting. Malformed JSON bodies
 on creation or next return HTTP 400 `INVALID_REQUEST` with `Invalid read JSON`; they do not
 acknowledge a page or expose parser-library advice.

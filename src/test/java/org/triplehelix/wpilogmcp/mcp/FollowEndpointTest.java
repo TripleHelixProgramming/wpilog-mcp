@@ -777,7 +777,8 @@ class FollowEndpointTest {
       assertFalse(waits.get(1).isDone());
     } finally {
       transport.stop();
-      for (var wait : waits) assertTrue(wait.isDone() || wait.get(5, TimeUnit.SECONDS).statusCode() >= 400);
+      // Every follow the stop finds parked ends with 410 CLOSED and is opened again on the next server.
+      for (var wait : waits) assertEquals(410, wait.get(5, TimeUnit.SECONDS).statusCode(), wait.get().body());
     }
   }
 }

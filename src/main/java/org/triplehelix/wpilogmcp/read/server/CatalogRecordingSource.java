@@ -26,6 +26,8 @@ import org.triplehelix.wpilogmcp.read.catalog.StoreReadCatalog;
 public final class CatalogRecordingSource implements OrdinalFollow.Source {
   public interface Lease extends AutoCloseable {
     StoreReadCatalog value();
+    /** True while the owner is stopping: a missing catalog then means a stop, not a missing store. */
+    default boolean closing() { return false; }
     @Override void close() throws IOException;
   }
   @FunctionalInterface public interface Catalogs { Lease acquire() throws IOException; }

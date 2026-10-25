@@ -94,16 +94,32 @@ final class FollowEndpoint implements AutoCloseable {
         }
       } finally { synchronized (leases) { lease.active--; lease.used = clock.getAsLong(); } }
     } catch (Refusal e) { ReadEndpoint.sendFailure(exchange, e.status, e.code, e.getMessage()); }
-    catch (ReadException e) { ReadEndpoint.sendFailure(exchange, ReadEndpoint.status(e.code()),
-        e.code() == org.triplehelix.wpilogmcp.read.ReadProblem.Code.FILE_CHANGED && !e.retryable() ? "HISTORY_UNAVAILABLE" : e.code().name(), e.getMessage(), e.retryable()); }
-    catch (java.nio.file.AccessDeniedException | org.triplehelix.wpilogmcp.log.LogFileException e) { ReadEndpoint.sendFailure(exchange, 403, "ACCESS_DENIED", e.getMessage()); }
+    catch (ReadException e) {
+      if (!stopped(exchange)) ReadEndpoint.sendFailure(exchange, ReadEndpoint.status(e.code()),
+          e.code() == org.triplehelix.wpilogmcp.read.ReadProblem.Code.FILE_CHANGED && !e.retryable() ? "HISTORY_UNAVAILABLE" : e.code().name(), e.getMessage(), e.retryable());
+    } catch (java.nio.file.AccessDeniedException | org.triplehelix.wpilogmcp.log.LogFileException e) {
+      if (!stopped(exchange)) ReadEndpoint.sendFailure(exchange, 403, "ACCESS_DENIED", e.getMessage());
+    } catch (java.util.concurrent.RejectedExecutionException e) {
+      if (!stopped(exchange)) ReadEndpoint.sendFailure(exchange, 503, "CLOSED", "Follow service is stopping; retry after it restarts");
+    }
     catch (ReadWire.WireLimit e) { ReadEndpoint.sendFailure(exchange, 413, "RESOURCE_LIMIT", e.getMessage()); }
     catch (IllegalArgumentException e) { ReadEndpoint.sendFailure(exchange, 400, "INVALID_REQUEST", e.getMessage()); }
     catch (IOException e) {
+      if (stopped(exchange)) return;
       String message = java.util.Objects.toString(e.getMessage(), "Source unavailable");
       String code = message.matches("^[A-Z_]+:.*") ? message.substring(0, message.indexOf(':')) : "SOURCE_UNAVAILABLE";
       ReadEndpoint.sendFailure(exchange, 409, code, e.getMessage());
     }
+  }
+  /**
+   * A follow caught by the stop meets owners torn down beneath it (grants, catalogs, its workspace),
+   * each of which fails in its own words. Whatever failed, the follow has ended: it answers 410 CLOSED
+   * and its client opens it again on the restarted server, instead of stopping on an access refusal.
+   */
+  private boolean stopped(HttpExchange exchange) throws IOException {
+    synchronized (leases) { if (!closed) return false; }
+    ReadEndpoint.sendFailure(exchange, 410, "CLOSED", "Follow closed: its server is stopping; open it again after the restart");
+    return true;
   }
   private void create(HttpExchange exchange, JsonObject body, ViewAdmission views) throws IOException {
     if (body.has("view_binding")) {

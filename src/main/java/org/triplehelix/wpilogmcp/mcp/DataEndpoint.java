@@ -125,6 +125,10 @@ final class DataEndpoint {
   }
 
   /** A refusal with a status and a JSON body. */
+  /** A request admitted before the stop that meets it is told to retry, not that no store exists. */
+  static Refusal stopping() {
+    return new Refusal(503, "The server is stopping", "Retry after it restarts");
+  }
   static final class Refusal extends Exception {
     final int status;
     final JsonObject body;
@@ -900,6 +904,7 @@ final class DataEndpoint {
     JsonArray problems;
     // The catalog is held while the files are read: a REV log opens through it, by its recorded alignment.
     try (var lease = catalogs.acquire()) {
+      if (lease.closing()) throw stopping();
       var stores = DataRanges.stores(lease.value(), request.store());
       problems = DataRanges.problems(lease.value(), stores);
       var candidates = DataRanges.candidates(stores, request.robot(), !request.capturesOnly(),
@@ -1543,6 +1548,7 @@ final class DataEndpoint {
       var q = query(exchange.getRequestURI().getRawQuery());
       var rows = new StringBuilder("robot_id,serial_number,name,basis,store_id\n");
       try (var lease = catalogs.acquire()) {
+        if (lease.closing()) throw stopping();
         var stores = DataRanges.stores(lease.value(), one(q, "store"));
         var problems = DataRanges.problems(lease.value(), stores);
         if (!problems.isEmpty()) rows.insert(0, "# catalog_problems: " + gson.toJson(problems) + "\n");
@@ -1580,6 +1586,7 @@ final class DataEndpoint {
       boolean known = false;
       JsonArray problems;
       try (var lease = catalogs.acquire()) {
+        if (lease.closing()) throw stopping();
         var stores = DataRanges.stores(lease.value(), one(q, "store"));
         problems = DataRanges.problems(lease.value(), stores);
         for (var store : stores) {
