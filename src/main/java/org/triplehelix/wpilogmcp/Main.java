@@ -755,8 +755,10 @@ public class Main {
       logger().info("TBA enrichment disabled (no API key found)");
     }
 
-    // Run disk cache cleanup in background (non-blocking), and build column files as logs arrive
+    // Create and report the cache directory before serving, so even a server that stops at once says
+    // which cache it uses; then clean it up in the background and build column files as logs arrive
     if (logManager.getDiskCache().isEnabled()) {
+      logManager.getDiskCache().prepareDirectory();
       startCacheCleanup(() -> logManager.getDiskCache().cleanup());
       logManager.startColumnBuilds();
     }
