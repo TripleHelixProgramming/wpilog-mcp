@@ -435,9 +435,12 @@ manual checklist there.
 
 Visible recording views show acquisition separately from follow progress. Quiet change-only
 signals remain connected; last-value age is informational. Health checks share one request per
-visible source with a five-second cadence and client deadline. Hiding the final view stops them.
-A same-clock reconnect reopens drained history using fresh buffers. A new robot recording never
-replaces an existing view's source automatically.
+visible source with a five-second cadence and client deadline. A check the server refuses as
+retryable, such as one that meets the store still writing the file a robot's disconnect closed,
+keeps the views' last status and is asked again after the server's suggested wait; a refusal
+that lasts five seconds is shown. Hiding the final view stops the checks. A same-clock reconnect
+reopens drained history using fresh buffers. A new robot recording never replaces an existing
+view's source automatically.
 
 After a same-owner server session restart, the preview restores the window allowance and the same
 working view, retries failed attachment, then bootstraps fresh data. Configuration, source anchor

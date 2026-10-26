@@ -2,7 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
-import { McpClient } from "../mcpClient";
+import { LocalControlError, McpClient } from "../mcpClient";
 import { DataClient } from "../dataClient";
 
 test("native view follows borrow the registered MCP session only on its own follow route", async t => {
@@ -112,6 +112,20 @@ test("inventory refuses malformed retryable flags rather than treating them as a
   t.after(() => { server.closeAllConnections(); server.close(); });
   const client = new McpClient(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`, "test");
   await assert.rejects(client.visualization("/source/entries/list", {}, undefined, { session: "s" }), /Invalid visualization refusal retryable/);
+});
+
+test("a visualization refusal keeps the server's suggested retry wait and refuses a malformed one", async t => {
+  let body = '{"code":"FILE_CHANGED","error":"changed","retryable":true,"retry_after_ms":1000}';
+  const server = http.createServer((req, res) => { req.resume(); req.on("end", () => { res.statusCode = 409; res.end(body); }); });
+  await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const client = new McpClient(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`, "test");
+  await assert.rejects(client.visualization("/source/health", {}, undefined, { session: "s" }),
+    (e: unknown) => e instanceof LocalControlError && e.retryable === true && e.retryAfterMs === 1000);
+  for (const wait of ['"soon"', "-1", "null"]) {
+    body = `{"code":"FILE_CHANGED","error":"changed","retryable":true,"retry_after_ms":${wait}}`;
+    await assert.rejects(client.visualization("/source/health", {}, undefined, { session: "s" }), /Invalid visualization refusal retry delay/);
+  }
 });
 
 /** A small reply can arrive whole in the chunk that crosses the budget; the destroy that follows

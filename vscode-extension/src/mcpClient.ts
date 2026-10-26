@@ -328,7 +328,9 @@ export class McpClient {
       check(); const value = JSON.parse(reply.body);
       if (reply.status !== 200) {
         if (value.retryable !== undefined && typeof value.retryable !== "boolean") throw new Error("Invalid visualization refusal retryable flag");
-        throw new LocalControlError(`${value.code ?? "PREVIEW_FAILED"}: ${value.error ?? reply.status}`, reply.status, value.code, value.retryable);
+        if (value.retry_after_ms !== undefined && !(typeof value.retry_after_ms === "number" && Number.isFinite(value.retry_after_ms) && value.retry_after_ms >= 0))
+          throw new Error("Invalid visualization refusal retry delay");
+        throw new LocalControlError(`${value.code ?? "PREVIEW_FAILED"}: ${value.error ?? reply.status}`, reply.status, value.code, value.retryable, value.retry_after_ms);
       }
       if (this.disposed || this.sessionId !== called) throw new Error("The connection changed during this visualization request");
       return value as T;
@@ -477,9 +479,10 @@ class RegistrationError extends Error {
   }
 }
 
-/** A conflict is shown to the person; the client never retries a policy replacement. */
+/** A conflict is shown to the person; the client never retries a policy replacement. A retryable
+ * refusal may carry the server's suggested wait before asking again. */
 export class LocalControlError extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string, readonly retryable?: boolean) { super(message); }
+  constructor(message: string, readonly status: number, readonly code?: string, readonly retryable?: boolean, readonly retryAfterMs?: number) { super(message); }
 }
 
 /** Inventory handles are session-owned; passing session prohibits automatic rebinding/replay. */

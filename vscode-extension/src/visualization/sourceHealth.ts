@@ -25,9 +25,19 @@ export function sourceHealth(value: any, source: HealthSource): SourceHealth {
   }
   return value;
 }
-interface Job { source: HealthSource; listeners: Set<(value: HealthObservation) => void>; abort: AbortController; timer?: NodeJS.Timeout; }
+interface Job { source: HealthSource; listeners: Set<(value: HealthObservation) => void>; abort: AbortController; timer?: NodeJS.Timeout; refusedSince?: number; }
+/** The server's suggested wait when it refuses a check as retryable, such as one that meets the store
+ * still writing the file a robot's disconnect closed; otherwise none. */
+function retryDelay(error: unknown): number | undefined {
+  const refusal = error as { retryable?: unknown; retryAfterMs?: unknown } | null;
+  if (!refusal || refusal.retryable !== true) return undefined;
+  const wait = refusal.retryAfterMs;
+  return typeof wait === "number" && Number.isFinite(wait) && wait >= 0 ? wait : 1000;
+}
 /** Visible views of one source share a five-second heartbeat. Silence in the selected signals
- * never drives this status. No cache, handle, prefix, or acquisition survives its final subscriber. */
+ * never drives this status. A refusal the server marks retryable is a passing state: the views keep
+ * what they last showed and the check is asked again after the suggested wait, until the refusal has
+ * lasted a heartbeat, when it is shown. No cache, handle, prefix, or acquisition survives its final subscriber. */
 export class SourceHealthMonitor implements HealthWatch {
   private jobs = new Map<string, Job>(); private closed = false;
   constructor(private read: (source: HealthSource, signal: AbortSignal) => Promise<unknown>, private intervalMs = 5000) {}
@@ -46,12 +56,19 @@ export class SourceHealthMonitor implements HealthWatch {
     } };
   }
   private async poll(key: string, job: Job): Promise<void> {
-    let value: HealthObservation;
-    try { const health = sourceHealth(await this.read(job.source, job.abort.signal), job.source); value = { kind: "ok", health, reason: health.reason }; }
-    catch (error) { value = { kind: "unavailable", reason: String(error) }; }
+    let value: HealthObservation | undefined, delay = this.intervalMs;
+    try {
+      const health = sourceHealth(await this.read(job.source, job.abort.signal), job.source);
+      value = { kind: "ok", health, reason: health.reason }; job.refusedSince = undefined;
+    } catch (error) {
+      const wait = retryDelay(error), now = Date.now();
+      if (wait === undefined) { job.refusedSince = undefined; value = { kind: "unavailable", reason: String(error) }; }
+      else if (now - (job.refusedSince ??= now) < this.intervalMs) delay = Math.min(wait, this.intervalMs);
+      else value = { kind: "unavailable", reason: String(error) };
+    }
     if (this.closed || job.abort.signal.aborted || this.jobs.get(key) !== job) return;
-    for (const changed of job.listeners) { try { changed(value); } catch { /* One closed panel cannot interrupt its peers. */ } }
-    if (!this.closed && !job.abort.signal.aborted && this.jobs.get(key) === job) job.timer = setTimeout(() => { void this.poll(key, job); }, this.intervalMs);
+    if (value) for (const changed of job.listeners) { try { changed(value); } catch { /* One closed panel cannot interrupt its peers. */ } }
+    if (!this.closed && !job.abort.signal.aborted && this.jobs.get(key) === job) job.timer = setTimeout(() => { void this.poll(key, job); }, delay);
   }
   dispose(): void { this.closed = true; for (const job of this.jobs.values()) { job.abort.abort(); clearTimeout(job.timer); } this.jobs.clear(); }
 }
