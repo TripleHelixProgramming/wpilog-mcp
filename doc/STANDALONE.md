@@ -637,11 +637,12 @@ binary uploads keep their own streaming limits. A body ending before that discar
 the route's normal size refusal. At the bound or deadline, the exchange closes before response
 headers, so closing a response cannot start another blocking drain; the sender may lose the reply.
 At most 32 MCP requests run at once (fewer on small machines), with overload reported as HTTP
-503 when refusal capacity is available. Data streams and native reads use 16 separate workers;
-store transfers and imports have another four, so readers cannot exhaust upload capacity.
-Excess transfers normally receive JSON `BUSY` with HTTP 503 and a one-second retry hint. Each
-streaming pool has two final-refusal workers with the same I/O deadline and no waiting queue;
-MCP execution overload uses the ordinary pool's refusal workers. If those workers are also full,
+503 when refusal capacity is available. Data streams and native reads run 16 at a time; store
+transfers and imports another four, so readers cannot exhaust upload capacity. A request's place
+is free as soon as its reply's last byte is written. Excess transfers normally receive JSON `BUSY`
+with HTTP 503 and a one-second retry hint. Each streaming pool answers two refusals at a time,
+with the same I/O deadline and no waiting queue; MCP execution overload uses the ordinary pool's
+refusals. If those are also full,
 the exchange closes before response headers, without draining its unread body on a dispatch
 worker. The client can therefore receive a disconnect instead of a refusal. Ten seconds without IO progress ends a transfer, releasing
 its reads, so clients that stop reading cannot occupy health's dispatch workers indefinitely.

@@ -789,18 +789,23 @@ class FollowEndpointTest {
       for (int i = 0; i < 16; i++) {
         var lease = create(); leases.add(lease);
         var first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
+        // A page's slot is free once its last byte is out, before its worker's thread is: the wait goes out once the
+        // first page's slot is free, and the next lease opens once the wait holds one.
+        int parked = i;
+        FollowLeaseTest.until(() -> pool.freeSlots() == 16 - parked);
         waits.add(http.sendAsync(request("POST", nextPath(lease), nextBody(first.get("next_cursor").getAsString(), 25000)), HttpResponse.BodyHandlers.ofString()));
+        FollowLeaseTest.until(() -> pool.freeSlots() == 15 - parked);
       }
-      FollowLeaseTest.until(() -> pool.activeCount() == 16);
-      assertEquals(503, call("POST", nextPath(leases.get(0)), nextBody("unused", 0)).statusCode());
+      var refused = call("POST", nextPath(leases.get(0)), nextBody("unused", 0));
+      // A lease whose page is waiting answers a second page with 503 as well; only the limit's refusal shows the limit.
+      assertEquals(503, refused.statusCode());
+      assertTrue(refused.body().contains("Streaming capacity is in use"), refused.body());
       assertEquals(200, call("GET", "/health", null).statusCode());
       assertEquals(204, call("DELETE", "/read/v1/follows/" + leases.get(0).get("id").getAsString(), null).statusCode());
       assertEquals(410, waits.get(0).get(5, TimeUnit.SECONDS).statusCode());
       assertFalse(waits.get(1).isDone());
-    } finally {
-      transport.stop();
-      // Every follow the stop finds parked ends with 410 CLOSED and is opened again on the next server.
-      for (var wait : waits) assertEquals(410, wait.get(5, TimeUnit.SECONDS).statusCode(), wait.get().body());
-    }
+    } finally { transport.stop(); }
+    // Every follow the stop finds parked ends with 410 CLOSED and is opened again on the next server.
+    for (var wait : waits) assertEquals(410, wait.get(5, TimeUnit.SECONDS).statusCode(), wait.get().body());
   }
 }

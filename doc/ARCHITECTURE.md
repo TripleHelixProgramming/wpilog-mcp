@@ -1124,16 +1124,21 @@ Game data is one file per season, bundled in the JAR. The current season's is lo
 
 ## Concurrency
 
-In stdio mode the server handles one message at a time. HTTP dispatch uses four core threads
-and grows to 32 with direct handoff and no waiting queue. Data and native-read routes hand off
-to 16 streaming workers; store and import routes have four independent workers. Excess transfers
-normally receive JSON `BUSY` and 503 with a retry hint. Each streaming pool has two final-refusal
-workers with direct handoff and the same I/O watchdog; MCP execution overload uses the ordinary
-pool's refusal workers. When refusal capacity is exhausted, the exchange is closed before
+In stdio mode the server handles one message at a time. HTTP dispatch uses four core threads and
+grows to 32 with direct handoff and no waiting queue. Data and native-read routes have 16
+streaming slots; store and import routes have four independent slots. A slot counts a request,
+not a thread: it is free once the request's reply has written its last byte, before the exchange
+closes, and each pool holds up to twice its slots in threads, so a client that asks again as
+soon as a reply arrives is never refused while the previous request's thread is still returning.
+A request that finds no slot waits up to 50 ms while some reply is finishing, and otherwise
+excess transfers normally receive JSON `BUSY` and 503 with a retry hint at once, so a refusal
+never holds the dispatch thread. Each streaming pool has two final-refusal slots counted the
+same way, with direct handoff and the same I/O watchdog; MCP execution overload uses the
+ordinary pool's refusal slots. When refusal capacity is exhausted, the exchange is closed before
 response headers. This avoids the JDK's unread-body drain on dispatch workers; a client may
 receive a disconnect instead of JSON. Stalled streams and refusals cannot occupy health or
-registration's dispatch workers. A progress watchdog interrupts the owning
-SocketChannel worker after ten seconds without IO progress, including request uploads. Output
+registration's dispatch workers. A progress watchdog interrupts the owning SocketChannel worker
+after ten seconds without IO progress, including request uploads. Output
 progress is checked in at most 64 KiB units. The watchdog never flushes or closes an exchange
 itself, since closing a chunked stream can block behind the same peer. If all 32 dispatch
 workers are occupied by other handlers, a further exchange is still rejected by the JDK dispatcher,

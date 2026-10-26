@@ -23,8 +23,13 @@ import java.util.concurrent.TimeUnit;
  * Interrupting the owning worker closes HttpServer's blocked SocketChannel; closing a chunked
  * response from the timer instead can itself block flushing into that same full socket. A request
  * joins the transport's admissions before its hand-off and leaves when its worker has finished, so
- * a stop's drain never misses one waiting for a worker. */
+ * a stop's drain never misses one waiting for a worker. The limits count requests, not threads:
+ * a request's slot is free once its reply's last byte is written ({@link ReplyCapacity}), and each
+ * pool may hold twice its limit in threads, so a request with a slot never waits for a finished
+ * request's thread to return. */
 final class StreamingRequests implements AutoCloseable {
+  private final ReplyCapacity work;
+  private final ReplyCapacity refusing = new ReplyCapacity(2);
   private final ThreadPoolExecutor workers;
   private final ThreadPoolExecutor refusals;
   private final java.util.concurrent.ScheduledExecutorService timer;
@@ -38,10 +43,11 @@ final class StreamingRequests implements AutoCloseable {
     this.admissions = admissions;
     timeoutNanos = timeout.toNanos();
     if (maximum < 1 || timeoutNanos <= 0) throw new IllegalArgumentException("Positive streaming limits required");
-    workers = new ThreadPoolExecutor(0, maximum, 60, TimeUnit.SECONDS, new SynchronousQueue<>(), r -> {
+    work = new ReplyCapacity(maximum);
+    workers = new ThreadPoolExecutor(0, 2 * maximum, 60, TimeUnit.SECONDS, new SynchronousQueue<>(), r -> {
       var thread = new Thread(r, "http-stream"); thread.setDaemon(true); return thread;
     });
-    refusals = new ThreadPoolExecutor(0, 2, 60, TimeUnit.SECONDS, new SynchronousQueue<>(), r -> {
+    refusals = new ThreadPoolExecutor(0, 4, 60, TimeUnit.SECONDS, new SynchronousQueue<>(), r -> {
       var thread = new Thread(r, "http-refusal"); thread.setDaemon(true); return thread;
     });
     timer = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -51,13 +57,20 @@ final class StreamingRequests implements AutoCloseable {
     timer.scheduleWithFixedDelay(() -> active.forEach(Transfer::expire), tick, tick, TimeUnit.MILLISECONDS);
   }
   int activeCount() { return active.size(); }
+  /** Slots no admitted request holds: a slot is free once its reply's last byte is written, before its thread is. */
+  int freeSlots() { return work.available(); }
   HttpHandler handle(HttpHandler handler) { return handle(handler, null); }
   HttpHandler handle(HttpHandler handler, HttpHandler refusal) {
     return exchange -> {
       var ticket = admissions.join(exchange);
-      try { workers.execute(() -> { try (ticket) { run(exchange, handler); } }); }
-      catch (RejectedExecutionException full) {
+      if (!work.tryAcquire()) {
         ticket.close();
+        if (refusal != null) { refusal.handle(exchange); return; }
+        refuse(exchange); return;
+      }
+      try { workers.execute(() -> { try (ticket) { run(exchange, handler, work); } }); }
+      catch (RejectedExecutionException full) {
+        work.release(); ticket.close();
         if (refusal != null) { refusal.handle(exchange); return; }
         refuse(exchange);
       }
@@ -70,8 +83,9 @@ final class StreamingRequests implements AutoCloseable {
   }
   void refuse(HttpExchange exchange, HttpHandler refusal) {
     var ticket = admissions.join(exchange);
-    try { refusals.execute(() -> { try (ticket) { run(exchange, refusal); } }); }
-    catch (RejectedExecutionException full) { ticket.close(); exchange.close(); }
+    if (!refusing.tryAcquire()) { ticket.close(); exchange.close(); return; }
+    try { refusals.execute(() -> { try (ticket) { run(exchange, refusal, refusing); } }); }
+    catch (RejectedExecutionException full) { refusing.release(); ticket.close(); exchange.close(); }
   }
   /**
    * A stop past its grace ends each stream at its next network read or write: a byte stream can
@@ -90,8 +104,9 @@ final class StreamingRequests implements AutoCloseable {
     exchange.sendResponseHeaders(503, body.length);
     try (var out = exchange.getResponseBody()) { out.write(body); }
   }
-  private void run(HttpExchange exchange, HttpHandler handler) {
+  private void run(HttpExchange exchange, HttpHandler handler, ReplyCapacity capacity) {
     var transfer = new Transfer(Thread.currentThread()); active.add(transfer);
+    SettledReply reply = null;
     try {
       exchange.setStreams(new FilterInputStream(exchange.getRequestBody()) {
         @Override public int read() throws IOException {
@@ -119,14 +134,19 @@ final class StreamingRequests implements AutoCloseable {
           transfer.begin(); try { out.close(); } finally { transfer.end(); }
         }
       });
-      handler.handle(exchange);
+      reply = SettledReply.open(exchange, capacity);
+      handler.handle(reply.exchange());
     } catch (IOException disconnected) {
       org.slf4j.LoggerFactory.getLogger(StreamingRequests.class).debug("HTTP transfer ended: {}", disconnected.toString());
     } finally {
       // close may flush, too: leave the watchdog active until it returns.
       try { transfer.begin(); exchange.close(); }
       catch (IOException expired) { /* Interrupted SocketChannel is already closed. */ }
-      finally { transfer.finish(); active.remove(transfer); Thread.interrupted(); }
+      finally {
+        // A reply that never completed, or a chunked one the exchange's close just ended, frees its slot here.
+        if (reply != null) reply.close(); else capacity.release();
+        transfer.finish(); active.remove(transfer); Thread.interrupted();
+      }
     }
   }
   private final class Transfer {

@@ -784,6 +784,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Replica migrations:** a migration started the moment another store's migration finishes is no longer refused as busy. Two migrations prepare at a time across every store, and the limit counted the two preparer threads; a migration completed its result on the store queue before its preparer's thread was back in the pool, so with both threads still finishing the next one was refused with `BUSY: two replica migrations are preparing`. The limit now counts migrations, and a migration frees its slot before its result.
 - **Peer discovery:** a peer announced while two earlier handshakes are finishing is now checked at the next tick. Two handshakes run at a time, and the limit counted the two threads; a handshake published its result before its thread was back in the pool, so with both still finishing the next peer's handshake was put off a second, tick after tick. The limit now counts handshakes, and a handshake frees its slot before it publishes its result.
 - **Recording inventories:** opening an inventory as soon as two others finished building is no longer refused as busy. Two inventories build at a time, and the limit counted the two builder threads; a build completed its result before its thread was back in the pool, so with both still finishing the next one was refused with `Both inventory builders are busy`. The limit now counts builds, and a build frees its slot before its result.
+- **HTTP request limits:** a client that sends its next request as soon as a reply arrives is no longer refused with 503 `BUSY` while nothing is running. The data, read, follow, store, inventory and replica pools counted threads, and a request's thread was still closing the exchange after the client had the reply, so at a pool's limit the next request found every thread taken. A limit now counts requests: a request's place is free once its reply's last byte is written, and a request that finds none while a reply is finishing waits up to 50 ms for it.
+- **HTTP refusals:** a refused request is answered with its 503 while earlier refusals are finishing, instead of having its connection closed with no reply. The two refusal threads counted the same way, so a third refusal right after two others found no thread; `HttpAdmissionTest` failed that way once on Ubuntu CI and twice on a Linux workstation.
 
 ### Security
 
@@ -968,6 +970,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to be released. The server releases them after writing its reply, so a client can hold the reply
   first; the tests read the count the moment the reply arrived, and the Windows runner once saw
   2 MiB still held. A reservation that is never released still fails them.
+
+- The follow limit test sends each long wait once the page before it has freed its slot, and checks
+  that the request after the sixteenth wait is refused by the limit itself. It waited for 16 active
+  workers, which can now include a finished request whose slot is already free, and in a loaded
+  Windows VM its sixteenth wait was refused twice. Its check of that refusal took any 503, and the
+  follow engine answers a second page on a waiting lease with 503 as well, so it passed with the
+  limit removed. Its checks after the stop now run outside the `finally`, where their failure hid
+  an earlier one.
 
 - The tests that kill a child process holding a lock now wait, at most 10 seconds, for Windows to
   release it before they take it themselves. Windows releases a terminated process's file locks
