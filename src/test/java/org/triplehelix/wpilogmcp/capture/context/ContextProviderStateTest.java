@@ -89,7 +89,10 @@ class ContextProviderStateTest {
           providers.connected("127.0.0.1"); connections.drain(); providers.start();
           TailProviderTest.await(() -> { loop.drain(); return !live.providers().isEmpty() && live.providers().get(0).state().equals("following"); });
           assertEquals(role.equals("program_console") ? 1.0 : 0.0, live.providers().get(0).periodSec());
-        } finally { release.countDown(); var closed = providers.closeAsync(); connections.advance(250_000); assertTrue(closed.isDone()); }
+        } finally {
+          // The close completes once the tail's control thread has ended, which it does on its own thread.
+          release.countDown(); var closed = providers.closeAsync(); connections.advance(250_000); closed.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
       }
     } finally { release.countDown(); manager.release(temp); manager.clearAllowedDirectories(); saved.forEach(manager::addAllowedDirectory); }
   }

@@ -918,6 +918,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line delivery or the device identity the store records, and once on Ubuntu CI another task ran
   first, so the test found no session.
 
+- The tail provider tests wait, at most five seconds, for the providers' close to complete. The
+  close now waits for each tail's control thread to end, so it completes on that thread a moment
+  after it returns; the tests asserted that it had already completed, and once on Ubuntu CI the
+  thread had not yet ended. A close that never completes still fails them.
+
 - The extension's follow broker wiring check reads the CI workflow with its line endings
   normalized. A Windows checkout gives the file CRLF endings, so the check's pattern never matched
   there; the extension's Windows tests had not run in CI before, since the Java tests failed first.

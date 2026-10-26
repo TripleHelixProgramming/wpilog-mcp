@@ -84,7 +84,10 @@ class CaptureAdmissionProviderTest {
               if (!record.isControl() && names.getOrDefault(record.getEntry(), "").startsWith("/Daemon/Tail/")) strings.add(record.getString());
             }
             assertEquals(List.of("retained during admission"), strings);
-          } finally { release.countDown(); var closed = providers.closeAsync(); connections.advance(250_000); assertTrue(closed.isDone()); }
+          } finally {
+            // The close completes once the tail's control thread has ended, which it does on its own thread.
+            release.countDown(); var closed = providers.closeAsync(); connections.advance(250_000); closed.get(5, TimeUnit.SECONDS);
+          }
         }
       }
     } finally { release.countDown(); manager.release(directory); manager.clearAllowedDirectories(); allowed.forEach(manager::addAllowedDirectory); }
