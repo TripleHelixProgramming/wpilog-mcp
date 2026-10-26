@@ -858,6 +858,11 @@ class DaemonManagerTest {
     final List<String> tokensPresented = new CopyOnWriteArrayList<>();
     /** Whether an accepted stop request ends the process, as it does in a real daemon. */
     volatile boolean exitsOnStop = true;
+    /** How long the process takes to exit once it accepted a stop, as a real daemon's drain does. */
+    volatile long exitDelayMillis;
+    /** Counted down when a stop request arrives; the answer then waits for {@link #answerStop}. */
+    final CountDownLatch stopReceived = new CountDownLatch(1);
+    volatile CountDownLatch answerStop;
     volatile boolean managed;
     /** Runs after each {@code /health} answer, so a test can see who probed the port. */
     volatile Runnable onHealth = () -> {};
@@ -891,9 +896,18 @@ class DaemonManagerTest {
           reply(exchange, 403, "{\"error\":\"wrong token\"}");
           return;
         }
+        stopReceived.countDown();
+        var held = answerStop;
+        if (held != null) {
+          try { held.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
         reply(exchange, 200, "{\"status\":\"stopping\"}");
         if (exitsOnStop) {
-          new Thread(() -> processes.end(pid)).start();
+          long delay = exitDelayMillis;
+          new Thread(() -> {
+            try { Thread.sleep(delay); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            processes.end(pid);
+          }).start();
         }
       });
       server.start();
@@ -1431,6 +1445,59 @@ class DaemonManagerTest {
         assertEquals(1, daemon.stopRequests.get());
         assertEquals(List.of(FAKE_PID), processes.destroyed);
         assertFalse(Files.exists(manager.pidFilePath("test")));
+      }
+    }
+
+    @Test
+    @DisplayName("a daemon still draining after the start timeout gets the whole stop timeout")
+    void aStopThatOutlastsTheStartTimeoutIsNotCutShort() throws Exception {
+      int port = freePort();
+      // The start timeout once bounded the stop too: a daemon draining its calls was killed after it.
+      var manager = new DaemonManager(tempDir, Duration.ofMillis(100), Duration.ofSeconds(10), noLauncher,
+          DaemonManager.FILE_SYSTEM, processes, org.triplehelix.wpilogmcp.Version.VERSION);
+      manager.writeToken("test", "tok");
+      manager.writePidFile("test", FAKE_PID, port);
+      try (var daemon = new FakeDaemon(port, FAKE_PID, org.triplehelix.wpilogmcp.Version.VERSION,
+          true, "tok", processes)) {
+        daemon.exitDelayMillis = 800;
+        assertTrue(manager.stopDaemon("test"));
+        assertEquals(List.of(), processes.forced, "A stop that ends in order is not cut short");
+        assertFalse(Files.exists(manager.pidFilePath("test")));
+      }
+    }
+
+    @Test
+    @DisplayName("the stop timeout is systemd's and outlasts the server's own stop deadline")
+    void theStopTimeoutMatchesSystemdAndOutlastsTheServersDeadline() throws Exception {
+      String unit;
+      try (var in = DaemonManager.class.getResourceAsStream("/service/server.service")) {
+        unit = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+      }
+      var stopSec = java.util.regex.Pattern.compile("(?m)^TimeoutStopSec=(\\d+)s\\s*$").matcher(unit);
+      assertTrue(stopSec.find(), unit);
+      assertEquals(Duration.ofSeconds(Long.parseLong(stopSec.group(1))), DaemonManager.DEFAULT_STOP_TIMEOUT,
+          "The laptop's launcher waits as long as the pit server's systemd unit");
+      assertTrue(DaemonManager.DEFAULT_STOP_TIMEOUT.compareTo(org.triplehelix.wpilogmcp.mcp.HttpTransport.STOP_DEADLINE) > 0,
+          "A stop that ends at its own deadline is never killed first");
+    }
+
+    @Test
+    @DisplayName("the stop request goes out after the record is marked stopping, outside the start lock")
+    void aSlowStopRequestDoesNotHoldTheStartLock() throws Exception {
+      int port = freePort();
+      var manager = managerWith(noLauncher, Duration.ofSeconds(8));
+      manager.writeToken("test", "tok");
+      manager.writePidFile("test", FAKE_PID, port);
+      try (var daemon = new FakeDaemon(port, FAKE_PID, org.triplehelix.wpilogmcp.Version.VERSION,
+          true, "tok", processes)) {
+        daemon.answerStop = new CountDownLatch(1);
+        var stopping = java.util.concurrent.CompletableFuture.supplyAsync(() -> manager.stopDaemon("test"));
+        assertTrue(daemon.stopReceived.await(5, TimeUnit.SECONDS), "The stop request arrived");
+        // A start or status check takes the same lock; it must not wait for a daemon's slow answer.
+        var status = java.util.concurrent.CompletableFuture.supplyAsync(() -> manager.runningDaemon("test"));
+        assertDoesNotThrow(() -> status.get(3, TimeUnit.SECONDS), "The lock was free while the request was outstanding");
+        daemon.answerStop.countDown();
+        assertTrue(stopping.get(10, TimeUnit.SECONDS));
       }
     }
 

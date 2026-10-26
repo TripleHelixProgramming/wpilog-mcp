@@ -64,7 +64,7 @@ public class HttpTransport {
    * log and interrupted, so the process ends by itself before the launcher's or systemd's
    * 90-second kill instead of being killed with nothing in the log to say what held it.
    */
-  static final Duration STOP_DEADLINE = Duration.ofSeconds(80);
+  public static final Duration STOP_DEADLINE = Duration.ofSeconds(80);
   /** The data endpoint's path, beside the MCP endpoint and /health. */
   public static final String DATA_PATH = "/data/entries";
   /** A store's robots, and one robot's sessions, as CSV for a dashboard's choices. */
