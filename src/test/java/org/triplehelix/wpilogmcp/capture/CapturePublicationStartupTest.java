@@ -192,6 +192,55 @@ class CapturePublicationStartupTest {
     assertEquals(List.of(1L, 2L, 4L, 8L, 16L, 30L, 30L), delays);
   }
 
+  @Test void closeReturnsOnlyAfterTheLoopHasRunItsLastTask() throws Exception {
+    var loop = new HeldEnd(ClientScheduler.daemon("capture-close-test"));
+    try (var socket = new ServerSocket()) {
+      socket.bind(new InetSocketAddress("127.0.0.1", 0));
+      var config = new CaptureConfig(List.of(RobotAddress.uri("127.0.0.1", socket.getLocalPort(), "close-loop")),
+          store.root(), .02, CapturePolicy.ALL, 0);
+      var service = new CaptureService(config, manager, WALL, loop, WpilogOutput::new, Duration.ofSeconds(10));
+      var closing = CompletableFuture.runAsync(service::close);
+      assertTrue(loop.asked.await(5, TimeUnit.SECONDS), "The close waits for the loop's end");
+      // The writer's last tasks run after the client's close shut the loop down; the close once returned before them.
+      assertThrows(java.util.concurrent.TimeoutException.class, () -> closing.get(300, TimeUnit.MILLISECONDS));
+      loop.end.complete(null);
+      closing.get(5, TimeUnit.SECONDS);
+    }
+  }
+
+  @Test void closeReturnsOnlyAfterTheClockPassRunningForItsStoreHasEnded() throws Exception {
+    var release = new CountDownLatch(1);
+    try (var socket = new ServerSocket()) {
+      socket.bind(new InetSocketAddress("127.0.0.1", 0));
+      var config = new CaptureConfig(List.of(RobotAddress.uri("127.0.0.1", socket.getLocalPort(), "close-clocks")),
+          store.root(), .02, CapturePolicy.ALL, 0);
+      var service = new CaptureService(config, manager, WALL, ClientScheduler.daemon("capture-clocks-test"), WpilogOutput::new, Duration.ofSeconds(10));
+      ReplicaPublicationFixture.holdClockPasses(store, release);
+      store.keepClocks();
+      var closing = CompletableFuture.runAsync(service::close);
+      // A clock pass reads the store's captures; the stop once closed the store under it.
+      assertThrows(java.util.concurrent.TimeoutException.class, () -> closing.get(300, TimeUnit.MILLISECONDS));
+      release.countDown();
+      closing.get(5, TimeUnit.SECONDS);
+    } finally {
+      release.countDown();
+      store.clocksSettled().get(10, TimeUnit.SECONDS);
+    }
+  }
+
+  /** A real loop whose end the test decides. */
+  private static final class HeldEnd implements ClientScheduler {
+    private final ClientScheduler inner;
+    final CountDownLatch asked = new CountDownLatch(1);
+    final CompletableFuture<Void> end = new CompletableFuture<>();
+    HeldEnd(ClientScheduler inner) { this.inner = inner; }
+    @Override public long nowUs() { return inner.nowUs(); }
+    @Override public void execute(Runnable action) { inner.execute(action); }
+    @Override public void schedule(Runnable action, long delayUs) { inner.schedule(action, delayUs); }
+    @Override public void close() { inner.close(); }
+    @Override public CompletableFuture<Void> terminated() { asked.countDown(); return inner.terminated().thenCombine(end, (a, b) -> null); }
+  }
+
   /** Capture's published status reaches {@code reason}; the deadline only guards against a hang. */
   private static void awaitReason(CaptureService service, String reason) throws InterruptedException {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);

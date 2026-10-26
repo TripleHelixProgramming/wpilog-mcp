@@ -70,4 +70,11 @@ public final class ReplicaPublicationFixture {
     store.publicationStartProbe(identity -> action.run());
   }
   @FunctionalInterface public interface PassStart { void run() throws java.io.IOException; }
+
+  /** Holds each later clock-record pass at its start until {@code release} counts down. */
+  public static void holdClockPasses(LogStore store, java.util.concurrent.CountDownLatch release) {
+    store.clockPassProbe(() -> {
+      try { release.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    });
+  }
 }

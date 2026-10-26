@@ -30,6 +30,41 @@ import org.triplehelix.wpilogmcp.ssh.SharedSsh;
 
 class ContextProviderStateTest {
   @TempDir Path temp;
+
+  @Test void theirCloseIsCompleteOnlyOnceTheStatisticsWorkerHasEnded() throws Exception {
+    var manager = LogManager.getInstance(); var saved = manager.getAllowedDirectories(); manager.addAllowedDirectory(temp);
+    try {
+      var loop = new ManualScheduler(); var connections = new ManualScheduler();
+      var end = new CompletableFuture<Void>();
+      var worker = new HeldEnd(new ManualScheduler(), end);
+      var auth = new PullConfig.Ssh("lvuser", "", null, false, 22);
+      var address = RobotAddress.uri("127.0.0.1", 5810, "providers-close"); var wall = Clock.systemUTC();
+      var config = new CaptureConfig(List.of(address), temp, .01, CapturePolicy.ALL, 0, 1 << 20,
+          new PullConfig(false, PullConfig.DISABLED.directories(), 5_000_000, 1_000_000, auth), 0,
+          new ProviderConfig(true, new ProviderConfig.Stats(false, 2_000_000, 100_000), List.of()));
+      var live = new LiveCapture(temp, loop);
+      try (var writer = new CaptureWriter(wall, loop, CapturePolicy.ALL, (host, start) -> temp.resolve("capture.wpilog"))) {
+        var pool = new SharedSsh(host -> CompletableFuture.completedFuture(null), JschConnection::connect, host -> connections);
+        var providers = new ContextProviders(config, writer, live, loop, manager.stores().store(temp), wall, pool, worker);
+        var closed = providers.closeAsync(); connections.advance(250_000);
+        // The close once covered only the SSH hosts, while a worker could still be sampling.
+        assertFalse(closed.isDone(), "The close waits for the statistics worker to end");
+        end.complete(null);
+        assertTrue(closed.isDone());
+      }
+    } finally { manager.clearAllowedDirectories(); saved.forEach(manager::addAllowedDirectory); }
+  }
+
+  /** A scheduler whose end the test decides. */
+  private static final class HeldEnd implements org.triplehelix.wpilogmcp.nt4.client.ClientScheduler {
+    private final org.triplehelix.wpilogmcp.nt4.client.ClientScheduler inner; private final CompletableFuture<Void> end;
+    HeldEnd(org.triplehelix.wpilogmcp.nt4.client.ClientScheduler inner, CompletableFuture<Void> end) { this.inner = inner; this.end = end; }
+    @Override public long nowUs() { return inner.nowUs(); }
+    @Override public void execute(Runnable action) { inner.execute(action); }
+    @Override public void schedule(Runnable action, long delayUs) { inner.schedule(action, delayUs); }
+    @Override public void close() { inner.close(); }
+    @Override public CompletableFuture<Void> terminated() { return end; }
+  }
   @org.junit.jupiter.params.ParameterizedTest
   @org.junit.jupiter.params.provider.ValueSource(strings = {"program_console", "kernel", "journal"})
   void publishedTailPeriodIsTheCommandsActualPollingInterval(String role) throws Exception {

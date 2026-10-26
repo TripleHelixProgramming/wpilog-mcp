@@ -61,6 +61,25 @@ class PullCoordinatorTest {
     return lines;
   }
 
+  @Test void closeCompletesOnlyOnceTheWorkersLastStepHasEnded() throws Exception {
+    var real = org.triplehelix.wpilogmcp.nt4.client.ClientScheduler.daemon("pull-close-test");
+    var running = new java.util.concurrent.CountDownLatch(1);
+    var release = new java.util.concurrent.CountDownLatch(1);
+    var pull = new PullCoordinator(CONFIG, gate, store, WALL, ignored -> {}, real,
+        (address, config, pin) -> { throw new AssertionError("A closed pull connects to nothing"); });
+    // A step still running, as a transfer's I/O is: a busy transfer writes its checkpoint as the step unwinds.
+    real.execute(() -> {
+      running.countDown();
+      try { release.await(10, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    });
+    assertTrue(running.await(5, java.util.concurrent.TimeUnit.SECONDS));
+    var closing = pull.closeAsync();
+    assertThrows(java.util.concurrent.TimeoutException.class,
+        () -> closing.get(300, java.util.concurrent.TimeUnit.MILLISECONDS), "The close waits for the running step");
+    release.countDown();
+    closing.get(5, java.util.concurrent.TimeUnit.SECONDS);
+  }
+
   @Test void pausedLinesNameChangingGateReasonsWithoutRepeatingTheSameState() throws Exception {
     var lines = logLines(() -> {
       try (var pull = new PullCoordinator(CONFIG, gate, store, WALL, ignored -> {}, worker,

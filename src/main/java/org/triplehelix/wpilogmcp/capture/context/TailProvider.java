@@ -148,6 +148,8 @@ public final class TailProvider implements AutoCloseable {
   }
   private void stopCommand() { var old = command; command = null; if (old != null) old.close(); }
   @Override public void close() { if (closed.compareAndSet(false, true)) { stopCommand(); worker.close(); } }
+  /** Capture's close waits for this worker to end. */
+  ClientScheduler worker() { return worker; }
 
   private final class Lines {
     private final ByteArrayOutputStream line = new ByteArrayOutputStream();

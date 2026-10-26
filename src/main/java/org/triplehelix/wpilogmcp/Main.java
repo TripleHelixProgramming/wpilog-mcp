@@ -835,7 +835,7 @@ public class Main {
         // so that in-flight tool calls don't encounter closed logs. A stop already under way,
         // from a stop request or the idle exit, is waited for rather than started again.
         httpTransport.stop();
-        if (capture != null) capture.close();
+        if (capture != null) capture.closeBy(httpTransport.stopDeadlineNanos());
         logManager.shutdown();
       });
       if (publicRun) cleanSignalExit();

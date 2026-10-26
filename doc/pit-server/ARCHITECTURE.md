@@ -62,7 +62,8 @@ and runs on a separate daemon. It reads the ordered capture listener's `/FMSInfo
 enabled bit: only a continuously disabled robot, settled for five seconds (the default) with NT4
 still connected, permits work. Unknown state and each new connection close the gate. Polling,
 retries and pacing use a scheduler, and neither SSH nor transfer storage runs on the NT4 loop.
-Shutdown includes the transport in the capture's existing deadline.
+Shutdown includes the transport in the capture's existing deadline, and the pull's close is
+complete only once its running step has ended and written its checkpoint.
 
 #### SSH
 
@@ -319,8 +320,11 @@ filesystem write/flush can exceed that slice; it is not a hard operating-system 
 Provider context delivery waits for admission and backlog replay to finish; tails retain their
 existing bounded pre-session buffers. Later manifest updates use immutable snapshots and coalesce
 into one pending task: changed facts queue immediately, ordinary progress at most every five
-seconds. Shutdown waits at most 30 seconds for the writer, pending admission and last close
-snapshot, including its hashes. Unlike a normal buffered disconnect, explicit server shutdown
+seconds. A server's stop gives capture the rest of its 80-second deadline to wait for the writer,
+pending admission, the last close snapshot with its hashes, that file's clock record, the robot
+pull's last step and checkpoint, the providers' workers and the loop's last task; a close without
+a server stop waits at most 30 seconds. The clock record is asked for before the snapshot
+completes, so a close waiting for the snapshot and then for settled clock records includes it. Unlike a normal buffered disconnect, explicit server shutdown
 abandons a still-pending admission with an error/count and an eventual manifest end reason.
 A timeout is logged for the next startup sweep.
 

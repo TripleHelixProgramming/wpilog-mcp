@@ -506,12 +506,17 @@ public class HttpTransport {
       return;
     }
     long deadline = System.nanoTime() + stopDeadline.toNanos();
+    stopDeadlineNanos = deadline;
     try {
       stopInOrder(deadline);
     } finally {
       stopFinished.complete(null);
     }
   }
+
+  /** When the stop that began must be over: capture's close shares it, so the whole stop ends before the kill. */
+  public long stopDeadlineNanos() { return stopDeadlineNanos; }
+  private volatile long stopDeadlineNanos;
 
   private void awaitStopped() {
     boolean interrupted = false;

@@ -128,7 +128,10 @@ public final class CaptureService implements AutoCloseable {
         (settings, admission, storage, wall, identity) -> new org.triplehelix.wpilogmcp.capture.pull.PullCoordinator(
             settings, admission, storage, wall, identity, ClientScheduler.daemon("robot-pull"), (address, options, pin) -> providers.pull(address, options, pin)) : pulls;
     pull = config.pull().active() ? factory.create(config.pull(), gate, store, clock,
-        learned -> loop.execute(() -> { if (learned.connection() == gate.connection()) writer.identity(learned.device()); })) : null;
+        learned -> {
+          try { loop.execute(() -> { if (learned.connection() == gate.connection()) writer.identity(learned.device()); }); }
+          catch (java.util.concurrent.RejectedExecutionException stopping) { /* Learned during the stop; nothing records it now. */ }
+        }) : null;
     if (pull != null) live.attachPull(pull::progress);
     client = new Nt4Client(config.addresses(), Nt4Client.captureSubscription(config.periodSeconds()), listener(writer, gate, live, gateway, providers, config.providers().photonvision().isEmpty()),
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(), loop);
@@ -202,7 +205,16 @@ public final class CaptureService implements AutoCloseable {
     throw new java.util.concurrent.CompletionException(cause);
   }
 
-  @Override public void close() {
+  @Override public void close() { closeBy(System.nanoTime() + closeTimeout.toNanos()); }
+
+  /**
+   * Stops capture and waits, until the deadline, for its work to end: the providers' workers, the
+   * robot pull's last step and checkpoint, the writer's admissions, the final manifest, the clock
+   * record of the file just closed, and the NT4 loop's last task. An HTTP server's stop passes its
+   * own deadline, shared by the whole stop. The close once returned at the final manifest or after
+   * 30 seconds, and the log manager then closed the stores under the clock pass and the pull.
+   */
+  public void closeBy(long deadlineNanos) {
     if (!stopping.compareAndSet(false, true)) return;
     stopped.complete(null);
     watchdog.close();
@@ -223,7 +235,10 @@ public final class CaptureService implements AutoCloseable {
           ? java.util.concurrent.CompletableFuture.completedFuture(null) : recovery.handle((ignored, error) -> null), pullClosed, gatewayClosed, providersClosed)
           .thenCompose(ignored -> writer.admissionCompletion())
           .thenCompose(ignored -> placement.completion())
-          .get(closeTimeout.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
+          .thenCompose(ignored -> store.clocksSettled())
+          .get(Math.max(0, deadlineNanos - System.nanoTime()), java.util.concurrent.TimeUnit.NANOSECONDS);
+      // The client's close shut the loop down; the tasks queued before that still run, the writer's last among them.
+      loop.terminated().get(Math.max(0, deadlineNanos - System.nanoTime()), java.util.concurrent.TimeUnit.NANOSECONDS);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt(); deferred(e);
     } catch (java.util.concurrent.TimeoutException e) {

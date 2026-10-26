@@ -1264,9 +1264,13 @@ public final class LogStore implements AutoCloseable {
       return last == null ? CompletableFuture.completedFuture(null) : last.handle((written, error) -> null);
     }
   }
+  private volatile Runnable clockPassProbe = () -> {};
+  /** Tests hold a clock-record pass as it starts. */
+  void clockPassProbe(Runnable probe) { clockPassProbe = Objects.requireNonNull(probe); }
   private void startClockPass(CompletableFuture<Integer> result) {
     CLOCK_WORKER.execute(() -> {
       int written = 0; Throwable failure = null;
+      clockPassProbe.run();
       try { written = keepClocksPass(); }
       catch (Exception e) { failure = e; }
       catch (OutOfMemoryError e) { failure = new IOException("Not enough heap to read a capture's clock facts", e); }
