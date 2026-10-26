@@ -196,8 +196,18 @@ def keepTestCache = project.hasProperty('testCacheDir')
 def fixtureScratch = ['test-fixtures']
 def realLogScratch = ['replay-work', 'replay-pull', 'replay-pairs', 'real-log-conformance-export']
 def harnessScratch = ['replay-native', 'shop-harness']
+// Each test task's temporary folder: its JVMs' java.io.tmpdir, emptied before the tests start and
+// deleted after a passing run. The project tells JUnit never to delete a @TempDir
+// (junit-platform.properties: on Windows a memory-mapped log stays locked until a garbage
+// collection), so in the system's temporary folder they piled up for good: three days of builds
+// filled a Linux workstation's 15 GB /tmp, and its next build failed 1,450 tests. Each task has its
+// own folder, so another task's run cannot remove what a failed run kept.
+def tempScratch = ['test-tmp']
 tasks.withType(Test).configureEach {
     doFirst { delete fixtureScratch.collect { "$buildDir/$it" } }
+    systemProperty 'java.io.tmpdir', file("$buildDir/test-tmp/$name").absolutePath
+    doFirst { delete tempScratch.collect { "$buildDir/$it/$name" }; file("$buildDir/test-tmp/$name").mkdirs() }
+    doLast { delete tempScratch.collect { "$buildDir/$it/$name" } }
 }
 
 // Make test task depend on native extraction and set the library path

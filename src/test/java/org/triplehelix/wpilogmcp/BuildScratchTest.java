@@ -76,15 +76,27 @@ class BuildScratchTest {
 
   @Test void eachScratchListIsEmptiedByTheTaskThatRunsItsSuites() throws IOException {
     var build = Files.readString(Path.of("build.gradle"));
-    assertEquals(Set.of("fixtureScratch", "realLogScratch", "harnessScratch"), scratchLists(build).keySet(),
+    assertEquals(Set.of("fixtureScratch", "realLogScratch", "harnessScratch", "tempScratch"), scratchLists(build).keySet(),
         "A new scratch list needs a task that empties it, checked here");
     assertTrue(blocks(build, "tasks.withType(Test).configureEach {").stream().anyMatch(b -> b.contains("delete fixtureScratch")),
         "Every test task must empty the fixture folders: worker numbers keep rising for the daemon's life");
+    assertTrue(blocks(build, "tasks.withType(Test).configureEach {").stream().anyMatch(b ->
+            b.contains("systemProperty 'java.io.tmpdir'") && b.contains("doFirst { delete tempScratch") && b.contains("doLast { delete tempScratch")),
+        "Every test task must give its JVMs a temporary folder under build/, empty it first and delete it after a passing run");
     assertTrue(blocks(build, "tasks.named('test') {").stream()
         .flatMap(test -> blocks(test, "if (project.hasProperty('conformanceLogDir')) {").stream())
         .anyMatch(b -> b.contains("delete realLogScratch")), "A real-log run of test must empty the real-log folders");
     assertTrue(blocks(build, "tasks.register('shopHarness', Test) {").stream().anyMatch(b -> b.contains("delete harnessScratch")),
         "shopHarness must empty the native replay and harness folders");
+  }
+
+  @Test void theTestsTemporaryFolderIsTheirTasksFolderUnderBuild() {
+    // Only a Gradle test worker has one; a test run from elsewhere keeps the system's folder.
+    org.junit.jupiter.api.Assumptions.assumeTrue(System.getProperty("org.gradle.test.worker") != null);
+    var temporary = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().normalize();
+    assertEquals(Path.of("build", "test-tmp").toAbsolutePath().normalize(), temporary.getParent(),
+        "A @TempDir is never deleted, so it must not land in the system's temporary folder: " + temporary);
+    assertTrue(Files.isDirectory(temporary), "The task creates its folder before the tests start");
   }
 
   @Test void theCheckSeesEveryWayAFolderIsNamed() {

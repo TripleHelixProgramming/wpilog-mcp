@@ -1036,6 +1036,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replaced; one checkout's `build/` passed 500 GiB. A claim check now fails when a test, a native
   editor runner or the build script names a folder under `build/` that nothing empties.
 
+- Each test task now runs its JVMs with a temporary folder of its own under `build/test-tmp/`, which
+  it empties before its tests start and deletes after a passing run; a failed run keeps it. The
+  project tells JUnit never to delete a `@TempDir`, because on Windows a memory-mapped log stays
+  locked until a garbage collection, so every run used to leave its folders in the system's
+  temporary folder for good: three days of builds filled a Linux workstation's 15 GB `/tmp`, and its
+  next build failed 1,450 tests with I/O errors. Folders that earlier builds left there stay until
+  they are deleted.
+
 - The unreleased synchronization-cache checks now require a dated compatibility decision
   when reviewed parsing, decoding, clock or synchronization inputs change; previously the
   cache-format rule depended only on manual review. Source changes, missing explanations
