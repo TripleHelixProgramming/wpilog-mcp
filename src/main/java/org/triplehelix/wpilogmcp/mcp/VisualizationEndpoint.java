@@ -53,6 +53,7 @@ final class VisualizationEndpoint implements AutoCloseable {
   }
   void handle(HttpExchange exchange, Authority authority, boolean inventoryAdmitted) throws IOException {
     try (var responseScope = InventoryResponses.open()) {
+      var reply = SettledReply.current(); if (reply != null) reply.onLastWrite(responseScope::settle);
       String route = exchange.getRequestURI().getPath().substring(PATH.length());
       int version = exchange.getRequestURI().getPath().startsWith(PATH_V2) ? 2 : 1;
       VisualizationAccess.transport(authority, version, VisualizationAccess.http(route));

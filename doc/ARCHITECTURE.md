@@ -1466,7 +1466,10 @@ its slot before its result, so the caller it wakes can start the next build at o
 response deadline cancels publication but retains the reservation, and the slot, until a blocked
 read actually unwinds. Four
 separate HTTP/MCP inventory workers leave control requests available. Response reservations
-remain charged through serialization and socket writing, including MCP batches. Transport admission
+remain charged through serialization, including MCP batches, and are freed as the reply's last
+write begins: the JDK writes a body straight to the socket, so a client may hold the reply before
+that write returns, and the request's own slot, still held through the write, bounds what remains
+in flight. Transport admission
 carries the original UTF-8 byte count into normal dispatch, so parsing cannot erase evidence of
 an oversized request. Refusal decisions follow session and basic request validation; notification
 suppression and mixed-batch controls retain their normal owner. Each inventory operation in a
@@ -1862,7 +1865,8 @@ MCP HTTP bodies are limited to 4 MiB and ten seconds. A separate pool admits at 
 503/disconnect refusal path described above.
 HTTP dispatch uses direct handoff to four-to-32 workers, without a waiting queue. Slow MCP
 bodies, tool calls and data/store streams do not occupy those workers; streaming admission has
-its own pools and progress deadlines as described above.
+its own pools and progress deadlines as described above. MCP execution counts its slots the same
+way: a call's slot is free once its reply's last byte is written.
 
 Store JSON publication uses the same 4 MiB limit as reading. An oversized update is refused
 before replacing the last readable manifest. Move aliases follow a bounded chain with cycle

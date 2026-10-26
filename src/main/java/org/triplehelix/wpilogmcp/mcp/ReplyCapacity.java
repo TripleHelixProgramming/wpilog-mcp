@@ -50,6 +50,10 @@ final class ReplyCapacity {
   void finishing() { finishing.incrementAndGet(); }
   /** The finishing reply's slot is free; release first, so no waiter misses it. */
   void finished() { finishing.decrementAndGet(); }
+  /** Runs on a worker right after its reply's last write, before the slot is free; tests hold the worker there. */
+  private volatile Runnable lastWriteProbe = () -> {};
+  void lastWriteProbe(Runnable probe) { lastWriteProbe = probe; }
+  void afterLastWrite() { lastWriteProbe.run(); }
   int available() { return permits.availablePermits(); }
   boolean waiting() { return permits.hasQueuedThreads(); }
   /** How many admissions have waited for a finishing reply. */

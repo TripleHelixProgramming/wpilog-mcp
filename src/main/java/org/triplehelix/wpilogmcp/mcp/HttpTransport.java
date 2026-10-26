@@ -90,6 +90,11 @@ public class HttpTransport {
   private ScheduledExecutorService scheduler;
   private java.util.concurrent.ExecutorService sseExecutor;
   private java.util.concurrent.ExecutorService mcpExecutor;
+  /** MCP requests at a time; a request's slot is free once its reply's last byte is written. */
+  private ReplyCapacity mcpCapacity;
+  /** Runs on an MCP worker after its request has replied, before the worker returns; tests hold it there. */
+  private volatile Runnable afterMcpRequest = () -> {};
+  void afterMcpRequest(Runnable probe) { afterMcpRequest = probe; }
   private ScheduledExecutorService bodyDeadlines;
   private StreamingRequests streaming;
   private StreamingRequests storeStreaming;
@@ -403,7 +408,8 @@ public class HttpTransport {
         new SynchronousQueue<>(), r -> {
           var thread = new Thread(r, "http-request"); thread.setDaemon(true); return thread;
         });
-    mcpExecutor = new ThreadPoolExecutor(0, maxMcpRequests, 60, TimeUnit.SECONDS,
+    mcpCapacity = new ReplyCapacity(maxMcpRequests);
+    mcpExecutor = new ThreadPoolExecutor(0, 2 * maxMcpRequests, 60, TimeUnit.SECONDS,
         new SynchronousQueue<>(), r -> {
           var thread = new Thread(r, "mcp-request"); thread.setDaemon(true); return thread;
         });
@@ -725,6 +731,7 @@ public class HttpTransport {
   }
   private void dispatchMessage(HttpExchange exchange, JsonElement parsed, InventoryRequests.Admission admission) throws IOException {
     try (var responses = org.triplehelix.wpilogmcp.visualization.InventoryResponses.open()) {
+      var reply = SettledReply.current(); if (reply != null) reply.onLastWrite(responses::settle);
       if (parsed.isJsonArray()) handleBatchPost(exchange, parsed.getAsJsonArray(), admission);
       else if (parsed.isJsonObject()) handleSinglePost(exchange, parsed.getAsJsonObject(), admission);
       else sendJsonResponse(exchange, 400, JsonRpc.createErrorResponse(null, JsonRpc.INVALID_REQUEST, "Expected object or array"), null);
@@ -733,17 +740,21 @@ public class HttpTransport {
   /** Slow bodies and tool calls share a bounded admission pool; health never waits behind them. */
   private void submitPost(HttpExchange exchange) throws IOException {
     var ticket = admissions.join(exchange);
+    if (!mcpCapacity.tryAcquire()) { ticket.close(); streaming.refuse(exchange); return; }
     try {
       mcpExecutor.execute(() -> {
-        try { handlePost(exchange); }
-        catch (Exception e) {
+        var reply = SettledReply.open(exchange, mcpCapacity);
+        try {
+          handlePost(reply.exchange());
+          afterMcpRequest.run();
+        } catch (Exception e) {
           logger.warn("MCP request failed: {}", e.toString());
-          try { sendError(exchange, 500, "Internal server error"); }
+          try { sendError(reply.exchange(), 500, "Internal server error"); }
           catch (IOException ignored) { exchange.close(); }
-        } finally { ticket.close(); }
+        } finally { reply.close(); ticket.close(); }
       });
     } catch (java.util.concurrent.RejectedExecutionException e) {
-      ticket.close();
+      mcpCapacity.release(); ticket.close();
       streaming.refuse(exchange);
     }
   }

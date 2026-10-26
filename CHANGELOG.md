@@ -786,6 +786,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Recording inventories:** opening an inventory as soon as two others finished building is no longer refused as busy. Two inventories build at a time, and the limit counted the two builder threads; a build completed its result before its thread was back in the pool, so with both still finishing the next one was refused with `Both inventory builders are busy`. The limit now counts builds, and a build frees its slot before its result.
 - **HTTP request limits:** a client that sends its next request as soon as a reply arrives is no longer refused with 503 `BUSY` while nothing is running. The data, read, follow, store, inventory and replica pools counted threads, and a request's thread was still closing the exchange after the client had the reply, so at a pool's limit the next request found every thread taken. A limit now counts requests: a request's place is free once its reply's last byte is written, and a request that finds none while a reply is finishing waits up to 50 ms for it.
 - **HTTP refusals:** a refused request is answered with its 503 while earlier refusals are finishing, instead of having its connection closed with no reply. The two refusal threads counted the same way, so a third refusal right after two others found no thread; `HttpAdmissionTest` failed that way once on Ubuntu CI and twice on a Linux workstation.
+- **MCP request limit:** an MCP client that sends its next call as soon as a reply arrives is no longer refused with 503 at the limit. The MCP pool counted its threads, and a call's thread was still finishing after the client had the reply; a call's slot is now free once its reply's last byte is written.
+- **Inventory reply reservations:** a reply's reservations are now freed as its last write begins, so a client that has the reply never finds them still held. They were freed after the socket write, when the request's scope closed, so a client could read the reply and then still see 2 MiB reserved; the inventory refusal tests had been taught to wait for it instead (`1dadec9`).
 
 ### Security
 
@@ -966,10 +968,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two of its steps: on Windows CI, the status test's second publication recovery, which must change
   nothing, published a fifth file.
 
-- The inventory refusal tests wait, at most five seconds, for a refused batch's reply reservations
-  to be released. The server releases them after writing its reply, so a client can hold the reply
-  first; the tests read the count the moment the reply arrived, and the Windows runner once saw
-  2 MiB still held. A reservation that is never released still fails them.
+- The inventory refusal tests hold the worker just after a refused batch's reply has been written
+  and check that its reply reservations are already free, instead of waiting up to five seconds for
+  their release. The server released them after writing the reply, so a client could hold the reply
+  first, and the Windows runner once saw 2 MiB still held; they are now freed as the last write
+  begins.
 
 - The follow limit test sends each long wait once the page before it has freed its slot, and checks
   that the request after the sixteenth wait is refused by the limit itself. It waited for 16 active

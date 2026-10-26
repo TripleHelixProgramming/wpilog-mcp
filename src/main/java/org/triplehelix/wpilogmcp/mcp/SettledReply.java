@@ -25,7 +25,10 @@ import java.util.List;
  * whatever a failed or unfinished reply still holds.
  *
  * <p>Other holders of the request, such as inventory reply reservations, find the reply through {@link #current()} on
- * the worker's thread: a JDK 17 exchange keeps its attributes on the shared context, not on the request.
+ * the worker's thread: a JDK 17 exchange keeps its attributes on the shared context, not on the request. A holder that
+ * bounds memory rather than threads is freed as the last write begins ({@link #onLastWrite}): the JDK writes a body
+ * straight to the socket, so a client can hold the reply before that write returns, and the request's own slot,
+ * still held through the write, bounds what remains in flight.
  */
 final class SettledReply implements AutoCloseable {
   private static final ThreadLocal<SettledReply> CURRENT = new ThreadLocal<>();
@@ -35,6 +38,7 @@ final class SettledReply implements AutoCloseable {
   private final SettledReply previous;
   private final HttpExchange view;
   private final List<Runnable> releases = new ArrayList<>();
+  private final List<Runnable> lastWrite = new ArrayList<>();
   private long declared = UNKNOWN, written;
   private boolean finishing, settled;
 
@@ -63,8 +67,21 @@ final class SettledReply implements AutoCloseable {
     release.run();
   }
 
-  private synchronized void finishing() {
-    if (!finishing && !settled) { finishing = true; capacity.finishing(); }
+  /** Runs {@code release} as the reply's last write begins, or now if it already has. */
+  void onLastWrite(Runnable release) {
+    synchronized (this) { if (!finishing && !settled) { lastWrite.add(release); return; } }
+    release.run();
+  }
+
+  private synchronized boolean open() { return !settled; }
+
+  private void finishing() {
+    List<Runnable> run;
+    synchronized (this) {
+      if (finishing || settled) return;
+      finishing = true; capacity.finishing(); run = List.copyOf(lastWrite); lastWrite.clear();
+    }
+    for (var release : run) release.run();
   }
 
   /** Frees everything the reply holds, once. */
@@ -72,7 +89,8 @@ final class SettledReply implements AutoCloseable {
     List<Runnable> run; boolean wasFinishing;
     synchronized (this) {
       if (settled) return;
-      settled = true; run = List.copyOf(releases); releases.clear(); wasFinishing = finishing;
+      settled = true; wasFinishing = finishing;
+      run = new ArrayList<>(lastWrite); run.addAll(releases); lastWrite.clear(); releases.clear();
     }
     try { for (var release : run) release.run(); }
     finally {
@@ -97,18 +115,20 @@ final class SettledReply implements AutoCloseable {
       boolean last = completes(length);
       out.write(bytes, offset, length); written(length, last);
     }
+    // A request handed to another pool writes through this stream after this reply settled: a settled reply only
+    // passes the bytes on.
     @Override public void close() throws IOException {
-      finishing();
-      try { out.close(); } finally { settle(); }
+      boolean open = open(); finishing();
+      try { out.close(); } finally { if (open) capacity.afterLastWrite(); settle(); }
     }
     private boolean completes(long length) {
-      boolean last = declared > 0 && length > 0 && written + length >= declared;
+      boolean last = declared > 0 && length > 0 && written + length >= declared && open();
       if (last) finishing();
       return last;
     }
     private void written(long length, boolean last) {
       written += length;
-      if (last) settle();
+      if (last) { capacity.afterLastWrite(); settle(); }
     }
   }
 

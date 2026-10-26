@@ -71,6 +71,28 @@ class HttpAdmissionTest {
     }
   }
 
+  /** A call's worker stays after its reply has reached the client, as a busy machine can. With one MCP slot, the next
+   * call used to be refused with 503 until that thread was back in the pool. */
+  @Test void anMcpCallAtTheLimitIsAdmittedOnceThePreviousReplyIsWritten() throws Exception {
+    var transport = new HttpTransport(new ToolRegistry(), 0); transport.requestLimits(1 << 20, 1, Duration.ofSeconds(10));
+    var replied = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
+    var first = new java.util.concurrent.atomic.AtomicBoolean(true);
+    transport.afterMcpRequest(() -> {
+      if (!first.getAndSet(false)) return;
+      replied.countDown();
+      try { release.await(10, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    });
+    transport.start();
+    try {
+      var initialize = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + transport.getPort() + "/mcp"))
+          .POST(HttpRequest.BodyPublishers.ofString("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")).build();
+      assertEquals(200, HttpClient.newHttpClient().send(initialize, HttpResponse.BodyHandlers.ofString()).statusCode());
+      assertTrue(replied.await(5, java.util.concurrent.TimeUnit.SECONDS), "the first call's worker stays after its reply");
+      var next = HttpClient.newHttpClient().send(initialize, HttpResponse.BodyHandlers.ofString());
+      assertEquals(200, next.statusCode(), "the next call is admitted: " + next.body());
+    } finally { release.countDown(); transport.stop(); }
+  }
+
   @Test void anUnfinishedBodyHasADeadlineAndReleasesItsAdmissionSlot() throws Exception {
     var transport = new HttpTransport(new ToolRegistry(), 0);
     transport.requestLimits(1024, 1, Duration.ofMillis(200)); transport.start();
