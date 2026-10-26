@@ -582,8 +582,10 @@ Older binaries reject format 2. The backup and preparation record are retained u
 
 Migration hashes outside the store queue, retaining file leases and filesystem boundaries.
 Two server-wide preparation slots, one per store and no waiting queue, remain charged through
-publication or cancellation unwind. A short store turn rechecks identity and boundaries before
-publishing the marker; future completions and mutation observers run after the store lock closes.
+publication or cancellation unwind, and are freed before the migration's result completes, so a
+migration started the moment another finishes is admitted. A short store turn rechecks identity
+and boundaries before publishing the marker; future completions and mutation observers run after
+the store lock closes.
 A format-2 retry retains its established UUIDs. The metadata and path-count limits refuse an
 oversized migration without truncating old facts. Native power-loss durability is not yet proven.
 

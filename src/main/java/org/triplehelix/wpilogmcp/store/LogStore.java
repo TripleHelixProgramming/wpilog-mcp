@@ -1063,12 +1063,22 @@ public final class LogStore implements AutoCloseable {
     return MirrorCapacity.measure(root, security, config).snapshot();
   }
 
+  /**
+   * Two replica migrations prepare at a time across every store. The limit counts preparations, not threads: a
+   * migration gives its permit back on the store queue before it completes its result, so the caller it wakes can
+   * start the next one while the preparer's thread is still on its way back to the pool. A pool of two threads
+   * refused that next migration whenever both threads were still finishing.
+   */
+  private static final java.util.concurrent.Semaphore PREPARE_PERMITS = new java.util.concurrent.Semaphore(2);
   private static final java.util.concurrent.ThreadPoolExecutor REPLICA_PREPARERS =
-      new java.util.concurrent.ThreadPoolExecutor(0, 2, 30, java.util.concurrent.TimeUnit.SECONDS,
+      new java.util.concurrent.ThreadPoolExecutor(0, Integer.MAX_VALUE, 30, java.util.concurrent.TimeUnit.SECONDS,
           new java.util.concurrent.SynchronousQueue<>(), task -> {
             var thread = new Thread(task, "store-replica-migration"); thread.setDaemon(true); return thread;
           });
   private final java.util.concurrent.atomic.AtomicBoolean replicaPreparing = new java.util.concurrent.atomic.AtomicBoolean();
+  /** Runs on a preparer's thread once its migration has completed; tests hold the thread there, as a busy machine can. */
+  private volatile Runnable preparationEndProbe = () -> {};
+  void preparationEndProbe(Runnable probe) { preparationEndProbe = probe; }
 
   /** Explicit migration preserves payloads. Preparation is bounded and off-queue; only publication
    * takes the store lock, and no user continuation runs until that lock has been released. */
@@ -1083,6 +1093,10 @@ public final class LogStore implements AutoCloseable {
       org.triplehelix.wpilogmcp.config.MirrorConfig config, ReplicaPreparation preparation) {
     var result = new CompletableFuture<ReplicaCatalog>();
     if (!replicaPreparing.compareAndSet(false, true)) return CompletableFuture.failedFuture(new IOException("BUSY: replica migration already running"));
+    if (!PREPARE_PERMITS.tryAcquire()) {
+      replicaPreparing.set(false);
+      return CompletableFuture.failedFuture(new IOException("BUSY: two replica migrations are preparing; retry"));
+    }
     pending.incrementAndGet();
     try {
       REPLICA_PREPARERS.execute(() -> {
@@ -1108,7 +1122,7 @@ public final class LogStore implements AutoCloseable {
             } catch (Throwable e) { failure = e; }
             finally { if (charged != null) charged.close(); }
             // Release ownership before completing a future: its callback may reenter the store.
-            replicaPreparing.set(false); pending.decrementAndGet();
+            PREPARE_PERMITS.release(); replicaPreparing.set(false); pending.decrementAndGet();
             completed.complete(null);
             if (failure == null) {
               published(root.resolve("store.json"), published); result.complete(published.replicas());
@@ -1120,10 +1134,12 @@ public final class LogStore implements AutoCloseable {
         } catch (Throwable failure) {
           if (prepared != null) prepared.close();
           if (reservation != null) reservation.close();
-          replicaPreparing.set(false); pending.decrementAndGet(); result.completeExceptionally(failure);
+          PREPARE_PERMITS.release(); replicaPreparing.set(false); pending.decrementAndGet(); result.completeExceptionally(failure);
         }
+        preparationEndProbe.run();
       });
     } catch (java.util.concurrent.RejectedExecutionException busy) {
+      PREPARE_PERMITS.release();
       replicaPreparing.set(false); pending.decrementAndGet(); result.completeExceptionally(new IOException("BUSY: two replica migrations are preparing; retry", busy));
     }
     return result;
