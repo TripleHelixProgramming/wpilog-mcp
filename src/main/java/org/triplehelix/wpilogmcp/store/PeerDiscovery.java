@@ -25,9 +25,18 @@ public final class PeerDiscovery implements AutoCloseable {
   private final Object lock = new Object();
   private final Map<String, Candidate> candidates = new LinkedHashMap<>();
   private boolean closed;
-  private final ThreadPoolExecutor workers = new ThreadPoolExecutor(0, 2, 30, TimeUnit.SECONDS, new SynchronousQueue<>(), task -> {
+  /**
+   * Two handshake probes at a time. The limit counts probes, not threads: a probe gives its permit back before it
+   * publishes its result, so a tick can start the next probe while the finished probe's thread is still on its way
+   * back to the pool. A pool of two threads put that next probe off by a second whenever both were still finishing.
+   */
+  private final Semaphore probes = new Semaphore(2);
+  private final ThreadPoolExecutor workers = new ThreadPoolExecutor(0, Integer.MAX_VALUE, 30, TimeUnit.SECONDS, new SynchronousQueue<>(), task -> {
     var thread = new Thread(task, "replica-handshake"); thread.setDaemon(true); return thread;
   });
+  /** Runs on a probe's thread once it has published its result; tests hold the thread there, as a busy machine can. */
+  private volatile Runnable afterProbe = () -> {};
+  void afterProbe(Runnable probe) { afterProbe = probe; }
   private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(task -> {
     var thread = new Thread(task, "replica-discovery"); thread.setDaemon(true); return thread;
   });
@@ -83,6 +92,7 @@ public final class PeerDiscovery implements AutoCloseable {
       if (closed || candidates.get(candidate.peer) != candidate || candidate.probing || candidate.retry > clock.millis()) return;
       candidate.probing = true;
     }
+    if (!probes.tryAcquire()) { synchronized (lock) { candidate.probing = false; candidate.retry = clock.millis() + 1000; } return; }
     try { workers.execute(() -> {
       String state = "ready", reason = null;
       try {
@@ -91,13 +101,15 @@ public final class PeerDiscovery implements AutoCloseable {
             && candidate.peer.equals(s.storeId()) && candidate.master.equals(s.masterStoreId())))
           throw new IOException("Handshake does not match the advertised serving store and master");
       } catch (Exception failure) { state = "unavailable"; reason = Objects.toString(failure.getMessage(), "Handshake failed"); }
+      probes.release(); // Before the result is published: the next tick may start the next probe at once.
       synchronized (lock) {
         if (!closed && candidates.get(candidate.peer) == candidate) {
           candidate.probing = false; candidate.state = state; candidate.reason = reason == null ? null : reason.substring(0, Math.min(reason.length(), 1024));
           candidate.retry = clock.millis() + (state.equals("ready") ? 30_000 : 60_000);
         }
       }
-    }); } catch (RejectedExecutionException full) { synchronized (lock) { candidate.probing = false; candidate.retry = clock.millis() + 1000; } }
+      afterProbe.run();
+    }); } catch (RejectedExecutionException stopped) { probes.release(); synchronized (lock) { candidate.probing = false; candidate.retry = clock.millis() + 1000; } }
   }
   @Override public void close() {
     synchronized (lock) { closed = true; candidates.clear(); }
