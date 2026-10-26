@@ -312,6 +312,28 @@ class FollowEndpointTest {
     var reopened = json(local(client, "/read/v1/follows", boundRequest(view)), 201);
     assertEquals(204, call("DELETE", "/read/v1/follows/" + reopened.get("id").getAsString(), null).statusCode());
   }
+  /** A follow's reply goes out before its request has finished. By then the slot it reserved while opening must be its
+   * lease, or a client that opens the next follow at once is counted twice and refused one below the limit. */
+  @ParameterizedTest @ValueSource(booleans = {false, true})
+  void aFollowCountsOnceAsSoonAsItsReplyIsSent(boolean bound) throws Exception {
+    String client = client(); var leases = new ArrayList<JsonObject>();
+    var held = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
+    var first = new java.util.concurrent.atomic.AtomicBoolean(true);
+    endpoint().afterReply(() -> {
+      if (!first.getAndSet(false)) return;
+      held.countDown();
+      try { release.await(30, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    });
+    try {
+      leases.add(bound ? json(local(client, "/read/v1/follows", boundRequest(createView(client))), 201) : create());
+      assertTrue(held.await(10, TimeUnit.SECONDS), "The first follow's request is still finishing");
+      for (int i = 1; i < 32; i++) leases.add(create());
+      assertEquals(429, call("POST", "/read/v1/follows", creation()).statusCode(), "The limit itself still holds");
+    } finally {
+      release.countDown(); endpoint().afterReply(() -> {});
+      for (var lease : leases) assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+    }
+  }
 
   @ParameterizedTest @ValueSource(ints = {5000, 10000})
   void queriedFrontierBootstrapsLargeTwoMemberRecordingsAtOneMiB(int topics) throws Exception {
