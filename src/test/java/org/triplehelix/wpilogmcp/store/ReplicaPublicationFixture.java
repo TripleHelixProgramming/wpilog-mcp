@@ -62,6 +62,9 @@ public final class ReplicaPublicationFixture {
     }
     placement.completion().get(10, TimeUnit.SECONDS);
     store.awaitImports();
+    // The placement asks for the closed file's clock record, which a worker every store shares writes later.
+    // Waiting here keeps that write, and its publication, from landing after the test changes the store.
+    store.clocksSettled().get(20, TimeUnit.SECONDS);
     return captured;
   }
 

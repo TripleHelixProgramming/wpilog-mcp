@@ -955,6 +955,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   header; one test then counted three published files instead of two, in 18 of 30 runs in a
   Windows VM.
 
+- The replica publication tests' shared capture helper waits for that clock record pass too. Only
+  one test's own helper did, so a test using the shared one could have the record published between
+  two of its steps: on Windows CI, the status test's second publication recovery, which must change
+  nothing, published a fifth file.
+
 - The inventory refusal tests wait, at most five seconds, for a refused batch's reply reservations
   to be released. The server releases them after writing its reply, so a client can hold the reply
   first; the tests read the count the moment the reply arrived, and the Windows runner once saw
