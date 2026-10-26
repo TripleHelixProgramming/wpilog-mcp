@@ -24,14 +24,14 @@ class ReplicaNetworkTest {
   final List<HttpTransport> servers = new ArrayList<>();
   final List<LogStore> stores = new ArrayList<>();
   @BeforeEach void setup() throws Exception { temp = temp.toRealPath(); previous = manager.getAllowedDirectories(); manager.addAllowedDirectory(temp); }
-  @AfterEach void cleanup() {
-    servers.forEach(HttpTransport::stop); stores.forEach(LogStore::close); manager.unloadAllLogs();
+  @AfterEach void cleanup() throws Exception {
+    servers.forEach(HttpTransport::stop); for (var store : stores) manager.stores().release(store.root()); manager.unloadAllLogs();
     manager.clearAllowedDirectories(); previous.forEach(manager::addAllowedDirectory);
   }
   String id() { return UUID.randomUUID().toString(); }
+  /** A served store is the one its transport finds through the process's registry, as in a server. */
   LogStore store(String name) throws Exception {
-    Files.createDirectories(temp.resolve(name));
-    var store = new LogStore(temp.resolve(name), manager.testGetSecurityValidator(), manager, StoreCatalog::read); stores.add(store); return store;
+    var store = manager.stores().store(temp.resolve(name)); stores.add(store); return store;
   }
   HttpTransport serve(LogStore store, int port) throws Exception {
     var registry = new ToolRegistry(); org.triplehelix.wpilogmcp.tools.StatisticsTools.registerAll(registry);

@@ -527,6 +527,14 @@ existing admission deadline. The lock file stays in place after release: deletin
 give two processes different inodes to lock. Import payload reads, hashing, correlation and copying
 do not hold that lock; short manifest and rename operations still need it to serialize writers.
 
+In one process, one store object owns a folder. Java refuses a lock that the same process already
+holds on a file, and the store reported that refusal as another import holding the lock. The server
+opens every folder through one registry, but tests that kept a registry of their own and also listed
+the folder made a second store object, and on Windows its turns now and then met the first's. A
+second store object for a folder that is already open is refused when it is made. Closing a store
+waits, at most ten seconds, for its last queued turn, which still takes the lock, before the folder
+is free again.
+
 Peer sync uses the same staging/publication separation. A daemon staging worker owns the
 transfer journal, network waits, rate limiting, hashing and inspection. Its permanent
 `.sync/.owner.lock` excludes another sync process without holding `store.lock` across those

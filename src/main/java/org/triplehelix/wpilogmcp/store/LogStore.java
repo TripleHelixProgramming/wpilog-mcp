@@ -245,6 +245,19 @@ public final class LogStore implements AutoCloseable {
   private final Path root;
   private final SecurityValidator security;
   private final StoreQueue queue;
+  /**
+   * One store object owns a folder in a process. It runs every change on its queue under the
+   * folder's lock, and a second object for the same folder, with a queue of its own, took that lock
+   * at the same moment: Java refused it inside the process, which was reported as another import
+   * holding the lock. The server opens every folder through one registry; tests that kept a
+   * registry of their own and also listed the folder made a second object and failed on Windows
+   * now and then. A second object is now refused when it is made. The folder is given back after
+   * the queue's last turn, not when close is called, since a turn queued before then still takes
+   * the lock.
+   */
+  private static final java.util.concurrent.ConcurrentHashMap<Path, LogStore> OWNERS = new java.util.concurrent.ConcurrentHashMap<>();
+  static final java.time.Duration CLOSE_WAIT = java.time.Duration.ofSeconds(10);
+  private final Path ownedFolder;
   private final ExecutorService staging = Executors.newSingleThreadExecutor(task -> {
     var thread = new Thread(task, "store-import-staging"); thread.setDaemon(true); return thread;
   });
@@ -627,25 +640,57 @@ public final class LogStore implements AutoCloseable {
 
   LogStore(Path root, SecurityValidator security, LogManager logManager, CatalogReader catalogReader,
       Mover mover, DiskSpaceBudgets.StoreBudget diskBudget) {
+    this(root, security, logManager, catalogReader, mover, diskBudget, true);
+  }
+
+  /**
+   * A store standing in for another process's store on the same folder, for tests that simulate a
+   * second server: it claims nothing, so it meets this process's store only at the folder's lock,
+   * as another process does.
+   */
+  static LogStore anotherProcess(Path root, SecurityValidator security, LogManager logManager, CatalogReader catalogReader,
+      Mover mover, DiskSpaceBudgets.StoreBudget diskBudget) {
+    return new LogStore(root, security, logManager, catalogReader, mover, diskBudget, false);
+  }
+
+  private LogStore(Path root, SecurityValidator security, LogManager logManager, CatalogReader catalogReader,
+      Mover mover, DiskSpaceBudgets.StoreBudget diskBudget, boolean claims) {
     this.diskBudget.set(diskBudget);
     FileNameEncoding.warnIfNeeded();
     this.root = root;
-    this.security = security;
-    this.logManager = logManager;
-    this.catalogReader = catalogReader;
-    this.inbox = new StoreInbox(this, security);
-    this.mover = mover;
-    queue = new StoreQueue();
-    // Recovery may walk a season of directories. It shares staging's lifetime and never
-    // delays a capture turn or runs under the registry's constructor/publication monitor.
-    staging.execute(() -> {
-      try { if (!importsStopped.get()) ImportStage.recover(new StoreFiles(root, security)); }
-      catch (IOException | RuntimeException failure) {
-        LoggerFactory.getLogger(LogStore.class).warn("Abandoned import stage recovery will retry: {}", failure.getMessage());
-      }
-      if (!importsStopped.get()) initialCatalogCapacity();
-    });
-    requestPublicationRecovery(false);
+    // Claimed before the queue starts: a refused object never runs a turn.
+    ownedFolder = claims ? claim(root) : null;
+    try {
+      this.security = security;
+      this.logManager = logManager;
+      this.catalogReader = catalogReader;
+      this.inbox = new StoreInbox(this, security);
+      this.mover = mover;
+      queue = new StoreQueue();
+      if (ownedFolder != null) queue.afterLastTurn(() -> OWNERS.remove(ownedFolder, this));
+      // Recovery may walk a season of directories. It shares staging's lifetime and never
+      // delays a capture turn or runs under the registry's constructor/publication monitor.
+      staging.execute(() -> {
+        try { if (!importsStopped.get()) ImportStage.recover(new StoreFiles(root, security)); }
+        catch (IOException | RuntimeException failure) {
+          LoggerFactory.getLogger(LogStore.class).warn("Abandoned import stage recovery will retry: {}", failure.getMessage());
+        }
+        if (!importsStopped.get()) initialCatalogCapacity();
+      });
+      requestPublicationRecovery(false);
+    } catch (RuntimeException | Error failure) {
+      if (ownedFolder != null) OWNERS.remove(ownedFolder, this);
+      throw failure;
+    }
+  }
+
+  private Path claim(Path folder) {
+    Path key;
+    try { key = folder.toRealPath(); }
+    catch (IOException | RuntimeException missing) { key = folder.toAbsolutePath().normalize(); }
+    if (OWNERS.putIfAbsent(key, this) != null) throw new IllegalStateException("STORE_OWNED: " + folder
+        + " is already open in this process; open it through the registry that holds it, or close that store first");
+    return key;
   }
 
   private final ReplicaTransfers replicaTransfers = new ReplicaTransfers(this);
@@ -1676,9 +1721,30 @@ public final class LogStore implements AutoCloseable {
 
   @Override
   public void close() {
+    beginClose();
+    awaitClosed(CLOSE_WAIT);
+  }
+
+  /** Stops imports and the queue without waiting for the queue's last turn. */
+  void beginClose() {
     stopImports();
     replicaTransfers.close();
     queue.shutdown();
+  }
+
+  /**
+   * Waits for the queue's last turn, after which another store object may open the folder. False
+   * when the time runs out or the caller is that turn: the folder then stays owned until the turn
+   * ends, so a reopen is refused rather than run beside it.
+   */
+  boolean awaitClosed(java.time.Duration limit) {
+    if (queue.ownsCurrentThread()) return false;
+    try {
+      if (queue.awaitTermination(limit.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS)) return true;
+      LoggerFactory.getLogger(LogStore.class).warn("Store {} still had a turn running {} ms after it closed; it stays owned until that turn ends",
+          root, limit.toMillis());
+    } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+    return false;
   }
 
   /** An explicit completion barrier for offline callers and tests, including preparation. */

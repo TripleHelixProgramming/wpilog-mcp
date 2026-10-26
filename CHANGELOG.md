@@ -316,6 +316,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One owner per store folder:** a store folder has one store object in a process. A second one
+  for a folder that is already open is refused when it is made, with `STORE_OWNED`, and closing a
+  store waits, at most ten seconds, for its last queued turn before the folder is free. Two store
+  objects for one folder ran their own queues and could take its lock at the same moment: Java
+  refused the second inside the process, and an import failed with "Store lock is held by another
+  import". The server opens every folder through one registry, so only tests met it, on Windows CI.
 - The data endpoint's UTC mapping is kept: a loaded log builds it once, and a capture still
   recording extends it by the clock's new readings, so a request no longer reads the whole clock
   entry again. On a two-hour recording, a ten-second UTC window decodes at most 40 of its 1,400
@@ -992,6 +998,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their killed child held before they reopen its stores. They reopened at once, and once on
   Windows CI the reopened store found "Store lock is held by another import"; in a Windows VM
   under load they failed in one run of ten.
+
+- The tests that listed or served a store folder while a registry or store of their own held it
+  now hand it to the process's registry, as the server does, and take it back; the sync tests give
+  their file mover to the registry's store instead of making a second one, and the two tests that
+  stand in for a second server say so. On Windows CI the legacy layout test's import found "Store
+  lock is held by another import"; with one owner per folder enforced and none of these changes,
+  32 tests in ten classes failed at once, on every machine.
 
 - The session expiry test now expires sessions as of a moment after its last request. Windows'
   clock moved in steps of about a millisecond on the test machines, so the last request and an

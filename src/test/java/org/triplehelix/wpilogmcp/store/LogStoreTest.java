@@ -112,14 +112,22 @@ class LogStoreTest {
     return StoreCatalog.read(root, security);
   }
 
+  /**
+   * Listing opens the store folder through the process's registry, and one store object owns a
+   * folder, so this test's registry gives the folder back for the listing and opens it again on
+   * its next use.
+   */
   private JsonObject listing() throws Exception {
-    var tools = new ToolRegistry();
-    CoreTools.registerAll(tools);
-    var roots = LogDirectory.getInstance().getLogDirectories();
-    var selected = roots.contains(root) ? root : roots.get(0).toRealPath();
-    var request = new JsonObject(); request.addProperty("scope_id", LogDirectory.getInstance().sourceScopes().snapshot().stream()
-        .filter(scope -> scope.root().equals(selected)).findFirst().orElseThrow().id());
-    return tools.getTool("list_available_logs").execute(request).getAsJsonObject();
+    registry.release(root);
+    try {
+      var tools = new ToolRegistry();
+      CoreTools.registerAll(tools);
+      var roots = LogDirectory.getInstance().getLogDirectories();
+      var selected = roots.contains(root) ? root : roots.get(0).toRealPath();
+      var request = new JsonObject(); request.addProperty("scope_id", LogDirectory.getInstance().sourceScopes().snapshot().stream()
+          .filter(scope -> scope.root().equals(selected)).findFirst().orElseThrow().id());
+      return tools.getTool("list_available_logs").execute(request).getAsJsonObject();
+    } finally { StoreFolders.release(root); }
   }
 
   @ParameterizedTest
@@ -656,6 +664,7 @@ class LogStoreTest {
     run(List.of(), false, null);
     var limited = new SecurityValidator();
     limited.addAllowedDirectory(root);
+    registry.release(root); // the restricted registry owns the folder for its block
     try (var restricted = new StoreRegistry(limited)) {
       var outside = log(temp.resolve("outside.wpilog"), null, START, 1);
       var result = restricted.store(root).importPaths(

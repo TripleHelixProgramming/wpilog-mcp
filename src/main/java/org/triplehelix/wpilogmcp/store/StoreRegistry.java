@@ -103,6 +103,11 @@ public final class StoreRegistry implements AutoCloseable {
   }
 
   public LogStore store(Path directory) throws IOException {
+    return store(directory, null);
+  }
+
+  /** Opens a folder's store with a mover of a test's own; the store must be the folder's first. */
+  LogStore store(Path directory, LogStore.Mover mover) throws IOException {
     validate(directory);
     Files.createDirectories(directory);
     var real = directory.toRealPath();
@@ -111,9 +116,22 @@ public final class StoreRegistry implements AutoCloseable {
     var budget = diskBudget(real);
     synchronized (this) {
       if (closed) throw new IllegalStateException("Store registry is closed");
+      if (mover != null && stores.containsKey(real)) throw new IllegalStateException("A store with its own mover must be its folder's first: " + real);
       return stores.computeIfAbsent(real,
-          path -> new LogStore(path, security, logManager, StoreCatalog::read, new LogStore.Mover(), budget));
+          path -> new LogStore(path, security, logManager, StoreCatalog::read, mover == null ? new LogStore.Mover() : mover, budget));
     }
+  }
+
+  /**
+   * Closes and forgets one store once its last turn has run, so another store object may open the
+   * folder. The server never gives a folder back; a test that listed a store folder through the
+   * process's registry returns it here, since a second registry of its own would be refused.
+   */
+  void release(Path directory) throws IOException {
+    var real = directory.toRealPath();
+    LogStore store;
+    synchronized (this) { store = stores.remove(real); }
+    if (store != null) store.close();
   }
 
   /** Move notices expire from listings, but a path once handed to a tool remains a durable alias. */
@@ -278,7 +296,10 @@ public final class StoreRegistry implements AutoCloseable {
     beforeBudgetCloses.run();
     diskSampler.shutdown();
     diskSpace.close();
-    stores.values().forEach(LogStore::close);
+    // Every store stops before any is waited for, so a stop waits once, not once per store.
+    stores.values().forEach(LogStore::beginClose);
+    long deadline = System.nanoTime() + LogStore.CLOSE_WAIT.toNanos();
+    for (var store : stores.values()) store.awaitClosed(java.time.Duration.ofNanos(Math.max(0, deadline - System.nanoTime())));
   }
   private volatile Runnable beforeBudgetCloses = () -> {};
   /** Tests observe the stores at the moment the disk budget is about to close. */

@@ -161,7 +161,9 @@ class CaptureIdentityTest {
 
   @Test void aPulledFileMatchedWhileOpenSurvivesEventRenameAndIdentityPromotion() throws Exception {
     var root = temp.resolve("store"); var loop = new ManualScheduler();
-    try (var stores = new StoreRegistry(security())) {
+    // The listing opens the folder through the process's registry, which owns it in the server too.
+    try {
+      var stores = StoreFolders.registry();
       var store = stores.store(root); var placement = store.captures(WALL);
       var identity = device("SYNTHETIC-A", "SHA256:fixture");
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
@@ -209,14 +211,16 @@ class CaptureIdentityTest {
         var files = StoreCatalog.read(root, security()).files(); assertEquals(2, files.size());
         assertTrue(files.stream().allMatch(f -> f.path().startsWith(root.resolve("robots").resolve("SYNTHETIC-A"))));
       }
-    }
+    } finally { StoreFolders.release(root); }
   }
 
   @Test void disagreementIsManifestedAndLoggedWhileTheFilesLoggedSerialWins() throws Exception {
     var root = temp.resolve("store"); var security = security(); var loop = new ManualScheduler();
     var oldDirs = LogDirectory.getInstance().getLogDirectories();
     var err = System.err; var messages = new java.io.ByteArrayOutputStream();
-    try (var stores = new StoreRegistry(security); var output = new java.io.PrintStream(messages)) {
+    try (var output = new java.io.PrintStream(messages)) {
+      // The listing opens the folder through the process's registry, which owns it in the server too.
+      var stores = StoreFolders.registry();
       System.setErr(output);
       var placement = stores.store(root).captures(WALL);
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
@@ -233,7 +237,10 @@ class CaptureIdentityTest {
         assertEquals("SYNTHETIC-B", row.getAsJsonObject("robot").get("serial_number").getAsString());
         assertEquals("logged", row.getAsJsonObject("robot").get("basis").getAsString());
       }
-    } finally { System.setErr(err); LogDirectory.getInstance().setLogDirectories(oldDirs.stream().map(Path::toString).toList()); }
+    } finally {
+      System.setErr(err); LogDirectory.getInstance().setLogDirectories(oldDirs.stream().map(Path::toString).toList());
+      StoreFolders.release(root);
+    }
   }
 
   @Test void removingAPinnedFingerprintAllowsTheNextContactToRecordItsReplacement() throws Exception {

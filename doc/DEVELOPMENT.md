@@ -461,6 +461,17 @@ for HotSpot with compressed references and eight-byte object alignment).
 
 Every test task, the stress tests included, uses its own disk cache folder, `build/test-disk-cache`, and empties it before the run. So a run starts with nothing cached, synchronizes every REV log itself, and never reads or writes your own cache. `-PtestCacheDir=/path/to/folder` uses that folder instead and keeps what is in it: a second run then starts from the results the first one saved. Pointed at a copy of a cache that an older version wrote, a run shows how this version treats that version's results. Use a copy, because the tests write to the folder.
 
+### Store folders in tests
+
+One store object owns a store folder in a process, and a second one for an open folder is refused
+when it is made: two would take the folder's lock at the same moment, and an import would fail as
+if another process held it. Listing or scanning a store folder opens it through the process's
+registry, as the server does. So a test that lists a folder works on it through that registry and
+gives it back when it ends, and a test whose own registry holds the folder gives it back before the
+listing; the store tests' `StoreFolders` does both. A test that stands in for a second server uses
+the store's stand-in for another process, which meets the test's store only at the folder's lock.
+A test that kills a child process holding a lock waits for Windows to release it before taking it.
+
 ### Scratch under `build/`
 
 What a run writes under `build/` for its own use lasts until the next run of the same suite. A replay that passes deletes its run folder, and one that fails keeps it for diagnosis. Before its tests start, each task empties the folders its suites write, as it empties its disk cache: every test task empties `build/test-fixtures`; `test` with `-PconformanceLogDir` empties the real-log replay folders (`build/replay-work`, `build/replay-pull` and `build/replay-pairs`) and `build/real-log-conformance-export`; `shopHarness` empties `build/replay-native` and `build/shop-harness`. A targeted `test` without `-PconformanceLogDir` leaves a failed real-log run's folder alone while you look into it.

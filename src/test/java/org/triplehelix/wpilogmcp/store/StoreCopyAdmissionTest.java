@@ -58,6 +58,10 @@ class StoreCopyAdmissionTest {
     return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
   }
   long reserved() { return space.snapshots().stream().mapToLong(DiskSpaceBudgets.Snapshot::reservedBytes).sum(); }
+  /** The setup's store, reopened with a mover of the test's own: one store object owns a folder. */
+  LogStore storeWith(LogStore.Mover mover) throws Exception {
+    var folder = store.root(); registry.release(folder); store = registry.store(folder, mover); return store;
+  }
 
   @Test void twoConfiguredStoresShareTheActualFilesystemAndTheLargestStandingPolicy() throws Exception {
     var other = registry.store(temp.resolve("other"));
@@ -130,8 +134,7 @@ class StoreCopyAdmissionTest {
         copies.incrementAndGet(); return super.copy(from, to, admittedBytes);
       }
     };
-    try (var selected = new LogStore(store.root(), security, LogManager.getInstance(), StoreCatalog::read,
-        mover, store.diskBudget())) {
+    try (var selected = storeWith(mover)) {
       free.set(bytes.length + 99L);
       var result = selected.importPaths(new LogStore.Request(List.of(source), true, null), progress -> {})
           .get(10, TimeUnit.SECONDS);
@@ -231,12 +234,10 @@ class StoreCopyAdmissionTest {
       return 10_000_000_000L;
     });
     try (var selectedRegistry = new StoreRegistry(security, LogManager.getInstance(), StoreCatalog::discover, growingSpace)) {
-      var registered = selectedRegistry.store(temp.resolve("growing-store"));
       var mover = new LogStore.Mover() {
         @Override boolean sameFileStore(Path from, Path to) { return false; }
       };
-      try (var selected = new LogStore(registered.root(), security, LogManager.getInstance(),
-          StoreCatalog::read, mover, registered.diskBudget())) {
+      try (var selected = selectedRegistry.store(temp.resolve("growing-store"), mover)) {
         var result = selected.importPaths(new LogStore.Request(List.of(source), move, null), progress -> {
           if (progress.phase().equals("verifying")) try { copiedBytes.set(Files.size(progress.path())); }
           catch (IOException failure) { throw new java.io.UncheckedIOException(failure); }
@@ -265,8 +266,7 @@ class StoreCopyAdmissionTest {
         finally { if (interrupted) Thread.currentThread().interrupt(); }
       }
     };
-    try (var selected = new LogStore(store.root(), security, LogManager.getInstance(),
-        StoreCatalog::read, mover, store.diskBudget())) {
+    try (var selected = storeWith(mover)) {
       var imported = selected.importPaths(new LogStore.Request(List.of(source), true, null), progress -> {});
       try {
         assertTrue(entered.await(5, TimeUnit.SECONDS));

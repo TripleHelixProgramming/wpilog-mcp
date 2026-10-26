@@ -136,6 +136,7 @@ class StoreInboxTest {
 
   @Test void anUploadAboveTwoGiBReachesStreamingLengthValidation() throws Exception {
     String hash = "0".repeat(64);
+    StoreFolders.release(root); // a store with an 8 GiB budget of its own owns the folder for this block
     try (var space = new DiskSpaceBudgets(filesystem -> 8L << 30);
         var selected = new LogStore(root, manager.testGetSecurityValidator(), manager,
             StoreCatalog::read, new LogStore.Mover(), space.store(root))) {
