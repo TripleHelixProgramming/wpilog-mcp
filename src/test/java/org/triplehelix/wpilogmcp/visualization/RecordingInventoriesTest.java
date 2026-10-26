@@ -235,6 +235,22 @@ class RecordingInventoriesTest {
     assertTrue(bad.getAsJsonArray("schema_problems").asList().stream().anyMatch(p -> p.getAsJsonObject().get("code").getAsString().equals("INVALID_SCHEMA")));
   }
 
+  @Test void aFinishedBuildNoLongerHoldsABuilderWhileItsThreadReturnsToThePool() throws Exception {
+    // A build completes its caller's result while its thread is still finishing. The probe keeps two such threads
+    // there, as a busy machine can; the next build used to be refused as if both builders were busy.
+    var hold = new CountDownLatch(1); var held = new CountDownLatch(2);
+    inventories.afterBuild(() -> {
+      held.countDown();
+      try { hold.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    });
+    try {
+      open(); open();
+      assertTrue(held.await(5, TimeUnit.SECONDS), "both builders' threads stay after completing their results");
+      inventories.afterBuild(() -> {});
+      var other = new RecordingInventories.Client(Authority.HTTP_LOCAL, "other", () -> true);
+      assertTrue(inventories.open(other, fixture.reference).has("inventory_id"), "a third build is admitted");
+    } finally { hold.countDown(); }
+  }
   @Test void builderAndAggregateReservationsRejectWithoutAWaitingQueue() throws Exception {
     inventories.close(); var entered = new CountDownLatch(2); var release = new CountDownLatch(1);
     var defaults = RecordingInventories.Limits.defaults();

@@ -1456,8 +1456,10 @@ is never deduced from a page or a conflict.
 Accounting includes builds and retired inventories still used by readers. Short metadata locks
 claim or reclaim slots; admission, grant I/O, native close and future completion happen outside
 them. A removed session marks its in-flight admission invalid without waiting for disk I/O.
-The two no-queue build workers reserve metadata before starting; a ten-second response deadline
-cancels publication but retains the reservation until a blocked read actually unwinds. Four
+Two builds run at a time, with no waiting queue; each reserves metadata before it starts and frees
+its slot before its result, so the caller it wakes can start the next build at once. A ten-second
+response deadline cancels publication but retains the reservation, and the slot, until a blocked
+read actually unwinds. Four
 separate HTTP/MCP inventory workers leave control requests available. Response reservations
 remain charged through serialization and socket writing, including MCP batches. Transport admission
 carries the original UTF-8 byte count into normal dispatch, so parsing cannot erase evidence of
