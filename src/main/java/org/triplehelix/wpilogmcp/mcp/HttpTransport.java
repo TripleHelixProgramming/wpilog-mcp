@@ -57,14 +57,19 @@ public class HttpTransport {
   private static final AtomicInteger SSE_THREAD_COUNTER = new AtomicInteger(0);
   /** The header that carries the token a {@code POST /stop} must present. */
   public static final String STOP_TOKEN_HEADER = "X-Wpilog-Stop-Token";
-  /** How long {@link #stop} lets requests in flight finish before closing their connections. */
-  private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(5);
+  /** How long a stop lets byte streams run before ending them at their next write: they can be asked for again. */
+  private static final Duration STREAM_GRACE = Duration.ofSeconds(5);
+  /**
+   * The whole stop's deadline, decided on October 25: past it, whatever still runs is named in the
+   * log and interrupted, so the process ends by itself before the launcher's or systemd's
+   * 90-second kill instead of being killed with nothing in the log to say what held it.
+   */
+  static final Duration STOP_DEADLINE = Duration.ofSeconds(80);
   /** The data endpoint's path, beside the MCP endpoint and /health. */
   public static final String DATA_PATH = "/data/entries";
   /** A store's robots, and one robot's sessions, as CSV for a dashboard's choices. */
   public static final String DATA_ROBOTS_PATH = "/data/robots";
   public static final String DATA_SESSIONS_PATH = "/data/sessions";
-  private static final Duration DRAIN_POLL_INTERVAL = Duration.ofMillis(20);
 
   private final Gson gson;
   private final ToolRegistry toolRegistry;
@@ -109,9 +114,15 @@ public class HttpTransport {
     maxRequestBytes = bytes; maxMcpRequests = concurrent; bodyTimeout = timeout;
   }
   int readingBodies() { return readingBodies.get(); }
-  /** Handlers running right now. An SSE stream is not one: its handler returns at once. */
-  private final AtomicInteger inFlightRequests = new AtomicInteger();
+  /** Every request from its admission to its response's end, hand-offs included; the stop closes it first. */
+  private final Admissions admissions = new Admissions();
   private final AtomicBoolean stopped = new AtomicBoolean();
+  /** Completed when the one stop has finished: a later or concurrent stop waits for it. */
+  private final java.util.concurrent.CompletableFuture<Void> stopFinished = new java.util.concurrent.CompletableFuture<>();
+  private volatile Duration stopDeadline = STOP_DEADLINE, streamGrace = STREAM_GRACE;
+  /** Tests shorten the whole stop's deadline and the streams' grace; call before {@link #stop()}. */
+  void stopDeadline(Duration value) { stopDeadline = java.util.Objects.requireNonNull(value); }
+  void streamGrace(Duration value) { streamGrace = java.util.Objects.requireNonNull(value); }
   /** The token {@code POST /stop} must carry, or null when stopping over HTTP is not enabled. */
   private volatile String stopToken;
   private volatile Runnable onStop;
@@ -329,60 +340,63 @@ public class HttpTransport {
   }
 
   public void start() throws IOException {
+    toolRegistry.openVisualizations();
     liveSourceEndpoint.mirrorFolders(mirrorEndpoint::folders);
     try { visualization = new VisualizationEndpoint(sessionManager, toolRegistry);
       mirrorEndpoint.impacts((header, files) -> toolRegistry.visualizations().replicaCleanupImpact(header, files)); }
     catch (IOException failure) { visualizationFailure = failure.getMessage(); logger.warn("Visualization preview unavailable: {}", visualizationFailure); }
     server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
-    server.createContext(this.mcpPath, counted(this::handleRequest));
-    server.createContext("/directories", counted(this::handleRegistration));
-    server.createContext("/tba-key", counted(this::handleRegistration));
-    server.createContext("/pit-credential", counted(this::handleRegistration));
-    server.createContext("/pit-mcp", counted(this::handlePitMcp));
-    server.createContext("/health", counted(this::handleHealthCheck));
-    server.createContext("/metrics", counted(this::handleMetrics));
-    server.createContext("/stop", counted(this::handleStop));
-    streaming = new StreamingRequests(16, streamTimeout);
-    storeStreaming = new StreamingRequests(4, streamTimeout);
-    followStreaming = new StreamingRequests(16, streamTimeout);
-    inventoryStreaming = new StreamingRequests(4, streamTimeout);
-    var inventoryRead = inventoryStreaming.handle(counted(this::handleVisualization),
-        streaming.handle(counted(e -> handleVisualization(e, false))));
-    var visualizationControl = streaming.handle(counted(this::handleVisualization));
-    server.createContext(VisualizationEndpoint.PATH, exchange -> {
+    // Every route but health and stop is refused once a stop begins; each pool joins the
+    // request's admission before handing it on, so the drain counts it until its worker is done.
+    server.createContext(this.mcpPath, admitted(this::handleRequest));
+    server.createContext("/directories", admitted(this::handleRegistration));
+    server.createContext("/tba-key", admitted(this::handleRegistration));
+    server.createContext("/pit-credential", admitted(this::handleRegistration));
+    server.createContext("/pit-mcp", admitted(this::handlePitMcp));
+    server.createContext("/health", always(this::handleHealthCheck));
+    server.createContext("/metrics", admitted(this::handleMetrics));
+    server.createContext("/stop", always(this::handleStop));
+    streaming = new StreamingRequests(16, streamTimeout, admissions);
+    storeStreaming = new StreamingRequests(4, streamTimeout, admissions);
+    followStreaming = new StreamingRequests(16, streamTimeout, admissions);
+    inventoryStreaming = new StreamingRequests(4, streamTimeout, admissions);
+    var inventoryRead = inventoryStreaming.handle(this::handleVisualization,
+        streaming.handle(e -> handleVisualization(e, false)));
+    var visualizationControl = streaming.handle(this::handleVisualization);
+    server.createContext(VisualizationEndpoint.PATH, admitted(exchange -> {
       if (InventoryRequests.httpRead(exchange.getRequestURI().getPath())) inventoryRead.handle(exchange);
       else visualizationControl.handle(exchange);
-    });
-    server.createContext(VisualizationEndpoint.PATH_V2, exchange -> {
+    }));
+    server.createContext(VisualizationEndpoint.PATH_V2, admitted(exchange -> {
       if (InventoryRequests.httpRead(exchange.getRequestURI().getPath())) inventoryRead.handle(exchange);
       else visualizationControl.handle(exchange);
-    });
-    server.createContext(DATA_PATH, streaming.handle(counted(this::handleData)));
-    server.createContext(DATA_ROBOTS_PATH, streaming.handle(counted(exchange -> handleListing(exchange, dataEndpoint::handleRobots))));
-    server.createContext(DATA_SESSIONS_PATH, streaming.handle(counted(exchange -> handleListing(exchange, dataEndpoint::handleSessions))));
-    server.createContext(ReadEndpoint.PATH, streaming.handle(counted(this::handleRead)));
-    var nextFollow = followStreaming.handle(counted(this::handleFollow));
-    var controlFollow = streaming.handle(counted(this::handleFollow));
-    server.createContext(FollowEndpoint.PATH, exchange -> {
+    }));
+    server.createContext(DATA_PATH, admitted(streaming.handle(this::handleData)));
+    server.createContext(DATA_ROBOTS_PATH, admitted(streaming.handle(exchange -> handleListing(exchange, dataEndpoint::handleRobots))));
+    server.createContext(DATA_SESSIONS_PATH, admitted(streaming.handle(exchange -> handleListing(exchange, dataEndpoint::handleSessions))));
+    server.createContext(ReadEndpoint.PATH, admitted(streaming.handle(this::handleRead)));
+    var nextFollow = followStreaming.handle(this::handleFollow);
+    var controlFollow = streaming.handle(this::handleFollow);
+    server.createContext(FollowEndpoint.PATH, admitted(exchange -> {
       if (exchange.getRequestURI().getPath().endsWith("/next") && exchange.getRequestMethod().equals("POST")) nextFollow.handle(exchange);
       else controlFollow.handle(exchange);
-    });
-    server.createContext(StoreImportEndpoint.PATH, storeStreaming.handle(counted(this::handleImport)));
-    server.createContext(StoreImportEndpoint.ASSIGN_PATH, storeStreaming.handle(counted(this::handleImport)));
-    server.createContext("/store", storeStreaming.handle(counted(this::handleStore)));
-    replicaStreaming = new StreamingRequests(4, streamTimeout);
-    replicaMetadata = new StreamingRequests(4, streamTimeout);
-    replicaControls = new StreamingRequests(2, streamTimeout);
-    server.createContext(ReplicaEndpoint.PATH, replicaMetadata.handle(counted(this::handleReplicaDoor),
-        exchange -> replicaMetadata.refuse(exchange, this::replicaBusy)));
-    server.createContext(ReplicaEndpoint.PATH + "/file", replicaStreaming.handle(counted(this::handleReplicaDoor),
-        exchange -> replicaStreaming.refuse(exchange, this::replicaBusy)));
-    server.createContext(ReplicaEndpoint.PATH + "/close", replicaControls.handle(counted(this::handleReplicaDoor)));
-    server.createContext(LocalIngestionEndpoint.PATH, storeStreaming.handle(counted(this::handleLocalIngestion)));
-    server.createContext(StoreSyncEndpoint.PATH, counted(this::handleSync));
-    server.createContext(MirrorEndpoint.PATH, storeStreaming.handle(counted(this::handleMirror)));
-    server.createContext(StoreReplicaEndpoint.PATH, storeStreaming.handle(counted(this::handleReplica)));
-    server.createContext(LiveSourceEndpoint.PATH, counted(this::handleLiveSource));
+    }));
+    server.createContext(StoreImportEndpoint.PATH, admitted(storeStreaming.handle(this::handleImport)));
+    server.createContext(StoreImportEndpoint.ASSIGN_PATH, admitted(storeStreaming.handle(this::handleImport)));
+    server.createContext("/store", admitted(storeStreaming.handle(this::handleStore)));
+    replicaStreaming = new StreamingRequests(4, streamTimeout, admissions);
+    replicaMetadata = new StreamingRequests(4, streamTimeout, admissions);
+    replicaControls = new StreamingRequests(2, streamTimeout, admissions);
+    server.createContext(ReplicaEndpoint.PATH, admitted(replicaMetadata.handle(this::handleReplicaDoor,
+        exchange -> replicaMetadata.refuse(exchange, this::replicaBusy))));
+    server.createContext(ReplicaEndpoint.PATH + "/file", admitted(replicaStreaming.handle(this::handleReplicaDoor,
+        exchange -> replicaStreaming.refuse(exchange, this::replicaBusy))));
+    server.createContext(ReplicaEndpoint.PATH + "/close", admitted(replicaControls.handle(this::handleReplicaDoor)));
+    server.createContext(LocalIngestionEndpoint.PATH, admitted(storeStreaming.handle(this::handleLocalIngestion)));
+    server.createContext(StoreSyncEndpoint.PATH, admitted(this::handleSync));
+    server.createContext(MirrorEndpoint.PATH, admitted(storeStreaming.handle(this::handleMirror)));
+    server.createContext(StoreReplicaEndpoint.PATH, admitted(storeStreaming.handle(this::handleReplica)));
+    server.createContext(LiveSourceEndpoint.PATH, admitted(this::handleLiveSource));
     // Direct handoff grows beyond four workers as soon as they are busy. A waiting queue
     // would keep health behind four streaming data/store responses until that queue filled.
     httpExecutor = new ThreadPoolExecutor(4, 32, 60, TimeUnit.SECONDS,
@@ -452,12 +466,18 @@ public class HttpTransport {
     if (idleFor < idle.toNanos()) return;
     if (!idleExitRun.compareAndSet(false, true)) return;
     logger.info("No session and no request for {}: exiting", idle);
-    try {
-      onIdle.run();
-    } catch (RuntimeException e) {
-      logger.error("The idle exit failed: {}", e.toString());
-      idleExitRun.set(false);
-    }
+    // On its own thread, as a stop request's: the stop shuts down this scheduler, and doing so from
+    // the scheduler's own thread interrupted every later wait in the stop, the store's among them.
+    var exiting = new Thread(() -> {
+      try {
+        onIdle.run();
+      } catch (RuntimeException e) {
+        logger.error("The idle exit failed: {}", e.toString());
+        idleExitRun.set(false);
+      }
+    }, "idle-exit");
+    exiting.setDaemon(false);
+    exiting.start();
   }
 
   public int getPort() {
@@ -465,17 +485,47 @@ public class HttpTransport {
   }
 
   /**
-   * Stops the server: SSE streams are ended first, requests in flight get up to
-   * {@link #DRAIN_TIMEOUT} to finish, then the listening socket and every connection are closed.
+   * Stops the server in the order of rule R2: refuse, drain, release. New requests are refused
+   * first, with 503 and a retry hint; health and the stop route still answer. SSE streams and
+   * parked follows end. Admitted requests may finish: byte streams within {@link #STREAM_GRACE},
+   * after which each ends at its next write, and tool calls within the stop's deadline, after which
+   * whatever still runs is named in the log and interrupted. Only then are the socket, the
+   * workspace, sessions and stores released.
    *
-   * <p>{@code HttpServer.stop(delay)} is not used for the drain: it waits its whole delay unless
-   * an exchange ends after it was called, so with an SSE stream open (or nothing in flight at
-   * all) it would block for the full delay. Idempotent.
+   * <p>One stop runs, and any other caller waits for it to finish. A second call once returned at
+   * once, so the shutdown hook closed capture and the logs under a stop still draining. Workers are
+   * awaited rather than interrupted, since an interrupt closes any file channel its thread is
+   * reading, which other readers may share.
+   *
+   * <p>{@code HttpServer.stop(delay)} is not used for the drain: it waits its whole delay unless an
+   * exchange ends after it was called, so with an SSE stream open it would block for the full delay.
    */
   public void stop() {
     if (!stopped.compareAndSet(false, true)) {
+      awaitStopped();
       return;
     }
+    long deadline = System.nanoTime() + stopDeadline.toNanos();
+    try {
+      stopInOrder(deadline);
+    } finally {
+      stopFinished.complete(null);
+    }
+  }
+
+  private void awaitStopped() {
+    boolean interrupted = false;
+    while (true) {
+      try { stopFinished.get(); break; }
+      catch (InterruptedException e) { interrupted = true; }
+      catch (java.util.concurrent.ExecutionException e) { break; }
+    }
+    if (interrupted) Thread.currentThread().interrupt();
+  }
+
+  private void stopInOrder(long deadline) {
+    // Refuse: from here a new request gets 503 and a retry hint instead of meeting closed owners.
+    admissions.close();
     mirrorEndpoint.close();
     java.util.List<org.triplehelix.wpilogmcp.store.MdnsPeers> providers;
     org.triplehelix.wpilogmcp.store.PeerDiscovery discovery;
@@ -498,28 +548,20 @@ public class HttpTransport {
         Thread.currentThread().interrupt();
       }
     }
-    // 2. Let requests in flight finish, then close the listening socket and all connections
+    // 2. Let admitted requests finish, then close the listening socket and all connections
     if (server != null) {
-      awaitInFlightRequests();
+      drain(deadline);
       server.stop(0);
       logger.info("MCP HTTP server stopped");
     }
-    // 3. Shut down the executors; a handler cut off by the close finishes promptly
-    if (httpExecutor != null) {
-      httpExecutor.shutdown();
-      try {
-        if (!httpExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-          httpExecutor.shutdownNow();
-        }
-      } catch (InterruptedException e) {
-        httpExecutor.shutdownNow();
-        Thread.currentThread().interrupt();
-      }
-    }
+    // 3. Shut the executors down. Nothing admitted is left unless the deadline passed, and only
+    //    then is anything interrupted.
+    finish(httpExecutor, deadline);
+    // The idle exit no longer runs here, so stopping the session clock interrupts nothing of ours.
     if (scheduler != null) {
       scheduler.shutdownNow();
     }
-    if (mcpExecutor != null) mcpExecutor.shutdownNow();
+    finish(mcpExecutor, deadline);
     // No SSE iteration can construct a replacement owner. Keep the existing workspace alive
     // until admitted HTTP/MCP operations drain and the stream sockets have been closed.
     toolRegistry.closeVisualizations();
@@ -539,32 +581,80 @@ public class HttpTransport {
     if (leasesOpened) leases.transportClosed();
   }
 
-  /** Wraps a handler so that {@link #stop} can wait for the requests being handled. */
-  private HttpHandler counted(HttpHandler handler) {
+  /**
+   * Waits for admitted requests: byte streams for {@link #STREAM_GRACE}, then each ends at its next
+   * write; everything else until the deadline, past which the log names what still runs and the
+   * executors' shutdown interrupts it.
+   */
+  private void drain(long deadline) {
+    try {
+      var running = admissions.awaitIdle(Math.min(deadline, System.nanoTime() + streamGrace.toNanos()));
+      if (!running.isEmpty()) {
+        for (var pool : java.util.Arrays.asList(streaming, storeStreaming, followStreaming, inventoryStreaming,
+            replicaStreaming, replicaMetadata, replicaControls)) {
+          if (pool != null) pool.endTransfers();
+        }
+        running = admissions.awaitIdle(deadline);
+      }
+      if (!running.isEmpty()) {
+        logger.warn("Stop deadline of {} s reached with {} request(s) still running; interrupting {}",
+            stopDeadline.toSeconds(), running.size(), running);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /** Shuts an executor down and awaits it until the deadline; only past it is anything interrupted. */
+  private static void finish(java.util.concurrent.ExecutorService executor, long deadline) {
+    if (executor == null) return;
+    executor.shutdown();
+    try {
+      long remaining = deadline - System.nanoTime();
+      if (remaining <= 0 || !executor.awaitTermination(remaining, TimeUnit.NANOSECONDS)) executor.shutdownNow();
+    } catch (InterruptedException e) {
+      executor.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * The outermost handler of every route but health and stop. Once the stop has begun, a new
+   * request gets 503 and a retry hint; before, it began during the drain and met owners that were
+   * closing. Its admission lasts until the handler returns, and a hand-off to another worker joins
+   * before it.
+   */
+  private HttpHandler admitted(HttpHandler handler) {
     return exchange -> {
-      inFlightRequests.incrementAndGet();
-      try {
+      var ticket = admissions.admit(exchange);
+      if (ticket == null) {
+        refuseStopping(exchange);
+        return;
+      }
+      try (ticket) {
         handler.handle(exchange);
-      } finally {
-        inFlightRequests.decrementAndGet();
       }
     };
   }
 
-  private void awaitInFlightRequests() {
-    long deadline = System.nanoTime() + DRAIN_TIMEOUT.toNanos();
-    while (inFlightRequests.get() > 0 && System.nanoTime() < deadline) {
-      try {
-        Thread.sleep(DRAIN_POLL_INTERVAL.toMillis());
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return;
+  /** Health and stop answer during a stop too: a watcher sees it, and a repeated stop request is accepted. */
+  private HttpHandler always(HttpHandler handler) {
+    return exchange -> {
+      try (var ticket = admissions.join(exchange)) {
+        handler.handle(exchange);
       }
-    }
-    int remaining = inFlightRequests.get();
-    if (remaining > 0) {
-      logger.warn("{} request(s) still in flight after {} s; closing their connections",
-          remaining, DRAIN_TIMEOUT.toSeconds());
+    };
+  }
+
+  private static void refuseStopping(HttpExchange exchange) throws IOException {
+    byte[] body = "{\"status\":\"error\",\"code\":\"CLOSED\",\"message\":\"The server is stopping; retry after it restarts\"}"
+        .getBytes(StandardCharsets.UTF_8);
+    exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+    exchange.getResponseHeaders().set("Retry-After", "1");
+    exchange.getResponseHeaders().set("Connection", "close");
+    exchange.sendResponseHeaders(503, body.length);
+    try (var out = exchange.getResponseBody()) {
+      out.write(body);
     }
   }
 
@@ -623,8 +713,9 @@ public class HttpTransport {
     }
 
     if (InventoryRequests.reads(parsed)) {
-      inventoryStreaming.handle(counted(e -> dispatchMessage(e, parsed, new InventoryRequests.Admission(rawBytes, true))),
-          streaming.handle(counted(e -> dispatchMessage(e, parsed, new InventoryRequests.Admission(rawBytes, false))))).handle(exchange);
+      // The pool joins this call's admission before the MCP worker lets go, so the drain sees no gap.
+      inventoryStreaming.handle(e -> dispatchMessage(e, parsed, new InventoryRequests.Admission(rawBytes, true)),
+          streaming.handle(e -> dispatchMessage(e, parsed, new InventoryRequests.Admission(rawBytes, false)))).handle(exchange);
     } else dispatchMessage(exchange, parsed, new InventoryRequests.Admission(rawBytes, true));
   }
   private void dispatchMessage(HttpExchange exchange, JsonElement parsed, InventoryRequests.Admission admission) throws IOException {
@@ -636,7 +727,7 @@ public class HttpTransport {
   }
   /** Slow bodies and tool calls share a bounded admission pool; health never waits behind them. */
   private void submitPost(HttpExchange exchange) throws IOException {
-    inFlightRequests.incrementAndGet();
+    var ticket = admissions.join(exchange);
     try {
       mcpExecutor.execute(() -> {
         try { handlePost(exchange); }
@@ -644,10 +735,10 @@ public class HttpTransport {
           logger.warn("MCP request failed: {}", e.toString());
           try { sendError(exchange, 500, "Internal server error"); }
           catch (IOException ignored) { exchange.close(); }
-        } finally { inFlightRequests.decrementAndGet(); }
+        } finally { ticket.close(); }
       });
     } catch (java.util.concurrent.RejectedExecutionException e) {
-      inFlightRequests.decrementAndGet();
+      ticket.close();
       streaming.refuse(exchange);
     }
   }

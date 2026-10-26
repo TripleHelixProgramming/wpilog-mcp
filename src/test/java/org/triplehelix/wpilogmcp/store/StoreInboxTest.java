@@ -450,7 +450,7 @@ class StoreInboxTest {
       }
       store.awaitImports();
       assertFalse(Files.exists(file));
-      idle.advance(Duration.ofMillis(700)); assertEquals(0, exited.getCount());
+      idle.advance(Duration.ofMillis(700)); assertTrue(exited.await(5, TimeUnit.SECONDS), "The idle exit runs on its own thread");
     } finally {
       transport.stop();
     }

@@ -1206,7 +1206,7 @@ To stop the server:
 ```bash
 wpilog-mcp stop http
 ```
-It finishes the calls in progress, then exits, and `stop` returns once it has. A `stop` of a server that is not running succeeds too. The server accepts a stop only from this machine, and only with a token that `start` wrote to `~/.wpilog-mcp/run/http.token`, a file only you can read: no one else on the machine can stop it, and nothing on the network can. A server that does not answer the request within the start timeout is ended as a process. A server from before this version has no stop endpoint and is ended as a process straight away.
+It finishes the calls in progress, then exits, and `stop` returns once it has. While it stops, a new request gets 503 with `Retry-After: 1`, and `/health` still answers. A data stream gets five seconds before it is ended, and a call already running may finish within 80 seconds; past that, the server names it in its log and ends it. A `stop` of a server that is not running succeeds too. The server accepts a stop only from this machine, and only with a token that `start` wrote to `~/.wpilog-mcp/run/http.token`, a file only you can read: no one else on the machine can stop it, and nothing on the network can. A server that does not answer the request within the start timeout is ended as a process. A server from before this version has no stop endpoint and is ended as a process straight away.
 
 ### One Server for Every Client
 

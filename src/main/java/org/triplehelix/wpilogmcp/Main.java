@@ -832,7 +832,8 @@ public class Main {
       org.triplehelix.wpilogmcp.logging.BufferedLogOutput.onShutdown(() -> {
         logger().info("Shutdown signal received");
         // Order matters: drain in-flight HTTP requests first, then shut down LogManager
-        // so that in-flight tool calls don't encounter closed logs.
+        // so that in-flight tool calls don't encounter closed logs. A stop already under way,
+        // from a stop request or the idle exit, is waited for rather than started again.
         httpTransport.stop();
         if (capture != null) capture.close();
         logManager.shutdown();

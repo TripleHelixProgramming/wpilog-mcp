@@ -21,15 +21,21 @@ import java.util.concurrent.TimeUnit;
 /** Streaming IO never occupies dispatch workers needed by health and registration. Direct
  * handoff bounds admission, while an IO-progress deadline releases mappings held by silent peers.
  * Interrupting the owning worker closes HttpServer's blocked SocketChannel; closing a chunked
- * response from the timer instead can itself block flushing into that same full socket. */
+ * response from the timer instead can itself block flushing into that same full socket. A request
+ * joins the transport's admissions before its hand-off and leaves when its worker has finished, so
+ * a stop's drain never misses one waiting for a worker. */
 final class StreamingRequests implements AutoCloseable {
   private final ThreadPoolExecutor workers;
   private final ThreadPoolExecutor refusals;
   private final java.util.concurrent.ScheduledExecutorService timer;
   private final java.util.Set<Transfer> active = ConcurrentHashMap.newKeySet();
   private final long timeoutNanos;
+  private final Admissions admissions;
+  private volatile boolean ending;
 
-  StreamingRequests(int maximum, Duration timeout) {
+  StreamingRequests(int maximum, Duration timeout) { this(maximum, timeout, new Admissions()); }
+  StreamingRequests(int maximum, Duration timeout, Admissions admissions) {
+    this.admissions = admissions;
     timeoutNanos = timeout.toNanos();
     if (maximum < 1 || timeoutNanos <= 0) throw new IllegalArgumentException("Positive streaming limits required");
     workers = new ThreadPoolExecutor(0, maximum, 60, TimeUnit.SECONDS, new SynchronousQueue<>(), r -> {
@@ -48,8 +54,10 @@ final class StreamingRequests implements AutoCloseable {
   HttpHandler handle(HttpHandler handler) { return handle(handler, null); }
   HttpHandler handle(HttpHandler handler, HttpHandler refusal) {
     return exchange -> {
-      try { workers.execute(() -> run(exchange, handler)); }
+      var ticket = admissions.join(exchange);
+      try { workers.execute(() -> { try (ticket) { run(exchange, handler); } }); }
       catch (RejectedExecutionException full) {
+        ticket.close();
         if (refusal != null) { refusal.handle(exchange); return; }
         refuse(exchange);
       }
@@ -61,8 +69,18 @@ final class StreamingRequests implements AutoCloseable {
     refuse(exchange, StreamingRequests::busy);
   }
   void refuse(HttpExchange exchange, HttpHandler refusal) {
-    try { refusals.execute(() -> run(exchange, refusal)); }
-    catch (RejectedExecutionException full) { exchange.close(); }
+    var ticket = admissions.join(exchange);
+    try { refusals.execute(() -> { try (ticket) { run(exchange, refusal); } }); }
+    catch (RejectedExecutionException full) { ticket.close(); exchange.close(); }
+  }
+  /**
+   * A stop past its grace ends each stream at its next network read or write: a byte stream can
+   * be asked for again. A worker in file I/O is never interrupted, since that would close a file
+   * channel other readers share; it ends at its next write.
+   */
+  void endTransfers() {
+    ending = true;
+    active.forEach(Transfer::endTransfer);
   }
   private static void busy(HttpExchange exchange) throws IOException {
     RequestBodies.read(exchange, 64 << 10);
@@ -118,9 +136,14 @@ final class StreamingRequests implements AutoCloseable {
     Transfer(Thread worker) { this.worker = worker; }
     synchronized void begin() throws IOException {
       if (expired) throw new IOException("HTTP transfer made no IO progress before its deadline");
+      if (ending) { expired = true; throw new IOException("HTTP transfer ended: the server is stopping"); }
       since = System.nanoTime(); io = true;
     }
     synchronized void end() { io = false; }
+    /** Called by a stop: interrupt only a worker blocked on the network, as a silent peer's deadline does. */
+    synchronized void endTransfer() {
+      if (!ended && io && !expired) { expired = true; worker.interrupt(); }
+    }
     synchronized void finish() { ended = true; io = false; }
     synchronized void expire() {
       if (!ended && io && System.nanoTime() - since >= timeoutNanos) {
