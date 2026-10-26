@@ -926,6 +926,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after it returns; the tests asserted that it had already completed, and once on Ubuntu CI the
   thread had not yet ended. A close that never completes still fails them.
 
+- The live source test follows a retryable refusal of a visualization request: it waits the server's
+  suggested time and asks again, for up to 10 seconds. A health check sent just after the test
+  disconnects its robot can meet the store writing the closed file's placement and clock record, and
+  the server answers 409 `FILE_CHANGED`, retryable, with a suggested wait of a second; once on
+  Windows CI the test, which accepted only 200, failed there.
+
 - The extension's follow broker wiring check reads the CI workflow with its line endings
   normalized. A Windows checkout gives the file CRLF endings, so the check's pattern never matched
   there; the extension's Windows tests had not run in CI before, since the Java tests failed first.
