@@ -2110,8 +2110,9 @@ only reads: measuring it for every proof made a cold pass grow with the square o
 size. A proof that first finishes an interrupted transfer measures and reserves like any write.
 The two transfer workers are two permits for jobs, not two threads: a finished job returns its
 permit before it reports, so the caller it wakes can start the next job at once.
-Replica metadata has four workers and its own 8 MiB response budget, separate from four payload
-workers and visualization reservations.
+Replica metadata runs four requests at a time. Each reply is capped at 1 MiB, encoded in at most
+two buffers, so metadata replies hold at most 8 MiB with no reservation pool of their own; the four
+payload workers and the visualization reservations are separate.
 Only the configured master's channel enters confirmation. Forwarded verification is provisional;
 contrary master evidence is durable before a separately reserved replacement. Complete observed
 master coverage has its own epoch, revision and timestamp and is never inferred from a truncated

@@ -1100,7 +1100,9 @@ waiting queue and a ten-second response deadline; a finished build frees its slo
 reply, so a mirror that asks again at once finds it free. A timed-out build stays charged, and
 keeps its slot, until I/O unwinds, and cannot publish. Sessions/inventories expire after 60
 seconds idle or five minutes total.
-Four replica metadata workers own a separate 8 MiB encoding budget through socket completion.
+Four replica metadata requests run at a time. A metadata reply is capped at 1 MiB encoded and
+built in at most two buffers, so metadata replies hold at most 8 MiB, with no reservation pool of
+their own.
 Four payload workers own 64 KiB streaming buffers; downloads consume no recording-inventory or
 visualization-library response permits. Health, MCP ping and close use separate admission. Refusals are structured:
 400 malformed, 403 forbidden Origin, 409 stale/foreign selection, 413 structural limit, 503

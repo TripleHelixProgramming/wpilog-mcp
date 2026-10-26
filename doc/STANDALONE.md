@@ -1133,7 +1133,7 @@ Template admission also checks the extra escaping in the portable export reply.
 A configuration below its raw cap can still exceed the encoded reply cap and refuse before commit.
 
 Library HTTP/MCP requests share the four inventory request workers and 8 MiB encoded-response
-pool. Reservations remain held through encoding and socket completion. Health, ping and inventory
+pool. Reservations are freed as the reply's last write begins. Health, ping and inventory
 close retain control capacity. Request/write deadlines do not release library inputs while disk
 work still runs. One disk worker bounds record parsing and temporary JSON/encoding copies; four
 bounded completion slots keep caller callbacks off its queue and remain charged until those

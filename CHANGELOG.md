@@ -1180,6 +1180,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The pit server reference and the architecture guide say what bounds replica metadata replies to
+  8 MiB: four requests at a time, each reply capped at 1 MiB and encoded in at most two buffers.
+  They called it a separate budget, as if a reservation pool admitted or refused requests against
+  it; none does. The standalone reference says library reply reservations are freed as the reply's
+  last write begins; it still said they were held through the socket write, as they were before
+  inventory reply reservations changed.
 - `doc/GRAFANA_PLAN.md` records what stage 1 has built and the maintainer's two answers: every
   capture records its server's clock as an entry, now built, and struct fields on a recording
   become columns as the writer records them, which reverses the recording phase's first answer,
