@@ -1645,6 +1645,7 @@ public final class LogStore implements AutoCloseable {
   }
 
   /** An OS read may unwind later, but it cannot publish after shutdown stops staging admission. */
+  boolean importsStopped() { return importsStopped.get(); }
   void stopImports() {
     if (!importsStopped.compareAndSet(false, true)) return;
     for (var job : staging.shutdownNow()) if (job instanceof StagedJob staged) staged.abandon();

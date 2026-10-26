@@ -259,8 +259,10 @@ public final class StoreRegistry implements AutoCloseable {
       polling = watcher;
       if (polling != null) polling.shutdown();
     }
-    diskSampler.shutdown();
-    diskSpace.close();
+    // Refuse, drain, release: imports stop and are waited for before the disk budget they reserve
+    // from closes. Closing the budget first failed an import in flight with "Disk-space owner is
+    // closed" while its store did not yet know it was stopping, so it was recorded as refused, and
+    // local ingestion kept that refusal after the restart.
     stores.values().forEach(LogStore::stopImports);
     var ingestion = localIngestion;
     if (ingestion != null) ingestion.stop();
@@ -273,6 +275,12 @@ public final class StoreRegistry implements AutoCloseable {
       }
     }
     awaitImports();
+    beforeBudgetCloses.run();
+    diskSampler.shutdown();
+    diskSpace.close();
     stores.values().forEach(LogStore::close);
   }
+  private volatile Runnable beforeBudgetCloses = () -> {};
+  /** Tests observe the stores at the moment the disk budget is about to close. */
+  void beforeBudgetCloses(Runnable probe) { beforeBudgetCloses = java.util.Objects.requireNonNull(probe); }
 }
