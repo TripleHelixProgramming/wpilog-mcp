@@ -143,7 +143,9 @@ loaded logs, an external rewrite preserving all those attributes is outside this
 During refresh, increasing size with the same file identity is accepted only for manifested open
 capture payloads. Manifests, directories and completed payloads still require matching stamps;
 shrinkage, replacement and same-size modification do not qualify. A moving inventory is scanned
-at most twice. If it remains unstable, the read refuses with `FILE_CHANGED` and `retryable: true`.
+at most twice, the second time 50 milliseconds after the first, so that a short burst of writes,
+such as a capture closing its file, can end. If it remains unstable, the read refuses with
+`FILE_CHANGED` and `retryable: true`.
 This does not prove sample history: the managed reader and follow continuation retain their
 writer, ordinal and finalized-hash checks. Cache reuse still checks all stamps strictly, so later
 growth refreshes the observed size.

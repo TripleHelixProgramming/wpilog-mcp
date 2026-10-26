@@ -723,30 +723,33 @@ directory or payload changes identity, size or modification time. It checks thos
 without reading payloads; expiry of a moved-path notice also refreshes the listing. An external
 rewrite preserving all attributes remains outside this check, as for loaded logs. Concurrent
 refreshes share one future; filesystem work and waiting happen outside the ownership monitor.
-The refresh owner scans at most twice when dependencies move. Its post-scan validation accepts
-same-identity growth only for manifested open capture payloads; manifests, directories and closed
-payloads stay strict. Cache reuse remains strict for every dependency, including open payloads,
-so later growth refreshes observed sizes. Shrinkage, same-size modification and replacement cannot
-pass as growth. Two unstable scans return retryable `FILE_CHANGED`, not a history verdict; the
-managed reader and ordinal engine still own writer/ordinal/hash continuity. A missing member
-while building the canonical map also restarts the bounded scan rather than publishing it.
-Beneath it, each store's catalog is read without a lock, so the store can rename or remove a
-folder while a read walks it, as it renames a session's folder once the session's match is known.
-A read that finds a folder it listed gone, or a session it read moved before it finished, starts
-over at once, since a rename is one atomic step; on its third attempt it names a folder still
-moving, as the error of a strict read or a problem of a tolerant one, rather than passing it by. The
-shop harness found the race on a Linux workstation: a listing refused a whole store over one
-session renamed as it closed, and a read that missed the moment left the session out instead.
-The HTTP endpoint retains the catalog while its admitted root set agrees, retiring an old set
-after its final request. REV descriptions and queries share bounded immutable decodes there,
-with leases charging active reads and alignment kept per request. Native REV queries decode only
-exactly selected signals and the first model value needed for a SPARK identity; describe still
-reads all signals, and a complete decode can serve a selection. The decoder's input and
-decoded-storage limits are documented in [READ_API.md](READ_API.md#stores-and-recorded-rev-alignment);
-legacy synchronization keeps its existing decoder limits and results. Native REV retention uses
-primitive timestamp/value chunks, charged before allocation, without the former four-million-value
-ceiling. Store-reader tolerance is explicit and separate from writer inventory: invalid historical
-sessions may be skipped by either, but invalid robot/control manifests still stop writer inventory.
+The refresh owner scans at most twice when dependencies move, and waits 50 ms before the second
+scan. A store moves in bursts: a capture closing its file when a robot disconnects writes the file's
+placement and then its clock record, and a second scan made at once landed inside the same burst.
+The wait is on the refreshing request's thread, never a loop's. The owner's post-scan validation
+accepts same-identity growth only for manifested open capture payloads; manifests, directories and
+closed payloads stay strict. Cache reuse remains strict for every dependency, including open
+payloads, so later growth refreshes observed sizes. Shrinkage, same-size modification and
+replacement cannot pass as growth. Two unstable scans return retryable `FILE_CHANGED`, not a history
+verdict; the managed reader and ordinal engine still own writer/ordinal/hash continuity. A missing
+member while building the canonical map also restarts the bounded scan rather than publishing it.
+Beneath it, each store's catalog is read without a lock, so the store can rename or remove a folder
+while a read walks it, as it renames a session's folder once the session's match is known. A read
+that finds a folder it listed gone, or a session it read moved before it finished, starts over at
+once, since a rename is one atomic step; on its third attempt it names a folder still moving, as the
+error of a strict read or a problem of a tolerant one, rather than passing it by. The shop harness
+found the race on a Linux workstation: a listing refused a whole store over one session renamed as
+it closed, and a read that missed the moment left the session out instead. The HTTP endpoint retains
+the catalog while its admitted root set agrees, retiring an old set after its final request. REV
+descriptions and queries share bounded immutable decodes there, with leases charging active reads
+and alignment kept per request. Native REV queries decode only exactly selected signals and the
+first model value needed for a SPARK identity; describe still reads all signals, and a complete
+decode can serve a selection. The decoder's input and decoded-storage limits are documented in
+[READ_API.md](READ_API.md#stores-and-recorded-rev-alignment); legacy synchronization keeps its
+existing decoder limits and results. Native REV retention uses primitive timestamp/value chunks,
+charged before allocation, without the former four-million-value ceiling. Store-reader tolerance is
+explicit and separate from writer inventory: invalid historical sessions may be skipped by either,
+but invalid robot/control manifests still stop writer inventory.
 
 A query selects one entry and explicit disjoint windows, with inclusive or exclusive right ends.
 One field-path grammar projects values for native and legacy callers, and every reduction fills

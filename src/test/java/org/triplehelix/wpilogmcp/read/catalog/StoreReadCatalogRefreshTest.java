@@ -10,6 +10,7 @@ import java.nio.channels.FileChannel;
 import java.nio.file.*;
 import java.nio.file.attribute.FileTime;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -46,6 +47,12 @@ class StoreReadCatalogRefreshTest {
   StoreReadCatalog catalog(StoreReadCatalog.ScanObserver observer) throws Exception {
     return new StoreReadCatalog(ReadOptions.defaults(List.of(temp)), null, StoreReadCatalog.DEFAULT_SESSION_INDEX_BYTES, observer);
   }
+  StoreReadCatalog catalog(StoreReadCatalog.ScanObserver observer, StoreReadCatalog.Settle settle) throws Exception {
+    return new StoreReadCatalog(ReadOptions.defaults(List.of(temp)), null, StoreReadCatalog.DEFAULT_SESSION_INDEX_BYTES, observer, settle);
+  }
+  void writeHeader(String id) throws java.io.IOException {
+    Files.writeString(temp.resolve("store.json"), StoreJson.JSON.toJson(new Header(1, WHEN, id, List.of())));
+  }
   @Test void appendDuringEveryScanIsAdmittedWithoutRetryAndLaterGrowthRefreshesFacts() throws Exception {
     store(true); var scans = new AtomicInteger();
     try (var catalog = catalog(() -> { scans.incrementAndGet(); Files.write(payload, new byte[16], StandardOpenOption.APPEND); })) {
@@ -76,6 +83,29 @@ class StoreReadCatalogRefreshTest {
       var failure = assertThrows(ReadException.class, catalog::snapshot);
       assertEquals(ReadProblem.Code.FILE_CHANGED, failure.code()); assertTrue(failure.retryable()); assertEquals(2, scans.get());
       assertEquals("storexx", catalog.snapshot().stores().get(0).header().id()); assertEquals(3, scans.get(), "Failed refresh releases its shared future");
+    }
+  }
+  /** One burst of two writes, the first during the first scan and the second just after it, as a capture closing its file
+   * writes its placement and then its clock record. Scanned again at once, the second write lands in the second scan. */
+  @Test void aBurstThatEndsWhileTheSecondScanWaitsIsReadOnceItHasSettled() throws Exception {
+    store(true); var scans = new AtomicInteger(); var pauses = new java.util.ArrayList<java.time.Duration>(); var pending = new AtomicBoolean();
+    try (var catalog = catalog(() -> {
+      if (scans.incrementAndGet() == 1) { writeHeader("burst-started"); pending.set(true); }
+      else if (pending.getAndSet(false)) writeHeader("burst-ended");
+    }, wait -> {
+      pauses.add(wait);
+      if (pending.getAndSet(false)) try { writeHeader("burst-ended"); } catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+    })) {
+      assertEquals("burst-ended", catalog.snapshot().stores().get(0).header().id());
+      assertEquals(List.of(StoreReadCatalog.RESCAN_PAUSE), pauses); assertEquals(2, scans.get());
+    }
+  }
+  @Test void aStopDuringThePauseEndsTheReadAsInterruptedAndTheNextReadRefreshes() throws Exception {
+    store(true); var scans = new AtomicInteger();
+    try (var catalog = catalog(() -> { if (scans.incrementAndGet() == 1) writeHeader("moved"); }, wait -> { throw new InterruptedException(); })) {
+      assertThrows(java.io.InterruptedIOException.class, catalog::snapshot);
+      assertTrue(Thread.interrupted(), "The read keeps the interrupt for its caller"); assertEquals(1, scans.get());
+      assertEquals("moved", catalog.snapshot().stores().get(0).header().id()); assertEquals(2, scans.get());
     }
   }
   @ParameterizedTest @ValueSource(strings = {"shrink", "rewrite", "replacement", "closed-growth"})

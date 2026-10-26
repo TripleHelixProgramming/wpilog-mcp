@@ -77,6 +77,13 @@ public final class StoreReadCatalog implements AutoCloseable {
   private final AtomicReference<CompletableFuture<Cached>> refreshing = new AtomicReference<>();
   @FunctionalInterface interface ScanObserver { void completed() throws IOException; }
   private final ScanObserver afterScan;
+  /** How the refresh owner waits before it scans a moving store again; tests replace it. */
+  @FunctionalInterface interface Settle { void pause(java.time.Duration wait) throws InterruptedException; }
+  /** A store moves in bursts: a capture closing its file when a robot disconnects writes its
+   * placement and then its clock record. Scanned again at once, a store still inside the burst
+   * refused a read that a moment later would have succeeded. */
+  static final java.time.Duration RESCAN_PAUSE = java.time.Duration.ofMillis(50);
+  private final Settle settle;
 
   public StoreReadCatalog(List<Path> roots) throws IOException { this(ReadOptions.defaults(roots)); }
   /** Canonical admission roots, used by a transport to retain one catalog while its leases agree. */
@@ -92,7 +99,11 @@ public final class StoreReadCatalog implements AutoCloseable {
   }
   /** Deterministic boundary for testing filesystem changes between inventory and validation. */
   StoreReadCatalog(ReadOptions options, LogAccess access, long sessionIndexBytes, ScanObserver afterScan) throws IOException {
-    this.afterScan = afterScan;
+    this(options, access, sessionIndexBytes, afterScan, wait -> Thread.sleep(wait.toMillis()));
+  }
+  StoreReadCatalog(ReadOptions options, LogAccess access, long sessionIndexBytes, ScanObserver afterScan, Settle settle)
+      throws IOException {
+    this.afterScan = afterScan; this.settle = settle;
     if (sessionIndexBytes < 0) throw new IllegalArgumentException("Session index budget must be nonnegative");
     this.sessionIndexLimit = sessionIndexBytes;
     this.ownsLogs = access == null;
@@ -130,6 +141,7 @@ public final class StoreReadCatalog implements AutoCloseable {
     }
     try {
       for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) settle();
         var result = scan();
         if (result != null) { requireOpen(); cached = result; work.complete(result); return result; }
       }
@@ -137,6 +149,15 @@ public final class StoreReadCatalog implements AutoCloseable {
           "Store changed while reading its catalog; retry the read", true);
     } catch (Throwable failure) { work.completeExceptionally(failure); throw failure; }
     finally { refreshing.compareAndSet(work, null); }
+  }
+
+  /** The second scan of a moving store waits {@link #RESCAN_PAUSE} on the refresh owner's thread,
+   * a request's, never a loop's; a stop that interrupts the wait ends the read as interrupted. */
+  private void settle() throws IOException {
+    try { settle.pause(RESCAN_PAUSE); }
+    catch (InterruptedException e) {
+      Thread.currentThread().interrupt(); throw new java.io.InterruptedIOException("Interrupted reading store catalog");
+    }
   }
 
   /** A moving inventory is retried by its single refresh owner, never on the recording loop.
