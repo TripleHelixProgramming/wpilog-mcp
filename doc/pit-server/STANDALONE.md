@@ -1095,9 +1095,11 @@ shared verified-hash implementation and a read lease. Raw byte replies are strea
 metadata replies; they use 64 KiB application blocks.
 
 There are eight inventory handles server-wide, two per session including construction, with
-32 MiB accounted metadata per inventory and 64 MiB aggregate. Two builders have no waiting
-queue and a ten-second response deadline. A timed-out build stays charged until I/O unwinds
-and cannot publish. Sessions/inventories expire after 60 seconds idle or five minutes total.
+32 MiB accounted metadata per inventory and 64 MiB aggregate. Two builds run at a time, with no
+waiting queue and a ten-second response deadline; a finished build frees its slot before its
+reply, so a mirror that asks again at once finds it free. A timed-out build stays charged, and
+keeps its slot, until I/O unwinds, and cannot publish. Sessions/inventories expire after 60
+seconds idle or five minutes total.
 Four replica metadata workers own a separate 8 MiB encoding budget through socket completion.
 Four payload workers own 64 KiB streaming buffers; downloads consume no recording-inventory or
 visualization-library response permits. Health, MCP ping and close use separate admission. Refusals are structured:
