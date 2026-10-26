@@ -617,6 +617,11 @@ curl http://127.0.0.1:2363/health
 wpilog-mcp stop http             # finishes calls in progress, then exits
 ```
 
+A stop usually takes a few seconds. A call still running may take up to 80 seconds to finish,
+after which the server names it in its log and ends it; if the server has not exited 90 seconds
+after the request, the command ends the process. While the server stops, a client's new request
+is answered 503 and retried, and `curl http://127.0.0.1:2363/health` still answers.
+
 `start http` while it runs reports the running server. After an upgrade, `start` stops the old
 version and starts the new one. MCP clients that run `connect http` start the server themselves,
 so you rarely need `start` by hand. Logs: `~/.wpilog-mcp/logs/http.log`.

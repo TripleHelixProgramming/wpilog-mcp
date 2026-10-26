@@ -183,8 +183,11 @@ alone. Bring files in through the inbox, the import command or an upload
 
 ### 1.8 Stop, and what a crash does
 
-`wpilog-mcp stop pit` finishes calls in progress, closes the recording and writes the final
-manifest, waiting at most 30 seconds for the writer. A hand-run `run pit` stops with Ctrl-C.
+`wpilog-mcp stop pit` finishes calls in progress, closes the recording, and writes the final
+manifest and the recording's clock record. The whole stop has 80 seconds; past that, the server
+names in its log what it is still waiting for and ends it. The command ends the process if it has
+not exited 90 seconds after the request, as systemd does for the service. A hand-run `run pit`
+stops with Ctrl-C.
 
 A power loss or a kill leaves a session marked open. The next start sweeps the store before
 NT4 starts. A readable capture is finalized with its hash and size and
