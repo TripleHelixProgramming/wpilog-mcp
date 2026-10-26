@@ -988,6 +988,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there now and then: the next sync found "A sync is already running for this store", or recovery
   kept a capture the dead child had owned. One helper serves them and the placement test.
 
+- The sync recovery tests wait the same way, with the same helper, for the store and owner locks
+  their killed child held before they reopen its stores. They reopened at once, and once on
+  Windows CI the reopened store found "Store lock is held by another import"; in a Windows VM
+  under load they failed in one run of ten.
+
 - The session expiry test now expires sessions as of a moment after its last request. Windows'
   clock moved in steps of about a millisecond on the test machines, so the last request and an
   expiry right after it could read the same instant, and the session, not idle before it, stayed:

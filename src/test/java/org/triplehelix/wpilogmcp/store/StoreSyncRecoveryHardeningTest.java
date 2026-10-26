@@ -230,6 +230,10 @@ class StoreSyncRecoveryHardeningTest {
       if (manifest != null) assertTrue(manifest.startsWith(root));
       process.destroyForcibly();
       assertTrue(process.waitFor(5, TimeUnit.SECONDS));
+      // At its boundary the child held a store's lock and the sync's owner lock, which Windows
+      // frees when it can, not when the process exits; the reopen below takes both.
+      org.triplehelix.wpilogmcp.fixtures.ProcessLocks.awaitReleasedUnder(root, "store.lock");
+      org.triplehelix.wpilogmcp.fixtures.ProcessLocks.awaitReleasedUnder(root, SyncPublication.LOCK_NAME);
       return new Crash(root, staged, destination, manifest, state.get("placement_copies").getAsInt());
     } finally {
       process.destroyForcibly();
