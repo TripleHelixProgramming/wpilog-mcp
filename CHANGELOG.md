@@ -1017,6 +1017,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any other way. On a Mac the chart tests and the servers and helper processes tests started could
   open AWT with a Dock icon, which took focus while the suite ran.
 
+- The library pressure test waits until all four library calls have charged their input as well as
+  reserved their reply before it checks both. A call reserves its reply first, so on Windows CI the
+  fourth was still between the two and the test found 6 MiB of input where it expected 8.
+
 - The session expiry test now expires sessions as of a moment after its last request. Windows'
   clock moved in steps of about a millisecond on the test machines, so the last request and an
   expiry right after it could read the same instant, and the session, not idle before it, stayed:
