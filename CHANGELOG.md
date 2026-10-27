@@ -316,6 +316,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Local ingestion starts at most one job a poll: a poll that admitted a batch leaves the next REV
+  reconsideration to its next poll, three seconds later. A batch that finished at once, as one a
+  busy store refuses does, could be replaced as the poll's work by a reconsideration started in the
+  same poll; a test that waited on that work saw the reconsideration finish instead, and failed on
+  Ubuntu CI.
 - The server runs headless unless its command line says otherwise. A chart image draws through AWT,
   which on a Mac gave the server's JVM a Dock icon that took focus.
 - **One owner per store folder:** a store folder has one store object in a process. A second one

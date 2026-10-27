@@ -347,8 +347,10 @@ public final class LocalIngestion implements AutoCloseable {
         return;
       }
       error = null;
-      if (!importing.get()) admit(current, now);
-      if (!importing.get() && reconsiderNeeded.compareAndSet(true, false)) reconsider(current);
+      // One job a poll. A batch can finish before this line, as one a busy store refuses does; reconsidering then
+      // would make that job the poll's work in place of the batch, so it waits for the next poll.
+      boolean admittedBatch = !importing.get() && admit(current, now);
+      if (!admittedBatch && !importing.get() && reconsiderNeeded.compareAndSet(true, false)) reconsider(current);
     } catch (IOException | RuntimeException e) { error = message(e); }
     finally { polling.set(false); }
   }
@@ -475,7 +477,8 @@ public final class LocalIngestion implements AutoCloseable {
     observed.put(path, new Observed(source, stamp, now, "waiting", null, null, null));
   }
 
-  private void admit(Policy current, long now) throws IOException {
+  /** Starts at most one batch; true when it did. */
+  private boolean admit(Policy current, long now) throws IOException {
     var sources = current.sources();
     for (int turn = 0; turn < sources.size(); turn++) {
       int index = (nextSource + turn) % sources.size();
@@ -486,7 +489,7 @@ public final class LocalIngestion implements AutoCloseable {
           .sorted(Map.Entry.comparingByKey()).limit(BATCH_FILES).toList();
       if (ready.isEmpty()) continue;
       var ticket = begin(current);
-      if (ticket == null) return;
+      if (ticket == null) return false;
       nextSource = (index + 1) % sources.size();
       var captured = new LinkedHashMap<Path, Observed>();
       ready.forEach(e -> {
@@ -532,8 +535,9 @@ public final class LocalIngestion implements AutoCloseable {
       } catch (IOException | RuntimeException e) {
         finish(ticket, e); throw e;
       }
-      return;
+      return true;
     }
+    return false;
   }
 
   private void reconsider(Policy current) throws IOException {
