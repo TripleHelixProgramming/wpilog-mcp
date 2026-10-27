@@ -1026,6 +1026,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reserved their reply before it checks both. A call reserves its reply first, so on Windows CI the
   fourth was still between the two and the test found 6 MiB of input where it expected 8.
 
+- The admission test that fills the read pool with peers that never read reads each refused reply to
+  its end before it opens the next connection, as a client does. It read only the status line, so
+  two refusals could still be writing their replies when a third came, and by design that one is
+  closed without a reply: on Ubuntu CI the test read a missing status line.
+
 - The session expiry test now expires sessions as of a moment after its last request. Windows'
   clock moved in steps of about a millisecond on the test machines, so the last request and an
   expiry right after it could read the same instant, and the session, not idle before it, stayed:

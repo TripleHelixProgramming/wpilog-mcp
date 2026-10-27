@@ -56,9 +56,19 @@ class HttpAdmissionTest {
         socket.setSoTimeout(10000);
         socket.getOutputStream().write(("POST " + route + " HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: "
             + query.length() + "\r\n\r\n" + query).getBytes(StandardCharsets.US_ASCII));
-        // Headers prove the exchange is admitted; stop reading before the large response.
-        var status = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream())).readLine();
+        // Headers prove the exchange is admitted; stop reading before the large response. A refusal is read to its
+        // end, as a client does: the next one could otherwise meet both refusal slots still writing their replies.
+        var reply = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
+        var status = reply.readLine();
+        assertNotNull(status, "connection " + i + " was closed with no reply");
         assertTrue(status.contains("200") || status.contains("503"), status);
+        if (status.contains("503")) {
+          int length = 0;
+          for (String header; (header = reply.readLine()) != null && !header.isEmpty();)
+            if (header.regionMatches(true, 0, "Content-Length:", 0, 15)) length = Integer.parseInt(header.substring(15).trim());
+          var refusal = new char[length];
+          for (int read = 0, n; read < length; read += n) if ((n = reply.read(refusal, read, length - read)) < 0) fail("refusal ended early");
+        }
       }
       var health = assertDoesNotThrow(() -> HttpClient.newHttpClient().send(HttpRequest.newBuilder(
           URI.create("http://127.0.0.1:" + transport.getPort() + "/health")).timeout(Duration.ofSeconds(3)).build(),
