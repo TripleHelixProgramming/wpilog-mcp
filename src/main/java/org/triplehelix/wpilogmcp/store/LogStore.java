@@ -1725,6 +1725,9 @@ public final class LogStore implements AutoCloseable {
     awaitClosed(CLOSE_WAIT);
   }
 
+  /** True once a close has stopped the queue; turns queued before then still run. */
+  boolean closing() { return queue.isShutdown(); }
+
   /** Stops imports and the queue without waiting for the queue's last turn. */
   void beginClose() {
     stopImports();

@@ -1006,6 +1006,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lock is held by another import"; with one owner per folder enforced and none of these changes,
   32 tests in ten classes failed at once, on every machine.
 
+- The staging shutdown test checks a running publication turn's staged bytes while the close waits
+  for that turn, once the close has stopped the store's imports and queue. It checked them after the
+  close returned, which now comes only after the turn has unwound, so the turn's cleanup could
+  already have removed them: it failed on Windows CI and on a Mac, and took ten seconds.
+
 - The session expiry test now expires sessions as of a moment after its last request. Windows'
   clock moved in steps of about a millisecond on the test machines, so the last request and an
   expiry right after it could read the same instant, and the session, not idle before it, stayed:

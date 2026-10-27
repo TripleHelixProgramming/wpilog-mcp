@@ -136,12 +136,19 @@ class ImportStagingHardeningTest {
         return request;
       }, result -> {});
       assertTrue(entered.await(10, TimeUnit.SECONDS));
-      stores.close();
+      // A close drains the running publication turn, so the bytes are checked while it waits, once it
+      // has stopped imports, which interrupts staging's wait, and the store's queue.
+      var closing = java.util.concurrent.CompletableFuture.runAsync(stores::close);
+      long stopping = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+      while (!store.closing() && System.nanoTime() < stopping) Thread.sleep(5);
+      assertTrue(store.closing(), "the close stopped the store's imports and queue");
+      assertFalse(closing.isDone(), "the close waits for the running publication turn");
       assertNotNull(staged.get());
       assertTrue(Files.exists(staged.get()),
           "An interrupted staging wait must not delete bytes still owned by a running publication turn");
       release.countDown();
       assertTrue(exited.await(10, TimeUnit.SECONDS));
+      closing.get(10, TimeUnit.SECONDS);
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
       while (Files.exists(staged.get()) && System.nanoTime() < deadline) Thread.sleep(5);
       assertFalse(Files.exists(staged.get()), "Unplaced staged bytes are removed after their owner unwinds");
