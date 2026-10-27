@@ -25,8 +25,12 @@ export function syncSummary(result: SyncResult): string {
 }
 export function rememberedPeers(target: SyncTarget): string[] { return [...new Set(target.peers)]; }
 
+/** A byte limit as people read it: 8 MiB, or an exact count when it is not whole mebibytes. */
+export function byteLimit(bytes: number): string { return bytes % 1048576 === 0 ? `${bytes / 1048576} MiB` : `${bytes} bytes`; }
+
 export class StoreClient {
-  constructor(readonly endpoint: string, private readonly timeoutMs = 30_000, private readonly headersFor: HttpHeaders = noHeaders) {}
+  constructor(readonly endpoint: string, private readonly timeoutMs = 30_000, private readonly headersFor: HttpHeaders = noHeaders,
+    private readonly maxResponseBytes = 8 * 1024 * 1024) {}
   private async request<T>(route: string, method = "GET", body?: unknown): Promise<T> {
     const url = new URL(route, this.endpoint);
     if (url.origin !== new URL(this.endpoint).origin) throw new StoreControlError("Store control URL changed server");
@@ -35,14 +39,22 @@ export class StoreClient {
     return new Promise((resolve, reject) => {
       const request = (url.protocol === "https:" ? https : http).request(url, { method,
         headers: { ...authorization, Accept: "application/json", ...(data === undefined ? {} : { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) }) } }, response => {
-        const chunks: Buffer[] = []; let size = 0;
+        const chunks: Buffer[] = []; let size = 0, exceeded = false;
         response.on("data", (chunk: Buffer) => {
+          if (exceeded) return;
           size += chunk.length;
-          if (size > 8 * 1024 * 1024) request.destroy(new StoreControlError("Store control response exceeds 8 MiB"));
-          else chunks.push(chunk);
+          // Refused here, then destroyed without the error: a reply that arrived whole would
+          // otherwise end with a truncated body, and on Node 20 and 22 an error destroy throws
+          // on its already freed socket.
+          if (size > this.maxResponseBytes) {
+            exceeded = true; clearTimeout(timer); request.destroy();
+            reject(new StoreControlError(`Store control response exceeds ${byteLimit(this.maxResponseBytes)}`)); return;
+          }
+          chunks.push(chunk);
         });
         response.on("error", reject);
         response.on("end", () => {
+          if (exceeded) return;
           clearTimeout(timer);
           const text = Buffer.concat(chunks).toString("utf8");
           let value: any;

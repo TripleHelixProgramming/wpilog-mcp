@@ -63,6 +63,8 @@ public class McpServer {
 
   public void run() throws IOException {
     logger.info("MCP server listening on stdin");
+    // A run that ends closes the workspace; this one may build it again.
+    toolRegistry.openVisualizations();
     running = true;
     var notifications = new Thread(() -> {
       String last = null;

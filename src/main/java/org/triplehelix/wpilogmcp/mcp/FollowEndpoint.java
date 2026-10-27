@@ -56,6 +56,9 @@ final class FollowEndpoint implements AutoCloseable {
   @FunctionalInterface interface ViewAdmission {
     org.triplehelix.wpilogmcp.visualization.ViewBinding.Prepared prepare(JsonObject request) throws IOException;
   }
+  /** Runs once a new follow's 201 has been sent, while its request is still finishing; tests hold it there. */
+  private volatile Runnable afterReply = () -> {};
+  void afterReply(Runnable probe) { afterReply = probe; }
   void handle(HttpExchange exchange) throws IOException { handle(exchange, null); }
   void handle(HttpExchange exchange, ViewAdmission views) throws IOException {
     try {
@@ -94,16 +97,32 @@ final class FollowEndpoint implements AutoCloseable {
         }
       } finally { synchronized (leases) { lease.active--; lease.used = clock.getAsLong(); } }
     } catch (Refusal e) { ReadEndpoint.sendFailure(exchange, e.status, e.code, e.getMessage()); }
-    catch (ReadException e) { ReadEndpoint.sendFailure(exchange, ReadEndpoint.status(e.code()),
-        e.code() == org.triplehelix.wpilogmcp.read.ReadProblem.Code.FILE_CHANGED && !e.retryable() ? "HISTORY_UNAVAILABLE" : e.code().name(), e.getMessage(), e.retryable()); }
-    catch (java.nio.file.AccessDeniedException | org.triplehelix.wpilogmcp.log.LogFileException e) { ReadEndpoint.sendFailure(exchange, 403, "ACCESS_DENIED", e.getMessage()); }
+    catch (ReadException e) {
+      if (!stopped(exchange)) ReadEndpoint.sendFailure(exchange, ReadEndpoint.status(e.code()),
+          e.code() == org.triplehelix.wpilogmcp.read.ReadProblem.Code.FILE_CHANGED && !e.retryable() ? "HISTORY_UNAVAILABLE" : e.code().name(), e.getMessage(), e.retryable());
+    } catch (java.nio.file.AccessDeniedException | org.triplehelix.wpilogmcp.log.LogFileException e) {
+      if (!stopped(exchange)) ReadEndpoint.sendFailure(exchange, 403, "ACCESS_DENIED", e.getMessage());
+    } catch (java.util.concurrent.RejectedExecutionException e) {
+      if (!stopped(exchange)) ReadEndpoint.sendFailure(exchange, 503, "CLOSED", "Follow service is stopping; retry after it restarts");
+    }
     catch (ReadWire.WireLimit e) { ReadEndpoint.sendFailure(exchange, 413, "RESOURCE_LIMIT", e.getMessage()); }
     catch (IllegalArgumentException e) { ReadEndpoint.sendFailure(exchange, 400, "INVALID_REQUEST", e.getMessage()); }
     catch (IOException e) {
+      if (stopped(exchange)) return;
       String message = java.util.Objects.toString(e.getMessage(), "Source unavailable");
       String code = message.matches("^[A-Z_]+:.*") ? message.substring(0, message.indexOf(':')) : "SOURCE_UNAVAILABLE";
       ReadEndpoint.sendFailure(exchange, 409, code, e.getMessage());
     }
+  }
+  /**
+   * A follow caught by the stop meets owners torn down beneath it (grants, catalogs, its workspace),
+   * each of which fails in its own words. Whatever failed, the follow has ended: it answers 410 CLOSED
+   * and its client opens it again on the restarted server, instead of stopping on an access refusal.
+   */
+  private boolean stopped(HttpExchange exchange) throws IOException {
+    synchronized (leases) { if (!closed) return false; }
+    ReadEndpoint.sendFailure(exchange, 410, "CLOSED", "Follow closed: its server is stopping; open it again after the restart");
+    return true;
   }
   private void create(HttpExchange exchange, JsonObject body, ViewAdmission views) throws IOException {
     if (body.has("view_binding")) {
@@ -140,17 +159,19 @@ final class FollowEndpoint implements AutoCloseable {
         default -> throw new IllegalArgumentException("frontier_scope must be all or queries");
       };
     }
+    // A slot reserved while a follow opens becomes its lease in the same step, before the reply goes out: a client that
+    // opens the next follow as soon as it reads this one's 201 must find it counted once, not as a lease and still opening.
     synchronized (leases) {
       if (leases.size() + opening >= capacity) throw new Refusal(429, "RESOURCE_LIMIT", "Close another follow before opening a new one");
       opening++;
     }
-    OrdinalFollow engine = null; String id = null; boolean published = false;
+    OrdinalFollow engine = null; String id = null; boolean published = false, reserved = true;
     try {
       engine = new OrdinalFollow(epoch, sources.open(reference), queries, budget, records, bytes, scope);
       id = engine.id();
       synchronized (leases) {
         if (closed) throw new Refusal(503, "CLOSED", "Follow admission closed while opening");
-        leases.put(id, new Lease(engine, clock.getAsLong())); published = true;
+        leases.put(id, new Lease(engine, clock.getAsLong())); opening--; reserved = false; published = true;
       }
       var response = new JsonObject(); response.addProperty("api_version", ReadWire.VERSION);
       response.addProperty("id", id); response.addProperty("server_epoch", epoch); response.addProperty("cursor", engine.initialCursor());
@@ -159,8 +180,9 @@ final class FollowEndpoint implements AutoCloseable {
       response.addProperty("frontier_scope", scope.wire());
       try { ReadEndpoint.send(exchange, 201, response); }
       catch (IOException failure) { synchronized (leases) { leases.remove(id); } published = false; throw failure; }
+      afterReply.run();
     } finally {
-      synchronized (leases) { opening--; }
+      if (reserved) synchronized (leases) { opening--; }
       if (!published && engine != null) engine.close();
     }
   }
@@ -169,7 +191,7 @@ final class FollowEndpoint implements AutoCloseable {
       if (leases.size() + opening >= capacity) throw new Refusal(429, "RESOURCE_LIMIT", "Close another follow before opening a new one");
       opening++;
     }
-    OrdinalFollow engine = null; String id = null; boolean published = false;
+    OrdinalFollow engine = null; String id = null; boolean published = false, reserved = true;
     try (var prepared = views.prepare(request)) {
       engine = prepared.open(epoch, budget); id = engine.id();
       var binding = prepared.describe(); var response = new JsonObject(); response.addProperty("api_version", ReadWire.VERSION);
@@ -181,12 +203,13 @@ final class FollowEndpoint implements AutoCloseable {
       prepared.checkCurrent();
       synchronized (leases) {
         if (closed) throw new Refusal(503, "CLOSED", "Follow admission closed while opening");
-        leases.put(id, new Lease(engine, clock.getAsLong())); published = true;
+        leases.put(id, new Lease(engine, clock.getAsLong())); opening--; reserved = false; published = true;
       }
       try { ReadEndpoint.send(exchange, 201, response); }
       catch (IOException failure) { synchronized (leases) { leases.remove(id); } published = false; throw failure; }
+      afterReply.run();
     } finally {
-      synchronized (leases) { opening--; }
+      if (reserved) synchronized (leases) { opening--; }
       if (!published && engine != null) engine.close();
     }
   }

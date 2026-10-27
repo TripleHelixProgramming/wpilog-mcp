@@ -10,7 +10,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -24,6 +23,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
 import org.triplehelix.wpilogmcp.store.StoreJson;
 
@@ -31,10 +31,9 @@ import org.triplehelix.wpilogmcp.store.StoreJson;
 class BridgeLeaseTest {
   @TempDir Path temp;
 
+  /** A port nothing listens on, which no other test can take before this one uses it. */
   private int port() throws Exception {
-    try (var socket = new ServerSocket(0)) {
-      return socket.getLocalPort();
-    }
+    return org.triplehelix.wpilogmcp.fixtures.TestPorts.unused();
   }
 
   @Test void homeDefinesTheDaemonAndProjectAndFlagsOnlyLeaseDirectories() throws Exception {
@@ -54,7 +53,7 @@ class BridgeLeaseTest {
         + "\nservers:\n  http:\n    transport: http\n    port: " + homePort + "\n");
     Files.writeString(project.resolve(".wpilog-mcp.yaml"), "logdir: logs\nteam: 11\nservers:\n  http:\n    transport: http\n    port: "
         + projectPort + "\n");
-    var builder = new ProcessBuilder(ProcessHandle.current().info().command().orElse("java"),
+    var builder = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-jar", System.getProperty("install.testJar"), "connect", "http", "--logdir", "flaglogs", "--team", "22")
         .directory(project.toFile()).redirectError(temp.resolve("bridge.log").toFile());
     for (var name : List.of("WPILOG_HTTP_BIND", "WPILOG_HTTP_PATH", "TBA_API_KEY", "WPILOG_DIR", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS")) {
@@ -85,7 +84,7 @@ class BridgeLeaseTest {
       assertEquals(0, child.exitValue(), Files.readString(temp.resolve("bridge.log")));
       // A second bridge joins by URL, takes its team from the project, and re-registers on
       // re-initialization (the same startup path a reconnect after a restart takes).
-      builder.command(List.of(ProcessHandle.current().info().command().orElse("java"),
+      builder.command(List.of(ChildJvms.JAVA, ChildJvms.HEADLESS,
           "-jar", System.getProperty("install.testJar"), "connect", "--url",
           "http://127.0.0.1:" + homePort, "--logdir", "flaglogs"));
       var byUrl = builder.start();

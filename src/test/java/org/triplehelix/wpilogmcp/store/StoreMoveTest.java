@@ -193,10 +193,11 @@ class StoreMoveTest {
     assertArrayEquals(original, Files.readAllBytes(source));
   }
 
-  @Test void anActiveReaderReturnsARefusedOutcome() throws Exception {
+  @Test void anActiveReaderReturnsADeferredOutcome() throws Exception {
     try (var reader = LogFileAccess.read(source)) {
       var result = move(new LogStore.Mover());
-      assertEquals("refused", result.status());
+      // A reader lets go before long: the move is deferred and tried again, not refused for good.
+      assertEquals("deferred", result.status());
       assertTrue(result.reason().contains("read"), result.reason());
       assertTrue(Files.exists(source));
     }

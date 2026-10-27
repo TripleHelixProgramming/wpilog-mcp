@@ -50,6 +50,7 @@ public final class RecordingFixture {
   @FunctionalInterface public interface Contents { void write(WpilogWriter writer) throws Exception; }
   public void rewrite(int member, Contents contents) throws Exception {
     String name = member == 0 ? "capture.wpilog" : "rollover.wpilog"; var path = directory.resolve(name);
+    LogRewrites.releaseBeforeRewrite(path);
     try (var writer = new WpilogWriter(path, "")) { contents.write(writer); }
     var manifest = directory.resolve("session.json"); var session = JsonParser.parseString(Files.readString(manifest)).getAsJsonObject();
     var entry = session.getAsJsonArray("files").get(member).getAsJsonObject();

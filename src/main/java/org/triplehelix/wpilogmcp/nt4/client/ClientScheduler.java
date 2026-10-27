@@ -15,6 +15,13 @@ public interface ClientScheduler extends AutoCloseable {
   @Override void close();
   /** Socket adapters may drain already-enqueued cleanup after stopping their listener. */
   default void awaitTermination(long timeoutUs) throws InterruptedException {}
+  /**
+   * Completes once the loop has been closed and has run its last task, so an owner's close can
+   * wait for it without a thread of its own; a test's scheduler has nothing left to run.
+   */
+  default java.util.concurrent.CompletableFuture<Void> terminated() {
+    return java.util.concurrent.CompletableFuture.completedFuture(null);
+  }
 
   static ClientScheduler daemon() {
     return daemon("nt4-client");
@@ -23,11 +30,14 @@ public interface ClientScheduler extends AutoCloseable {
   static ClientScheduler daemon(String name) {
     return new ClientScheduler() {
       private final long epoch = System.nanoTime();
+      private final java.util.concurrent.CompletableFuture<Void> ended = new java.util.concurrent.CompletableFuture<>();
       private final ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, r -> {
         var thread = new Thread(r, name);
         thread.setDaemon(true);
         return thread;
-      });
+      }) {
+        @Override protected void terminated() { super.terminated(); ended.complete(null); }
+      };
       { executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false); }
       @Override public long nowUs() { return (System.nanoTime() - epoch) / 1000; }
       @Override public void execute(Runnable action) { executor.execute(action); }
@@ -38,6 +48,7 @@ public interface ClientScheduler extends AutoCloseable {
       @Override public void awaitTermination(long timeoutUs) throws InterruptedException {
         executor.awaitTermination(timeoutUs, TimeUnit.MICROSECONDS);
       }
+      @Override public java.util.concurrent.CompletableFuture<Void> terminated() { return ended; }
     };
   }
 }

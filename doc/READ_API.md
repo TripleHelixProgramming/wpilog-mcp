@@ -143,7 +143,9 @@ loaded logs, an external rewrite preserving all those attributes is outside this
 During refresh, increasing size with the same file identity is accepted only for manifested open
 capture payloads. Manifests, directories and completed payloads still require matching stamps;
 shrinkage, replacement and same-size modification do not qualify. A moving inventory is scanned
-at most twice. If it remains unstable, the read refuses with `FILE_CHANGED` and `retryable: true`.
+at most twice, the second time 50 milliseconds after the first, so that a short burst of writes,
+such as a capture closing its file, can end. If it remains unstable, the read refuses with
+`FILE_CHANGED` and `retryable: true`.
 This does not prove sample history: the managed reader and follow continuation retain their
 writer, ordinal and finalized-hash checks. Cache reuse still checks all stamps strictly, so later
 growth refreshes the observed size.
@@ -331,6 +333,9 @@ server's path verbatim; the returned snapshot's `serverPath()` and descriptor do
 uses catalog identity; `openSession(...)` selects a proven union, and `catalog()` returns the
 typed inventory. It checks stream completion,
 has bounded response reads and timeouts, follows no redirects, and accepts no URL credentials.
+A refusal is a `ReadException` with the server's code, message and `retryable` flag; a missing
+flag means false, a flag that is not a boolean is reported as `MALFORMED_RECORD`, and a busy reply
+(HTTP 503 or 429) is a retryable `BUSY`.
 The JDK HTTP client is sufficient; no Arrow reader dependency is needed for this Java adapter.
 
 REV requests name `companion_path` and `anchor_path`; query requests also name `signal` and
@@ -491,8 +496,10 @@ Boundary or expected-hash changes force verification; current path/catalog check
 snapshot-boundary checks still run. This does not detect edits that preserve all observed
 filesystem attributes. Concurrent cold misses may duplicate hash I/O without a shared I/O lock.
 A stale/foreign cursor is `INVALID_REQUEST`; an expired, deleted or restarted lease is HTTP 410
-`CURSOR_EXPIRED`. An already admitted wait cancelled by DELETE or shutdown ends with HTTP 410
-`CLOSED`. Rebootstrap the same source explicitly after losing a cursor or the retained client
+`CURSOR_EXPIRED`. An already admitted wait or page cancelled by DELETE or shutdown ends with HTTP
+410 `CLOSED`, whatever the shutdown released beneath it first; a native read admitted before a
+shutdown receives 503 `CLOSED`, as a request arriving during it does. Rebootstrap the same source
+explicitly after losing a cursor or the retained client
 frontier, and surface unavailable history rather than silently retargeting. Malformed JSON bodies
 on creation or next return HTTP 400 `INVALID_REQUEST` with `Invalid read JSON`; they do not
 acknowledge a page or expose parser-library advice.

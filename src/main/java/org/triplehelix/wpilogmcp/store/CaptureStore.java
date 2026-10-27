@@ -259,6 +259,15 @@ public final class CaptureStore implements CaptureWriter.Observer {
     }).whenComplete((ignored, error) -> {
       var next = selected.get();
       if (next == null) next = pending.getAndSet(null);
+      // A file that just closed has its hash; its clock record is read off this queue. The pass is
+      // asked for before the update completes, so a close that then waits for settled clock records
+      // includes it: it was asked for after, and a stop could close the store under it.
+      if (error == null && next != null) {
+        var update = next.update();
+        var before = closedFiles.getAndSet(new ClosedFiles(update.owner(), update.files().size()));
+        int previousCount = before != null && before.owner() == update.owner() ? before.count() : 0;
+        if (!update.open() || update.files().size() > previousCount) store.keepClocks();
+      }
       if (next != null) {
         if (error == null) next.done().complete(null); else next.done().completeExceptionally(error);
       }
@@ -267,13 +276,6 @@ public final class CaptureStore implements CaptureWriter.Observer {
       if (current != null && store.replicaPublicationFailure() != null) status.accept(new Status(current.path(), current.startedAt(), current.endedAt(),
           current.address(), current.open(), current.endReason(), current.identity(), current.statistics(), current.event(), current.matchType(),
           current.matchNumber(), store.replicaPublicationFailure()));
-      // A file that just closed has its hash; its clock record is read off this queue.
-      if (error == null && next != null) {
-        var update = next.update();
-        var before = closedFiles.getAndSet(new ClosedFiles(update.owner(), update.files().size()));
-        int previousCount = before != null && before.owner() == update.owner() ? before.count() : 0;
-        if (!update.open() || update.files().size() > previousCount) store.keepClocks();
-      }
       queued.set(false);
       if (pending.get() != null) dispatch();
     });

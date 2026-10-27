@@ -51,7 +51,7 @@ public final class RecordedSources implements AutoCloseable {
   private Lease catalog() throws IOException {
     var roots = door.stores().stream().map(StoreDoor.Selected::root).sorted().toList();
     synchronized (catalogLock) {
-      if (closed) throw new IOException("Source catalog is closed");
+      if (closed) throw closedCatalog();
       if (current != null && current.roots.equals(roots)) { current.users++; return new Lease(current); }
     }
     // Construction resolves filesystem roots; never hold the admission lock over that I/O.
@@ -67,8 +67,13 @@ public final class RecordedSources implements AutoCloseable {
     }
     if (discard != null && discard.value != null) discard.value.close();
     if (retiring != null && retiring.value != null) retiring.value.close();
-    if (selected == null) throw new IOException("Source catalog is closed");
+    if (selected == null) throw closedCatalog();
     return new Lease(selected);
+  }
+  /** A closed workspace is stopping, not refusing access: its follows end and are opened again. */
+  private static org.triplehelix.wpilogmcp.read.ReadException closedCatalog() {
+    return new org.triplehelix.wpilogmcp.read.ReadException(org.triplehelix.wpilogmcp.read.ReadProblem.Code.CLOSED,
+        "Source catalog is closed: its workspace is stopping; open the follow again after the restart");
   }
   @Override public void close() throws IOException {
     Catalog retiring = null;
@@ -84,7 +89,7 @@ public final class RecordedSources implements AutoCloseable {
   }
   public JsonObject identify(Authority caller, Path requested, String scopeId, boolean qualified) throws Exception {
     VisualizationAccess.transport(caller, qualified ? 2 : 1, VisualizationAccess.Operation.READ);
-    if (!qualified && !requested.isAbsolute()) {
+    if (!qualified && org.triplehelix.wpilogmcp.read.server.SourceScopes.relativeToASource(requested)) {
       var choices = logs.sourceScopes().snapshot();
       if (choices.size() > 1) throw new org.triplehelix.wpilogmcp.read.server.SourceScopes.Failure(
           "SOURCE_SELECTION_REQUIRED", "A relative file path requires an explicit source selection", choices,

@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Executors;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.capture.CaptureWriter;
 import org.triplehelix.wpilogmcp.capture.CapturePolicy;
 import org.triplehelix.wpilogmcp.capture.WpilogOutput;
@@ -269,7 +270,7 @@ class SystemPullPlacementTest {
     try (var fixture = new Fixture()) {
       var ready = temporary.resolve("copied.txt");
       var output = temporary.resolve("copy-process.log");
-      var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+      var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
           "-cp", System.getProperty("java.class.path"), AbandonedCopy.class.getName(),
           fixture.root.toString(), ready.toString(), phase).redirectErrorStream(true).redirectOutput(output.toFile()).start();
       try {
@@ -285,6 +286,9 @@ class SystemPullPlacementTest {
         assertTrue(Files.exists(abandonedStage.resolve(".owner.lock")));
         process.destroyForcibly();
         assertTrue(process.waitFor(5, TimeUnit.SECONDS));
+        // Windows unlocks a dead process's files when resources allow, not when it exits; until
+        // then the next placement rightly keeps the stage as live.
+        org.triplehelix.wpilogmcp.fixtures.ProcessLocks.awaitReleased(abandonedStage.resolve(".owner.lock"));
         assertArrayEquals(PAYLOAD, Files.readAllBytes(fixture.prefix()));
         assertEquals(fixture.entry.localName(), fixture.local.verified(fixture.entry));
         assertFalse(Files.exists(abandonedStage), "The next placement recovers only the abandoned disposable stage");

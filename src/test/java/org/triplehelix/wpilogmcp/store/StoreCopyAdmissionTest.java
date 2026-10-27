@@ -58,6 +58,10 @@ class StoreCopyAdmissionTest {
     return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
   }
   long reserved() { return space.snapshots().stream().mapToLong(DiskSpaceBudgets.Snapshot::reservedBytes).sum(); }
+  /** The setup's store, reopened with a mover of the test's own: one store object owns a folder. */
+  LogStore storeWith(LogStore.Mover mover) throws Exception {
+    var folder = store.root(); registry.release(folder); store = registry.store(folder, mover); return store;
+  }
 
   @Test void twoConfiguredStoresShareTheActualFilesystemAndTheLargestStandingPolicy() throws Exception {
     var other = registry.store(temp.resolve("other"));
@@ -121,7 +125,7 @@ class StoreCopyAdmissionTest {
     assertTrue(unwound.await(5, TimeUnit.SECONDS)); assertEquals(0, reserved());
   }
 
-  @Test void copiedImportRefusesBeforeMoverCopyAndKeepsTheOriginalBytes() throws Exception {
+  @Test void copiedImportDefersBeforeMoverCopyAndKeepsTheOriginalBytes() throws Exception {
     byte[] bytes = Files.readAllBytes(ImportFixture.write(temp.resolve("input.wpilog"), 17));
     var source = temp.resolve("input.wpilog"); var copies = new AtomicInteger();
     var mover = new LogStore.Mover() {
@@ -130,12 +134,12 @@ class StoreCopyAdmissionTest {
         copies.incrementAndGet(); return super.copy(from, to, admittedBytes);
       }
     };
-    try (var selected = new LogStore(store.root(), security, LogManager.getInstance(), StoreCatalog::read,
-        mover, store.diskBudget())) {
+    try (var selected = storeWith(mover)) {
       free.set(bytes.length + 99L);
       var result = selected.importPaths(new LogStore.Request(List.of(source), true, null), progress -> {})
           .get(10, TimeUnit.SECONDS);
-      assertEquals("refused", result.files().get(0).status());
+      // The space kept free for recording can come back, so the copy is deferred rather than refused.
+      assertEquals("deferred", result.files().get(0).status());
       assertTrue(result.files().get(0).reason().contains("capture's reserve"), result.toString());
       assertEquals(0, copies.get()); assertArrayEquals(bytes, Files.readAllBytes(source)); assertEquals(0, reserved());
     }
@@ -194,7 +198,6 @@ class StoreCopyAdmissionTest {
   @Test void expiredMirrorWorkerKeepsPhysicalAndLogicalChargesUntilTheOsReadUnwinds() throws Exception {
     var mirror = mirror(); byte[] bytes = Files.readAllBytes(ImportFixture.write(temp.resolve("input.wpilog"), 23));
     var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
-    mirror.store().replicaTransfers().idleTimeout(Duration.ofMillis(100));
     var future = mirror.store().replicaTransfers().transfer(mirror.policy(), id(), offer(mirror, bytes), offset -> new InputStream() {
       @Override public int read(byte[] target, int start, int length) throws IOException {
         entered.countDown();
@@ -205,6 +208,9 @@ class StoreCopyAdmissionTest {
     });
     try {
       assertTrue(entered.await(5, TimeUnit.SECONDS));
+      // Idleness counts from the job's start, so a short timeout set earlier could expire a slow
+      // runner's job during its setup, before it ever read; only the blocked read is meant to expire.
+      mirror.store().replicaTransfers().idleTimeout(Duration.ofMillis(100));
       var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> future.get(5, TimeUnit.SECONDS));
       assertTrue(failure.getCause().getMessage().contains("TRANSFER_TIMEOUT"));
       assertEquals(bytes.length, reserved()); assertTrue(mirror.store().replicaTransfers().active());
@@ -228,12 +234,10 @@ class StoreCopyAdmissionTest {
       return 10_000_000_000L;
     });
     try (var selectedRegistry = new StoreRegistry(security, LogManager.getInstance(), StoreCatalog::discover, growingSpace)) {
-      var registered = selectedRegistry.store(temp.resolve("growing-store"));
       var mover = new LogStore.Mover() {
         @Override boolean sameFileStore(Path from, Path to) { return false; }
       };
-      try (var selected = new LogStore(registered.root(), security, LogManager.getInstance(),
-          StoreCatalog::read, mover, registered.diskBudget())) {
+      try (var selected = selectedRegistry.store(temp.resolve("growing-store"), mover)) {
         var result = selected.importPaths(new LogStore.Request(List.of(source), move, null), progress -> {
           if (progress.phase().equals("verifying")) try { copiedBytes.set(Files.size(progress.path())); }
           catch (IOException failure) { throw new java.io.UncheckedIOException(failure); }
@@ -262,8 +266,7 @@ class StoreCopyAdmissionTest {
         finally { if (interrupted) Thread.currentThread().interrupt(); }
       }
     };
-    try (var selected = new LogStore(store.root(), security, LogManager.getInstance(),
-        StoreCatalog::read, mover, store.diskBudget())) {
+    try (var selected = storeWith(mover)) {
       var imported = selected.importPaths(new LogStore.Request(List.of(source), true, null), progress -> {});
       try {
         assertTrue(entered.await(5, TimeUnit.SECONDS));

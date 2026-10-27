@@ -17,6 +17,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.HttpTransport;
@@ -46,7 +47,7 @@ class MainSyncTest {
     Files.writeString(config, "servers:\n  default:\n    transport: http\n    port: " + port + "\n    logdir: " + StoreJson.JSON.toJson(target) + "\n");
   }
   private ProcessBuilder process(List<String> args, Path output) {
-    var command = new ArrayList<>(List.of(ProcessHandle.current().info().command().orElse("java"), "-Duser.home=" + temp,
+    var command = new ArrayList<>(List.of(ChildJvms.JAVA, ChildJvms.HEADLESS, "-Duser.home=" + temp,
         "-cp", System.getProperty("java.class.path"), Main.class.getName())); command.addAll(args);
     var builder = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(output.toFile());
     for (String key : List.of("WPILOG_DIR", "TBA_API_KEY", "WPILOG_HTTP_BIND", "WPILOG_HTTP_PATH", "WPILOG_DEBUG")) builder.environment().remove(key);

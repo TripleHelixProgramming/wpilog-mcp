@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.sync.PullManifest;
 
 /** Process death must preserve proven prefixes, and recovery must recheck its own witnesses. */
@@ -213,7 +214,7 @@ class StoreSyncRecoveryHardeningTest {
     var root = Files.createTempDirectory(directory, "sync-crash-").toRealPath();
     var ready = root.resolve("ready.json");
     var output = root.resolve("child.log");
-    var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-cp", System.getProperty("java.class.path"), CrashProcess.class.getName(),
         root.toString(), ready.toString(), boundary)
         .redirectErrorStream(true).redirectOutput(output.toFile()).start();
@@ -230,6 +231,10 @@ class StoreSyncRecoveryHardeningTest {
       if (manifest != null) assertTrue(manifest.startsWith(root));
       process.destroyForcibly();
       assertTrue(process.waitFor(5, TimeUnit.SECONDS));
+      // At its boundary the child held a store's lock and the sync's owner lock, which Windows
+      // frees when it can, not when the process exits; the reopen below takes both.
+      org.triplehelix.wpilogmcp.fixtures.ProcessLocks.awaitReleasedUnder(root, "store.lock");
+      org.triplehelix.wpilogmcp.fixtures.ProcessLocks.awaitReleasedUnder(root, SyncPublication.LOCK_NAME);
       return new Crash(root, staged, destination, manifest, state.get("placement_copies").getAsInt());
     } finally {
       process.destroyForcibly();

@@ -277,6 +277,8 @@ public final class PhotonVisionProvider implements AutoCloseable {
     return error.getClass().getSimpleName() + ": " + error.getMessage();
   }
   @Override public void close() { closed = true; var a = attempt; if (a != null) a.close(); worker.close(); }
+  /** Capture's close waits for this worker to end. */
+  ClientScheduler worker() { return worker; }
   private static final class LimitedBody implements HttpResponse.BodySubscriber<byte[]> {
     private final HttpResponse.BodySubscriber<byte[]> body = HttpResponse.BodySubscribers.ofByteArray();
     private java.util.concurrent.Flow.Subscription subscription;

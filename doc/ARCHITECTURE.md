@@ -423,7 +423,9 @@ automatic Move needs the person's explicit completed-file handoff acknowledgment
 not proof that a writer closed its file. Growing copies produce later immutable versions.
 
 Bounded receipts under `.local-ingestion/` record source path/version, result, destination, hash
-and time, including duplicate origins without replacing a payload's first provenance. Receipts
+and time, including duplicate origins without replacing a payload's first provenance. A deferred
+file gets no receipt, since one would outlive its passing cause and keep a restart from trying
+it again; it waits as the inbox's deferrals do. Receipts
 are metadata, excluded from unmanaged files and peer payload transfers. Unchanged receipts avoid
 rehashing or correlation after idle scans and restart. They hide sources only while the verified
 manifested destination remains available. The default listing uses this policy before counts or
@@ -525,6 +527,14 @@ existing admission deadline. The lock file stays in place after release: deletin
 give two processes different inodes to lock. Import payload reads, hashing, correlation and copying
 do not hold that lock; short manifest and rename operations still need it to serialize writers.
 
+In one process, one store object owns a folder. Java refuses a lock that the same process already
+holds on a file, and the store reported that refusal as another import holding the lock. The server
+opens every folder through one registry, but tests that kept a registry of their own and also listed
+the folder made a second store object, and on Windows its turns now and then met the first's. A
+second store object for a folder that is already open is refused when it is made. Closing a store
+waits, at most ten seconds, for its last queued turn, which still takes the lock, before the folder
+is free again.
+
 Peer sync uses the same staging/publication separation. A daemon staging worker owns the
 transfer journal, network waits, rate limiting, hashing and inspection. Its permanent
 `.sync/.owner.lock` excludes another sync process without holding `store.lock` across those
@@ -568,7 +578,7 @@ Store locks must be regular paths, never symbolic links, even to targets inside 
 
 The inbox uses a daemon polling thread every three seconds over known inboxes. Store discovery walks configured directories at watcher startup and at most once a minute thereafter; listing scans also pass along the stores they discover. With no configured store it does no imports. Size and modification time must match across two looks at least three seconds apart, and are checked again after waiting in the store queue.
 
-Files move through the existing importer, and successes and refusals get JSON-lines receipts in `inbox/imported.log`. Unchanged refusals are not retried until restart. Duplicate content remains in the inbox with its stored destination explained, as the importer leaves duplicate sources intact. The listing reports inbox paths, sizes, and waiting/importing/refused state separately from unmanaged files.
+Files move through the existing importer, and successes and refusals get JSON-lines receipts in `inbox/imported.log`. Unchanged refusals are not retried until restart. A deferral is not a refusal: the importer decides it by the failure's type where the cause is known (a busy store, the space recording keeps free, a file another move or readers hold, or the store stopping), never from a reason's words. The file returns to waiting and is tried again five seconds after the poll that admitted it, each later wait twice as long, at most a minute. Refused for good, a log that arrived while the store was briefly busy was never imported. Duplicate content remains in the inbox with its stored destination explained, as the importer leaves duplicate sources intact. The listing reports inbox paths, sizes, and waiting/importing/refused state separately from unmanaged files.
 
 The command stages in `inbox/.transfer-<id>/`, with an external transfer lock acquired before directory creation, then publishes `inbox/batch-<id>/` by atomic rename. Hidden entries are never walked for imports or listed. The next poll removes an unlocked abandoned transfer and writes a receipt; a slow active copy retains its lock. A batch sidecar `batch.json` carries `stated_robot`, and its stamp participates in settling and retry. A malformed sidecar refuses the batch; loose files have no stated identity.
 
@@ -721,30 +731,33 @@ directory or payload changes identity, size or modification time. It checks thos
 without reading payloads; expiry of a moved-path notice also refreshes the listing. An external
 rewrite preserving all attributes remains outside this check, as for loaded logs. Concurrent
 refreshes share one future; filesystem work and waiting happen outside the ownership monitor.
-The refresh owner scans at most twice when dependencies move. Its post-scan validation accepts
-same-identity growth only for manifested open capture payloads; manifests, directories and closed
-payloads stay strict. Cache reuse remains strict for every dependency, including open payloads,
-so later growth refreshes observed sizes. Shrinkage, same-size modification and replacement cannot
-pass as growth. Two unstable scans return retryable `FILE_CHANGED`, not a history verdict; the
-managed reader and ordinal engine still own writer/ordinal/hash continuity. A missing member
-while building the canonical map also restarts the bounded scan rather than publishing it.
-Beneath it, each store's catalog is read without a lock, so the store can rename or remove a
-folder while a read walks it, as it renames a session's folder once the session's match is known.
-A read that finds a folder it listed gone, or a session it read moved before it finished, starts
-over at once, since a rename is one atomic step; on its third attempt it names a folder still
-moving, as the error of a strict read or a problem of a tolerant one, rather than passing it by. The
-shop harness found the race on a Linux workstation: a listing refused a whole store over one
-session renamed as it closed, and a read that missed the moment left the session out instead.
-The HTTP endpoint retains the catalog while its admitted root set agrees, retiring an old set
-after its final request. REV descriptions and queries share bounded immutable decodes there,
-with leases charging active reads and alignment kept per request. Native REV queries decode only
-exactly selected signals and the first model value needed for a SPARK identity; describe still
-reads all signals, and a complete decode can serve a selection. The decoder's input and
-decoded-storage limits are documented in [READ_API.md](READ_API.md#stores-and-recorded-rev-alignment);
-legacy synchronization keeps its existing decoder limits and results. Native REV retention uses
-primitive timestamp/value chunks, charged before allocation, without the former four-million-value
-ceiling. Store-reader tolerance is explicit and separate from writer inventory: invalid historical
-sessions may be skipped by either, but invalid robot/control manifests still stop writer inventory.
+The refresh owner scans at most twice when dependencies move, and waits 50 ms before the second
+scan. A store moves in bursts: a capture closing its file when a robot disconnects writes the file's
+placement and then its clock record, and a second scan made at once landed inside the same burst.
+The wait is on the refreshing request's thread, never a loop's. The owner's post-scan validation
+accepts same-identity growth only for manifested open capture payloads; manifests, directories and
+closed payloads stay strict. Cache reuse remains strict for every dependency, including open
+payloads, so later growth refreshes observed sizes. Shrinkage, same-size modification and
+replacement cannot pass as growth. Two unstable scans return retryable `FILE_CHANGED`, not a history
+verdict; the managed reader and ordinal engine still own writer/ordinal/hash continuity. A missing
+member while building the canonical map also restarts the bounded scan rather than publishing it.
+Beneath it, each store's catalog is read without a lock, so the store can rename or remove a folder
+while a read walks it, as it renames a session's folder once the session's match is known. A read
+that finds a folder it listed gone, or a session it read moved before it finished, starts over at
+once, since a rename is one atomic step; on its third attempt it names a folder still moving, as the
+error of a strict read or a problem of a tolerant one, rather than passing it by. The shop harness
+found the race on a Linux workstation: a listing refused a whole store over one session renamed as
+it closed, and a read that missed the moment left the session out instead. The HTTP endpoint retains
+the catalog while its admitted root set agrees, retiring an old set after its final request. REV
+descriptions and queries share bounded immutable decodes there, with leases charging active reads
+and alignment kept per request. Native REV queries decode only exactly selected signals and the
+first model value needed for a SPARK identity; describe still reads all signals, and a complete
+decode can serve a selection. The decoder's input and decoded-storage limits are documented in
+[READ_API.md](READ_API.md#stores-and-recorded-rev-alignment); legacy synchronization keeps its
+existing decoder limits and results. Native REV retention uses primitive timestamp/value chunks,
+charged before allocation, without the former four-million-value ceiling. Store-reader tolerance is
+explicit and separate from writer inventory: invalid historical sessions may be skipped by either,
+but invalid robot/control manifests still stop writer inventory.
 
 A query selects one entry and explicit disjoint windows, with inclusive or exclusive right ends.
 One field-path grammar projects values for native and legacy callers, and every reduction fills
@@ -1119,16 +1132,21 @@ Game data is one file per season, bundled in the JAR. The current season's is lo
 
 ## Concurrency
 
-In stdio mode the server handles one message at a time. HTTP dispatch uses four core threads
-and grows to 32 with direct handoff and no waiting queue. Data and native-read routes hand off
-to 16 streaming workers; store and import routes have four independent workers. Excess transfers
-normally receive JSON `BUSY` and 503 with a retry hint. Each streaming pool has two final-refusal
-workers with direct handoff and the same I/O watchdog; MCP execution overload uses the ordinary
-pool's refusal workers. When refusal capacity is exhausted, the exchange is closed before
+In stdio mode the server handles one message at a time. HTTP dispatch uses four core threads and
+grows to 32 with direct handoff and no waiting queue. Data and native-read routes have 16
+streaming slots; store and import routes have four independent slots. A slot counts a request,
+not a thread: it is free once the request's reply has written its last byte, before the exchange
+closes, and each pool holds up to twice its slots in threads, so a client that asks again as
+soon as a reply arrives is never refused while the previous request's thread is still returning.
+A request that finds no slot waits up to 50 ms while some reply is finishing, and otherwise
+excess transfers normally receive JSON `BUSY` and 503 with a retry hint at once, so a refusal
+never holds the dispatch thread. Each streaming pool has two final-refusal slots counted the
+same way, with direct handoff and the same I/O watchdog; MCP execution overload uses the
+ordinary pool's refusal slots. When refusal capacity is exhausted, the exchange is closed before
 response headers. This avoids the JDK's unread-body drain on dispatch workers; a client may
 receive a disconnect instead of JSON. Stalled streams and refusals cannot occupy health or
-registration's dispatch workers. A progress watchdog interrupts the owning
-SocketChannel worker after ten seconds without IO progress, including request uploads. Output
+registration's dispatch workers. A progress watchdog interrupts the owning SocketChannel worker
+after ten seconds without IO progress, including request uploads. Output
 progress is checked in at most 64 KiB units. The watchdog never flushes or closes an exchange
 itself, since closing a chunked stream can block behind the same peer. If all 32 dispatch
 workers are occupied by other handlers, a further exchange is still rejected by the JDK dispatcher,
@@ -1185,7 +1203,7 @@ work are published together, so completion racing a probe is not lost. All healt
 share the probe boundary, an ongoing stall remains visible, and interval drains leave the
 cumulative metrics intact. Store observations measure the mutation action, as described above.
 
-On shutdown, the HTTP transport ends its event streams, waits up to 5 seconds for calls in progress, and closes its listener. Then the log manager stops its background threads and unloads the logs, so that calls in progress can finish before their logs are closed.
+A stop follows one order: refuse, drain, release. The HTTP transport first refuses new requests with 503 and `Retry-After: 1`. Health and the stop route still answer, so a watcher can see the stop. It ends its event streams and the follows parked in a wait, then lets admitted requests finish. Each request is counted from its admission until its response is complete, including its hand-off to a stream worker, so the drain never misses one waiting for a worker. A byte stream gets five seconds, then ends at its next write, since it can be asked for again. A tool call may run until the stop's deadline, 80 seconds after the stop began. Past that, the log names whatever still runs and the stop interrupts it, so the process ends by itself before the launcher's or systemd's 90-second kill rather than being killed with nothing in the log to say why. Before the deadline nothing is interrupted: an interrupt closes any file channel its thread is reading, which other readers may share. Only after the drain does the transport close its listener, its workspace and its sessions. A workspace closed this way is not built again until a transport starts serving, so a call still running cannot leave a second workspace holding the state lock. One stop runs at a time: a stop request, the idle exit and a signal can overlap, and a later caller waits for the first. The idle exit and a stop request run the stop on their own threads. Capture's close comes next, within the same deadline: it waits for its writer and final manifest, the clock record of the file just closed, the robot pull's checkpoint, its providers' workers and its loop's last task. Then the log manager stops its background threads and unloads the logs, so that calls in progress can finish before their logs are closed. The store registry stops imports and waits for them before it closes the disk budget they reserve space from, so an import the stop catches is deferred, not refused.
 
 The NT4 gateway charges queued work per peer and isolates a peer that exceeds its allowance.
 A short stall that fits the budget leaves views connected. If an upstream publication is refused,
@@ -1427,7 +1445,11 @@ this memory. A miss hashes the file, checking its boundary before and after; a c
 size, modification time, file identity or expected hash needs a new proof. Failures are never
 remembered, and the opened native snapshot still has to match the verified boundary. Every
 admission retains current catalog and path/grant checks. Edits preserving all observed file
-attributes remain outside this proof, as with the existing loaded-log boundary checks.
+attributes remain outside this proof, as with the existing loaded-log boundary checks. On Windows,
+which reports no file identity, the creation time stands in for one, and NTFS can give a file that
+replaces another the replaced file's creation time for about 15 seconds (tunneling). A same-size
+replacement whose modification time is set back within that window is such an edit, and unlike a
+loaded log this memory has no saved anchors to catch it: a limitation accepted on 2026-10-23.
 Concurrent cold misses may duplicate hashing; no I/O holds the metadata lock or a cache
 computation lock, and a hash finishing after close cannot repopulate the memory. Followers use
 the same verification policy with memory owned by each lease. Paged inventory open/details reuse the
@@ -1447,10 +1469,15 @@ is never deduced from a page or a conflict.
 Accounting includes builds and retired inventories still used by readers. Short metadata locks
 claim or reclaim slots; admission, grant I/O, native close and future completion happen outside
 them. A removed session marks its in-flight admission invalid without waiting for disk I/O.
-The two no-queue build workers reserve metadata before starting; a ten-second response deadline
-cancels publication but retains the reservation until a blocked read actually unwinds. Four
+Two builds run at a time, with no waiting queue; each reserves metadata before it starts and frees
+its slot before its result, so the caller it wakes can start the next build at once. A ten-second
+response deadline cancels publication but retains the reservation, and the slot, until a blocked
+read actually unwinds. Four
 separate HTTP/MCP inventory workers leave control requests available. Response reservations
-remain charged through serialization and socket writing, including MCP batches. Transport admission
+remain charged through serialization, including MCP batches, and are freed as the reply's last
+write begins: the JDK writes a body straight to the socket, so a client may hold the reply before
+that write returns, and the request's own slot, still held through the write, bounds what remains
+in flight. Transport admission
 carries the original UTF-8 byte count into normal dispatch, so parsing cannot erase evidence of
 an oversized request. Refusal decisions follow session and basic request validation; notification
 suppression and mixed-batch controls retain their normal owner. Each inventory operation in a
@@ -1846,7 +1873,8 @@ MCP HTTP bodies are limited to 4 MiB and ten seconds. A separate pool admits at 
 503/disconnect refusal path described above.
 HTTP dispatch uses direct handoff to four-to-32 workers, without a waiting queue. Slow MCP
 bodies, tool calls and data/store streams do not occupy those workers; streaming admission has
-its own pools and progress deadlines as described above.
+its own pools and progress deadlines as described above. MCP execution counts its slots the same
+way: a call's slot is free once its reply's last byte is written.
 
 Store JSON publication uses the same 4 MiB limit as reading. An oversized update is refused
 before replacing the last readable manifest. Move aliases follow a bounded chain with cycle
@@ -2041,8 +2069,10 @@ not arbitrary exception or marker text. Failed diagnostic persistence leaves the
 capture intact and reports `cause_durable: false`; restart can recover only durable facts.
 
 `ReplicaPublications` publishes immutable pending facts from the store owner. Initial and
-explicit recovery enumerate off that owner, bounded to 32,768 paths; one short metadata turn
-rechecks each candidate's receipt witness before retrying publication. Payload hashes and tree
+explicit recovery enumerate off that owner, bounded to 32,768 session folders, the folders a
+marker is written in, plus any other folder where one is found; the store's other files cost the
+walk a listing, never an inspection. One short metadata turn rechecks each candidate's receipt
+witness before retrying publication. Payload hashes and tree
 walks stay outside the turn. In a folder that holds no store, the initial pass takes no lock and
 creates no file: it records that there is no store, and reports a store this process knew about
 that has since vanished. Live outcomes take precedence over stale sweep observations.
@@ -2051,6 +2081,15 @@ limits; these are accounting limits, not measured heap. Incomplete or failed rec
 reports a fabricated total of zero. Only a complete safe recovery may classify its remaining
 failure as publication-only. CaptureService tolerates that class while preserving fatal
 startup for unsafe or corrupt recovery; explicit recovery still reports the failure.
+
+A busy store is neither unsafe nor publication-only: another process holds the store lock, the
+queue stayed occupied past a turn's deadline, or a receipt changed while recovery read it. Capture
+startup used to stop on these until the server restarted. It now tries again after a second,
+doubling to at most 30 seconds, until recovery succeeds or capture stops, and its status says it
+is waiting for its store and why. The walk takes no lock, so an entry can vanish once listed. A
+temporary manifest renamed over its manifest is skipped. Anything else that moves, a session
+folder above all, may carry a marker past the walk, so the pass is incomplete and busy rather
+than complete. An unsafe failure in the same pass outranks a busy one.
 
 `POST /replicas/v1/status` reads this owner publication, including true pending totals and
 safe causes. Its optional exact session lookup reaches entries outside the bounded summary
@@ -2074,8 +2113,14 @@ renewal retains the exact selected supplier. `ReplicaReconciler` supplies the ex
 `ReplicaTransfers` owner, never an adapter-owned writer. It maintains a bounded fair retry per
 configured mirror. Unchanged confirmed versions reuse boundary/hash proofs without per-file
 confirmation, receipt or observation rewrites; coverage and last-sync are recorded once per pass.
-Cold proofs still use the bounded transfer workers. Replica metadata has four workers and its
-own 8 MiB response budget, separate from four payload workers and visualization reservations.
+Cold proofs still use the bounded transfer workers but leave the mirror unmeasured, since a proof
+only reads: measuring it for every proof made a cold pass grow with the square of the mirror's
+size. A proof that first finishes an interrupted transfer measures and reserves like any write.
+The two transfer workers are two permits for jobs, not two threads: a finished job returns its
+permit before it reports, so the caller it wakes can start the next job at once.
+Replica metadata runs four requests at a time. Each reply is capped at 1 MiB, encoded in at most
+two buffers, so metadata replies hold at most 8 MiB with no reservation pool of their own; the four
+payload workers and the visualization reservations are separate.
 Only the configured master's channel enters confirmation. Forwarded verification is provisional;
 contrary master evidence is durable before a separately reserved replacement. Complete observed
 master coverage has its own epoch, revision and timestamp and is never inferred from a truncated
@@ -2086,8 +2131,8 @@ preflight checks count and encoded budgets before moving bytes or replacing a re
 durable intent bridges receipt and header replacement, with exact prepared receipt hash recovery.
 Capture writes instead retain a per-session `.replica-publication.json` marker if catalog publication
 fails. The capture completion barrier still succeeds and status reports deferred publication; the
-next recording never waits for a full catalog to recover. Explicit recovery scans at most 32768
-paths and reports a remaining limit or I/O failure. A pending import intent refuses a catalog build
+next recording never waits for a full catalog to recover. Explicit recovery walks at most 32,768
+session folders and reports a remaining limit or I/O failure. A pending import intent refuses a catalog build
 until its store owner recovers. Explicit store move aliases preserve logical identity; equal bytes elsewhere
 are not aliases. Closed clock companions retain independent identities and capture relationships,
 and transfer validation uses `ClockRecords`. Provenance, clock/matching and placement claims

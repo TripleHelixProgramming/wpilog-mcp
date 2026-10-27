@@ -104,9 +104,13 @@ final class StoreQueue extends AbstractExecutorService {
       }
     } finally {
       observer.shutdown();
-      synchronized (this) { terminated = true; notifyAll(); }
+      try { afterLastTurn.run(); }
+      finally { synchronized (this) { terminated = true; notifyAll(); } }
     }
   }
+  private volatile Runnable afterLastTurn = () -> {};
+  /** Runs on the owner thread after its last turn, before termination is reported: a store gives its folder back here. */
+  void afterLastTurn(Runnable hook) { afterLastTurn = java.util.Objects.requireNonNull(hook); }
 
   private void observe() { observe(() -> {}); }
   /** The observer seam lets completion retire a sample before its interval publication. */

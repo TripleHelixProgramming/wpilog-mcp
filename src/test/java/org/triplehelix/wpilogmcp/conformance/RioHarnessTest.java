@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.harness.HarnessHttp;
 import org.triplehelix.wpilogmcp.harness.RioContainer;
 import org.triplehelix.wpilogmcp.harness.PhotonBackend;
@@ -40,7 +41,7 @@ class RioHarnessTest {
     int httpPort = port(), ntPort = photonJar == null ? port() : 5810, sshPort = port(), jmxPort = port();
     assertEquals(4, java.util.Set.of(httpPort, ntPort, sshPort, jmxPort).size());
     var home = Files.createDirectory(run.resolve("home")); var store = run.resolve("store");
-    String javaExe = ProcessHandle.current().info().command().orElseThrow();
+    String javaExe = ChildJvms.JAVA;
     Process server = null, robot = null, facts = null;
     try (var photon = photonJar == null ? null : new PhotonBackend(run, Path.of(photonJar));
         var rio = new RioContainer(image, run, timeline.get("serial_number").getAsString(),
@@ -55,7 +56,7 @@ class RioHarnessTest {
           + "\n      pull:\n        enabled: true\n        settle_sec: " + timeline.get("settle_sec")
           + "\n        ssh: {port: " + sshPort + "}"
           + "\n        system: {enabled: true, kernel: dmesg, journal: false}\n");
-      server = launch(List.of(javaExe, "-Xmx512m", "-Duser.home=" + home, "-jar", System.getProperty("harness.serverJar"),
+      server = launch(List.of(javaExe, ChildJvms.HEADLESS, "-Xmx512m", "-Duser.home=" + home, "-jar", System.getProperty("harness.serverJar"),
           "run", "harness", "--config", config.toString()), run, run.resolve("server.log"),
           Map.of("WPILOG_DISK_CACHE_DIR", run.resolve("cache").toString()));
       var http = new HarnessHttp(httpPort);
@@ -85,7 +86,7 @@ class RioHarnessTest {
         // Inspect while the deployed process exists; every command is the shipped collector's.
         // The explicit host keeps this independent CLI's pins in its own facts store. --server
         // would contend with the recorder's store lock, which intentionally refuses a second owner.
-        facts = launch(List.of(javaExe, "-Duser.home=" + home, "-jar", System.getProperty("harness.serverJar"),
+        facts = launch(List.of(javaExe, ChildJvms.HEADLESS, "-Duser.home=" + home, "-jar", System.getProperty("harness.serverJar"),
             "robot-facts", "127.0.0.1", "--port", Integer.toString(sshPort), "--out", control.resolve("facts.md").toString()),
             run, control.resolve("facts.log"), Map.of("WPILOG_DISK_CACHE_DIR", run.resolve("facts-cache").toString()));
         assertTrue(robot.waitFor(boot.get("end_us").getAsLong() / 1_000_000 + 30, TimeUnit.SECONDS), "Container timeline did not end");

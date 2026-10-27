@@ -50,8 +50,8 @@ final class StoreLock implements AutoCloseable {
   }
 
   /** Contention may be retried for capture; permissions and other I/O failures must not be. */
-  static final class Held extends IOException {
-    Held() { super("Store lock is held by another import (store.lock); retry when it finishes"); }
+  static final class Held extends StoreBusyException {
+    Held() { super(Condition.LOCK_HELD, "Store lock is held by another import (store.lock); retry when it finishes"); }
   }
 
   private static IOException held() {

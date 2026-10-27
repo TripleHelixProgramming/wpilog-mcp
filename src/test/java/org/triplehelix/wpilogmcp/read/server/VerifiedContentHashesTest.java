@@ -78,6 +78,9 @@ class VerifiedContentHashesTest {
           Files.writeString(file, "abd"); Files.setLastModifiedTime(file, FileTime.fromMillis(before.modified().toMillis() + 2_000));
         }
         case "identity" -> {
+          // Windows reports no identity, and NTFS gives the replacement the old creation time for
+          // about 15 seconds; the creation-time case below covers it.
+          Assumptions.assumeTrue(before.fileKey() != null, "the file system reports no file identity");
           var replacement = Files.writeString(file.resolveSibling("replacement"), "abd");
           Files.setLastModifiedTime(replacement, before.modified());
           Files.move(replacement, file, StandardCopyOption.REPLACE_EXISTING);
@@ -85,6 +88,23 @@ class VerifiedContentHashesTest {
         default -> throw new AssertionError(change);
       }
       assertNotEquals(before, FileSnapshot.of(file), "Fixture must expose the changed boundary on this filesystem");
+      assertTrue(assertThrows(IOException.class, () -> verify(memory, file)).getMessage().contains("manifested hash"));
+      assertEquals(2, reads.get());
+    }
+  }
+
+  @Test void withoutAFileIdentityACreationTimeChangeIsAChangedBoundary() throws Exception {
+    var before = FileSnapshot.of(file);
+    Assumptions.assumeTrue(before.fileKey() == null, "the file system reports a file identity, which the identity case covers");
+    try (var memory = memory()) {
+      verify(memory, file);
+      var replacement = Files.writeString(file.resolveSibling("replacement"), "abd");
+      Files.setLastModifiedTime(replacement, before.modified());
+      Files.move(replacement, file, StandardCopyOption.REPLACE_EXISTING);
+      // A replacement outside NTFS's 15-second tunneling window keeps its own creation time.
+      Files.getFileAttributeView(file, java.nio.file.attribute.BasicFileAttributeView.class)
+          .setTimes(null, null, FileTime.fromMillis(before.created().toMillis() - 3_600_000));
+      assertNotEquals(before, FileSnapshot.of(file), "Only the creation time differs");
       assertTrue(assertThrows(IOException.class, () -> verify(memory, file)).getMessage().contains("manifested hash"));
       assertEquals(2, reads.get());
     }

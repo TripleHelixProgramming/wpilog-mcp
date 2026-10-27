@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 import org.triplehelix.wpilogmcp.nt4.client.ManualScheduler;
@@ -62,7 +63,7 @@ class CaptureCostLoggingTest {
 
   private List<String> run(String level) throws Exception {
     var output = directory.resolve(level + ".log");
-    var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Dorg.slf4j.simpleLogger.defaultLogLevel=" + level,
         "-cp", System.getProperty("java.class.path"), ReportProcess.class.getName(), directory.toString())
         .redirectErrorStream(true).redirectOutput(output.toFile()).start();

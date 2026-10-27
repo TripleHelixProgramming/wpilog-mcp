@@ -199,6 +199,23 @@ class ReadEndpointTest {
     assertTrue(terminal.get("message").contains("IOException"), terminal.toString());
   }
 
+  @Test void aCatalogRequestTheStopCatchesIsToldToRetry() throws Exception {
+    var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+    start(2, new AtomicLong(), () -> {
+      entered.countDown();
+      try { release.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+      return null;
+    });
+    var pending = client.sendAsync(HttpRequest.newBuilder(base.resolve("/read/v1/catalog")).timeout(Duration.ofSeconds(10)).GET().build(),
+        HttpResponse.BodyHandlers.ofByteArray());
+    assertTrue(entered.await(5, TimeUnit.SECONDS));
+    endpoint.close(); // Admitted before the stop: no store has gone away, so no empty catalog is the answer.
+    release.countDown();
+    var response = pending.get(10, TimeUnit.SECONDS);
+    assertEquals(503, response.statusCode(), new String(response.body(), java.nio.charset.StandardCharsets.UTF_8));
+    assertEquals("CLOSED", json(response).get("code").getAsString());
+  }
+
   @Test void catalogRefusalsPreserveTheTypedRetryDecision() throws Exception {
     var retryable = new java.util.concurrent.atomic.AtomicBoolean(true);
     start(2, new AtomicLong(), () -> { throw new ReadException(ReadProblem.Code.FILE_CHANGED, "catalog changed", retryable.get()); });
@@ -207,6 +224,12 @@ class ReadEndpointTest {
       assertEquals(409, response.statusCode());
       assertEquals("FILE_CHANGED", json(response).get("code").getAsString());
       assertEquals(new JsonPrimitive(expected), json(response).get("retryable"));
+      // The Java client reports the same decision the server sent.
+      try (var remote = new org.triplehelix.wpilogmcp.read.http.RemoteLogAccess(base)) {
+        var failure = assertThrows(ReadException.class, remote::catalog);
+        assertEquals(ReadProblem.Code.FILE_CHANGED, failure.code());
+        assertEquals(expected, failure.retryable());
+      }
     }
   }
 

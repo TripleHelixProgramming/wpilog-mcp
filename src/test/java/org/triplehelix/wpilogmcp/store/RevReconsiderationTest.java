@@ -186,33 +186,36 @@ class RevReconsiderationTest {
     }
   }
 
-  @Test void simultaneousRequestsShareTheOutstandingQueueTurn() throws Exception {
+  @Test void simultaneousRequestsShareTheOutstandingStagingTurn() throws Exception {
     var security = security();
     var root = Files.createDirectory(temp.resolve("store"));
+    var source = pair("held").wpilog();
     try (var registry = new StoreRegistry(security)) {
       var store = registry.store(root);
       var entered = new CountDownLatch(1);
       var release = new CountDownLatch(1);
-      var barrier = store.captureAsync(io -> {
+      // Reconsideration waits behind import preparation on the staging thread, not behind the store
+      // queue. An import's first progress report runs on that thread, so holding it holds the turn.
+      var held = store.importPaths(new LogStore.Request(List.of(source), false, null), progress -> {
+        if (!progress.phase().equals("starting")) return;
         entered.countDown();
         try {
-          if (!release.await(30, TimeUnit.SECONDS)) throw new java.io.IOException("Test queue barrier expired");
+          if (!release.await(30, TimeUnit.SECONDS)) throw new IllegalStateException("Test staging barrier expired");
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
-          throw new java.io.IOException(e);
         }
-        return null;
       });
       try {
         assertTrue(entered.await(30, TimeUnit.SECONDS));
         var first = store.reconsiderUnassignedRev();
         var second = store.reconsiderUnassignedRev();
-        assertSame(first, second, "Only one reconsideration may wait behind other store work");
+        assertSame(first, second, "Only one reconsideration may wait behind other staged work");
+        assertFalse(first.isDone(), "The held staging thread has not run it");
         release.countDown();
         assertEquals(0, first.get(30, TimeUnit.SECONDS).considered());
       } finally {
         release.countDown();
-        barrier.get(30, TimeUnit.SECONDS);
+        held.get(30, TimeUnit.SECONDS);
       }
     }
   }

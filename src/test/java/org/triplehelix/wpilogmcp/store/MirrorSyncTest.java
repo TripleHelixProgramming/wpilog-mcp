@@ -72,6 +72,7 @@ class MirrorSyncTest {
     Files.createDirectories(folder); var paths = new ArrayList<Path>();
     for (var member : members) {
       var path = folder.resolve(member.name()); paths.add(path);
+      org.triplehelix.wpilogmcp.fixtures.LogRewrites.releaseBeforeRewrite(path);
       try (var writer = new WpilogWriter(path, "mirror fixture")) {
         int clockEntry = writer.start("systemTime", "int64", "", 0);
         int entry = writer.start("/Value", "double", "", 0);

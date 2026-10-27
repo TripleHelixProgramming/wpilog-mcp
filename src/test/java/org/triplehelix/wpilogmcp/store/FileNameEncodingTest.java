@@ -9,12 +9,13 @@ import java.nio.file.InvalidPathException;
 import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 
 class FileNameEncodingTest {
   @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory;
   @Test void openingTwoStoresWarnsOnlyOnceInAFreshJvm() throws Exception {
     var output = directory.resolve("warning.txt");
-    var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-cp", System.getProperty("java.class.path"), WarningProcess.class.getName(), directory.toString())
         .redirectErrorStream(true).redirectOutput(output.toFile()).start();
     try { assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); }

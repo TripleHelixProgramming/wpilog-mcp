@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
@@ -30,7 +31,7 @@ class ScanIndexStressComparisonTest {
     var cache = Files.createDirectories(work.resolve("cache"));
     var stdout = work.resolve("stdout");
     var stderr = work.resolve("stderr");
-    var builder = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var builder = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Duser.home=" + work.resolve("home"), "-cp", System.getProperty("java.class.path"),
         Child.class.getName(), work.toString(), Boolean.toString(adjacentMicros))
         .redirectOutput(stdout.toFile()).redirectError(stderr.toFile());

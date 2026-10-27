@@ -131,6 +131,11 @@ This runs every test that needs nothing outside the repository. Three rules appl
 
 The tests run on Windows in CI too. Build an expected path with the same path API the code uses, never from a hand-written string; compare paths as the file system does; and don't assume a checked-out file has LF line endings.
 
+No JVM a test runs or starts opens a window. Every test task sets `java.awt.headless`; a test that
+starts a JVM takes its `java` and the headless option from `ChildJvms`, which a check enforces; and
+the server sets it itself unless its command line does. On a Mac a JVM that is not headless gets a
+Dock icon when it draws a chart, and test runs took focus that way.
+
 ### The systemd service check
 
 - `MainRunTest` starts isolated foreground children and checks stderr, exit status, ownership,
@@ -147,17 +152,20 @@ templates and the check itself. The job:
 1. Builds only the shadow JAR, creates the service account and installs the printed units.
 2. Checks launcher/JAR access as the service user, with modes in any refusal, and supplies the
    runner's JDK through `JAVA_HOME`.
-3. Starts the service and timer, checks managed/version health and the `stop` refusal, runs the
-   probe, and stops through systemd within 90 seconds.
-4. Repeats with only `--managed` removed and requires that the same verifier reject the plant.
+3. Starts the service and timer, checks managed/version health and the `stop` refusal, and runs the
+   probe.
+4. Stops the timer and pauses the server, whose port stays open but silent, as a hung server's
+   does. The probe must fail only after its retries, at least 30 seconds, and within 30 seconds
+   more its `OnFailure=` handler must leave a new server process answering health.
+5. Stops through systemd within 90 seconds.
+6. Repeats twice, once with only `--managed` removed and once with only the probe's `OnFailure=`
+   removed, and requires that the same verifier reject each plant.
 
 Journals, printed units and assertion results are uploaded even on failure. `ci/check_service.py`
 refuses to install on a developer machine: it requires root and a disposable GitHub Actions runner.
 The local Python check `python3 -m unittest ci.test_changes ci.test_check_service` proves filter
 fallbacks and the verifier's refusal predicates without systemd. macOS and Windows do not run
 systemd locally; their ordinary Java tests still cover the foreground command and ownership.
-The retry exhaustion and `OnFailure=` restart still need a real Linux-host check; the
-existing CI probe step alone does not exercise them.
 
 ### The metrics stack check
 
@@ -458,9 +466,22 @@ for HotSpot with compressed references and eight-byte object alignment).
 
 Every test task, the stress tests included, uses its own disk cache folder, `build/test-disk-cache`, and empties it before the run. So a run starts with nothing cached, synchronizes every REV log itself, and never reads or writes your own cache. `-PtestCacheDir=/path/to/folder` uses that folder instead and keeps what is in it: a second run then starts from the results the first one saved. Pointed at a copy of a cache that an older version wrote, a run shows how this version treats that version's results. Use a copy, because the tests write to the folder.
 
+### Store folders in tests
+
+One store object owns a store folder in a process, and a second one for an open folder is refused
+when it is made: two would take the folder's lock at the same moment, and an import would fail as
+if another process held it. Listing or scanning a store folder opens it through the process's
+registry, as the server does. So a test that lists a folder works on it through that registry and
+gives it back when it ends, and a test whose own registry holds the folder gives it back before the
+listing; the store tests' `StoreFolders` does both. A test that stands in for a second server uses
+the store's stand-in for another process, which meets the test's store only at the folder's lock.
+A test that kills a child process holding a lock waits for Windows to release it before taking it.
+
 ### Scratch under `build/`
 
-What a run writes under `build/` for its own use lasts until the next run of the same suite. A replay that passes deletes its run folder, and one that fails keeps it for diagnosis. Before its tests start, each task empties the folders its suites write, as it empties its disk cache: every test task empties `build/test-fixtures`; `test` with `-PconformanceLogDir` empties the real-log replay folders (`build/replay-work`, `build/replay-pull` and `build/replay-pairs`) and `build/real-log-conformance-export`; `shopHarness` empties `build/replay-native` and `build/shop-harness`. A targeted `test` without `-PconformanceLogDir` leaves a failed real-log run's folder alone while you look into it. The native editor runners keep only their latest run in each of their folders under `build/`; an output folder you name for them keeps every run. Copy what you want to keep out of these folders before the suite runs again.
+What a run writes under `build/` for its own use lasts until the next run of the same suite. A replay that passes deletes its run folder, and one that fails keeps it for diagnosis. Before its tests start, each task empties the folders its suites write, as it empties its disk cache: every test task empties `build/test-fixtures`; `test` with `-PconformanceLogDir` empties the real-log replay folders (`build/replay-work`, `build/replay-pull` and `build/replay-pairs`) and `build/real-log-conformance-export`; `shopHarness` empties `build/replay-native` and `build/shop-harness`. A targeted `test` without `-PconformanceLogDir` leaves a failed real-log run's folder alone while you look into it.
+
+The temporary folder of a test task's JVMs is `build/test-tmp/<task>`, so every `@TempDir`, and every file a test or the server under test creates in the temporary folder, lands there. The project tells JUnit never to delete a `@TempDir` (`src/test/resources/junit-platform.properties`), because on Windows a memory-mapped log stays locked until a garbage collection and the deletion failed the test. In the system's temporary folder they used to pile up for good, until three days of builds filled a Linux workstation's 15 GB `/tmp`, a memory file system, and its next build failed 1,450 tests with I/O errors. Each task empties its own folder before its tests start and deletes it after a passing run; a failed run keeps it, and another task's run leaves it alone. The native editor runners keep only their latest run in each of their folders under `build/`; an output folder you name for them keeps every run. Copy what you want to keep out of these folders before the suite runs again.
 
 A claim check fails when a test, a native editor runner or the build script names a folder under `build/` that no task empties, that is not a disk cache, and that the check does not list as kept on purpose with its reason. A new suite's scratch therefore goes into one of the lists in `build.gradle`. Reports under `build/reports/` are written by name, so the suite's next run replaces them; a test that names a report after a temporary folder deletes it.
 
@@ -501,8 +522,9 @@ editor. `npm test` is unchanged.
 
 The smoke generates its log once with the pure-Java fixture writer, copies it and its append record
 into each run's temporary folder, seeds a standalone install in a temporary home under
-`build/extension-smoke`, and lets the extension start its server. It checks activation, the shared
-daemon's health/version, the actual Logs provider's leased fixture listing, the custom editor tab,
+`build/extension-smoke`, and lets the extension start its server when a request first needs one. It
+checks that activation alone starts no server, that listing local logs starts the shared daemon with
+the right health and version, the actual Logs provider's leased fixture listing, the custom editor tab,
 Perspective's actual row count (two fixture records, then three after an appended record), and the
 real pit command's user-scope arguments. A test `claude` executable records argv without registering
 anything.
@@ -511,12 +533,12 @@ The runner stops its own daemon, retains logs/results under `build/extension-smo
 changes the user's install or account. Test code, downloaded editors and dependencies are excluded
 from the VSIX.
 
-CI then runs `test:smoke:plants`: six faults in disposable compiled output remove activation,
-startup, listing or editor opening, replace an appended table batch, or add a synthetic secret
-argument. Each must fail at its own assertion after the earlier checks passed; a timeout or
+CI then runs `test:smoke:plants`: seven faults in disposable compiled output remove activation,
+startup, the listed tree or editor opening, replace an appended table batch, rename a data-store
+command, or add a synthetic secret argument. Each must fail at its own assertion after the earlier checks passed; a timeout or
 unrelated crash is not accepted. The script restores every compiled file and runs only in Linux CI.
 
-This retires the real-editor caveat for those six surfaces. It does not inspect rendered
+This retires the real-editor caveat for those seven surfaces. It does not inspect rendered
 plots, exercise credential dialogs, contact the Claude service, or prove agent discovery.
 The older milestones were checked without a real editor; these interactions still need the
 oldest supported and current versions by hand:
@@ -941,7 +963,8 @@ suite separately proves that a size refusal leaves the retained retry page intac
 `ReadEndpointTest`, `ReadWireTest`, `RemoteLogAccessTest` and `RevReadEndpointTest` cover the
 versioned read routes, exact typed values, projected/reduced Arrow shapes, multi-entry NDJSON
 and multipart Arrow, bounded leases, cancellation, completion proof and input/path admission.
-They also check retryable overload, schema errors and null-message failures. Read and store
+They also check that the Java client keeps the server's retry decision, retryable overload, schema
+errors and null-message failures. Read and store
 streaming admission are tested independently; the Python example test plants a decode problem
 and requires it to survive the terminal-status check. `StructSchemaDescriptionsTest` keeps schema provenance intact
 without trusting remote byte sizes. `ReadArrowTypesTest` pins the shared encoding owner.

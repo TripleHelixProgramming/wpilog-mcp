@@ -312,6 +312,28 @@ class FollowEndpointTest {
     var reopened = json(local(client, "/read/v1/follows", boundRequest(view)), 201);
     assertEquals(204, call("DELETE", "/read/v1/follows/" + reopened.get("id").getAsString(), null).statusCode());
   }
+  /** A follow's reply goes out before its request has finished. By then the slot it reserved while opening must be its
+   * lease, or a client that opens the next follow at once is counted twice and refused one below the limit. */
+  @ParameterizedTest @ValueSource(booleans = {false, true})
+  void aFollowCountsOnceAsSoonAsItsReplyIsSent(boolean bound) throws Exception {
+    String client = client(); var leases = new ArrayList<JsonObject>();
+    var held = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
+    var first = new java.util.concurrent.atomic.AtomicBoolean(true);
+    endpoint().afterReply(() -> {
+      if (!first.getAndSet(false)) return;
+      held.countDown();
+      try { release.await(30, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    });
+    try {
+      leases.add(bound ? json(local(client, "/read/v1/follows", boundRequest(createView(client))), 201) : create());
+      assertTrue(held.await(10, TimeUnit.SECONDS), "The first follow's request is still finishing");
+      for (int i = 1; i < 32; i++) leases.add(create());
+      assertEquals(429, call("POST", "/read/v1/follows", creation()).statusCode(), "The limit itself still holds");
+    } finally {
+      release.countDown(); endpoint().afterReply(() -> {});
+      for (var lease : leases) assertEquals(204, call("DELETE", "/read/v1/follows/" + lease.get("id").getAsString(), null).statusCode());
+    }
+  }
 
   @ParameterizedTest @ValueSource(ints = {5000, 10000})
   void queriedFrontierBootstrapsLargeTwoMemberRecordingsAtOneMiB(int topics) throws Exception {
@@ -767,17 +789,23 @@ class FollowEndpointTest {
       for (int i = 0; i < 16; i++) {
         var lease = create(); leases.add(lease);
         var first = json(call("POST", nextPath(lease), nextBody(lease.get("cursor").getAsString(), 0)), 200);
+        // A page's slot is free once its last byte is out, before its worker's thread is: the wait goes out once the
+        // first page's slot is free, and the next lease opens once the wait holds one.
+        int parked = i;
+        FollowLeaseTest.until(() -> pool.freeSlots() == 16 - parked);
         waits.add(http.sendAsync(request("POST", nextPath(lease), nextBody(first.get("next_cursor").getAsString(), 25000)), HttpResponse.BodyHandlers.ofString()));
+        FollowLeaseTest.until(() -> pool.freeSlots() == 15 - parked);
       }
-      FollowLeaseTest.until(() -> pool.activeCount() == 16);
-      assertEquals(503, call("POST", nextPath(leases.get(0)), nextBody("unused", 0)).statusCode());
+      var refused = call("POST", nextPath(leases.get(0)), nextBody("unused", 0));
+      // A lease whose page is waiting answers a second page with 503 as well; only the limit's refusal shows the limit.
+      assertEquals(503, refused.statusCode());
+      assertTrue(refused.body().contains("Streaming capacity is in use"), refused.body());
       assertEquals(200, call("GET", "/health", null).statusCode());
       assertEquals(204, call("DELETE", "/read/v1/follows/" + leases.get(0).get("id").getAsString(), null).statusCode());
       assertEquals(410, waits.get(0).get(5, TimeUnit.SECONDS).statusCode());
       assertFalse(waits.get(1).isDone());
-    } finally {
-      transport.stop();
-      for (var wait : waits) assertTrue(wait.isDone() || wait.get(5, TimeUnit.SECONDS).statusCode() >= 400);
-    }
+    } finally { transport.stop(); }
+    // Every follow the stop finds parked ends with 410 CLOSED and is opened again on the next server.
+    for (var wait : waits) assertEquals(410, wait.get(5, TimeUnit.SECONDS).statusCode(), wait.get().body());
   }
 }

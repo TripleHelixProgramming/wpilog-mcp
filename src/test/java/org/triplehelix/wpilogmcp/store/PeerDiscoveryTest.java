@@ -43,6 +43,23 @@ class PeerDiscoveryTest {
       assertTrue(discovery.snapshot().stream().noneMatch(p -> p.peerId().equals(first)));
     } finally { release.countDown(); }
   }
+  @Test void aFinishedProbeNoLongerHoldsAWorkerWhileItsThreadReturnsToThePool() throws Exception {
+    // A probe publishes its result while its thread is still finishing. The hook keeps two such threads there, as a
+    // busy machine can; the next candidate's probe used to be put off, tick after tick, as if two probes were running.
+    var hold = new CountDownLatch(1); var held = new CountDownLatch(2);
+    try (var discovery = new PeerDiscovery(address -> List.of(new ReplicaProtocol.Store(PEER, MASTER, false, 2)), Clock.systemUTC())) {
+      discovery.afterProbe(() -> {
+        held.countDown();
+        try { hold.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+      });
+      String a = new UUID(0, 1).toString(), b = new UUID(0, 2).toString(), c = new UUID(0, 3).toString();
+      discovery.announce(a, MASTER, "http://127.0.0.1:10001", 100, 60);
+      discovery.announce(b, MASTER, "http://127.0.0.1:10002", 100, 60);
+      assertTrue(held.await(3, TimeUnit.SECONDS), "both probes' threads stay after publishing their results");
+      discovery.announce(c, MASTER, "http://127.0.0.1:10003", 100, 60);
+      until(() -> discovery.snapshot().stream().anyMatch(p -> p.peerId().equals(c) && !p.state().equals("candidate")));
+    } finally { hold.countDown(); }
+  }
   @Test void expiryAndOversizedOrOffLinkHintsCannotCreateFetches() throws Exception {
     var calls = new java.util.concurrent.atomic.AtomicInteger(); var time = new java.util.concurrent.atomic.AtomicLong();
     Clock clock = new Clock() {

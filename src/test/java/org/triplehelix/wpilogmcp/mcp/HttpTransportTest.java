@@ -850,7 +850,7 @@ class HttpTransportTest {
       var time = new java.util.concurrent.atomic.AtomicLong();
       var t = startWith(x -> { x.idleClock(time::get); x.setIdleExit(java.time.Duration.ofMillis(300), exited::countDown); });
       time.set(300_000_000); t.exitIfIdle();
-      assertEquals(0, exited.getCount());
+      assertTrue(exited.await(5, TimeUnit.SECONDS), "The idle exit runs on its own thread");
     }
 
     @Test
@@ -871,7 +871,7 @@ class HttpTransportTest {
           .build();
       assertEquals(200, client.send(delete, HttpResponse.BodyHandlers.ofString()).statusCode());
       time.addAndGet(300_000_000); t.exitIfIdle();
-      assertEquals(0, exited.getCount(), "the idle exit did not run after the session");
+      assertTrue(exited.await(5, TimeUnit.SECONDS), "the idle exit did not run after the session");
     }
 
     @Test
@@ -889,7 +889,7 @@ class HttpTransportTest {
       for (int i = 0; i < 5; i++) {
         time.addAndGet(100_000_000); request(t, "GET", "/health", null); t.exitIfIdle();
       }
-      assertEquals(0, exited.getCount(), "health checks kept the server up");
+      assertTrue(exited.await(5, TimeUnit.SECONDS), "health checks kept the server up");
     }
   }
 }

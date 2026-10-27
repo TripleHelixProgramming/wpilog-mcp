@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 
 /** A supervisor needs a foreground child, its exit status and stderr, never a PID claim. */
 class MainRunTest {
@@ -23,7 +24,7 @@ class MainRunTest {
   }
   private record Output(int code, String out, String err) {}
   private Output run(List<String> args) throws Exception {
-    var command = new ArrayList<>(List.of(ProcessHandle.current().info().command().orElseThrow(),
+    var command = new ArrayList<>(List.of(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Duser.home=" + temp, "-cp", System.getProperty("java.class.path"), Main.class.getName()));
     command.addAll(args);
     var out = temp.resolve("stdout"); var err = temp.resolve("stderr");
@@ -73,7 +74,7 @@ class MainRunTest {
           new org.triplehelix.wpilogmcp.store.LocalIngestion.Policy(1, true, destination.toRealPath().toString(), "synthetic-store",
               List.of(new org.triplehelix.wpilogmcp.store.LocalIngestion.Source(source.toRealPath().toString(), "copy", true, false, null))));
       Files.writeString(policyFile, savedPolicy);
-      var command = new ArrayList<>(List.of(ProcessHandle.current().info().command().orElseThrow(), "-Xmx256m",
+      var command = new ArrayList<>(List.of(ChildJvms.JAVA, ChildJvms.HEADLESS, "-Xmx256m",
           "-Duser.home=" + temp, "-jar", System.getProperty("install.testJar"), "run", "pit", "--config", path.toString()));
       if (mode.equals("flag")) command.add("--managed");
       var err = temp.resolve(mode + ".stderr"); var out = temp.resolve(mode + ".stdout");
@@ -412,7 +413,7 @@ class MainRunTest {
 
   private Output daemonProcess(List<String> arguments, String label) throws Exception {
     var out = temp.resolve(label + ".stdout"); var err = temp.resolve(label + ".stderr");
-    var command = new ArrayList<>(List.of(ProcessHandle.current().info().command().orElseThrow()));
+    var command = new ArrayList<>(List.of(ChildJvms.JAVA, ChildJvms.HEADLESS));
     command.addAll(arguments);
     var builder = new ProcessBuilder(command)
         .directory(temp.toFile()).redirectOutput(out.toFile()).redirectError(err.toFile());

@@ -129,8 +129,11 @@ class CaptureStoreTest {
   @Test void openClosedContinuedAndSameSecondSessionsKeepTheirFactsAndBytes() throws Exception {
     directory = directory.toRealPath();
     var security = new SecurityValidator(); security.addAllowedDirectory(directory);
-    try (var stores = new StoreRegistry(security)) {
-      var root = directory.resolve("store"); var loop = new ManualScheduler();
+    // The listing below opens the folder through the process's registry, which owns it in the
+    // server too, so the capture writes through that registry's store and the test gives it back.
+    var root = directory.resolve("store");
+    try {
+      var stores = StoreFolders.registry(); var loop = new ManualScheduler();
       var placement = stores.store(root).captures(WALL);
       try (var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement)) {
         connect(writer, loop, 10_000_000, 0);
@@ -172,7 +175,7 @@ class CaptureStoreTest {
         assertEquals(3, StoreCatalog.read(root, security).files().size());
         assertEquals(1, StoreCatalog.read(root, security).header().formatVersion());
       }
-    }
+    } finally { StoreFolders.release(root); }
   }
 
   @ParameterizedTest @ValueSource(booleans = {false, true})

@@ -136,12 +136,19 @@ class ImportStagingHardeningTest {
         return request;
       }, result -> {});
       assertTrue(entered.await(10, TimeUnit.SECONDS));
-      stores.close();
+      // A close drains the running publication turn, so the bytes are checked while it waits, once it
+      // has stopped imports, which interrupts staging's wait, and the store's queue.
+      var closing = java.util.concurrent.CompletableFuture.runAsync(stores::close);
+      long stopping = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+      while (!store.closing() && System.nanoTime() < stopping) Thread.sleep(5);
+      assertTrue(store.closing(), "the close stopped the store's imports and queue");
+      assertFalse(closing.isDone(), "the close waits for the running publication turn");
       assertNotNull(staged.get());
       assertTrue(Files.exists(staged.get()),
           "An interrupted staging wait must not delete bytes still owned by a running publication turn");
       release.countDown();
       assertTrue(exited.await(10, TimeUnit.SECONDS));
+      closing.get(10, TimeUnit.SECONDS);
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
       while (Files.exists(staged.get()) && System.nanoTime() < deadline) Thread.sleep(5);
       assertFalse(Files.exists(staged.get()), "Unplaced staged bytes are removed after their owner unwinds");
@@ -233,6 +240,36 @@ class ImportStagingHardeningTest {
     ImportStage.recover(new StoreFiles(root, security),
         marker -> Files.writeString(marker, "retired"));
     assertTrue(Files.exists(retained), "Retiring a stage between discovery and lock acquisition preserves its unmanaged copy");
+  }
+
+  @Test void aStageAnotherRecoveryRemovesWhileThisOneChecksItIsSkipped() throws Exception {
+    var root = Files.createDirectories(directory.resolve("store"));
+    var parent = Files.createDirectories(root.resolve("unassigned").resolve("synthetic").resolve("robot"));
+    var stages = List.of(parent.resolve(".import-staging-first"), parent.resolve(".import-staging-second"));
+    for (var stage : stages) {
+      Files.createDirectory(stage);
+      Files.writeString(stage.resolve(".owner.lock"), "wpilog-import-stage-v1");
+      Files.writeString(stage.resolve("partial.wpilog"), "synthetic partial bytes");
+    }
+    // The first marker checked vanishes with its stage during the check, as when a concurrent
+    // recovery collects it first; the real check then fails as this one does.
+    var removed = new java.util.concurrent.atomic.AtomicReference<Path>();
+    var security = new SecurityValidator() {
+      @Override public void validate(Path path) throws java.io.IOException {
+        if (path.getFileName() != null && path.getFileName().toString().equals(".owner.lock")
+            && removed.compareAndSet(null, path.getParent())) {
+          try (var paths = Files.walk(path.getParent())) {
+            for (var gone : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(gone);
+          }
+          throw new java.nio.file.NoSuchFileException(path.toString());
+        }
+        super.validate(path);
+      }
+    };
+    security.addAllowedDirectory(directory);
+    ImportStage.recover(new StoreFiles(root, security));
+    assertNotNull(removed.get(), "A stage vanished while its marker was checked");
+    for (var stage : stages) assertFalse(Files.exists(stage), "The other abandoned stage is still recovered: " + stage);
   }
 
   @Test void reopeningAStoreRecoversAbandonedStagesWithoutSubmittingAnImport() throws Exception {
@@ -399,7 +436,7 @@ class ImportStagingHardeningTest {
           }).get(5, TimeUnit.SECONDS);
         } catch (Exception failure) { throw new java.util.concurrent.CompletionException(failure); }
       }).get(10, TimeUnit.SECONDS);
-      assertEquals("refused", result.files().get(0).status(),
+      assertEquals("deferred", result.files().get(0).status(),
           "A newly eligible session invalidates the earlier placement decision even when source bytes are unchanged");
       assertTrue(result.files().get(0).reason().contains("candidates"), result.toString());
       assertEquals(1, StoreCatalog.readManaged(store.root(), security).files().size(),
@@ -432,7 +469,7 @@ class ImportStagingHardeningTest {
           Files.writeString(identity, json.toString());
         } catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
       }).get(10, TimeUnit.SECONDS);
-      assertEquals("refused", result.files().get(0).status(),
+      assertEquals("deferred", result.files().get(0).status(),
           "A portable robot name must not bypass identity rechecks by resembling a staging directory");
       assertTrue(result.files().get(0).reason().contains("candidates"), result.toString());
       assertEquals(1, StoreCatalog.readManaged(store.root(), security).files().size());

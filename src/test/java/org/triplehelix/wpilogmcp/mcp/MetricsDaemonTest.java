@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.fixtures.PrometheusText;
 import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
 import org.triplehelix.wpilogmcp.nt4.server.Nt4Gateway;
@@ -41,7 +42,7 @@ class MetricsDaemonTest {
           + "\n    metrics: {include: ['/keep/'], max_array_length: 1}\n    capture:\n      robot: {host: 127.0.0.1, port: " + gateway.port()
           + "}\n      store: " + new com.google.gson.Gson().toJson(temp.resolve("store").toString())
           + "\n      gateway: {port: " + gatewayPort + "}\n");
-      var builder = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(), "-Xmx256m",
+      var builder = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS, "-Xmx256m",
           "-Duser.home=" + temp, "-jar", System.getProperty("install.testJar"), "--internal-daemon", "metrics", "--config", config.toString())
           .redirectErrorStream(true).redirectOutput(output.toFile());
       builder.environment().put("WPILOG_DISK_CACHE_DIR", temp.resolve("cache").toString());

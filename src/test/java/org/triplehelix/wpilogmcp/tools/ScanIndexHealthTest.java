@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.log.LogManager;
 
 /** A fresh process makes zero disk-lookup counters an independent fact, not a prior result. */
@@ -28,7 +29,7 @@ class ScanIndexHealthTest {
     var stderr = work.resolve("stderr");
     // This file is not an index: directory totals must not accidentally include it.
     Files.writeString(cache.resolve("unrelated.txt"), "not a scan index");
-    var builder = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var builder = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Duser.home=" + work.resolve("home"), "-cp", System.getProperty("java.class.path"),
         Child.class.getName(), Boolean.toString(enabled))
         .redirectOutput(stdout.toFile()).redirectError(stderr.toFile());

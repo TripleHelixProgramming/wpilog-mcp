@@ -239,6 +239,9 @@ public final class CaptureWriter implements Nt4Client.Listener, AutoCloseable {
   CaptureProgress.Probe progress(long loopStallUs, long storeTurnUs) { return progress.probe(loopStallUs, storeTurnUs); }
   /** Startup recovery can fail off the listener; only this atomic public status is changed. */
   void startupFailed() { progress.stopped(CaptureProgress.Reason.STARTUP_FAILED); }
+  /** Startup waits off the listener too, for a busy store, and says why with a fixed code. */
+  void waitingForStore(String cause) { progress.waitingForStore(cause); }
+  void storeSettled() { progress.storeSettled(); }
   public boolean ready() { return output != null && opening == null && deferred.isEmpty() && !draining; }
   public CompletableFuture<Void> admissionCompletion() { return admissionCompletion; }
   private long nowUs() { return replaying == null ? loop.nowUs() : replaying.receivedUs(); }

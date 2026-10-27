@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.capture.pull.PullGate;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
@@ -44,7 +45,7 @@ class CaptureBlockedLoggingTest {
 
   @Test void aCostReportDuringCloseCannotHoldTheNextListenerValues() throws Exception {
     var output = directory.resolve("child-output.txt");
-    var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Dorg.slf4j.simpleLogger.defaultLogLevel=info", "-cp",
         System.getProperty("java.class.path"), CaptureProcess.class.getName(), directory.toString())
         .redirectErrorStream(true).redirectOutput(output.toFile()).start();
@@ -161,7 +162,9 @@ class CaptureBlockedLoggingTest {
         assertTrue(sink.entered.await(5, TimeUnit.SECONDS),
             "The real cost-summary output must reach the held stderr sink");
         var completed = following;
-        assertDoesNotThrow(() -> completed.get(200, TimeUnit.MILLISECONDS),
+        // The held stderr blocks these values until cleanup if logging can hold them, so a longer wait
+        // still tells the two apart; 200 ms was too short for a fresh JVM's reconnect on a slow runner.
+        assertDoesNotThrow(() -> completed.get(5, TimeUnit.SECONDS),
             "Blocked stderr prevented the close and following listener values from completing");
       } finally {
         releaseForce.countDown();

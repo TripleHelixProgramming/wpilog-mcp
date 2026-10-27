@@ -1,14 +1,14 @@
 {
   "format_version": 2,
   "recipe_version": 1,
-  "reviewed_at": "2026-10-22",
+  "reviewed_at": "2026-10-25",
   "decision": "cache_unaffected",
-  "reason": "Format 2 and recipe 1 are unchanged. The log manager gains a way to let a recording's index go after a failed write, so that the next read loads the file. How a log is scanned, how an index is encoded, read and trusted, and which files are eligible are untouched, so indexes already written give the same answers.",
+  "reason": "Format 2 and recipe 1 are unchanged. The disk cache gains a way to create and report its directory at startup, before its background cleanup does. How a log is scanned, how an index is encoded, read and trusted, and which files are eligible are untouched, so indexes already written give the same answers.",
   "previous_format_version": 2,
   "previous_recipe_version": 1,
   "source_sha256": {
     "edu/wpi/first/util/datalog/DataLogAccess.java": "9e6659d846e967a7a97ffb85ad288326f362c00e6bd32fbe9c2384f5cca79b11",
-    "org/triplehelix/wpilogmcp/cache/DiskCache.java": "f74c51f9be0c8aebef80c78d2489b9483669926e17e464fc5280b5556ac3f73f",
+    "org/triplehelix/wpilogmcp/cache/DiskCache.java": "f460d4206b20dba2c1ea51587baa2946f96bcda22c256fc9aa5e39883de93a45",
     "org/triplehelix/wpilogmcp/cache/ScanIndexSerializer.java": "6a01be30d6a0ecc330d7637bdb50bcc45fe96619173dcceef93fd36867e82787",
     "org/triplehelix/wpilogmcp/log/EntryInfo.java": "c0c5958be7e2b1df9066349e8080f701a91d66235dc52cb06e37d42dd10edd3c",
     "org/triplehelix/wpilogmcp/log/FileSnapshot.java": "394586e261df0b8ead605f67ff09334b4d439c114ae526e7de332df0c65bc68b",

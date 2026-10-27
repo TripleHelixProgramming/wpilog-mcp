@@ -36,11 +36,26 @@ public class ToolRegistry {
   /** The first caller builds the workspace; tests substitute a build that fails. */
   volatile WorkspaceBuild workspaceBuild = identity ->
       new org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace(identity, org.triplehelix.wpilogmcp.log.LogManager.getInstance(), () -> capture.get());
+  /**
+   * Set when a stop closes the workspace, cleared when a transport starts serving. A request still
+   * running then could otherwise build a new one, which held the workspace's state lock until the
+   * process exited, so a replacement server's visualizations stayed unavailable.
+   */
+  private volatile boolean visualizationsClosed;
+  public void openVisualizations() { visualizationsClosed = false; }
   public org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace visualizations() throws java.io.IOException {
+    if (visualizationsClosed) throw new java.io.IOException("Workspace closed: the server is stopping");
     var future = visualization.get();
     if (future == null) {
       var pending = new java.util.concurrent.CompletableFuture<org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace>();
       if (visualization.compareAndSet(null, pending)) {
+        // A close between the check above and this claim found no workspace to close: give way to it.
+        if (visualizationsClosed) {
+          visualization.compareAndSet(pending, null);
+          var closed = new java.io.IOException("Workspace closed: the server is stopping");
+          pending.completeExceptionally(closed);
+          throw closed;
+        }
         // Every failure answers the callers waiting on this build, an Error too, and frees the slot
         // for the next caller to build again: an unfinished build would hold them all for good.
         try { pending.complete(workspaceBuild.build(identity)); }
@@ -59,6 +74,7 @@ public class ToolRegistry {
     }
   }
   public void closeVisualizations() {
+    visualizationsClosed = true;
     var pending = visualization.getAndSet(null);
     if (pending != null) pending.thenAccept(org.triplehelix.wpilogmcp.visualization.VisualizationWorkspace::close);
   }

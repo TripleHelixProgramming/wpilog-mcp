@@ -84,7 +84,16 @@ public class Main {
   private static boolean managed;
   private static boolean publicRun;
 
+  /**
+   * A server never shows a window. Chart images draw through AWT, which on a Mac otherwise gives the
+   * JVM a Dock icon that takes focus; a value set on the command line still wins.
+   */
+  static void headlessByDefault() {
+    if (System.getProperty("java.awt.headless") == null) System.setProperty("java.awt.headless", "true");
+  }
+
   public static void main(String[] args) {
+    headlessByDefault();
     // Configuration loading can log before transport selection. Keep short-lived CLI errors
     // direct, but install before any logger in a process that may become a server.
     boolean shortCommand = args.length > 0
@@ -755,8 +764,10 @@ public class Main {
       logger().info("TBA enrichment disabled (no API key found)");
     }
 
-    // Run disk cache cleanup in background (non-blocking), and build column files as logs arrive
+    // Create and report the cache directory before serving, so even a server that stops at once says
+    // which cache it uses; then clean it up in the background and build column files as logs arrive
     if (logManager.getDiskCache().isEnabled()) {
+      logManager.getDiskCache().prepareDirectory();
       startCacheCleanup(() -> logManager.getDiskCache().cleanup());
       logManager.startColumnBuilds();
     }
@@ -830,9 +841,10 @@ public class Main {
       org.triplehelix.wpilogmcp.logging.BufferedLogOutput.onShutdown(() -> {
         logger().info("Shutdown signal received");
         // Order matters: drain in-flight HTTP requests first, then shut down LogManager
-        // so that in-flight tool calls don't encounter closed logs.
+        // so that in-flight tool calls don't encounter closed logs. A stop already under way,
+        // from a stop request or the idle exit, is waited for rather than started again.
         httpTransport.stop();
-        if (capture != null) capture.close();
+        if (capture != null) capture.closeBy(httpTransport.stopDeadlineNanos());
         logManager.shutdown();
       });
       if (publicRun) cleanSignalExit();

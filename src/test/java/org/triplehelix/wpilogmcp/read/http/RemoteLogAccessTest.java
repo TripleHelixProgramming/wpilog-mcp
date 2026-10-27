@@ -93,6 +93,7 @@ class RemoteLogAccessTest {
     try (var remote = new RemoteLogAccess(URI.create("http://127.0.0.1:" + server.getAddress().getPort()))) {
       var failure = assertThrows(ReadException.class, remote::catalog);
       assertEquals("BUSY", failure.code().name());
+      assertTrue(failure.retryable());
       assertTrue(failure.getMessage().contains("503"), failure.getMessage());
     } finally { server.stop(0); }
   }

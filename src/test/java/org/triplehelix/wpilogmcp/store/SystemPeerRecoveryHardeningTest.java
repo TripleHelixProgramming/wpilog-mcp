@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.fixtures.SystemSessionFixture;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
@@ -129,7 +130,7 @@ class SystemPeerRecoveryHardeningTest {
     var root = Files.createTempDirectory(directory, "system-peer-crash-").toRealPath();
     var ready = root.resolve("ready.json");
     var output = root.resolve("child.log");
-    var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-cp", System.getProperty("java.class.path"), CrashProcess.class.getName(),
         root.toString(), ready.toString(), Boolean.toString(shared))
         .redirectErrorStream(true).redirectOutput(output.toFile()).start();
@@ -146,6 +147,8 @@ class SystemPeerRecoveryHardeningTest {
       for (var path : List.of(staged, destination, metadata, receipt)) assertTrue(path.startsWith(root));
       process.destroyForcibly();
       assertTrue(process.waitFor(5, TimeUnit.SECONDS));
+      // Its sync ownership and stage markers share this name.
+      org.triplehelix.wpilogmcp.fixtures.ProcessLocks.awaitReleasedUnder(root, ".owner.lock");
       var pending = JsonParser.parseString(Files.readString(receipt)).getAsJsonObject();
       assertFalse(pending.get("committed").getAsBoolean());
       return new Crash(root, staged, destination, metadata, receipt);

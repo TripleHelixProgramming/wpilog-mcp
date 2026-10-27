@@ -5,6 +5,7 @@
 package org.triplehelix.wpilogmcp.log;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -74,7 +75,8 @@ class ContentHashTest {
     });
     try (var use = manager.acquire(source.toString())) {
       assertTrue(once.get(), "the file was rewritten during the scan");
-      assertTrue(((LazyParsedLog) use.log()).contentSha256().isEmpty());
+      // A failed rewrite falls back to an eager parse, which has no content name to withhold.
+      assertTrue(assertInstanceOf(LazyParsedLog.class, use.log()).contentSha256().isEmpty());
     }
   }
 
@@ -92,8 +94,8 @@ class ContentHashTest {
       }
     }
     assertTrue(found > 0, "the sample is in the file");
-    System.arraycopy(to, 0, bytes, found, to.length);
-    Files.write(file, bytes);
+    // In place: Windows refuses to truncate the file the scan has mapped.
+    org.triplehelix.wpilogmcp.fixtures.LogRewrites.writeInPlace(file, found, to);
     Files.setLastModifiedTime(file, before.modified());
     assertTrue(before.sameAs(FileSnapshot.of(file)), "the change is hidden from the file's attributes");
   }

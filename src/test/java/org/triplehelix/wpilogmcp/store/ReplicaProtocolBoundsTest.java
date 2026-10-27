@@ -101,6 +101,9 @@ class ReplicaProtocolBoundsTest {
         assertEquals(new HashSet<>(files.stream().map(ReplicaCatalog.Entry::identity).toList()), new HashSet<>(actual.stream().map(ReplicaCatalog.Entry::identity).toList()));
         var coverage = ReplicaJournal.read(mirrorRoot, new StoreFiles(mirrorRoot, security)).coverage();
         assertEquals(300, coverage.offeredFiles()); assertEquals(300, coverage.heldMatchingFiles());
+        // Rechecking a held file reserves nothing: only the jobs that write measure the mirror.
+        long measured = mirror.replicaTransfers().measurements();
+        assertTrue(measured < held.size() / 10, "A cold reconciliation measured the mirror " + measured + " times for " + held.size() + " held files");
       }
     } finally { http.stop(0); manager.unloadAllLogs(); manager.clearAllowedDirectories(); allowed.forEach(manager::addAllowedDirectory); }
   }
@@ -198,6 +201,21 @@ class ReplicaProtocolBoundsTest {
       blocking.set(false); String fresh = owner.handshake().sessionId();
       assertEquals(300, owner.page(fresh, master, 1, null, null).total());
     } finally { release.countDown(); }
+  }
+  @Test void aFinishedBuildNoLongerHoldsABuilderWhileItsThreadReturnsToThePool() throws Exception {
+    // A build completes its caller's result while its thread is still finishing. The probe keeps two such threads
+    // there, as a busy machine can; the next build used to be refused as if two catalogs were building.
+    var hold = new java.util.concurrent.CountDownLatch(1); var held = new java.util.concurrent.CountDownLatch(2);
+    try (var owner = new ReplicaProtocol(door)) {
+      owner.afterBuild(() -> {
+        held.countDown();
+        try { hold.await(10, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+      });
+      for (int i = 0; i < 2; i++) assertEquals(300, owner.page(owner.handshake().sessionId(), master, 1, null, null).total());
+      assertTrue(held.await(5, java.util.concurrent.TimeUnit.SECONDS), "both builders' threads stay after completing their results");
+      owner.afterBuild(() -> {});
+      assertEquals(300, owner.page(owner.handshake().sessionId(), master, 1, null, null).total(), "a third build is admitted");
+    } finally { hold.countDown(); }
   }
   @FunctionalInterface interface Checked { void run() throws Exception; }
   static String failure(Checked call) { try { call.run(); return "unexpected success"; } catch (Exception e) { return e.getMessage(); } }

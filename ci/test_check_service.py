@@ -5,7 +5,7 @@ from pathlib import Path
 import stat
 from types import SimpleNamespace
 from unittest.mock import call, patch
-from ci.check_service import check_health, split_units, check_program_access, service_environment
+from ci.check_service import check_health, split_units, check_program_access, service_environment, plant_units, unit_names
 
 
 class ServiceChecksTest(unittest.TestCase):
@@ -48,6 +48,33 @@ class ServiceChecksTest(unittest.TestCase):
 
     def test_only_printed_unit_files_are_installed(self):
         with self.assertRaises(AssertionError):
-            split_units('# file: ../../other\n[Unit]\n')
+            split_units('# file: ../../other\n[Unit]\n', 'ci-service')
         with self.assertRaises(AssertionError):
-            split_units('no units')
+            split_units('no units', 'ci-service')
+
+    def printed(self, *roles):
+        names = unit_names('ci-service')
+        return ''.join(f'# file: {names[role]}\n[Unit]\nDescription={role}\n\n' for role in roles)
+
+    def test_the_service_probe_timer_and_restart_handler_are_all_required(self):
+        units = split_units(self.printed('unit', 'probe', 'timer', 'restart'), 'ci-service')
+        self.assertEqual(sorted(units), sorted(unit_names('ci-service').values()))
+        with self.assertRaisesRegex(AssertionError, 'restart service; got'):
+            split_units(self.printed('unit', 'probe', 'timer'), 'ci-service')
+        with self.assertRaisesRegex(AssertionError, 'restart service; got'):
+            split_units(self.printed('unit', 'probe', 'timer', 'restart').replace('ci-service-restart', 'other-restart'), 'ci-service')
+
+    def test_each_plant_changes_only_its_unit_and_refuses_to_change_nothing(self):
+        names = unit_names('ci-service')
+        units = {names['unit']: 'ExecStart=/opt/wpilog-mcp/bin/wpilog-mcp run ci-service --managed\n',
+                 names['probe']: '[Unit]\nRequisite=x\nOnFailure=wpilog-mcp-ci-service-restart.service\n',
+                 names['timer']: '[Timer]\n', names['restart']: '[Service]\n'}
+        self.assertIs(plant_units(units, 'ci-service', None), units)
+        unmanaged = plant_units(units, 'ci-service', 'unmanaged')
+        self.assertNotIn('--managed', unmanaged[names['unit']])
+        self.assertEqual({k: v for k, v in unmanaged.items() if k != names['unit']}, {k: v for k, v in units.items() if k != names['unit']})
+        no_restart = plant_units(units, 'ci-service', 'no-restart')
+        self.assertNotIn('\nOnFailure=', no_restart[names['probe']])
+        self.assertEqual(no_restart[names['unit']], units[names['unit']])
+        with self.assertRaisesRegex(AssertionError, 'found nothing to change'):
+            plant_units(no_restart, 'ci-service', 'no-restart')

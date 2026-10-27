@@ -62,6 +62,22 @@ public final class ReplicaPublicationFixture {
     }
     placement.completion().get(10, TimeUnit.SECONDS);
     store.awaitImports();
+    // The placement asks for the closed file's clock record, which a worker every store shares writes later.
+    // Waiting here keeps that write, and its publication, from landing after the test changes the store.
+    store.clocksSettled().get(20, TimeUnit.SECONDS);
     return captured;
+  }
+
+  /** Runs {@code action} as each later publication recovery pass selects its store, before its first turn. */
+  public static void onPublicationStart(LogStore store, PassStart action) {
+    store.publicationStartProbe(identity -> action.run());
+  }
+  @FunctionalInterface public interface PassStart { void run() throws java.io.IOException; }
+
+  /** Holds each later clock-record pass at its start until {@code release} counts down. */
+  public static void holdClockPasses(LogStore store, java.util.concurrent.CountDownLatch release) {
+    store.clockPassProbe(() -> {
+      try { release.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    });
   }
 }

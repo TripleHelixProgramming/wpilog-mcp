@@ -51,14 +51,12 @@ import org.triplehelix.wpilogmcp.capture.CapturePolicy;
 import org.triplehelix.wpilogmcp.capture.CaptureWriter;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.LogManager;
-import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 import org.triplehelix.wpilogmcp.mcp.HttpTransport;
 import org.triplehelix.wpilogmcp.mcp.McpMessageHandler;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
 import org.triplehelix.wpilogmcp.nt4.client.ManualScheduler;
-import org.triplehelix.wpilogmcp.store.StoreRegistry;
 import org.triplehelix.wpilogmcp.tools.SessionStoreFixture.SessionSpec;
 import org.triplehelix.wpilogmcp.visualization.ServerIdentity;
 
@@ -549,10 +547,12 @@ class CompareSessionsLimitsTest {
       assertEquals(200, health.statusCode(), health.body());
       assertEquals("ok", JsonParser.parseString(health.body()).getAsJsonObject().get("status").getAsString());
 
-      var security = new SecurityValidator();
-      security.addAllowedDirectory(temp);
-      try (var stores = new StoreRegistry(security, manager)) {
-        var placement = stores.store(store.root()).captures(WALL);
+      // The comparisons read the store through the process's registry, which a capture in the same
+      // server shares: one store object owns the folder.
+      var compared = manager.stores().store(store.root());
+      compared.takeLongestTurnUs(); // the turns measured below are the capture's, while comparisons run
+      {
+        var placement = compared.captures(WALL);
         var loop = new ManualScheduler();
         var writer = new CaptureWriter(WALL, loop, CapturePolicy.ALL, placement);
         try {
@@ -570,7 +570,7 @@ class CompareSessionsLimitsTest {
           }
           assertNull(writer.admissionFailure(), "capture admission failed while comparisons ran");
           assertTrue(writer.ready(), "a capture into the compared store must be admitted within 5 s");
-          assertTrue(stores.queueMetrics().longestTurnUs() < 1_000_000,
+          assertTrue(compared.takeLongestTurnUs() < 1_000_000,
               "store turns stay within their one-second budget while comparisons run");
           writer.disconnected();
           loop.drain();

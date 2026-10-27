@@ -254,6 +254,29 @@ class ReplicaContractsTest {
     assertEquals(2, other.replicaHeader().formatVersion());
   }
 
+  @Test void aFinishedMigrationNoLongerHoldsAPreparerWhileItsThreadReturnsToThePool() throws Exception {
+    // A migration completes its result on the store queue while its preparer's thread is still finishing. The probe
+    // keeps two such threads there, as a busy machine can; a third store's migration used to be refused as if two
+    // migrations were preparing.
+    imported();
+    var other = manager.stores().store(temp.resolve("other")); var third = manager.stores().store(temp.resolve("third"));
+    other.importPaths(new LogStore.Request(List.of(), false, null), p -> {}).get();
+    third.importPaths(new LogStore.Request(List.of(), false, null), p -> {}).get();
+    var hold = new java.util.concurrent.CountDownLatch(1); var held = new java.util.concurrent.CountDownLatch(2);
+    Runnable stay = () -> {
+      held.countDown();
+      try { hold.await(10, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    };
+    store.preparationEndProbe(stay); other.preparationEndProbe(stay);
+    try {
+      store.migrateReplicas(store.replicaHeader().id()).get(10, java.util.concurrent.TimeUnit.SECONDS);
+      other.migrateReplicas(other.replicaHeader().id()).get(10, java.util.concurrent.TimeUnit.SECONDS);
+      assertTrue(held.await(5, java.util.concurrent.TimeUnit.SECONDS), "both preparers' threads stay after their migrations completed");
+      third.migrateReplicas(third.replicaHeader().id()).get(10, java.util.concurrent.TimeUnit.SECONDS);
+      assertEquals(2, third.replicaHeader().formatVersion(), "the third store's migration was admitted");
+    } finally { hold.countDown(); store.preparationEndProbe(() -> {}); other.preparationEndProbe(() -> {}); }
+  }
+
   @Test void diskAccountingIncludesPartialAndMetadataButDoesNotAdoptStrays() throws Exception {
     var path = imported(); var header = store.replicaHeader().withOrigin(new MirrorOrigin(id(), "http://127.0.0.1:9", null, List.of(), Map.of()));
     io().write(store.root().resolve("store.json"), header);

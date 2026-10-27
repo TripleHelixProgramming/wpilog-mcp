@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.store;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -23,6 +24,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
+import org.triplehelix.wpilogmcp.log.LogFileAccess;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
 
@@ -140,6 +142,53 @@ class LocalIngestionTest {
       assertFalse(service.visible(original));
       assertEquals("imported", service.files(0, 100).files().get(0).state());
     }
+  }
+
+  @Test void aFileAnotherMoveHoldsIsDeferredWithoutAReceiptAndARestartTriesItAgain() throws Exception {
+    var file = ImportFixture.write(source.resolve("held.wpilog"), 1);
+    service.replace(policy("move", true));
+    try (var moving = LogFileAccess.reserveMove(List.of(file))) {
+      poll(0); poll(3);
+      var held = service.files(0, 100).files().get(0);
+      assertEquals("waiting", held.state(), "A deferred file waits, with its reason; no new state appears");
+      assertTrue(held.reason().contains("being moved by an import"), held.reason());
+      var deferredBy = service.currentWork();
+      poll(7);
+      assertSame(deferredBy, service.currentWork(), "Not tried again before its five seconds");
+      poll(8);
+      assertNotSame(deferredBy, service.currentWork(), "Tried again once five seconds passed");
+      assertEquals("waiting", service.files(0, 100).files().get(0).state());
+    }
+    var receipts = destination.resolve(".local-ingestion");
+    if (Files.exists(receipts)) try (var paths = Files.walk(receipts)) {
+      assertTrue(paths.noneMatch(path -> path.getFileName().toString().equals("current.json")), "A deferral leaves no receipt");
+    }
+    service.close();
+    service = new LocalIngestion(registry, security, policyFile); service.clock = now::get;
+    poll(30); poll(33);
+    assertFalse(Files.exists(file), "Once nothing held it, the restarted service moved it into the store");
+    assertEquals("imported", service.files(0, 100).files().get(0).state());
+  }
+
+  @Test void aStoreLockHeldByAnotherProcessDefersTheBatchUntilItIsReleased() throws Exception {
+    var file = ImportFixture.write(source.resolve("busy.wpilog"), 2);
+    service.replace(policy("copy", false));
+    try (var channel = FileChannel.open(destination.resolve("store.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+         var lock = channel.lock()) {
+      poll(0);
+      now.set(Duration.ofSeconds(3).toNanos()); service.poll(now.get());
+      var failure = assertThrows(java.util.concurrent.ExecutionException.class, () -> service.currentWork().get(30, TimeUnit.SECONDS));
+      assertNotNull(StoreBusyException.in(failure), "The admitted job met the held lock: " + failure);
+      registry.awaitImports();
+      var busy = service.files(0, 100).files().get(0);
+      assertEquals("waiting", busy.state());
+      assertTrue(busy.reason().contains("Store lock is held"), busy.reason());
+    }
+    poll(7);
+    assertEquals("waiting", service.files(0, 100).files().get(0).state(), "Free again, the store still waits out the five seconds");
+    poll(8);
+    assertEquals("imported", service.files(0, 100).files().get(0).state(), "Imported once its wait was over");
+    assertTrue(Files.exists(file), "A copy source stays where it was");
   }
 
   @Test void changedVersionWaitsAgainAndBothImmutableVersionsRemain() throws Exception {
@@ -347,12 +396,16 @@ class LocalIngestionTest {
   }
 
   @Test void explicitScanRetriesAnUnchangedRefusalButIdleAndRestartDoNot() throws Exception {
-    var original = ImportFixture.write(source.resolve("original.wpilog"), 1);
-    service.replace(policy("copy", false)); poll(0);
-    try (var reservation = org.triplehelix.wpilogmcp.log.LogFileAccess.reserveMove(List.of(original))) {
-      poll(3);
-    }
+    // A refusal no retry can fix: bytes no reader accepts. Valid bytes of the same size and time then
+    // stand in for a cause that went away while the version, as stamped, stayed the same. (Another
+    // import's move once served here, but that passes on its own and is now deferred.)
+    var valid = Files.readAllBytes(ImportFixture.write(temp.resolve("valid.wpilog"), 1));
+    var original = Files.write(source.resolve("original.wpilog"), new byte[valid.length]);
+    var written = Files.getLastModifiedTime(original);
+    service.replace(policy("copy", false)); poll(0); poll(3);
     assertEquals("refused", service.files(0, 100).files().get(0).state());
+    Files.write(original, valid);
+    Files.setLastModifiedTime(original, written);
     poll(30); assertTrue(catalog().files().isEmpty(), "automatic scans must not retry an unchanged refusal");
     service.close(); service = new LocalIngestion(registry, security, policyFile); service.clock = now::get;
     poll(60); assertEquals("refused", service.files(0, 100).files().get(0).state());

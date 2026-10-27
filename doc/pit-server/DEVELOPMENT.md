@@ -351,7 +351,8 @@ belong to its own temporary facts store rather than contending with the recordin
 
 CI's existing metrics-stack smoke preloads the same documented versions from Prometheus's
 Quay registry and Google's Docker Hub cache, then retains the Compose tags; it does not change
-the tested stack when shared Docker Hub quotas are exhausted.
+the tested stack when shared Docker Hub quotas are exhausted. A refused pull is tried twice more,
+ten seconds apart, before the check fails, since a registry can refuse for a moment.
 
 CI builds the image with cached Docker layers, then runs both independent timeline processes in two
 Gradle workers so their two 24-second boots overlap instead of doubling the job's wait. Native

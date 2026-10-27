@@ -44,7 +44,6 @@ public final class StoreSyncHardeningFixture implements AutoCloseable {
   private final AtomicLong free = new AtomicLong(10_000_000_000L);
   private final DiskSpaceBudgets space = new DiskSpaceBudgets(filesystem -> free.get());
   private final StoreRegistry stores;
-  private final LogStore extraTarget;
   private final CountDownLatch reading = new CountDownLatch(1);
   private final CountDownLatch release = new CountDownLatch(1);
   private final AtomicBoolean held = new AtomicBoolean();
@@ -82,10 +81,8 @@ public final class StoreSyncHardeningFixture implements AutoCloseable {
     manager.addAllowedDirectory(directory);
     security.addAllowedDirectory(directory);
     stores = new StoreRegistry(security, manager, StoreCatalog::discover, space);
-    var configuredTarget = stores.store(directory.resolve("target"));
-    extraTarget = mover == null ? null : new LogStore(configuredTarget.root(), security, manager,
-        StoreCatalog::read, mover, configuredTarget.diskBudget());
-    target = extraTarget == null ? configuredTarget : extraTarget;
+    // The registry makes the target with the test's mover: one store object owns a folder.
+    target = stores.store(directory.resolve("target"), mover);
     var origin = stores.store(directory.resolve("origin"));
     for (var store : List.of(target, origin)) {
       store.capture(io -> null);
@@ -207,7 +204,7 @@ public final class StoreSyncHardeningFixture implements AutoCloseable {
   }
   /** A second owner represents another process, with a separate staging lane and the same lock. */
   public LogStore competingOwner() throws IOException {
-    return new LogStore(target.root(), security, manager, StoreCatalog::read,
+    return LogStore.anotherProcess(target.root(), security, manager, StoreCatalog::read,
         new LogStore.Mover(), target.diskBudget());
   }
 
@@ -217,7 +214,6 @@ public final class StoreSyncHardeningFixture implements AutoCloseable {
       if (syncing != null && !syncing.isCancelled()) syncing.get(10, TimeUnit.SECONDS);
       else target.awaitImports();
     } finally {
-      if (extraTarget != null) extraTarget.close();
       stores.close();
       manager.clearAllowedDirectories();
       previous.forEach(manager::addAllowedDirectory);

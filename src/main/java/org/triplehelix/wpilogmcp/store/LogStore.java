@@ -72,6 +72,26 @@ public final class LogStore implements AutoCloseable {
   }
   public record Progress(String phase, Path path, int completed, int total) {}
   public record Outcome(Path originalPath, String status, Path path, String reason) {}
+
+  /**
+   * A refusal a later attempt can overcome is deferred, not refused: a busy store (its lock held,
+   * its metadata changing), the reserve kept free for recording, a file another move, a writer or
+   * readers hold, or this store stopping. It is decided by type where the cause was known, never
+   * from a reason: the inbox and local ingestion once kept every refusal for good.
+   */
+  public boolean deferred(Throwable failure) {
+    if (importsStopped.get() || StoreBusyException.in(failure) != null) return true;
+    var cause = failure;
+    while ((cause instanceof java.util.concurrent.CompletionException
+        || cause instanceof java.util.concurrent.ExecutionException) && cause.getCause() != null)
+      cause = cause.getCause();
+    return cause instanceof LogFileAccess.InUse || cause instanceof LogFileAccess.BeingMoved
+        || cause instanceof DiskSpaceBudgets.Refused refused && refused.code().equals("CAPTURE_DISK_RESERVE");
+  }
+
+  private Outcome outcome(Path original, Path retained, Throwable failure) {
+    return new Outcome(original, deferred(failure) ? "deferred" : "refused", retained, failure.getMessage());
+  }
   public record SameRobot(String serialNumber, List<Path> directories) {}
   public record Result(List<Outcome> files, List<SameRobot> sameRobots) {}
   public record Reconsideration(int considered, int imported, int remaining, List<Outcome> files) {
@@ -225,6 +245,19 @@ public final class LogStore implements AutoCloseable {
   private final Path root;
   private final SecurityValidator security;
   private final StoreQueue queue;
+  /**
+   * One store object owns a folder in a process. It runs every change on its queue under the
+   * folder's lock, and a second object for the same folder, with a queue of its own, took that lock
+   * at the same moment: Java refused it inside the process, which was reported as another import
+   * holding the lock. The server opens every folder through one registry; tests that kept a
+   * registry of their own and also listed the folder made a second object and failed on Windows
+   * now and then. A second object is now refused when it is made. The folder is given back after
+   * the queue's last turn, not when close is called, since a turn queued before then still takes
+   * the lock.
+   */
+  private static final java.util.concurrent.ConcurrentHashMap<Path, LogStore> OWNERS = new java.util.concurrent.ConcurrentHashMap<>();
+  static final java.time.Duration CLOSE_WAIT = java.time.Duration.ofSeconds(10);
+  private final Path ownedFolder;
   private final ExecutorService staging = Executors.newSingleThreadExecutor(task -> {
     var thread = new Thread(task, "store-import-staging"); thread.setDaemon(true); return thread;
   });
@@ -291,7 +324,7 @@ public final class LogStore implements AutoCloseable {
   /** Filesystem operations are injectable so tests can model a second volume without one. */
   static class Mover {
     boolean sameFileStore(Path source, Path destination) throws IOException {
-      return Files.getFileStore(source).equals(Files.getFileStore(destination.getParent()));
+      return FilesystemIdentity.same(source, destination.getParent());
     }
     void move(Path source, Path destination, java.nio.file.CopyOption... options) throws IOException {
       Files.move(source, destination, options);
@@ -415,7 +448,7 @@ public final class LogStore implements AutoCloseable {
       var after = importStamps();
       if (before.equals(after)) { catalog.stamps = after; return catalog; }
     }
-    throw new IOException("Store metadata changed during import preparation; retry");
+    throw new StoreBusyException(StoreBusyException.Condition.RECORD_CHANGING, "Store metadata changed during import preparation; retry");
   }
 
   private void refreshImportCatalog(ImportCatalog catalog) throws IOException {
@@ -424,7 +457,8 @@ public final class LogStore implements AutoCloseable {
     if (catalog.proof != null) {
       var now = importProof(latest, catalog.inputs, catalog.selectedRobots, catalog.statedRobot);
       if (!catalog.proof.remainsValid(now))
-        throw new IOException("Import candidates or duplicate receipts changed after preparation; retry");
+        throw new StoreBusyException(StoreBusyException.Condition.RECORD_CHANGING,
+            "Import candidates or duplicate receipts changed after preparation; retry");
       catalog.proof = now;
     }
     if (!changed) return;
@@ -562,7 +596,8 @@ public final class LogStore implements AutoCloseable {
         });
       } catch (ImportCatalogChanged changed) {
         if (attempt == 2)
-          throw new IOException("Store metadata changed during three publication attempts; retry the import", changed);
+          throw new StoreBusyException(StoreBusyException.Condition.RECORD_CHANGING,
+              "Store metadata changed during three publication attempts; retry the import", changed);
       }
     }
     throw new AssertionError("Bounded import attempts must return or refuse");
@@ -605,25 +640,57 @@ public final class LogStore implements AutoCloseable {
 
   LogStore(Path root, SecurityValidator security, LogManager logManager, CatalogReader catalogReader,
       Mover mover, DiskSpaceBudgets.StoreBudget diskBudget) {
+    this(root, security, logManager, catalogReader, mover, diskBudget, true);
+  }
+
+  /**
+   * A store standing in for another process's store on the same folder, for tests that simulate a
+   * second server: it claims nothing, so it meets this process's store only at the folder's lock,
+   * as another process does.
+   */
+  static LogStore anotherProcess(Path root, SecurityValidator security, LogManager logManager, CatalogReader catalogReader,
+      Mover mover, DiskSpaceBudgets.StoreBudget diskBudget) {
+    return new LogStore(root, security, logManager, catalogReader, mover, diskBudget, false);
+  }
+
+  private LogStore(Path root, SecurityValidator security, LogManager logManager, CatalogReader catalogReader,
+      Mover mover, DiskSpaceBudgets.StoreBudget diskBudget, boolean claims) {
     this.diskBudget.set(diskBudget);
     FileNameEncoding.warnIfNeeded();
     this.root = root;
-    this.security = security;
-    this.logManager = logManager;
-    this.catalogReader = catalogReader;
-    this.inbox = new StoreInbox(this, security);
-    this.mover = mover;
-    queue = new StoreQueue();
-    // Recovery may walk a season of directories. It shares staging's lifetime and never
-    // delays a capture turn or runs under the registry's constructor/publication monitor.
-    staging.execute(() -> {
-      try { if (!importsStopped.get()) ImportStage.recover(new StoreFiles(root, security)); }
-      catch (IOException | RuntimeException failure) {
-        LoggerFactory.getLogger(LogStore.class).warn("Abandoned import stage recovery will retry: {}", failure.getMessage());
-      }
-      if (!importsStopped.get()) initialCatalogCapacity();
-    });
-    requestPublicationRecovery(false);
+    // Claimed before the queue starts: a refused object never runs a turn.
+    ownedFolder = claims ? claim(root) : null;
+    try {
+      this.security = security;
+      this.logManager = logManager;
+      this.catalogReader = catalogReader;
+      this.inbox = new StoreInbox(this, security);
+      this.mover = mover;
+      queue = new StoreQueue();
+      if (ownedFolder != null) queue.afterLastTurn(() -> OWNERS.remove(ownedFolder, this));
+      // Recovery may walk a season of directories. It shares staging's lifetime and never
+      // delays a capture turn or runs under the registry's constructor/publication monitor.
+      staging.execute(() -> {
+        try { if (!importsStopped.get()) ImportStage.recover(new StoreFiles(root, security)); }
+        catch (IOException | RuntimeException failure) {
+          LoggerFactory.getLogger(LogStore.class).warn("Abandoned import stage recovery will retry: {}", failure.getMessage());
+        }
+        if (!importsStopped.get()) initialCatalogCapacity();
+      });
+      requestPublicationRecovery(false);
+    } catch (RuntimeException | Error failure) {
+      if (ownedFolder != null) OWNERS.remove(ownedFolder, this);
+      throw failure;
+    }
+  }
+
+  private Path claim(Path folder) {
+    Path key;
+    try { key = folder.toRealPath(); }
+    catch (IOException | RuntimeException missing) { key = folder.toAbsolutePath().normalize(); }
+    if (OWNERS.putIfAbsent(key, this) != null) throw new IllegalStateException("STORE_OWNED: " + folder
+        + " is already open in this process; open it through the registry that holds it, or close that store first");
+    return key;
   }
 
   private final ReplicaTransfers replicaTransfers = new ReplicaTransfers(this);
@@ -800,6 +867,10 @@ public final class LogStore implements AutoCloseable {
   @FunctionalInterface interface PublicationRecoveryProbe { void observed(Path marker) throws IOException; }
   private volatile PublicationRecoveryProbe publicationRecoveryProbe = marker -> {};
   void publicationRecoveryProbe(PublicationRecoveryProbe probe) { publicationRecoveryProbe = Objects.requireNonNull(probe); }
+  private volatile StoreWalk.Probe publicationWalkProbe = entry -> {};
+  void publicationWalkProbe(StoreWalk.Probe probe) { publicationWalkProbe = Objects.requireNonNull(probe); }
+  private volatile int publicationFolderLimit = ReplicaPublications.MAX_OBSERVATIONS;
+  void publicationFolderLimit(int limit) { publicationFolderLimit = limit; }
   @FunctionalInterface interface PublicationStartProbe { void selected(String storeId) throws IOException; }
   private volatile PublicationStartProbe publicationStartProbe = identity -> {};
   void publicationStartProbe(PublicationStartProbe probe) { publicationStartProbe = Objects.requireNonNull(probe); }
@@ -888,16 +959,30 @@ public final class LogStore implements AutoCloseable {
     try {
       publicationMutation(identity, files -> { ReplicaMasters.recover(root, files); return null; }, ignored -> {});
     } catch (IOException unsafe) { failure = unsafe; }
-    int inspected = 0, observed = 0;
+    // The bound counts the folders a marker is written in, session folders, and any other folder
+    // where one is found: a store's other files cost the walk a listing, never an inspection.
+    int folders = 0, observed = 0, limit = publicationFolderLimit;
     publicationWalks.incrementAndGet();
-    try (var paths = Files.walk(root)) {
-      var iterator = paths.iterator();
-      while (iterator.hasNext()) {
+    try (var walk = new StoreWalk(root, publicationWalkProbe)) {
+      for (var entry = walk.next(); entry != null; entry = walk.next()) {
         ensureImporting();
-        var marker = iterator.next();
-        if (++inspected > ReplicaPublications.MAX_OBSERVATIONS)
-          throw new IOException("RESOURCE_LIMIT: capture publication recovery exceeds32768 paths");
-        if (!marker.getFileName().toString().equals(ReplicaMasters.CAPTURE_PENDING)) continue;
+        var marker = entry.path();
+        String name = marker.getFileName().toString();
+        boolean pending = name.equals(ReplicaMasters.CAPTURE_PENDING);
+        if (entry.vanished() && !pending) {
+          // A manifest write renames its temporary file over the manifest once the walk has listed
+          // it. Anything else that moves, a session folder above all, may carry a marker past the
+          // walk, so the pass is not complete, but it is worth trying again.
+          if (!(name.startsWith(".manifest-") && name.endsWith(".tmp")))
+            failure = worse(failure, new StoreBusyException(StoreBusyException.Condition.RECORD_CHANGING,
+                "Store changed during capture publication recovery"));
+          continue;
+        }
+        if (entry.directory() ? sessionFolder(marker) : pending && !sessionFolder(marker.getParent())) {
+          if (++folders > limit)
+            throw new IOException("RESOURCE_LIMIT: capture publication recovery exceeds " + limit + " session folders");
+        }
+        if (!pending) continue;
         try {
           var candidate = ReplicaMasters.inspectCapture(root, io, marker);
           publicationRecoveryProbe.observed(marker);
@@ -914,15 +999,15 @@ public final class LogStore implements AutoCloseable {
             removed = Files.notExists(io.check(marker)) && StoreCatalog.isStore(root)
                 && identity.equals(io.read(root.resolve("store.json"), Header.class).id());
           } catch (IOException | RuntimeException unavailable) { /* Keep the original failed-read evidence. */ }
-          if (!removed && failure == null) failure = missing;
+          if (!removed) failure = worse(failure, missing);
         } catch (IOException | RuntimeException invalid) {
-          if (failure == null) failure = invalid instanceof IOException checked ? checked
-              : new IOException("Invalid capture publication recovery", invalid);
+          failure = worse(failure, invalid instanceof IOException checked ? checked
+              : new IOException("Invalid capture publication recovery", invalid));
         }
       }
     } catch (IOException | RuntimeException incomplete) {
-      if (failure == null) failure = incomplete instanceof IOException checked ? checked
-          : new IOException("Capture publication enumeration could not finish", incomplete);
+      failure = worse(failure, incomplete instanceof IOException checked ? checked
+          : new IOException("Capture publication enumeration could not finish", incomplete));
     }
     var finalFailure = failure;
     publicationState(() -> replicaPublications.finish(finalFailure == null,
@@ -939,6 +1024,19 @@ public final class LogStore implements AutoCloseable {
       throw new PublicationPendingException(replicaPublicationFailure);
     }
     replicaPublicationFailure = null;
+  }
+
+  /** An unsafe failure outranks a busy one, so a store at work never hides corrupt recovery. */
+  static IOException worse(IOException kept, IOException next) {
+    return kept == null || kept instanceof StoreBusyException && !(next instanceof StoreBusyException) ? next : kept;
+  }
+
+  /** {@code robots/<robot>/sessions/<day>/<session>}: the folders whose receipts carry markers. */
+  private boolean sessionFolder(Path directory) {
+    if (directory == null || !directory.startsWith(root)) return false;
+    var parts = root.relativize(directory);
+    return parts.getNameCount() == 5 && parts.getName(0).toString().equals("robots")
+        && parts.getName(2).toString().equals("sessions");
   }
 
   @FunctionalInterface private interface PublicationStep { void run() throws IOException; }
@@ -1010,12 +1108,22 @@ public final class LogStore implements AutoCloseable {
     return MirrorCapacity.measure(root, security, config).snapshot();
   }
 
+  /**
+   * Two replica migrations prepare at a time across every store. The limit counts preparations, not threads: a
+   * migration gives its permit back on the store queue before it completes its result, so the caller it wakes can
+   * start the next one while the preparer's thread is still on its way back to the pool. A pool of two threads
+   * refused that next migration whenever both threads were still finishing.
+   */
+  private static final java.util.concurrent.Semaphore PREPARE_PERMITS = new java.util.concurrent.Semaphore(2);
   private static final java.util.concurrent.ThreadPoolExecutor REPLICA_PREPARERS =
-      new java.util.concurrent.ThreadPoolExecutor(0, 2, 30, java.util.concurrent.TimeUnit.SECONDS,
+      new java.util.concurrent.ThreadPoolExecutor(0, Integer.MAX_VALUE, 30, java.util.concurrent.TimeUnit.SECONDS,
           new java.util.concurrent.SynchronousQueue<>(), task -> {
             var thread = new Thread(task, "store-replica-migration"); thread.setDaemon(true); return thread;
           });
   private final java.util.concurrent.atomic.AtomicBoolean replicaPreparing = new java.util.concurrent.atomic.AtomicBoolean();
+  /** Runs on a preparer's thread once its migration has completed; tests hold the thread there, as a busy machine can. */
+  private volatile Runnable preparationEndProbe = () -> {};
+  void preparationEndProbe(Runnable probe) { preparationEndProbe = probe; }
 
   /** Explicit migration preserves payloads. Preparation is bounded and off-queue; only publication
    * takes the store lock, and no user continuation runs until that lock has been released. */
@@ -1030,6 +1138,10 @@ public final class LogStore implements AutoCloseable {
       org.triplehelix.wpilogmcp.config.MirrorConfig config, ReplicaPreparation preparation) {
     var result = new CompletableFuture<ReplicaCatalog>();
     if (!replicaPreparing.compareAndSet(false, true)) return CompletableFuture.failedFuture(new IOException("BUSY: replica migration already running"));
+    if (!PREPARE_PERMITS.tryAcquire()) {
+      replicaPreparing.set(false);
+      return CompletableFuture.failedFuture(new IOException("BUSY: two replica migrations are preparing; retry"));
+    }
     pending.incrementAndGet();
     try {
       REPLICA_PREPARERS.execute(() -> {
@@ -1055,7 +1167,7 @@ public final class LogStore implements AutoCloseable {
             } catch (Throwable e) { failure = e; }
             finally { if (charged != null) charged.close(); }
             // Release ownership before completing a future: its callback may reenter the store.
-            replicaPreparing.set(false); pending.decrementAndGet();
+            PREPARE_PERMITS.release(); replicaPreparing.set(false); pending.decrementAndGet();
             completed.complete(null);
             if (failure == null) {
               published(root.resolve("store.json"), published); result.complete(published.replicas());
@@ -1067,10 +1179,12 @@ public final class LogStore implements AutoCloseable {
         } catch (Throwable failure) {
           if (prepared != null) prepared.close();
           if (reservation != null) reservation.close();
-          replicaPreparing.set(false); pending.decrementAndGet(); result.completeExceptionally(failure);
+          PREPARE_PERMITS.release(); replicaPreparing.set(false); pending.decrementAndGet(); result.completeExceptionally(failure);
         }
+        preparationEndProbe.run();
       });
     } catch (java.util.concurrent.RejectedExecutionException busy) {
+      PREPARE_PERMITS.release();
       replicaPreparing.set(false); pending.decrementAndGet(); result.completeExceptionally(new IOException("BUSY: two replica migrations are preparing; retry", busy));
     }
     return result;
@@ -1133,11 +1247,12 @@ public final class LogStore implements AutoCloseable {
         var pendingPublications = new ArrayList<ReplicaPublications.Event>();
         String observedStoreId = null;
         try {
+          // The store was occupied for the whole deadline: busy, so a caller may try again later.
           if (deadlineNanos != 0 && System.nanoTime() >= deadlineNanos)
-            throw new IOException("Capture admission deadline expired before its store turn");
+            throw new StoreBusyException(StoreBusyException.Condition.QUEUE_BUSY, "Capture admission deadline expired before its store turn");
           try (var lock = StoreLock.acquire(root, security)) {
             if (deadlineNanos != 0 && System.nanoTime() >= deadlineNanos)
-              throw new IOException("Capture admission deadline expired while acquiring store.lock");
+              throw new StoreBusyException(StoreBusyException.Condition.QUEUE_BUSY, "Capture admission deadline expired while acquiring store.lock");
             var io = new StoreFiles(root, security, (path, record) -> publications.add(Map.entry(path, record)));
             io.publicationEvents(pendingPublications::add, publicationClock);
             io.annotationProbe(publicationAnnotationProbe);
@@ -1210,9 +1325,13 @@ public final class LogStore implements AutoCloseable {
       return last == null ? CompletableFuture.completedFuture(null) : last.handle((written, error) -> null);
     }
   }
+  private volatile Runnable clockPassProbe = () -> {};
+  /** Tests hold a clock-record pass as it starts. */
+  void clockPassProbe(Runnable probe) { clockPassProbe = Objects.requireNonNull(probe); }
   private void startClockPass(CompletableFuture<Integer> result) {
     CLOCK_WORKER.execute(() -> {
       int written = 0; Throwable failure = null;
+      clockPassProbe.run();
       try { written = keepClocksPass(); }
       catch (Exception e) { failure = e; }
       catch (OutOfMemoryError e) { failure = new IOException("Not enough heap to read a capture's clock facts", e); }
@@ -1437,6 +1556,9 @@ public final class LogStore implements AutoCloseable {
           .thenCompose(result -> result.state().equals("ready")
               ? ReplicaReconciler.run(this, config, clock, progress, replicaEpoch, discovered) : CompletableFuture.completedFuture(result))
           .whenComplete((result, error) -> { syncing.set(false); pending.decrementAndGet(); });
+    } catch (ReplicaTransfers.NotStarted notNow) {
+      // Busy is an answer, not a failure: a timer that threw here was never run again.
+      syncing.set(false); pending.decrementAndGet(); return CompletableFuture.failedFuture(notNow);
     } catch (RuntimeException e) { syncing.set(false); pending.decrementAndGet(); throw e; }
   }
 
@@ -1588,6 +1710,7 @@ public final class LogStore implements AutoCloseable {
   }
 
   /** An OS read may unwind later, but it cannot publish after shutdown stops staging admission. */
+  boolean importsStopped() { return importsStopped.get(); }
   void stopImports() {
     if (!importsStopped.compareAndSet(false, true)) return;
     for (var job : staging.shutdownNow()) if (job instanceof StagedJob staged) staged.abandon();
@@ -1598,9 +1721,33 @@ public final class LogStore implements AutoCloseable {
 
   @Override
   public void close() {
+    beginClose();
+    awaitClosed(CLOSE_WAIT);
+  }
+
+  /** True once a close has stopped the queue; turns queued before then still run. */
+  boolean closing() { return queue.isShutdown(); }
+
+  /** Stops imports and the queue without waiting for the queue's last turn. */
+  void beginClose() {
     stopImports();
     replicaTransfers.close();
     queue.shutdown();
+  }
+
+  /**
+   * Waits for the queue's last turn, after which another store object may open the folder. False
+   * when the time runs out or the caller is that turn: the folder then stays owned until the turn
+   * ends, so a reopen is refused rather than run beside it.
+   */
+  boolean awaitClosed(java.time.Duration limit) {
+    if (queue.ownsCurrentThread()) return false;
+    try {
+      if (queue.awaitTermination(limit.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS)) return true;
+      LoggerFactory.getLogger(LogStore.class).warn("Store {} still had a turn running {} ms after it closed; it stays owned until that turn ends",
+          root, limit.toMillis());
+    } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+    return false;
   }
 
   /** An explicit completion barrier for offline callers and tests, including preparation. */
@@ -1709,7 +1856,7 @@ public final class LogStore implements AutoCloseable {
         inspected.add(ImportInspection.read(source, parser));
         batchHashes.add(hash);
       } catch (IOException | IllegalArgumentException e) {
-        outcomes.add(new Outcome(source, "refused", null, e.getMessage()));
+        outcomes.add(outcome(source, null, e));
       }
     }
 
@@ -1822,7 +1969,7 @@ public final class LogStore implements AutoCloseable {
           found.add(real);
         }
       } catch (IOException e) {
-        outcomes.add(new Outcome(path, "refused", null, e.getMessage()));
+        outcomes.add(outcome(path, null, e));
       }
     }
     return List.copyOf(found);
@@ -2177,7 +2324,7 @@ public final class LogStore implements AutoCloseable {
           try { mover.discardCopy(retained); retained = null; }
           catch (IOException cleanup) { failure.addSuppressed(cleanup); }
         }
-        outcomes.add(new Outcome(placement.input().path(), "refused", retained, failure.getMessage()));
+        outcomes.add(outcome(placement.input().path(), retained, failure));
       }
     } finally {
       // Only this worker owns its temporary bytes. A cancelled OS copy keeps that ownership
@@ -2431,7 +2578,7 @@ public final class LogStore implements AutoCloseable {
     try {
       for (var path : paths) {
         var result = logManager.release(path);
-        if (!result.released()) throw new IOException(result.reason());
+        if (!result.released()) throw new LogFileAccess.InUse(result.reason());
       }
       return reservation;
     } catch (IOException | RuntimeException e) {

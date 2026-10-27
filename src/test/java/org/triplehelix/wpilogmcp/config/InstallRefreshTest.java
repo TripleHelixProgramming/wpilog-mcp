@@ -7,7 +7,6 @@ package org.triplehelix.wpilogmcp.config;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -93,10 +92,7 @@ class InstallRefreshTest {
     var root = Files.createDirectory(temp.resolve("install"));
     var run = Files.createDirectory(root.resolve("run"));
     var file = run.resolve(".install-refresh.guard");
-    int port;
-    try (var socket = new ServerSocket(0)) {
-      port = socket.getLocalPort();
-    }
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused(); // Nothing answers, and no other test can take it.
     var manager = new DaemonManager(run, Duration.ofMillis(1), (command, environment, log) -> {
       fail("refresh must prevent a spawn");
       return null;

@@ -481,6 +481,16 @@ public class DiskCache {
    * if total size exceeds {@code maxTotalSizeMb}. Runs synchronously
    * but is designed to be called from a background thread.
    */
+  /**
+   * Creates and reports the cache directory now. The cleanup that would otherwise do it first runs on
+   * a background thread, so a server that stopped at once could exit before saying which cache it uses.
+   */
+  public void prepareDirectory() {
+    if (!enabled) return;
+    try { cacheDirectory.getPath(); }
+    catch (IOException unavailable) { logger.debug("Cache directory unavailable: {}", unavailable.getMessage()); }
+  }
+
   public void cleanup() {
     if (!enabled) return;
 

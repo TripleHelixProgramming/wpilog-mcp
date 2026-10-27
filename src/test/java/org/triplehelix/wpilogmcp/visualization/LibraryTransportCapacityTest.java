@@ -45,7 +45,9 @@ class LibraryTransportCapacityTest {
         calls.add(http.sendAsync(request(base, i < 2 ? "/visualizations/v2/templates/create" : "/mcp", i < 2 ? create.toString() : rpc("visualization_template_create", create).toString(), session), HttpResponse.BodyHandlers.ofString()));
       }
       assertTrue(entered.await(2, TimeUnit.SECONDS));
-      RecordingInventoriesTest.await(() -> workspace.inventories.responseBytes() == 8 << 20);
+      // A request reserves its reply before its library call charges input, so the fourth may still be between them.
+      RecordingInventoriesTest.await(() -> workspace.inventories.responseBytes() == 8 << 20
+          && workspace.library.reservedInputBytes() == VisualizationLibrary.MAX_INPUT_BYTES);
       assertEquals(8 << 20, workspace.inventories.responseBytes()); assertEquals(VisualizationLibrary.MAX_INPUT_BYTES, workspace.library.reservedInputBytes());
       var list = new JsonObject(); list.addProperty("api_version", 2); list.addProperty("kind", "view");
       var refused = http.send(request(base, "/visualizations/v2/library/list", list.toString(), session), HttpResponse.BodyHandlers.ofString());

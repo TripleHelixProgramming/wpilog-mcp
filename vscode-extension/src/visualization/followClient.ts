@@ -105,7 +105,9 @@ export class FollowClient implements FollowTransport {
         // One bounded allocation, rather than an unbounded chunks array followed by a second copy.
         const buffer = Buffer.allocUnsafe(this.pageBytes); let size = 0;
         res.on("data", (chunk: Buffer) => {
-          if (size + chunk.length > buffer.length) { const e = new FollowError("RESOURCE_LIMIT", "Follow response exceeds byte limit", status); finish(e); req.destroy(e); return; }
+          // Settled first, then destroyed without the error: when the whole reply arrived in this
+          // chunk, Node 20 has already freed the socket, and an error destroy throws on it.
+          if (size + chunk.length > buffer.length) { finish(new FollowError("RESOURCE_LIMIT", "Follow response exceeds byte limit", status)); req.destroy(); return; }
           chunk.copy(buffer, size); size += chunk.length;
         });
         res.on("error", error => finish(error));

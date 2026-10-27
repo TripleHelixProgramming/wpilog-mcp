@@ -55,3 +55,20 @@ test("upload preserves refusal text and never retries an uncertain POST or follo
     assert.equal(posts, 3);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); await fs.rm(directory, { recursive: true }); }
 });
+
+test("an upload reply over its byte limit is refused for its size even when it arrives whole", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "wpilog-upload-")), file = path.join(directory, "test.wpilog");
+  await fs.writeFile(file, Buffer.alloc(1000, 7));
+  let polls = 0;
+  const server = http.createServer(async (req, res) => {
+    // One piece: the reply has ended before the upload sees it is too large.
+    if (req.method === "POST") { for await (const _chunk of req) { /* the whole upload is read */ } res.writeHead(202); res.end(Buffer.alloc(1025, 0x20)); }
+    else { polls++; res.end(JSON.stringify({ state: "done", result: { files: [], same_robots: [] } })); }
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+    await assert.rejects(uploadLog(endpoint, file, "a", () => {}, undefined, undefined, 1024), /exceeds 1024 bytes/);
+    assert.equal(polls, 0, "a refused reply starts no polling");
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await fs.rm(directory, { recursive: true }); }
+});

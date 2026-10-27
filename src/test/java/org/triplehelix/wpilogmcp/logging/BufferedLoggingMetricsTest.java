@@ -20,6 +20,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.config.MetricsConfig;
 import org.triplehelix.wpilogmcp.mcp.MetricsEndpoint;
 
@@ -33,7 +34,7 @@ class BufferedLoggingMetricsTest {
     var cache = Path.of(System.getenv().getOrDefault("WPILOG_DISK_CACHE_DIR",
         "build/test-disk-cache")).toAbsolutePath().resolve("buffered-metrics");
     var builder = new ProcessBuilder(
-        ProcessHandle.current().info().command().orElseThrow(),
+        ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Duser.home=" + temporary,
         "-cp", System.getProperty("java.class.path"), Child.class.getName())
         .directory(temporary.toFile()).redirectOutput(stdout.toFile()).redirectError(stderr.toFile());

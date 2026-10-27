@@ -110,6 +110,25 @@ class InventoryRefusalTest {
     }
   }
 
+  /** Sends an MCP request whose worker is held right after its reply's last write, as a busy machine can, and checks
+   * that the reply's reservations are already free: the JDK writes the body straight to the socket, so the client may
+   * hold the reply before the worker does anything more. */
+  private static HttpResponse<String> sendAndCheckReservations(Harness h, String body) throws Exception {
+    try (var held = h.holdAfterLastWrite()) {
+      var response = h.send("/mcp", body, h.session);
+      assertEquals(0, h.inventories.responseBytes(), "the reply's reservations are free by the time it arrives");
+      return response;
+    }
+  }
+
+  @org.junit.jupiter.api.Test void aVisualizationInventoryReplyFreesItsReservationsBeforeItArrives() throws Exception {
+    try (var h = new Harness(false); var held = h.holdAfterLastWrite()) {
+      var page = h.send("/visualizations/v1/source/entries/list", h.id.toString(), h.session);
+      assertEquals(200, page.statusCode(), page.body());
+      assertEquals(0, h.inventories.responseBytes(), "the reply's reservations are free by the time it arrives");
+    }
+  }
+
   @org.junit.jupiter.api.Test void inventoryBatchHasASeparateAggregateReplyCap() throws Exception {
     try (var h = new Harness(false)) {
       h.registry.registerTool(new ToolRegistry.Tool() {
@@ -120,11 +139,10 @@ class InventoryRefusalTest {
       });
       var batch = new JsonArray(); batch.add(rpc("visualization_source_entries_list", h.id, 1));
       batch.add(rpc("wide_fixture", new JsonObject(), 2)); batch.add(rpc("wide_fixture", new JsonObject(), 3));
-      var response = h.send("/mcp", batch.toString(), h.session);
+      var response = sendAndCheckReservations(h, batch.toString());
       assertEquals(413, response.statusCode()); assertTrue(response.body().length() < 4096);
       assertRefusal(JsonParser.parseString(response.body()).getAsJsonObject(), false);
       assertTrue(response.body().contains("may have executed"), "A batch is not a transaction; refusal must not invite a blind retry");
-      assertEquals(0, h.inventories.responseBytes());
       assertEquals(8 << 20, h.registry.visualizations().capabilities().getAsJsonObject("recording_inventory_limits").get("max_mcp_batch_reply_bytes").getAsInt());
     }
   }
@@ -147,14 +165,13 @@ class InventoryRefusalTest {
       });
       var batch = new JsonArray(); var notification = rpc("visualization_source_entries_list", h.id, 1);
       notification.remove("id"); batch.add(notification); batch.add(rpc("boundary_fixture", new JsonObject(), 2));
-      var response = h.send("/mcp", batch.toString(), h.session);
+      var response = sendAndCheckReservations(h, batch.toString());
       assertEquals(refused ? 413 : 200, response.statusCode());
       if (refused) assertRefusal(JsonParser.parseString(response.body()).getAsJsonObject(), false);
       else {
         assertEquals(8 << 20, response.body().getBytes(StandardCharsets.UTF_8).length);
         assertEquals(expected, response.body());
       }
-      assertEquals(0, h.inventories.responseBytes());
     }
   }
 
@@ -206,6 +223,25 @@ class InventoryRefusalTest {
     }
     HttpResponse<String> send(String path, String body, String owner) throws Exception { return http.send(request(path, body, owner), HttpResponse.BodyHandlers.ofString()); }
     void unblock() throws Exception { release.countDown(); for (var call : calls) call.get(5, TimeUnit.SECONDS); }
+    /** Holds the worker that writes a reply, on whichever pool runs it, right after the reply's last write, until the
+     * returned handle closes. An MCP call with inventory reads is written by the inventory pool, or by the streaming
+     * pool when that one is busy. */
+    AutoCloseable holdAfterLastWrite() throws Exception {
+      var capacities = new ArrayList<Object>();
+      var mcp = HttpTransport.class.getDeclaredField("mcpCapacity"); mcp.setAccessible(true); capacities.add(mcp.get(server));
+      for (var pool : java.util.List.of("inventoryStreaming", "streaming")) {
+        var field = HttpTransport.class.getDeclaredField(pool); field.setAccessible(true); var requests = field.get(server);
+        var work = requests.getClass().getDeclaredField("work"); work.setAccessible(true); capacities.add(work.get(requests));
+      }
+      var checked = new CountDownLatch(1);
+      Runnable hold = () -> { try { checked.await(5, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } };
+      for (var capacity : capacities) probe(capacity, hold);
+      return () -> { checked.countDown(); for (var capacity : capacities) probe(capacity, () -> {}); };
+    }
+    private void probe(Object capacity, Runnable probe) throws Exception {
+      var method = capacity.getClass().getDeclaredMethod("lastWriteProbe", Runnable.class); method.setAccessible(true);
+      method.invoke(capacity, probe);
+    }
     @Override public void close() throws Exception {
       try { unblock(); } finally { server.stop(); inventories.close(); logs.addAllowedDirectory(temp); logs.release(temp); logs.clearAllowedDirectories(); old.forEach(logs::addAllowedDirectory); }
     }

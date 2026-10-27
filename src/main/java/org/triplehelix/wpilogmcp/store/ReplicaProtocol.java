@@ -73,8 +73,18 @@ public final class ReplicaProtocol implements AutoCloseable {
   private final Map<String, Snapshot> snapshots = new HashMap<>();
   private long accounted;
   private boolean closed;
-  private final ThreadPoolExecutor builders = new ThreadPoolExecutor(0, 2, 30, TimeUnit.SECONDS,
+  /**
+   * Two catalog builds at a time. The limit counts builds, not threads: a build gives its permit back before it
+   * completes its result, so the caller it wakes can start the next build while the build's thread is still on its
+   * way back to the pool. A pool of two threads refused that next build whenever both threads were still finishing.
+   * A build its caller timed out keeps its permit until it unwinds, as it keeps its reservation.
+   */
+  private final Semaphore buildPermits = new Semaphore(2);
+  private final ThreadPoolExecutor builders = new ThreadPoolExecutor(0, Integer.MAX_VALUE, 30, TimeUnit.SECONDS,
       new SynchronousQueue<>(), task -> { var t = new Thread(task, "replica-catalog"); t.setDaemon(true); return t; });
+  /** Runs on a builder's thread once its result is complete; tests hold the thread there, as a busy machine can. */
+  private volatile Runnable afterBuild = () -> {};
+  void afterBuild(Runnable probe) { afterBuild = probe; }
   private final ScheduledExecutorService expiry = Executors.newSingleThreadScheduledExecutor(task -> {
     var t = new Thread(task, "replica-catalog-expiry"); t.setDaemon(true); return t;
   });
@@ -291,8 +301,13 @@ public final class ReplicaProtocol implements AutoCloseable {
       snapshots.put(snapshot.id, snapshot); accounted += BUILD_BYTES;
     }
     var result = new CompletableFuture<Snapshot>();
+    if (!buildPermits.tryAcquire()) {
+      synchronized (lock) { snapshot.retired = true; release(snapshot); }
+      throw new IOException("BUSY: two replica catalogs are building");
+    }
     try {
       builders.execute(() -> {
+        Throwable failure = null;
         try {
           var selected = door.select(store); var header = header(selected); var catalog = header.replicas();
           if (catalog == null) throw new IOException("MIGRATION_REQUIRED: replica protocol requires format 2");
@@ -313,15 +328,19 @@ public final class ReplicaProtocol implements AutoCloseable {
             snapshot.selected = selected; snapshot.epoch = catalog.epoch(); snapshot.revision = catalog.revision();
             snapshot.offers = List.copyOf(rows); accounted -= snapshot.bytes - size; snapshot.bytes = size;
           }
-          result.complete(snapshot);
-        } catch (Throwable failure) {
+        } catch (Throwable problem) {
+          failure = problem;
           synchronized (lock) { snapshot.retired = true; release(snapshot); }
-          result.completeExceptionally(failure);
+        } finally {
+          buildPermits.release(); // Before the result wakes its caller, who may start the next build at once.
         }
+        if (failure == null) result.complete(snapshot); else result.completeExceptionally(failure);
+        afterBuild.run();
       });
-    } catch (RejectedExecutionException busy) {
+    } catch (RejectedExecutionException stopped) {
+      buildPermits.release();
       synchronized (lock) { snapshot.retired = true; release(snapshot); }
-      throw new IOException("BUSY: two replica catalogs are building", busy);
+      throw new IOException("BUSY: two replica catalogs are building", stopped);
     }
     try { return result.get(10, TimeUnit.SECONDS); }
     catch (InterruptedException interrupted) {

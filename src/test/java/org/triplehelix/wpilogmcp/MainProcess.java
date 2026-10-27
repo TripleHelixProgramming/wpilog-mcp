@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 
 /**
  * Runs {@link Main} in a child JVM, for what can only be seen from a fresh process: the log level
@@ -37,11 +38,12 @@ final class MainProcess {
     var classpath = System.getProperty("java.class.path");
     assumeTrue(classpath != null && classpath.contains("classes"),
         "The test class path is not available to a child JVM: " + classpath);
-    var java = ProcessHandle.current().info().command().orElse("java");
+    var java = ChildJvms.JAVA;
     var stdin = Files.createTempFile(workDir, "stdin", ".empty");
 
     var command = new ArrayList<String>();
     command.add(java);
+    command.add(ChildJvms.HEADLESS);
     command.add("-cp");
     command.add(classpath);
     command.add(Main.class.getName());

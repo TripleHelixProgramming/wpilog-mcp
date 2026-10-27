@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.harness.HarnessHttp;
 
 /** One native server process is one boot; acknowledgements count records, never a guessed delay. */
@@ -32,8 +33,8 @@ final class NativeReplayProcess implements AutoCloseable {
   NativeReplayProcess(ReplaySource source, long shiftUs, Path run, int port) throws Exception {
     this.source = source; this.shiftUs = shiftUs;
     control = Files.createDirectories(run.resolve("control")).toAbsolutePath();
-    String javaCommand = ProcessHandle.current().info().command().orElseThrow();
-    var command = List.of(javaCommand, "-Xmx512m", "-Djava.library.path=" + System.getProperty("harness.natives"),
+    String javaCommand = ChildJvms.JAVA;
+    var command = List.of(javaCommand, ChildJvms.HEADLESS, "-Xmx512m", "-Djava.library.path=" + System.getProperty("harness.natives"),
         "-jar", System.getProperty("harness.robotJar"), "--replay", source.path.toAbsolutePath().toString(),
         control.toString(), Integer.toString(port), Long.toString(shiftUs), "0");
     var builder = new ProcessBuilder(command).directory(run.toFile()).redirectErrorStream(true);

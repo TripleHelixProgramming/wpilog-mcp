@@ -116,19 +116,36 @@ final class ImportStage implements AutoCloseable {
           recoverDirectory(io, path, beforeLock);
           return FileVisitResult.SKIP_SUBTREE;
         }
+        // Another recovery, or a creator retiring its stage, may remove an entry once it is listed.
+        @Override public FileVisitResult visitFileFailed(Path path, IOException failure) throws IOException {
+          if (failure instanceof java.nio.file.NoSuchFileException) return FileVisitResult.CONTINUE;
+          throw failure;
+        }
       });
     }
   }
 
+  /**
+   * Only the locking handle reads the marker. Windows enforces a byte-range lock against every other
+   * handle, even this process's own, so a read through another one failed: before the lock for a
+   * stage still in use, and after it for this recoverer's own lock. One abandoned stage then broke
+   * every later import, sync and pull into the store. An initialized marker has the magic's exact
+   * size, which needs no read. A stage another recovery removes while this one examines it is
+   * gone, not a failure: a store's startup recovery and an import's own can walk the same stage.
+   */
   private static void recoverDirectory(StoreFiles io, Path directory, BeforeRecovery beforeLock) throws IOException {
-    var marker = io.check(directory.resolve(OWNER));
-    if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS)
-        || Files.size(marker) != MAGIC.length() || !Files.readString(marker).equals(MAGIC)) return;
+    Path marker;
+    try {
+      marker = io.check(directory.resolve(OWNER));
+      if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS) || Files.size(marker) != MAGIC.length()) return;
+    } catch (java.nio.file.NoSuchFileException gone) {
+      return;
+    }
     beforeLock.ready(marker);
-    try (var channel = FileChannel.open(marker, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+    try (var channel = FileChannel.open(marker, StandardOpenOption.READ, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
          var held = channel.tryLock()) {
       if (held == null) return;
-      if (channel.size() != MAGIC.length() || !Files.readString(marker).equals(MAGIC)) return;
+      if (channel.size() != MAGIC.length() || !MAGIC.equals(readMarker(channel))) return;
       // walk does not follow links; a planted link is removed, never traversed.
       try (var paths = Files.walk(directory)) {
         for (var path : paths.sorted(Comparator.reverseOrder()).toList()) {
@@ -144,5 +161,11 @@ final class ImportStage implements AutoCloseable {
     }
     Files.deleteIfExists(marker);
     Files.deleteIfExists(directory);
+  }
+
+  private static String readMarker(FileChannel channel) throws IOException {
+    var bytes = java.nio.ByteBuffer.allocate(MAGIC.length());
+    while (bytes.hasRemaining() && channel.read(bytes, bytes.position()) >= 0) { /* until full or at the end */ }
+    return new String(bytes.array(), 0, bytes.position(), java.nio.charset.StandardCharsets.US_ASCII);
   }
 }

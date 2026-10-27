@@ -38,6 +38,18 @@ class StoreRegistryTest {
     previousAllowed.forEach(manager::addAllowedDirectory);
   }
 
+  @Test void everyStoreHasStoppedItsImportsBeforeTheDiskBudgetCloses() throws Exception {
+    var security = new SecurityValidator(); security.addAllowedDirectory(temp);
+    var stopped = new java.util.concurrent.atomic.AtomicReference<java.util.List<Boolean>>();
+    var registry = new StoreRegistry(security);
+    var first = registry.store(Files.createDirectories(temp.resolve("first")));
+    var second = registry.store(Files.createDirectories(temp.resolve("second")));
+    // An import failing once the budget has closed is deferred only if its store already knows it is stopping.
+    registry.beforeBudgetCloses(() -> stopped.set(java.util.List.of(first.importsStopped(), second.importsStopped())));
+    registry.close();
+    assertEquals(java.util.List.of(true, true), stopped.get());
+  }
+
   @Test void directoryDiscoveryIsBoundedWhileKnownInboxesStillGetEveryPoll() throws Exception {
     temp = temp.toRealPath();
     var security = new SecurityValidator();

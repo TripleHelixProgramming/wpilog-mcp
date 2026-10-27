@@ -391,7 +391,7 @@ class ReplicaTransfersTest {
     store.replicaTransfers().confirm(policy, id(), confirmation(candidate)).get();
     var path = store.root().resolve(result.file().path());
     try (var warm = manager.acquireReadOnly(path.toString())) { assertEquals(16.0, warm.log().values().get("/Value").get(0).value()); }
-    byte[] corrupted = bytes.clone(); corrupted[corrupted.length - 1] ^= 1; Files.write(path, corrupted);
+    org.triplehelix.wpilogmcp.fixtures.LogRewrites.flipLastByte(path);
     Files.setLastModifiedTime(path, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 10_000));
     var failure = assertThrows(java.io.IOException.class, () -> manager.acquireReadOnly(path.toString()));
     assertTrue(failure.getMessage().contains("hash"), failure.getMessage());
@@ -479,6 +479,53 @@ class ReplicaTransfersTest {
     store.replicaTransfers().recover(policy).get();
     assertEquals("published", store.replicaTransfers().transfer(policy, request, candidate, source(bytes)).get().state());
     assertEquals(2, store.replicaHeader().replicas().revision());
+  }
+  @Test void aFinishedJobNoLongerHoldsAWorkerWhileItsThreadReturnsToThePool() throws Exception {
+    // A job's result wakes its caller while the job's thread is still finishing. A dependent that blocks
+    // keeps that thread there, as a busy machine can; with two such threads, the next job used to be
+    // refused as if two transfers were running.
+    var hold = new java.util.concurrent.CountDownLatch(1);
+    try {
+      for (int i = 0; i < 2; i++) {
+        byte[] bytes = payload(40 + i);
+        var gate = new java.util.concurrent.CountDownLatch(1); var entered = new java.util.concurrent.CountDownLatch(1);
+        var job = store.replicaTransfers().transfer(policy, id(), offer(bytes), offset -> new ByteArrayInputStream(bytes, (int) offset, bytes.length - (int) offset) {
+          @Override public synchronized int read(byte[] buffer, int start, int count) {
+            entered.countDown(); while (gate.getCount() > 0) try { gate.await(); } catch (InterruptedException ignored) { }
+            return super.read(buffer, start, count);
+          }
+        });
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        var finishing = new java.util.concurrent.CountDownLatch(1);
+        job.whenComplete((receipt, failure) -> {
+          finishing.countDown();
+          try { hold.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        gate.countDown();
+        assertTrue(finishing.await(5, TimeUnit.SECONDS), "the job's own thread runs the dependent and stays there");
+        assertEquals("published", job.getNow(null).state());
+      }
+      assertEquals("recovered", store.replicaTransfers().recover(policy).get(5, TimeUnit.SECONDS).state());
+    } finally { hold.countDown(); }
+  }
+  @Test void aRecheckThatMustFirstRecoverReservesForTheRecoveryUnderItsOwnBudget() throws Exception {
+    // A recheck only reads and measures nothing, but finishing a transfer it finds interrupted writes.
+    byte[] bytes = payload(17), next = payload(22); var held = offer(bytes);
+    store.replicaTransfers().transfer(policy, id(), held, source(bytes)).get(10, TimeUnit.SECONDS);
+    store.replicaTransfers().confirm(policy, id(), confirmation(held)).get(10, TimeUnit.SECONDS);
+    store.replicaTransfers().boundary(name -> { if (name.equals("manifest")) throw new java.io.IOException("restart before receipt"); });
+    assertTrue(reason(store.replicaTransfers().transfer(policy, id(), offer(next), source(next))).contains("restart before receipt"));
+    store.close(); store = new LogStore(policy.folder(), manager.testGetSecurityValidator(), manager, StoreCatalog::read);
+    var owner = store.replicaTransfers(); var journal = store.root().resolve(ReplicaJournal.JOURNAL); var before = Files.readAllBytes(journal);
+    var small = new MirrorConfig(policy.origin(), policy.folder(), 14, 4095,
+        List.of(), List.of(), 30, 0, "all", 4096);
+    var refused = assertThrows(java.util.concurrent.ExecutionException.class,
+        () -> owner.reconcile(owner.reconciliationEpoch(small), () -> owner.unchanged(small, held)));
+    assertTrue(String.valueOf(refused.getCause().getMessage()).contains("CAPACITY_PAUSED"), refused.toString());
+    assertArrayEquals(before, Files.readAllBytes(journal));
+    assertTrue(owner.reconcile(owner.reconciliationEpoch(policy), () -> owner.unchanged(policy, held)));
+    var recovered = ReplicaJournal.read(store.root(), new StoreFiles(store.root(), manager.testGetSecurityValidator()));
+    assertNull(recovered.pending()); assertTrue(recovered.retired().isEmpty(), recovered.retired().toString());
   }
 
 }

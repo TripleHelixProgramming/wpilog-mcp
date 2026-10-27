@@ -187,7 +187,9 @@ class VisualizationEndpointTest {
     assertEquals(409, http.send(HttpRequest.newBuilder(url.apply(other)).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
     assertEquals(409, http.send(HttpRequest.newBuilder(URI.create(url.apply(path) + "&server_instance_id=" + UUID.randomUUID())).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
     assertEquals(400, http.send(HttpRequest.newBuilder(URI.create(url.apply(path) + "&scope_id=" + UUID.randomUUID())).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
-    java.nio.file.Files.writeString(path, "changed synthetic bytes");
+    // The log stays loaded: a cached read must still see its file change.
+    org.triplehelix.wpilogmcp.fixtures.LogRewrites.flipLastByte(path);
+    java.nio.file.Files.setLastModifiedTime(path, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 2000));
     var stale = http.send(HttpRequest.newBuilder(url.apply(path)).header("If-None-Match", reply.headers().firstValue("ETag").orElseThrow()).GET().build(), HttpResponse.BodyHandlers.ofString());
     assertEquals(409, stale.statusCode(), stale.body());
   }
@@ -929,7 +931,8 @@ class VisualizationEndpointTest {
     assertEquals(200, deleted.statusCode());
     assertEquals(windowId(session), call(route(a) + "/attach", new JsonObject()).get("attached_client_id").getAsString());
     assertEquals(windowId(session), call(route(b), null).get("attached_client_id").getAsString());
-    server.expireSessions(Duration.ZERO);
+    // Measured after the last request: on Windows' coarse clock it could read the same instant.
+    server.expireSessions(Duration.ZERO, java.time.Instant.now().plusSeconds(1));
     String expired = session; session = connect();
     assertEquals(404, raw(route(a) + "/attach", "{}", expired, null).statusCode());
     assertEquals(windowId(session), call(route(a) + "/attach", new JsonObject()).get("attached_client_id").getAsString());

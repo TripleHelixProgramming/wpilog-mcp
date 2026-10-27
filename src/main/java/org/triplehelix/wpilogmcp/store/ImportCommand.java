@@ -125,9 +125,11 @@ public final class ImportCommand {
     }
   }
 
+  /** A deferred file was not imported either; its reason says that trying again can succeed. */
   private static boolean refused(LogStore.Result result) {
-    return result.files().stream().anyMatch(file -> file.status().equals("refused"));
+    return result.files().stream().anyMatch(file -> notImported(file.status()));
   }
+  private static boolean notImported(String status) { return status.equals("refused") || status.equals("deferred"); }
 
   private static int remote(URI base, Path store, LogStore.Request request, PrintStream out)
       throws IOException, InterruptedException {
@@ -159,7 +161,7 @@ public final class ImportCommand {
           var result = job.getAsJsonObject("result");
           out.println("result " + result);
           for (var file : result.getAsJsonArray("files")) {
-            if (file.getAsJsonObject().get("status").getAsString().equals("refused")) return 1;
+            if (notImported(file.getAsJsonObject().get("status").getAsString())) return 1;
           }
           return 0;
         }

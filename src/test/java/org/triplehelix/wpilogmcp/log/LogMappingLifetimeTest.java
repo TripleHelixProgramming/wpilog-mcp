@@ -116,17 +116,18 @@ class LogMappingLifetimeTest {
   }
 
   @Test
-  void heldToolRefusesMoveWithReasonThenReleasesForRetry() throws Exception {
+  void heldToolDefersMoveWithReasonThenReleasesForRetry() throws Exception {
     var entered = new CountDownLatch(1);
     var proceed = new CountDownLatch(1);
     var executor = Executors.newSingleThreadExecutor();
     try {
       var call = executor.submit(() -> new ReadingTool(manager, entered, proceed).execute(arguments(source)));
       assertTrue(entered.await(5, TimeUnit.SECONDS));
-      var refused = move();
-      assertEquals("refused", refused.status());
-      assertTrue(refused.reason().contains("in-flight"), refused.reason());
-      assertTrue(refused.reason().contains("3 seconds"), refused.reason());
+      // A call lets go of its log before long: the move is deferred and tried again, not refused for good.
+      var deferred = move();
+      assertEquals("deferred", deferred.status());
+      assertTrue(deferred.reason().contains("in-flight"), deferred.reason());
+      assertTrue(deferred.reason().contains("3 seconds"), deferred.reason());
       assertTrue(Files.exists(source));
       assertFalse(call.isDone());
       proceed.countDown();

@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 
 /** Blocking the actual sink tests the owner boundary without forbidding an ordinary log call. */
 class StoreQueueBlockedOutputTest {
@@ -23,7 +24,7 @@ class StoreQueueBlockedOutputTest {
 
   @Test void anOverBudgetReportCannotDelayTheNextCaptureTurn() throws Exception {
     var output = directory.resolve("process.log");
-    var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-cp", System.getProperty("java.class.path"), Probe.class.getName())
         .redirectErrorStream(true).redirectOutput(output.toFile()).start();
     try {

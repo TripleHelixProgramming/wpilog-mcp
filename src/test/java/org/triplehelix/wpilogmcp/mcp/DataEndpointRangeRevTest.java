@@ -298,6 +298,19 @@ class DataEndpointRangeRevTest {
     assertNoSynchronization();
   }
 
+  @Test void aRangeTheStopCatchesIsToldToRetryNotThatNoStoreExists() throws Exception {
+    var closing = new CatalogRecordingSource.Lease() {
+      @Override public StoreReadCatalog value() { return null; }
+      @Override public boolean closing() { return true; }
+      @Override public void close() {}
+    };
+    server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext(HttpTransport.DATA_PATH, new DataEndpoint(manager, () -> null, () -> closing)::handle);
+    server.start();
+    var response = get(range("names", "/SystemStats/BatteryVoltage"));
+    assertEquals(503, response.statusCode(), new String(response.body(), StandardCharsets.UTF_8));
+  }
+
   @Test void aRangeWithoutARevSignalOpensNoRevLog() throws Exception {
     fixture(true, List.of());
     long decoded = catalog.revSignalsDecoded();

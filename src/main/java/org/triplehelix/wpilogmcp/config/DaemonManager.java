@@ -70,7 +70,9 @@ import org.triplehelix.wpilogmcp.mcp.HttpTransport;
  * <p>A daemon is stopped by {@code POST /stop} with a token the start that spawned it wrote to a
  * file beside the PID file that only the user can read ({@code {name}.token}) and gave the
  * daemon in its environment: so a process that can read the file may stop the daemon, and no
- * other. A daemon too old to have that endpoint is ended as a process.
+ * other. A daemon too old to have that endpoint is ended as a process. A stopped daemon has 90
+ * seconds to exit before it is ended without asking, more than its own 80-second stop deadline;
+ * it once had the 10-second start timeout, while its stop could take about 70.
  *
  * @since 0.8.0
  */
@@ -87,6 +89,12 @@ public class DaemonManager {
   public static final String STOP_TOKEN_ENV = "WPILOG_STOP_TOKEN";
   /** How long a start waits for the daemon (or a concurrent start's daemon) to answer. */
   private static final Duration DEFAULT_START_TIMEOUT = Duration.ofSeconds(10);
+  /**
+   * How long a stop waits for the daemon to exit before ending it, decided on October 25: the pit
+   * server's systemd {@code TimeoutStopSec}, and past the daemon's own 80-second stop deadline, so
+   * a stop that ends in order is never cut short.
+   */
+  static final Duration DEFAULT_STOP_TIMEOUT = Duration.ofSeconds(90);
   private static final Duration HEALTH_POLL_INTERVAL = Duration.ofMillis(250);
   /** The launchers' heap when WPILOG_MAX_HEAP is unset (bin/wpilog-mcp, bin/wpilog-mcp.bat). */
   static final String DEFAULT_MAX_HEAP = "4g";
@@ -213,6 +221,7 @@ public class DaemonManager {
 
   private final Path runDir;
   private final Duration startTimeout;
+  private final Duration stopTimeout;
   private final Launcher launcher;
   private final PidFileWriter files;
   private final Processes processes;
@@ -220,13 +229,14 @@ public class DaemonManager {
   private final String ownVersion;
 
   public DaemonManager() {
-    this(Path.of(System.getProperty("user.home"), "." + APP_NAME, "run"), DEFAULT_START_TIMEOUT);
+    this(Path.of(System.getProperty("user.home"), "." + APP_NAME, "run"));
   }
 
   DaemonManager(Path runDir) {
-    this(runDir, DEFAULT_START_TIMEOUT);
+    this(runDir, DEFAULT_START_TIMEOUT, DEFAULT_STOP_TIMEOUT, PROCESS_LAUNCHER, FILE_SYSTEM, SYSTEM_PROCESSES, Version.VERSION);
   }
 
+  /** Tests give one short timeout for both waits. */
   DaemonManager(Path runDir, Duration startTimeout) {
     this(runDir, startTimeout, PROCESS_LAUNCHER);
   }
@@ -241,8 +251,14 @@ public class DaemonManager {
 
   DaemonManager(Path runDir, Duration startTimeout, Launcher launcher, PidFileWriter files,
       Processes processes, String ownVersion) {
+    this(runDir, startTimeout, startTimeout, launcher, files, processes, ownVersion);
+  }
+
+  DaemonManager(Path runDir, Duration startTimeout, Duration stopTimeout, Launcher launcher, PidFileWriter files,
+      Processes processes, String ownVersion) {
     this.runDir = runDir;
     this.startTimeout = startTimeout;
+    this.stopTimeout = stopTimeout;
     this.launcher = launcher;
     this.files = files;
     this.processes = processes;
@@ -718,11 +734,12 @@ public class DaemonManager {
    * Ends a running daemon: marks its record as stopping under the lock and asks it to stop
    * (by {@code POST /stop} with the token, or, for a daemon too old to have that endpoint, as
    * a process), waits for the process to exit, ends it without asking if it has not after the
-   * start timeout (the transport finishes its calls within half that), and removes its record
-   * and token under the lock. A restart already holds its starter's claim and keeps it through
+   * stop timeout (longer than the daemon's own stop deadline), and removes its record and token
+   * under the lock. A restart already holds its starter's claim and keeps it through
    * the stop, so neither another restart decision nor the old PID dying can admit a second
    * starter. A failed stop restores the old daemon's stopping record for later inspection.
-   * The lock is not held while waiting.
+   * The lock is held only to check and mark the record: the stop request, which can take seconds,
+   * and the wait for the exit happen outside it, once a concurrent start can read "stopping".
    */
   private boolean endDaemon(String name, RunningDaemon daemon, boolean restarting) {
     var current = probe(daemon.port());
@@ -733,6 +750,7 @@ public class DaemonManager {
       logger.warn("Server '{}' changed ownership before stop; no process was signalled", name);
       return false;
     }
+    var token = new java.util.concurrent.atomic.AtomicReference<String>();
     try {
       boolean owned = locked(name, () -> {
         // Another stop/start may have replaced the claim after findRunning released its lock.
@@ -740,14 +758,7 @@ public class DaemonManager {
         if (!restarting) {
           writePidFile(name, daemon.pid(), daemon.port(), STOPPING_MARKER);
         }
-        var token = readToken(name);
-        if (token != null && requestStop(daemon.port(), token)) {
-          logger.debug("Server '{}' (PID {}) accepted the stop request", name, daemon.pid());
-        } else {
-          logger.info("Server '{}' (PID {}) takes no stop request{}; ending its process", name,
-              daemon.pid(), token == null ? " (no token file)" : "");
-          processes.destroy(daemon.pid());
-        }
+        token.set(readToken(name));
         return true;
       });
       if (!owned) return false;
@@ -755,9 +766,16 @@ public class DaemonManager {
       logger.error("Failed to mark server '{}' as stopping: {}", name, e.getCause().getMessage());
       return false;
     }
-    if (!waitForExit(daemon.pid(), startTimeout)) {
+    if (token.get() != null && requestStop(daemon.port(), token.get())) {
+      logger.debug("Server '{}' (PID {}) accepted the stop request", name, daemon.pid());
+    } else {
+      logger.info("Server '{}' (PID {}) takes no stop request{}; ending its process", name,
+          daemon.pid(), token.get() == null ? " (no token file)" : "");
+      processes.destroy(daemon.pid());
+    }
+    if (!waitForExit(daemon.pid(), stopTimeout)) {
       logger.warn("Server '{}' (PID {}) did not exit within {} ms; ending it", name, daemon.pid(),
-          startTimeout.toMillis());
+          stopTimeout.toMillis());
       processes.destroyForcibly(daemon.pid());
       if (!waitForExit(daemon.pid(), Duration.ofSeconds(2))) {
         if (restarting) {

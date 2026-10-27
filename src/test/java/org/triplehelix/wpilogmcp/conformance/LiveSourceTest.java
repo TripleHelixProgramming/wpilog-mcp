@@ -79,9 +79,24 @@ class LiveSourceTest {
   String connect() throws Exception {
     return send("POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}").headers().firstValue("Mcp-Session-Id").orElseThrow();
   }
+  /** A read can meet the store changing under it, as when a robot's disconnect writes the closed file's placement and
+   * clock record. The server then answers retryable with a suggested wait, which a client follows, for up to 10 seconds. */
   JsonObject visualization(String session, String route, JsonObject body) throws Exception {
-    var reply = send("POST", "/visualizations/v1" + route, body.toString(), "Mcp-Session-Id", session);
-    assertEquals(200, reply.statusCode(), reply.body()); return JsonParser.parseString(reply.body()).getAsJsonObject();
+    long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+    while (true) {
+      var reply = send("POST", "/visualizations/v1" + route, body.toString(), "Mcp-Session-Id", session);
+      long wait = reply.statusCode() == 200 || System.nanoTime() > deadline ? -1 : retryWait(reply.body());
+      if (wait < 0) { assertEquals(200, reply.statusCode(), reply.body()); return JsonParser.parseString(reply.body()).getAsJsonObject(); }
+      Thread.sleep(wait);
+    }
+  }
+  /** The wait a retryable refusal suggests, or -1 for any other answer. */
+  static long retryWait(String body) {
+    try {
+      var refusal = JsonParser.parseString(body).getAsJsonObject();
+      if (!refusal.has("retryable") || !refusal.get("retryable").getAsBoolean()) return -1;
+      return refusal.has("retry_after_ms") ? refusal.get("retry_after_ms").getAsLong() : 1000;
+    } catch (RuntimeException notARefusal) { return -1; }
   }
   @Test void recordingHealthSeparatesQuietConnectionFromDisconnectAndNeverSelectsAnotherRecording() throws Exception {
     String session = connect(); var root = temp.resolve("live");

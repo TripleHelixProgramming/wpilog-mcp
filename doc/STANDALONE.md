@@ -485,11 +485,11 @@ within its existing deadline. Do not delete `store.lock`: the persistent file le
 lock the same object. Symbolic lock paths, including dangling ones, are refused, and lock opens
 never follow links.
 
-**Exit codes.** 0 for a completed import or an accepted inbox transfer, 1 for a failure or a refused direct file, and 2 for a command-line error. An accepted inbox transfer may still be refused later; check its receipt.
+**Exit codes.** 0 for a completed import or an accepted inbox transfer, 1 for a failure or a refused or deferred direct file, and 2 for a command-line error. An accepted inbox transfer may still be refused later; check its receipt.
 
 **The inbox.** You can also drop files into a store's `inbox/`. The owning server polls every three seconds and imports a file by move once its size and modification time agree across two looks at least three seconds apart; a file that changes while it waits returns to waiting. Symbolic links and special files are refused.
 
-The server writes only `inbox/imported.log` in the inbox: one JSON object per line with the time, original path, status, destination and reason. A refused file stays there and is not retried until it changes or the server restarts. A duplicate stays too, with its existing destination explained. `list_available_logs` reports these files under `inbox`, with their size and a waiting, importing or refused state, rather than under `unmanaged`.
+The server writes only `inbox/imported.log` in the inbox: one JSON object per line with the time, original path, status, destination and reason. A refused file stays there and is not retried until it changes or the server restarts. A deferred file met a condition that passes on its own, such as another process holding the store's lock: it waits, shown with its reason, and is tried again after five seconds, then 10, 20 and 40, then every minute, with a receipt for each attempt. A duplicate stays too, with its existing destination explained. `list_available_logs` reports these files under `inbox`, with their size and a waiting, importing or refused state, rather than under `unmanaged`.
 
 A plain directory is never turned into a store because the watcher saw it. Stores are discovered when watching starts, whenever a listing scans, and otherwise at most once a minute; the three-second polls visit known inboxes only.
 
@@ -637,11 +637,12 @@ binary uploads keep their own streaming limits. A body ending before that discar
 the route's normal size refusal. At the bound or deadline, the exchange closes before response
 headers, so closing a response cannot start another blocking drain; the sender may lose the reply.
 At most 32 MCP requests run at once (fewer on small machines), with overload reported as HTTP
-503 when refusal capacity is available. Data streams and native reads use 16 separate workers;
-store transfers and imports have another four, so readers cannot exhaust upload capacity.
-Excess transfers normally receive JSON `BUSY` with HTTP 503 and a one-second retry hint. Each
-streaming pool has two final-refusal workers with the same I/O deadline and no waiting queue;
-MCP execution overload uses the ordinary pool's refusal workers. If those workers are also full,
+503 when refusal capacity is available. Data streams and native reads run 16 at a time; store
+transfers and imports another four, so readers cannot exhaust upload capacity. A request's place
+is free as soon as its reply's last byte is written. Excess transfers normally receive JSON `BUSY`
+with HTTP 503 and a one-second retry hint. Each streaming pool answers two refusals at a time,
+with the same I/O deadline and no waiting queue; MCP execution overload uses the ordinary pool's
+refusals. If those are also full,
 the exchange closes before response headers, without draining its unread body on a dispatch
 worker. The client can therefore receive a disconnect instead of a refusal. Ten seconds without IO progress ends a transfer, releasing
 its reads, so clients that stop reading cannot occupy health's dispatch workers indefinitely.
@@ -668,11 +669,15 @@ and the pending legacy copy integrations.
 
 `capture` contains `configured_count` and a `captures` array, currently zero or one row. Each
 row reports `state` (`waiting_admission`, `recording` or `stopped`), a finite `reason` when
-stopped, nullable `last_write_age_ms`, `longest_listener_loop_stall_us`, and
-`longest_store_queue_turn_us`. Before the first completed write, the age is null. Reasons
-distinguish not started, waiting for a clock or topic, disconnection, admission failure, write
-failure, startup failure, low disk, close and shutdown. No path, robot identity, recorder
-identifier or raw error message is included. The two maxima cover observations since the
+stopped, a `cause` that is null except while startup waits for its store, nullable
+`last_write_age_ms`, `longest_listener_loop_stall_us`, and `longest_store_queue_turn_us`. Before
+the first completed write, the age is null. Reasons distinguish not started, waiting for the
+store, waiting for a clock or topic, disconnection, admission failure, write failure, startup
+failure, low disk, close and shutdown. While the reason is `waiting_for_store`, the cause is
+`lock_held` (another process holds the store lock), `queue_busy` (the store's queue stayed
+occupied past the turn's deadline) or `record_changing` (a receipt or folder changed while
+recovery read it), and startup tries again after a second, doubling to 30 seconds. No path,
+robot identity, recorder identifier or raw error message is included. The two maxima cover observations since the
 preceding health probe, shared by all callers; a racing completion is not lost and an ongoing
 stall remains visible across probes. The store maximum measures the mutation action and
 currently excludes a blocked completion-report callback; see
@@ -1128,7 +1133,7 @@ Template admission also checks the extra escaping in the portable export reply.
 A configuration below its raw cap can still exceed the encoded reply cap and refuse before commit.
 
 Library HTTP/MCP requests share the four inventory request workers and 8 MiB encoded-response
-pool. Reservations remain held through encoding and socket completion. Health, ping and inventory
+pool. Reservations are freed as the reply's last write begins. Health, ping and inventory
 close retain control capacity. Request/write deadlines do not release library inputs while disk
 work still runs. One disk worker bounds record parsing and temporary JSON/encoding copies; four
 bounded completion slots keep caller callbacks off its queue and remain charged until those
@@ -1202,7 +1207,7 @@ To stop the server:
 ```bash
 wpilog-mcp stop http
 ```
-It finishes the calls in progress, then exits, and `stop` returns once it has. A `stop` of a server that is not running succeeds too. The server accepts a stop only from this machine, and only with a token that `start` wrote to `~/.wpilog-mcp/run/http.token`, a file only you can read: no one else on the machine can stop it, and nothing on the network can. A server that does not answer the request within the start timeout is ended as a process. A server from before this version has no stop endpoint and is ended as a process straight away.
+It finishes the calls in progress, then exits, and `stop` returns once it has. While it stops, a new request gets 503 with `Retry-After: 1`, and `/health` still answers. A data stream gets five seconds before it is ended, and a call already running may finish within 80 seconds; past that, the server names it in its log and ends it. A `stop` of a server that is not running succeeds too. The server accepts a stop only from this machine, and only with a token that `start` wrote to `~/.wpilog-mcp/run/http.token`, a file only you can read: no one else on the machine can stop it, and nothing on the network can. A server that has not exited 90 seconds after the request, the same limit the pit server's systemd unit gives it, is ended as a process. A server from before this version has no stop endpoint and is ended as a process straight away.
 
 ### One Server for Every Client
 
@@ -1522,7 +1527,7 @@ Content-Type: application/json
 
 `store` and every source in `paths` must be inside configured log directories, with symlinks resolved. With no configured directory, the endpoint refuses all imports. Outside paths go through the user's inbox; an unauthenticated HTTP server cannot offer a move-anything operation. `move` is required; `stated_robot` is optional or null. An empty `paths` array creates an empty store under the same lock. The body is limited to 1 MiB.
 
-A `202` response contains `job_id` and a relative `url` such as `/store/import/<job>` (also in `Location`). `GET` that URL to poll. The job has `state` (`queued`, `running`, `done`, or `failed`), its latest `progress` (`phase`, `path`, `completed`, `total`, or null before it starts), `result` on completion, and `error` on failure. `result` is the Java importer's complete result: `files` with `original_path`, `status`, `path`, and `reason`, plus `same_robots` with `serial_number` and `directories`. A done job can contain refused files: inspect their statuses. Progress counts apply to the named phase; the final phase is `complete`. A second import to the same store queues behind the first.
+A `202` response contains `job_id` and a relative `url` such as `/store/import/<job>` (also in `Location`). `GET` that URL to poll. The job has `state` (`queued`, `running`, `done`, or `failed`), its latest `progress` (`phase`, `path`, `completed`, `total`, or null before it starts), `result` on completion, and `error` on failure. `result` is the Java importer's complete result: `files` with `original_path`, `status`, `path`, and `reason`, plus `same_robots` with `serial_number` and `directories`. A done job can contain refused or deferred files: inspect their statuses. A deferred file met a condition that passes on its own (the store's lock held by another process, the store's metadata changing during the import, the disk space kept free for recording, another import moving the file, or the server stopping), so importing it again later can succeed; a refused one needs its reason addressed first. Progress counts apply to the named phase; the final phase is `complete`. A second import to the same store queues behind the first.
 
 `POST /store/assign` takes `store`, `paths`, and a required `stated_robot`. It moves only manifested unassigned files within that store, retaining their original provenance; ordinary imports still report duplicates as `present`. Assignment uses the same job response, polling URL, queue, lock, and path/Origin checks. Files already assigned, files outside this store's unassigned manifests, and REV files without a unique correlated wpilog are refused. An active HTTP or inbox import keeps an otherwise idle daemon alive until it finishes.
 

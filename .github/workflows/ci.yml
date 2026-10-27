@@ -241,6 +241,17 @@ jobs:
           result = json.loads(Path('build/reports/systemd/unmanaged-plant.json').read_text())
           assert 'Expected managed: true' in result.get('reason', ''), result
           PY
+      - name: Prove the check rejects a probe that restarts nothing
+        run: |
+          if sudo --preserve-env=GITHUB_ACTIONS,PATH,JAVA_HOME python3 ci/check_service.py build/libs/wpilog-mcp-*-all.jar --plant-no-restart; then
+            echo 'No-restart plant escaped'; exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('build/reports/systemd/no-restart-plant.json').read_text())
+          assert 'did not restart the paused server' in result.get('reason', ''), result
+          PY
       - name: Upload the service journal and assertions
         if: always()
         uses: actions/upload-artifact@v4
@@ -301,6 +312,9 @@ jobs:
             build/extension-smoke/**/claude-args.json
             build/extension-smoke/**/*.log
             build/extension-smoke/fixture/*.wpilog
+            # VS Code 1.101 names an MCP server's log after its label, "WPILog: This laptop [local]",
+            # and the upload refuses a colon in a path (NTFS cannot store one), failing the job.
+            !build/extension-smoke/**/*:*
           retention-days: 14
 
   robot-dependency-submission:

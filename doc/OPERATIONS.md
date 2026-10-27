@@ -56,6 +56,10 @@ ephemeral identity and a reason. This does not create a log store; the recorded 
 If HTTP is healthy but recording has stopped, inspect `capture.captures[].state` and `reason`.
 `low_disk` resumes automatically when free space is above the configured floor plus margin;
 `startup_failed`, `admission_failed` and `write_failed` have details in the private server log.
+`waiting_for_store` resumes by itself once the store is free. Its `cause` says why: `lock_held`
+means another process holds the store lock, often an import run from the command line;
+`queue_busy` and `record_changing` mean the server's own store work was in the way. Capture tries
+again after a second, then every 2, 4, 8 and 16 seconds, then every 30 seconds.
 `last_write_age_ms` is null before a completed write. A high age alone does not prove missing
 data: a topic may publish only when it changes. Stopped capture keeps process health `ok` and
 does not by itself activate the systemd restart handler.
@@ -613,6 +617,11 @@ curl http://127.0.0.1:2363/health
 wpilog-mcp stop http             # finishes calls in progress, then exits
 ```
 
+A stop usually takes a few seconds. A call still running may take up to 80 seconds to finish,
+after which the server names it in its log and ends it; if the server has not exited 90 seconds
+after the request, the command ends the process. While the server stops, a client's new request
+is answered 503 and retried, and `curl http://127.0.0.1:2363/health` still answers.
+
 `start http` while it runs reports the running server. After an upgrade, `start` stops the old
 version and starts the new one. MCP clients that run `connect http` start the server themselves,
 so you rarely need `start` by hand. Logs: `~/.wpilog-mcp/logs/http.log`.
@@ -706,7 +715,9 @@ wpilog-mcp import --robot practice ~/riologs/downloads     # name the robot when
 
 Files are copied (`--move` moves them), identified by content, hashed, loaded to check them,
 and placed by robot and session. The output lists each file as imported, present (a duplicate,
-left at its source), unassigned (no robot or session known yet) or refused, with the reason.
+left at its source), unassigned (no robot or session known yet), deferred (kept out by a
+condition that passes on its own, such as another process holding the store's lock; run the
+import again later) or refused, with the reason.
 If Move cannot remove the original after committing a verified copy, the result still reports
 the import and explains why the original remains.
 The command probes the configured port and reported server name, including a systemd-managed
@@ -732,7 +743,9 @@ overlap, and the manifest says so.
 
 Drop files into `<store>/inbox/`. The owning server imports each file once its size has been
 stable for three seconds, and writes one line per file to `inbox/imported.log` with the
-outcome. A refused file stays there with its reason until it changes. A folder with a
+outcome. A refused file stays there with its reason until it changes. A deferred file waits
+with its reason and is tried again after five seconds, then 10, 20 and 40, then every minute,
+until the store is free. A folder with a
 `batch.json` naming `stated_robot` imports as one batch for that robot.
 
 #### 7.3 Assigning a file to a robot

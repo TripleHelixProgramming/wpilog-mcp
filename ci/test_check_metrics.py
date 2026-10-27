@@ -1,8 +1,9 @@
 # Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
 # SPDX-License-Identifier: MIT
 import json
+import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 from urllib.error import HTTPError
 import struct
 import tempfile
@@ -43,6 +44,28 @@ class MetricsImageTest(unittest.TestCase):
                 ['docker', 'tag', 'mirror.gcr.io/grafana/grafana:13.2.3', 'grafana/grafana:13.2.3'],
             ], [c.args[0] for c in run.call_args_list])
             self.assertTrue(all(c.kwargs['check'] for c in run.call_args_list))
+
+    def test_a_refused_pull_is_tried_again_before_the_image_is_tagged(self):
+        refused = subprocess.CalledProcessError(1, ['docker', 'pull'])
+        with patch('ci.check_metrics.subprocess.check_output', return_value='prom/prometheus:v3.15.0\n'), \
+                patch('ci.check_metrics.subprocess.run', side_effect=[refused, refused, None, None]) as run, \
+                patch('ci.check_metrics.time.sleep') as sleep:
+            preload_images(['docker', 'compose'])
+            self.assertEqual(3 * [['docker', 'pull', 'quay.io/prometheus/prometheus:v3.15.0']]
+                             + [['docker', 'tag', 'quay.io/prometheus/prometheus:v3.15.0', 'prom/prometheus:v3.15.0']],
+                             [c.args[0] for c in run.call_args_list])
+            self.assertEqual([call(10), call(10)], sleep.call_args_list)
+
+    def test_a_pull_refused_three_times_fails_the_check_without_tagging(self):
+        refused = subprocess.CalledProcessError(1, ['docker', 'pull'])
+        with patch('ci.check_metrics.subprocess.check_output', return_value='prom/prometheus:v3.15.0\n'), \
+                patch('ci.check_metrics.subprocess.run', side_effect=refused) as run, \
+                patch('ci.check_metrics.time.sleep') as sleep:
+            with self.assertRaises(subprocess.CalledProcessError):
+                preload_images(['docker', 'compose'])
+            self.assertEqual(3 * [['docker', 'pull', 'quay.io/prometheus/prometheus:v3.15.0']],
+                             [c.args[0] for c in run.call_args_list])
+            self.assertEqual(2, sleep.call_count)
 
     def test_an_unrecognized_repository_is_not_silently_substituted(self):
         with patch('ci.check_metrics.subprocess.check_output', return_value='unrecognized/server:1\n'), \

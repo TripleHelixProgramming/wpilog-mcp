@@ -373,6 +373,8 @@ A selected unavailable source returns `SOURCE_UNAVAILABLE`; another source is ne
 Import policy and pending-file facts remain available from the local-ingestion controls, not this
 listing. Listed absolute paths explicitly select files for later tool calls. Relative paths with
 multiple choices require `scope_id`; a scoped path and its move alias must remain in that scope.
+Only a path with no root is relative: on Windows, `\logs\match.wpilog` names that file on the current
+drive and needs no `scope_id`.
 
 **Example Response:**
 ```json

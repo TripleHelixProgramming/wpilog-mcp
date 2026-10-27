@@ -264,6 +264,23 @@ def history_choices(dashboard):
     return len(sessions['session_id'])
 
 
+PULL_ATTEMPTS = 3
+PULL_RETRY_SEC = 10
+
+
+def pull(source):
+    # A registry can refuse for a moment (Quay once answered 503 for Prometheus), so a refused
+    # pull is tried twice more before the check fails.
+    for attempt in range(1, PULL_ATTEMPTS + 1):
+        try:
+            subprocess.run(['docker', 'pull', source], check=True)
+            return
+        except subprocess.CalledProcessError:
+            if attempt == PULL_ATTEMPTS:
+                raise
+            time.sleep(PULL_RETRY_SEC)
+
+
 def preload_images(compose):
     # Shared CI egress can exhaust Docker Hub's anonymous quota. Fetch the same versions
     # from Prometheus's own registry and Google's Docker Hub cache, retaining Compose's tags.
@@ -275,7 +292,7 @@ def preload_images(compose):
         if prefix is None:
             raise ValueError('Unrecognized metrics image: ' + image)
         source = mirrors[prefix] + image[len(prefix):]
-        subprocess.run(['docker', 'pull', source], check=True)
+        pull(source)
         subprocess.run(['docker', 'tag', source, image], check=True)
 
 

@@ -49,7 +49,16 @@ public final class RecordingInventories implements AutoCloseable {
   private final Admissions admissions;
   private final Limits limits;
   private final LongSupplier nanoTime;
+  /**
+   * Two inventory builds at a time. The limit counts builds, not threads: a build gives its permit back before it
+   * completes its result, so the caller it wakes can start the next build while the build's thread is still on its
+   * way back to the pool. A pool of two threads refused that next build whenever both threads were still finishing.
+   */
+  private final Semaphore buildPermits = new Semaphore(MAX_BUILDERS);
   private final ThreadPoolExecutor builders;
+  /** Runs on a builder's thread once its result is complete; tests hold the thread there, as a busy machine can. */
+  private volatile Runnable afterBuild = () -> {};
+  void afterBuild(Runnable probe) { afterBuild = probe; }
   private final ScheduledExecutorService expiry;
   private final Semaphore responses = new Semaphore(MAX_RESPONSES);
   private long bytes;
@@ -66,7 +75,7 @@ public final class RecordingInventories implements AutoCloseable {
   public RecordingInventories(RecordedSources sources) { this(sources::admitRecording, Limits.defaults(), System::nanoTime); }
   RecordingInventories(Admissions admissions, Limits limits, LongSupplier nanoTime) {
     this.admissions = admissions; this.limits = limits; this.nanoTime = nanoTime; new SecureRandom().nextBytes(secret);
-    builders = new ThreadPoolExecutor(0, MAX_BUILDERS, 60, TimeUnit.SECONDS, new SynchronousQueue<>(), task -> {
+    builders = new ThreadPoolExecutor(0, Integer.MAX_VALUE, 60, TimeUnit.SECONDS, new SynchronousQueue<>(), task -> {
       var thread = new Thread(task, "recording-inventory-build"); thread.setDaemon(true); return thread;
     });
     expiry = Executors.newSingleThreadScheduledExecutor(task -> { var thread = new Thread(task, "recording-inventory-expiry"); thread.setDaemon(true); return thread; });
@@ -116,8 +125,13 @@ public final class RecordingInventories implements AutoCloseable {
         slot.readers = 1; retained.add(slot); bytes += slot.charge;
       }
       var result = new CompletableFuture<DetachedInventory>();
+      if (!buildPermits.tryAcquire()) {
+        synchronized (lock) { slot.building = false; slot.readers--; retire(slot); }
+        throw InventoryFailure.limit("Both inventory builders are busy; retry after 1000 ms", true);
+      }
       try { builders.execute(() -> build(slot, ref, result)); }
-      catch (RejectedExecutionException full) {
+      catch (RejectedExecutionException stopped) {
+        buildPermits.release();
         synchronized (lock) { slot.building = false; slot.readers--; retire(slot); }
         throw InventoryFailure.limit("Both inventory builders are busy; retry after 1000 ms", true);
       }
@@ -147,21 +161,26 @@ public final class RecordingInventories implements AutoCloseable {
       inventory = DetachedInventory.build(source, admission, limits.inventoryBytes(), () -> slot.cancelled || !slot.client.alive().getAsBoolean());
     } catch (Throwable problem) { failure = problem; }
     // The native prefix is closed before a handle can become visible or a future can complete.
-    synchronized (lock) {
-      slot.building = false;
-      boolean cancelled = slot.cancelled || closed || !slot.client.alive().getAsBoolean();
-      boolean overdue = nanoTime.getAsLong() - slot.created >= limits.buildNanos();
-      if (failure != null || cancelled || overdue) {
-        retire(slot);
-        if (cancelled) failure = InventoryFailure.expired();
-        else if (overdue) failure = InventoryFailure.limit("Inventory construction exceeded 10000 ms; retry after 1000 ms or choose a smaller recording", true);
-      } else {
-        bytes -= slot.charge - inventory.bytes; slot.charge = inventory.bytes;
-        slot.inventory = inventory; available.put(slot.id, slot);
+    try {
+      synchronized (lock) {
+        slot.building = false;
+        boolean cancelled = slot.cancelled || closed || !slot.client.alive().getAsBoolean();
+        boolean overdue = nanoTime.getAsLong() - slot.created >= limits.buildNanos();
+        if (failure != null || cancelled || overdue) {
+          retire(slot);
+          if (cancelled) failure = InventoryFailure.expired();
+          else if (overdue) failure = InventoryFailure.limit("Inventory construction exceeded 10000 ms; retry after 1000 ms or choose a smaller recording", true);
+        } else {
+          bytes -= slot.charge - inventory.bytes; slot.charge = inventory.bytes;
+          slot.inventory = inventory; available.put(slot.id, slot);
+        }
       }
+      slot.worker = null;
+    } finally {
+      buildPermits.release(); // Before the result wakes its caller, who may start the next build at once.
     }
-    slot.worker = null;
     if (failure == null) result.complete(inventory); else result.completeExceptionally(failure);
+    afterBuild.run();
     Thread.interrupted();
   }
   private void cancel(Slot slot) {

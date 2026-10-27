@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 
 /** A fork observes actual scan messages without depending on a new cache-only test API. */
@@ -28,7 +29,7 @@ class PersistentScanOwnerTest {
     var cache = Path.of(configured).resolve("scan-owner-" + UUID.randomUUID()).toAbsolutePath();
     Files.createDirectories(cache);
     var output = directory.resolve("scan.log");
-    var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Dorg.slf4j.simpleLogger.defaultLogLevel=warn",
         "-Dorg.slf4j.simpleLogger.log.org.triplehelix.wpilogmcp.log.LazyParsedLog=info",
         "-cp", System.getProperty("java.class.path"), OpenProcess.class.getName(),

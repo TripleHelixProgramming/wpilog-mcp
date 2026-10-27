@@ -56,9 +56,19 @@ class HttpAdmissionTest {
         socket.setSoTimeout(10000);
         socket.getOutputStream().write(("POST " + route + " HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: "
             + query.length() + "\r\n\r\n" + query).getBytes(StandardCharsets.US_ASCII));
-        // Headers prove the exchange is admitted; stop reading before the large response.
-        var status = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream())).readLine();
+        // Headers prove the exchange is admitted; stop reading before the large response. A refusal is read to its
+        // end, as a client does: the next one could otherwise meet both refusal slots still writing their replies.
+        var reply = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
+        var status = reply.readLine();
+        assertNotNull(status, "connection " + i + " was closed with no reply");
         assertTrue(status.contains("200") || status.contains("503"), status);
+        if (status.contains("503")) {
+          int length = 0;
+          for (String header; (header = reply.readLine()) != null && !header.isEmpty();)
+            if (header.regionMatches(true, 0, "Content-Length:", 0, 15)) length = Integer.parseInt(header.substring(15).trim());
+          var refusal = new char[length];
+          for (int read = 0, n; read < length; read += n) if ((n = reply.read(refusal, read, length - read)) < 0) fail("refusal ended early");
+        }
       }
       var health = assertDoesNotThrow(() -> HttpClient.newHttpClient().send(HttpRequest.newBuilder(
           URI.create("http://127.0.0.1:" + transport.getPort() + "/health")).timeout(Duration.ofSeconds(3)).build(),
@@ -69,6 +79,28 @@ class HttpAdmissionTest {
       transport.stop(); manager.unloadLog(path.toString());
       manager.clearAllowedDirectories(); directories.forEach(manager::addAllowedDirectory);
     }
+  }
+
+  /** A call's worker stays after its reply has reached the client, as a busy machine can. With one MCP slot, the next
+   * call used to be refused with 503 until that thread was back in the pool. */
+  @Test void anMcpCallAtTheLimitIsAdmittedOnceThePreviousReplyIsWritten() throws Exception {
+    var transport = new HttpTransport(new ToolRegistry(), 0); transport.requestLimits(1 << 20, 1, Duration.ofSeconds(10));
+    var replied = new java.util.concurrent.CountDownLatch(1); var release = new java.util.concurrent.CountDownLatch(1);
+    var first = new java.util.concurrent.atomic.AtomicBoolean(true);
+    transport.afterMcpRequest(() -> {
+      if (!first.getAndSet(false)) return;
+      replied.countDown();
+      try { release.await(10, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    });
+    transport.start();
+    try {
+      var initialize = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + transport.getPort() + "/mcp"))
+          .POST(HttpRequest.BodyPublishers.ofString("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")).build();
+      assertEquals(200, HttpClient.newHttpClient().send(initialize, HttpResponse.BodyHandlers.ofString()).statusCode());
+      assertTrue(replied.await(5, java.util.concurrent.TimeUnit.SECONDS), "the first call's worker stays after its reply");
+      var next = HttpClient.newHttpClient().send(initialize, HttpResponse.BodyHandlers.ofString());
+      assertEquals(200, next.statusCode(), "the next call is admitted: " + next.body());
+    } finally { release.countDown(); transport.stop(); }
   }
 
   @Test void anUnfinishedBodyHasADeadlineAndReleasesItsAdmissionSlot() throws Exception {

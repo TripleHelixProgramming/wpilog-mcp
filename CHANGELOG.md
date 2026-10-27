@@ -316,6 +316,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Local ingestion starts at most one job a poll: a poll that admitted a batch leaves the next REV
+  reconsideration to its next poll, three seconds later. A batch that finished at once, as one a
+  busy store refuses does, could be replaced as the poll's work by a reconsideration started in the
+  same poll; a test that waited on that work saw the reconsideration finish instead, and failed on
+  Ubuntu CI.
+- The server runs headless unless its command line says otherwise. A chart image draws through AWT,
+  which on a Mac gave the server's JVM a Dock icon that took focus.
+- **One owner per store folder:** a store folder has one store object in a process. A second one
+  for a folder that is already open is refused when it is made, with `STORE_OWNED`, and closing a
+  store waits, at most ten seconds, for its last queued turn before the folder is free. Two store
+  objects for one folder ran their own queues and could take its lock at the same moment: Java
+  refused the second inside the process, and an import failed with "Store lock is held by another
+  import". The server opens every folder through one registry, so only tests met it, on Windows CI.
 - The data endpoint's UTC mapping is kept: a loaded log builds it once, and a capture still
   recording extends it by the clock's new readings, so a request no longer reads the whole clock
   entry again. On a two-hour recording, a ten-second UTC window decodes at most 40 of its 1,400
@@ -759,6 +772,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Server installation:** destination containment checks refuse escaped symlinks, and installer JSON checks keep JVM stderr banners separate; previously installation could escape its destination or a JVM banner could be mistaken for invalid installer output.
 - **Health checks:** `health_check` recognizes an in-memory registered TBA key; previously it could report a missing key despite a client's active registration.
 - **File-size refusal:** WPILOGs beyond the supported mapping bound remain untouched on import and appear with the same explained refusal in plain-directory listings, instead of being omitted or partially placed. Windowed mapping raises that bound to 1 TiB.
+- **Windows paths without a drive:** with several log folders configured, a path such as `\logs\match.wpilog` now reads that file on the current drive, as any Windows program would. Before, it was refused as relative ("A relative file path requires an explicit source scope"), although a path with a root cannot be relative to one of the folders; on Windows, 408 tests that name mock logs this way failed. Nothing changes on macOS or Linux, where every such path is absolute.
+- **Windows import recovery:** a staging folder left by an interrupted import is now recovered on Windows. Before, recovery read the folder's ownership marker through a second handle while a lock was held on it, which Windows refuses, so after one interrupted import every later import, peer sync and system-log pull into that store failed with "The process cannot access the file because another process has locked a portion of the file" until the folder was deleted by hand, and a sync that started while an import held its stage failed the same way. Only the handle that holds the lock reads the marker now.
+- **Windows drive checks:** a staged copy is no longer refused as "not on the destination filesystem" when it is on the same drive, and one drive has one disk budget. Before, the checks compared Java's file stores, which name a drive differently when a path is longer than 247 characters, and a stage sits about fifty characters below its destination: a store at `C:\Users\<name>\pit-store`, for example, refused every session file a peer sync staged, and copies admitted through long and short paths could together spend the space reserved for capture. Drives are now told apart by their volume serial number on Windows, and as before elsewhere.
+- **Concurrent import-stage recovery:** when two recoveries walk the same abandoned import stage, such as a store's startup recovery beside an import's or a sync's own, the one that finds the stage already gone now skips it. Before, it could fail with `NoSuchFileException`, failing the import, sync or pull that ran it; full builds failed this way now and then.
+- **Extension, oversized replies:** a server reply over the extension's byte limit that arrived in one piece no longer escapes as an uncaught exception. The refusal settled the request and then destroyed it with the error, and on Node 20 and 22 the reply's socket had already been freed, so that error was thrown with no handler (Node 26 no longer does this). The MCP client and the follow client now destroy the request without the error once it is settled.
+- **Extension, store control and upload replies:** a store control reply over 8 MiB, or an upload reply over 1 MiB, is now refused as soon as it crosses the limit, and nothing more is read. Before, the request was only destroyed: a reply that had already arrived whole still ended, so the store client parsed the part under the limit and the upload resolved with it, and on Node 20 and 22 the destroy's error was thrown as an uncaught exception.
+- **Mirror reconciliation:** a held file's recheck, such as each one in the first reconciliation after a restart, no longer measures the whole mirror before and after it. Before, those measurements made a reconciliation's time grow with the square of the mirror's size: 300 held files took over ten minutes on Windows, where CI's runner timed out at 600 seconds; they now take 15 to 25 seconds in a Windows VM and about a second on Linux. A recheck that must first finish an interrupted transfer still measures the mirror and reserves for it.
+- **Java read client:** the `wpilog-reader` library's remote client now keeps the server's `retryable` flag on a refusal, so `ReadException.retryable()` is true for a retryable `FILE_CHANGED`, such as a catalog read while a recording rolls over, and for a busy reply (HTTP 503 or 429). Before, it dropped the flag, so every refusal received over HTTP looked permanent and a program that retried by the flag, as the read API guide says to, gave up at once. A missing flag still means false, and one that is not a boolean is an invalid response, as in the extension.
+- **Mirror transfers:** a transfer job that has finished no longer counts against the limit of two at a time while its thread returns to the pool. Before, when both threads were still finishing, the next job was refused as busy although nothing was running, and a mirror pass could end partial; with rechecks taking a few milliseconds, this happened in 3 of 4 runs of the reconciliation test on one CPU, and once on CI's Ubuntu runner.
+- **Startup:** a server with a disk cache creates and reports its cache directory before it serves anything. Before, the background cleanup did both, so a server that stopped at once could exit with neither done; the extension's cache tests failed that way once on Windows.
+- **Mirror synchronization:** a mirror no longer stops synchronizing for good when a tick of its timer finds the transfer owner busy, for example just after the mirror was disabled and configured again while a transfer was still finishing. Before, the busy refusal was thrown out of the timer's task, which the scheduler then never ran again, and the status read "synchronizing" until the mirror was disabled. A busy tick now changes nothing and the next one retries, and a request sent the moment a job reports completion is no longer refused as if the job still ran.
+- **Follows across a restart:** a follow that a server stop catches in the middle of a page now ends with 410 CLOSED, and the client opens it again on the restarted server. Before, the stop released grants and catalogs beneath the page, which reported their absence as 403 access refused or a non-retryable 409, and the extension then stopped following for good: in a Windows VM, every view open across a restart stopped this way. A native read or data request admitted before a stop now receives 503 CLOSED instead of an empty catalog or "no store is configured", and a request whose body is read after the stop is refused instead of losing its reply.
+- **Capture startup:** a busy store no longer stops capture until the server restarts. Startup recovery failed for good when another process held the store lock, when the store's queue stayed busy past a turn's deadline, when a receipt changed while recovery read it, and most often when a manifest write renamed its temporary file during recovery's walk of the store. Startup now tries again after a second, doubling to at most 30 seconds, and `/health` reports the capture as `waiting_for_store` with a `cause`; corrupt or unsafe recovery still stops it. The walk's 32,768 bound now counts session folders instead of every path, so a store holding more files than that no longer stops capture.
+- **Imports deferred, not refused:** a file kept out by a condition that passes on its own is now `deferred` instead of `refused`, and the inbox and folder synchronization (local ingestion) try it again. Before, the inbox never retried an unchanged refused file and local ingestion reused its refusal receipt after a restart, so a log that arrived while another process held the store's lock, while the store's metadata changed, while another import moved the file, when the copy would have used the space kept free for recording, or while the server stopped, was never imported. A deferred file waits with its reason and is tried again after five seconds, doubling to a minute; folder synchronization writes no receipt for it. Import results, `inbox/imported.log`, the import command (exit code 1) and the extension's import summary name the new status. Refusal receipts written before this release keep their state until the source is scanned again on request or the file changes.
+- **A stop in order:** the HTTP server now refuses new requests as soon as a stop begins, with 503 and `Retry-After: 1`, lets admitted requests finish, and only then closes its listener, workspace and sessions. Before, it kept accepting requests during its five-second drain, so new calls began while their stores and catalogs were closing. It counted a streaming request only once a worker ran it, and it interrupted tool calls instead of waiting for them. A second stop returned at once, so a signal arriving during a stop request or an idle exit closed capture and the logs under the first stop. The idle exit interrupted its own stop and skipped the store's final wait. A call still running could also rebuild the visualization workspace after the stop, leaving a replacement server's visualizations unavailable. Now a data stream gets five seconds and a tool call up to 80 seconds, after which the log names it and the stop ends it, so the process exits by itself before the 90-second kill.
+- **Imports at a stop:** the store registry now stops imports and waits for them before it closes the disk budget they reserve space from. Before, it closed the budget first, so an import still running failed with "Disk-space owner is closed" while its store did not yet know it was stopping; the failure was recorded as refused, and folder synchronization kept that refusal after the restart. Such an import is now deferred and tried again.
+- **Stopping a background server:** `wpilog-mcp stop`, a restart and an upgrade now give the server 90 seconds to exit before ending its process, the same as the pit server's systemd unit. They used the 10-second start timeout, which could kill a server still finishing its calls within its own 80-second stop deadline. The stop request is also sent outside the launcher's lock, so a concurrent start or status check no longer waits for the server's answer.
+- **Capture's close at a stop:** capture now waits, within the stop's 80-second deadline, for the clock record of the file it just closed, for the robot pull's running step and its checkpoint, for the tail, PhotonVision and statistics workers, and for the NT4 loop's last task. Before, it returned at that file's final manifest or after 30 seconds, and the log manager then closed the stores under the clock pass and the pull's checkpoint; the last file's clock pass was even asked for after its manifest completed, so a close could miss it. An identity the robot pull learns during the stop no longer raises an error on its thread.
+- **Reads while a store moves:** a read that finds the store's files changing while it lists them now waits 50 milliseconds before it lists them again. Before, it listed them again at once, inside the same burst of writes, such as the placement and then the clock record that capture writes for a file it closes when a robot disconnects, and the read was refused as a retryable `FILE_CHANGED` that a moment later would have succeeded.
+- **Opening follows at the limit:** a client that opens a follow as soon as the previous one's reply arrives is no longer refused one below the limit of 32. The server gave back the slot it held while opening a follow only after sending the reply, so the next request could find that follow counted twice, and the 32nd follow was refused with 429 "Close another follow" while 31 were open.
+- **Extension, recording health after a disconnect:** a health check that the server refuses as retryable, as when it meets the store still writing the file it closed when a robot disconnected, no longer shows the recording as unavailable. The views keep what they last showed, and the check is asked again after the server's suggested wait; a refusal that lasts five seconds is shown. Before, the views showed "unavailable" with the refusal until the next check five seconds later, just as someone was watching the disconnect.
+- **Replica catalog builds:** a mirror that asks for its next catalog as soon as one arrives is no longer refused as busy. The master builds two catalogs at a time and counted its two threads, and a build woke its caller before its thread was back in the pool, so with both threads still finishing the next request was refused with `BUSY: two replica catalogs are building` while nothing was building. The limit now counts builds, and a build frees its slot before its result.
+- **Replica migrations:** a migration started the moment another store's migration finishes is no longer refused as busy. Two migrations prepare at a time across every store, and the limit counted the two preparer threads; a migration completed its result on the store queue before its preparer's thread was back in the pool, so with both threads still finishing the next one was refused with `BUSY: two replica migrations are preparing`. The limit now counts migrations, and a migration frees its slot before its result.
+- **Peer discovery:** a peer announced while two earlier handshakes are finishing is now checked at the next tick. Two handshakes run at a time, and the limit counted the two threads; a handshake published its result before its thread was back in the pool, so with both still finishing the next peer's handshake was put off a second, tick after tick. The limit now counts handshakes, and a handshake frees its slot before it publishes its result.
+- **Recording inventories:** opening an inventory as soon as two others finished building is no longer refused as busy. Two inventories build at a time, and the limit counted the two builder threads; a build completed its result before its thread was back in the pool, so with both still finishing the next one was refused with `Both inventory builders are busy`. The limit now counts builds, and a build frees its slot before its result.
+- **HTTP request limits:** a client that sends its next request as soon as a reply arrives is no longer refused with 503 `BUSY` while nothing is running. The data, read, follow, store, inventory and replica pools counted threads, and a request's thread was still closing the exchange after the client had the reply, so at a pool's limit the next request found every thread taken. A limit now counts requests: a request's place is free once its reply's last byte is written, and a request that finds none while a reply is finishing waits up to 50 ms for it.
+- **HTTP refusals:** a refused request is answered with its 503 while earlier refusals are finishing, instead of having its connection closed with no reply. The two refusal threads counted the same way, so a third refusal right after two others found no thread; `HttpAdmissionTest` failed that way once on Ubuntu CI and twice on a Linux workstation.
+- **MCP request limit:** an MCP client that sends its next call as soon as a reply arrives is no longer refused with 503 at the limit. The MCP pool counted its threads, and a call's thread was still finishing after the client had the reply; a call's slot is now free once its reply's last byte is written.
+- **Inventory reply reservations:** a reply's reservations are now freed as its last write begins, so a client that has the reply never finds them still held. They were freed after the socket write, when the request's scope closed, so a client could read the reply and then still see 2 MiB reserved; the inventory refusal tests had been taught to wait for it instead (`1dadec9`).
 
 ### Security
 
@@ -891,6 +933,168 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data endpoint shared one bucket loop and native reads repeated it, and no test checked which
   sample a reduced bucket named. Answers are unchanged.
 
+- The metrics-stack check tries a refused image pull twice more, ten seconds apart, before it
+  fails. Before, one 503 Service Unavailable from Quay for the Prometheus image failed a CI run
+  whose tests had all passed.
+
+- The tail admission test runs the capture loop's queued tasks until the admission's completion
+  opens the session, instead of exactly one. Other threads post to that loop too, such as a tail's
+  line delivery or the device identity the store records, and once on Ubuntu CI another task ran
+  first, so the test found no session.
+
+- The tail provider tests wait, at most five seconds, for the providers' close to complete. The
+  close now waits for each tail's control thread to end, so it completes on that thread a moment
+  after it returns; the tests asserted that it had already completed, and once on Ubuntu CI the
+  thread had not yet ended. A close that never completes still fails them.
+
+- The live source test follows a retryable refusal of a visualization request: it waits the server's
+  suggested time and asks again, for up to 10 seconds. A health check sent just after the test
+  disconnects its robot can meet the store writing the closed file's placement and clock record, and
+  the server answers 409 `FILE_CHANGED`, retryable, with a suggested wait of a second; once on
+  Windows CI the test, which accepted only 200, failed there.
+
+- The extension's follow broker wiring check reads the CI workflow with its line endings
+  normalized. A Windows checkout gives the file CRLF endings, so the check's pattern never matched
+  there; the extension's Windows tests had not run in CI before, since the Java tests failed first.
+
+- The extension's organize-flow tests resolve their temporary folder with the native resolver, as
+  the organizer resolves the folders it saves. On Windows CI the temporary folder is a short 8.3
+  name (RUNNER~1) that only the native resolver expands, so eight tests compared two spellings of
+  one folder.
+
+- The expired mirror worker test sets its short idle timeout only once the transfer is blocked
+  in its read. Idleness counts from a job's start, so on a slow Windows runner the job expired
+  during its setup, before it read, and the test waited five seconds for a read that never came.
+
+- The blocked-logging capture test gives the listener values that follow a close five seconds,
+  not 200 ms. Logging that a held stderr can stall holds them until the test's cleanup, so the
+  longer wait still catches it; a fresh JVM's reconnect took longer than 200 ms on Windows.
+
+- The replica publication tests wait for the clock record pass that a capture's close asks for.
+  The close asks only after it completes, and one worker that every store shares writes the
+  record later, so on Windows the record could be published after a test had restored the store's
+  header; one test then counted three published files instead of two, in 18 of 30 runs in a
+  Windows VM.
+
+- The replica publication tests' shared capture helper waits for that clock record pass too. Only
+  one test's own helper did, so a test using the shared one could have the record published between
+  two of its steps: on Windows CI, the status test's second publication recovery, which must change
+  nothing, published a fifth file.
+
+- The inventory refusal tests hold the worker just after a refused batch's reply has been written
+  and check that its reply reservations are already free, instead of waiting up to five seconds for
+  their release. The server released them after writing the reply, so a client could hold the reply
+  first, and the Windows runner once saw 2 MiB still held; they are now freed as the last write
+  begins.
+
+- The follow limit test sends each long wait once the page before it has freed its slot, and checks
+  that the request after the sixteenth wait is refused by the limit itself. It waited for 16 active
+  workers, which can now include a finished request whose slot is already free, and in a loaded
+  Windows VM its sixteenth wait was refused twice. Its check of that refusal took any 503, and the
+  follow engine answers a second page on a waiting lease with 503 as well, so it passed with the
+  limit removed. Its checks after the stop now run outside the `finally`, where their failure hid
+  an earlier one.
+
+- The tests that kill a child process holding a lock now wait, at most 10 seconds, for Windows to
+  release it before they take it themselves. Windows releases a terminated process's file locks
+  when resources allow, not when it exits, so the peer recovery and capture recovery tests failed
+  there now and then: the next sync found "A sync is already running for this store", or recovery
+  kept a capture the dead child had owned. One helper serves them and the placement test.
+
+- The sync recovery tests wait the same way, with the same helper, for the store and owner locks
+  their killed child held before they reopen its stores. They reopened at once, and once on
+  Windows CI the reopened store found "Store lock is held by another import"; in a Windows VM
+  under load they failed in one run of ten.
+
+- The tests that listed or served a store folder while a registry or store of their own held it
+  now hand it to the process's registry, as the server does, and take it back; the sync tests give
+  their file mover to the registry's store instead of making a second one, and the two tests that
+  stand in for a second server say so. On Windows CI the legacy layout test's import found "Store
+  lock is held by another import"; with one owner per folder enforced and none of these changes,
+  32 tests in ten classes failed at once, on every machine.
+
+- The staging shutdown test checks a running publication turn's staged bytes while the close waits
+  for that turn, once the close has stopped the store's imports and queue. It checked them after the
+  close returned, which now comes only after the turn has unwound, so the turn's cleanup could
+  already have removed them: it failed on Windows CI and on a Mac, and took ten seconds.
+
+- Every test JVM, and every JVM a test starts, is headless, and a check fails when a test starts one
+  any other way. On a Mac the chart tests and the servers and helper processes tests started could
+  open AWT with a Dock icon, which took focus while the suite ran.
+
+- The library pressure test waits until all four library calls have charged their input as well as
+  reserved their reply before it checks both. A call reserves its reply first, so on Windows CI the
+  fourth was still between the two and the test found 6 MiB of input where it expected 8.
+
+- The admission test that fills the read pool with peers that never read reads each refused reply to
+  its end before it opens the next connection, as a client does. It read only the status line, so
+  two refusals could still be writing their replies when a third came, and by design that one is
+  closed without a reply: on Ubuntu CI the test read a missing status line.
+
+- The session expiry test now expires sessions as of a moment after its last request. Windows'
+  clock moved in steps of about a millisecond on the test machines, so the last request and an
+  expiry right after it could read the same instant, and the session, not idle before it, stayed:
+  the test failed on three of five Windows runs.
+
+- The session transfer test retries a read the server refuses as retryable, for up to 10 seconds,
+  as clients do. While the recorder rolls files over, a catalog read can see the store change on
+  each of its attempts; the slower Windows runner hit that on two of five runs.
+
+- The bridge, JVM provider, import command and install refresh tests also take the ports they
+  expect nothing to answer on from that per-fork slice. Before, each closed a system-chosen port
+  and then relied on it staying empty, so a server in another test process could take it in
+  between; one full build failed this way, its bridge reaching a server it expected to be
+  unreachable.
+
+- The conformance sweep's teardown no longer throws when its setup failed part way, so a report
+  shows the setup's own failure. On Windows the setup had failed on the drive-check bug above, so
+  the sweep had not run there since that bug came in.
+
+- Two tests wait longer, where Ubuntu's timings did not fit the Windows runner, which is 6 to 16
+  times slower on file-heavy store work: the capture admission test's completion wait, which
+  matters only when a test hangs, and the inventory test's build deadline, which must outlast the
+  admission it interrupts (80 ms became 2 s). The placement test that kills
+  a child holding a stage now waits for the child's lock to be released before the next placement,
+  since Windows releases a dead process's file locks when resources allow, not when it exits.
+
+- Tests that write a new log over one the server has loaded now release it first, and tests that
+  corrupt a loaded log change its bytes in place. Windows refuses to truncate or replace a file
+  while it is mapped, so on Windows these tests failed before reaching what they test; the
+  content-hash test's rewrite then fell back to an eager parse and failed with a class cast, and it
+  now requires the lazy log it means to examine.
+
+- The tests of a replaced file's identity now run only where the file system reports one. Windows
+  reports none, and NTFS gives a file that replaces another the old creation time for about 15
+  seconds, so on Windows those fixtures could not make the change they test and failed their own
+  precondition. A Windows-only test checks the fallback instead: a different creation time alone
+  counts as a changed file. The window is documented: there, a same-size replacement with its
+  modification time set back is not detected by the memory of verified hashes.
+
+- The editor smoke check now requires that activation alone starts no shared server, and checks the
+  server's health and version after listing local logs, the first request that needs it. Before, it
+  expected activation to start the server, which the extension stopped doing when local services
+  became opt-in, so the check failed on both VS Code versions as soon as CI ran it. The listing plant
+  now breaks only the tree built from a listing, which still starts the server.
+
+- The systemd CI check installs all four printed units and proves the restart on a real Linux
+  host: it pauses the server, whose port stays open but silent, requires the health probe to fail
+  only after its retries, and requires systemd to leave a new process answering. A second plant,
+  with the probe's `OnFailure=` removed, must be rejected. Before, the check still expected the
+  three units printed before the restart service existed, so it failed as soon as CI ran it, and
+  nothing had exercised the restart on a real host.
+
+- The test that two simultaneous REV reconsideration requests share one turn now holds the import
+  staging thread, where reconsideration has waited since it moved off the store queue, and also
+  requires the shared request to be still pending. Before, it held the store queue, which
+  reconsideration no longer waits behind, so the first request could finish before the second was
+  made; Ubuntu CI failed once this way.
+
+- The daemon, installer and offline import tests take the ports they name from a slice below every
+  system's ephemeral range, one slice to each Gradle fork, each port checked free and handed out
+  once. Before, each test asked the system for a free port, closed it, and then had a daemon bind
+  it or expected it to stay empty, so a test in another fork could be handed the same port in
+  between, and full builds failed finding the port taken.
+
 - The store copy admission tests now grant their own folder and restore the log manager's grants
   afterwards. Previously the upload test relied on an empty grant list, which admits every path,
   so its import was refused ("outside configured log directories") whenever a test that uses the
@@ -910,6 +1114,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native editor runners kept every run, and reports named after temporary folders were never
   replaced; one checkout's `build/` passed 500 GiB. A claim check now fails when a test, a native
   editor runner or the build script names a folder under `build/` that nothing empties.
+
+- Each test task now runs its JVMs with a temporary folder of its own under `build/test-tmp/`, which
+  it empties before its tests start and deletes after a passing run; a failed run keeps it. The
+  project tells JUnit never to delete a `@TempDir`, because on Windows a memory-mapped log stays
+  locked until a garbage collection, so every run used to leave its folders in the system's
+  temporary folder for good: three days of builds filled a Linux workstation's 15 GB `/tmp`, and its
+  next build failed 1,450 tests with I/O errors. Folders that earlier builds left there stay until
+  they are deleted.
 
 - The unreleased synchronization-cache checks now require a dated compatibility decision
   when reviewed parsing, decoding, clock or synchronization inputs change; previously the
@@ -1011,6 +1223,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- The pit server reference and the architecture guide say what bounds replica metadata replies to
+  8 MiB: four requests at a time, each reply capped at 1 MiB and encoded in at most two buffers.
+  They called it a separate budget, as if a reservation pool admitted or refused requests against
+  it; none does. The standalone reference says library reply reservations are freed as the reply's
+  last write begins; it still said they were held through the socket write, as they were before
+  inventory reply reservations changed.
 - `doc/GRAFANA_PLAN.md` records what stage 1 has built and the maintainer's two answers: every
   capture records its server's clock as an entry, now built, and struct fields on a recording
   become columns as the writer records them, which reverses the recording phase's first answer,

@@ -59,9 +59,11 @@ final class ReadEndpoint implements AutoCloseable {
   }
   final class CatalogLease implements org.triplehelix.wpilogmcp.read.server.CatalogRecordingSource.Lease {
     private final CatalogUse use;
+    private final boolean closing;
     private boolean released;
-    CatalogLease(CatalogUse use) { this.use = use; }
+    CatalogLease(CatalogUse use, boolean closing) { this.use = use; this.closing = closing; }
     public StoreReadCatalog value() { return use == null ? null : use.value; }
+    @Override public boolean closing() { return closing; }
     @Override public void close() throws IOException {
       if (use == null) return;
       boolean release;
@@ -74,11 +76,13 @@ final class ReadEndpoint implements AutoCloseable {
   }
   CatalogLease catalog() throws IOException {
     // Consult current configured roots on every admission, but retain the catalog/decode owner.
-    // Factory construction does no inventory IO. A changed lease retires its previous roots.
+    // Construction reads every configured store's header, so it happens outside the lock, and a
+    // close can land meanwhile. A changed lease retires its previous roots.
     var candidate = catalogs.open();
     StoreReadCatalog discard = null, retire = null;
-    CatalogUse admitted;
+    CatalogUse admitted; boolean closing;
     synchronized (catalogLock) {
+      closing = catalogsClosed;
       if (catalogsClosed) { discard = candidate; admitted = null; }
       else {
         if (currentCatalog != null && (candidate == null || !currentCatalog.value.roots().equals(candidate.roots()))) {
@@ -96,7 +100,13 @@ final class ReadEndpoint implements AutoCloseable {
     }
     if (discard != null) discard.close();
     if (retire != null) retire.close();
-    return new CatalogLease(admitted);
+    return new CatalogLease(admitted, closing);
+  }
+  /** What a request admitted before the stop receives when it meets the stop: retry, as a new request would. */
+  private static Refusal stopping() { return new Refusal(503, "CLOSED", "Read service is stopping; retry after it restarts"); }
+  private boolean stopped(HttpExchange exchange) throws IOException {
+    synchronized (leases) { if (!closed) return false; }
+    var refusal = stopping(); sendFailure(exchange, refusal.status, refusal.code, refusal.getMessage()); return true;
   }
   private static final class Lease {
     final ReadSnapshot snapshot;
@@ -127,6 +137,7 @@ final class ReadEndpoint implements AutoCloseable {
       if (path.equals(PATH + "/catalog")) {
         requireMethod(method, "GET");
         try (var catalogLease = catalog()) {
+          if (catalogLease.closing()) throw stopping();
           var catalog = catalogLease.value();
           // Serialize the existing catalog directly into the bounded writer, rather than first
           // allocating an unbounded second Gson tree for all of a season's manifest records.
@@ -140,6 +151,7 @@ final class ReadEndpoint implements AutoCloseable {
       } else if (path.equals(PATH + "/rev/query") || path.equals(PATH + "/rev/describe")) {
         requireMethod(method, "POST");
         try (var catalogLease = catalog()) {
+          if (catalogLease.closing()) throw stopping();
           var catalog = catalogLease.value();
           if (catalog == null) throw new Refusal(404, "NOT_FOUND", "No store is configured");
           var request = body(exchange);
@@ -164,12 +176,13 @@ final class ReadEndpoint implements AutoCloseable {
         } finally { finished(lease); }
       } else throw new Refusal(404, "NOT_FOUND", "Unknown read route");
     } catch (Refusal failure) { sendFailure(exchange, failure.status, failure.code, failure.getMessage()); }
-    catch (ReadException failure) { sendFailure(exchange, status(failure.code()), failure.code().name(), failure.getMessage(), failure.retryable()); }
-    catch (java.nio.file.AccessDeniedException | org.triplehelix.wpilogmcp.log.LogFileException failure) {
-      sendFailure(exchange, 403, "ACCESS_DENIED", failure.getMessage());
+    catch (ReadException failure) {
+      if (!stopped(exchange)) sendFailure(exchange, status(failure.code()), failure.code().name(), failure.getMessage(), failure.retryable());
+    } catch (java.nio.file.AccessDeniedException | org.triplehelix.wpilogmcp.log.LogFileException failure) {
+      if (!stopped(exchange)) sendFailure(exchange, 403, "ACCESS_DENIED", failure.getMessage());
     } catch (ReadWire.WireLimit failure) { sendFailure(exchange, 413, "RESOURCE_LIMIT", failure.getMessage()); }
     catch (IllegalArgumentException failure) { sendFailure(exchange, 400, "INVALID_REQUEST", failure.getMessage()); }
-    catch (IOException failure) { sendFailure(exchange, 400, "READ_FAILED", failure.getMessage()); }
+    catch (IOException failure) { if (!stopped(exchange)) sendFailure(exchange, 400, "READ_FAILED", failure.getMessage()); }
   }
 
   private void open(HttpExchange exchange, JsonObject request) throws IOException {
@@ -179,6 +192,7 @@ final class ReadEndpoint implements AutoCloseable {
     }
     ReadSnapshot snapshot = null;
     try (var catalogLease = catalog()) {
+      if (catalogLease.closing()) throw stopping();
       var catalog = catalogLease.value();
       Path path; StoreReadCatalog.StoreFile facts = null;
       if (request.has("path")) {
@@ -376,7 +390,10 @@ final class ReadEndpoint implements AutoCloseable {
   }
 
   JsonObject body(HttpExchange exchange) throws IOException {
-    var timeout = timer.schedule(exchange::close, 10, TimeUnit.SECONDS);
+    java.util.concurrent.ScheduledFuture<?> timeout;
+    // After the stop shuts the timer, a body read is refused as a stop rather than lost to an uncaught rejection.
+    try { timeout = timer.schedule(exchange::close, 10, TimeUnit.SECONDS); }
+    catch (java.util.concurrent.RejectedExecutionException stopped) { throw stopping(); }
     try (var input = exchange.getRequestBody()) {
       byte[] bytes = RequestBodies.read(exchange, MAX_REQUEST_BYTES);
       if (bytes.length > MAX_REQUEST_BYTES) throw new ReadException(ReadProblem.Code.RESOURCE_LIMIT, "Read request exceeds " + MAX_REQUEST_BYTES + " bytes");

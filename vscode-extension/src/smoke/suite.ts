@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { readSourceUri } from "../sourceUri";
 
 interface LogItem extends vscode.TreeItem { node: { kind: string; log?: { path: string } }; }
 interface Api {
@@ -36,11 +37,35 @@ async function smoke(): Promise<void> {
     const api = await within(extension.activate(), "activation");
     assert.ok(extension.isActive, "extension activated in VS Code");
     assert.ok(typeof api?.ready?.then === "function" && api?.logs, "activation exposes only readiness and the actual Logs provider's read interface");
+    await within(api.ready, "activation readiness");
+    // Local services are opt-in: nothing starts the shared server until a request needs it.
+    const pidFile = path.join(testHome, ".wpilog-mcp", "run", "http.pid");
+    assert.ok(!fs.existsSync(pidFile), "activation alone starts no shared server");
     record("activation");
 
-    await within(api.ready, "shared server startup");
-    const pidFile = path.join(testHome, ".wpilog-mcp", "run", "http.pid");
-    assert.ok(fs.existsSync(pidFile), "extension starts the shared daemon in the isolated home");
+    // What the search walked, for a failure message: a missing fixture otherwise hides the reason.
+    const walked: string[] = [];
+    const find = async (parent?: LogItem, depth = 0): Promise<LogItem | undefined> => {
+      for (const item of await api.logs.getChildren(parent)) {
+        walked.push(`${"  ".repeat(depth)}${item.node.kind}: ${String(item.label)}${item.description ? ` (${String(item.description)})` : ""}`);
+        if (item.node.kind === "log" && item.node.log?.path === fixture) return item;
+        if (item.collapsibleState !== vscode.TreeItemCollapsibleState.None) {
+          const child = await find(item, depth + 1); if (child) return child;
+        }
+      }
+      return undefined;
+    };
+    // Listing local logs is the first request that needs the local server. A refresh (the server
+    // starting, an agent connecting) cancels a listing in flight, and the tree view asks again
+    // when told to; this check asks again too, until the fixture appears or a deadline passes.
+    let item: LogItem | undefined;
+    for (const deadline = Date.now() + 30_000; ;) {
+      walked.length = 0;
+      item = await within(find(), "Logs tree listing");
+      if (item || Date.now() > deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    assert.ok(fs.existsSync(pidFile), "listing local logs starts the shared daemon in the isolated home");
     const [, port] = fs.readFileSync(pidFile, "utf8").split(/\r?\n/);
     assert.ok(Number(port) > 0, "start records the chosen port");
     const base = `http://127.0.0.1:${port}`;
@@ -48,26 +73,18 @@ async function smoke(): Promise<void> {
     assert.equal(health.status, 200);
     const info = await health.json() as { version: string };
     assert.equal(info.version, extension.packageJSON.version);
-    record("shared standalone server starts");
+    record("listing local logs starts the shared standalone server");
 
-    const find = async (parent?: LogItem): Promise<LogItem | undefined> => {
-      for (const item of await api.logs.getChildren(parent)) {
-        if (item.node.kind === "log" && item.node.log?.path === fixture) return item;
-        if (item.collapsibleState !== vscode.TreeItemCollapsibleState.None) {
-          const child = await find(item); if (child) return child;
-        }
-      }
-      return undefined;
-    };
-    const item = await within(find(), "Logs tree listing");
-    assert.ok(item, "actual Logs provider lists the generated fixture, through its window lease");
+    assert.ok(item, `actual Logs provider lists the generated fixture, through its window lease; it walked:\n${walked.join("\n") || "(nothing)"}`);
     record("Logs tree lists generated fixture");
 
     assert.equal(item.command?.command, "wpilog-mcp.explorer.openLog");
     await within(vscode.commands.executeCommand(item.command!.command, ...item.command!.arguments!), "fixture editor opens");
     assert.ok(vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab =>
       tab.input instanceof vscode.TabInputCustom && tab.input.viewType === "wpilog-mcp.explorer"
-      && tab.input.uri.fsPath === fixture), "the custom editor, not a text editor, opened this fixture");
+      // The editor opens a source document, whose address names the connection, server, scope and path.
+      && tab.input.uri.scheme === "wpilog-source" && readSourceUri(tab.input.uri.toString()).path === fixture),
+      "the custom editor, not a text editor, opened this fixture");
     record("custom editor opens the fixture");
 
     assert.equal(await within(api.smokeData(["/Value"], 0, 1), "Perspective fixture rows"), 2);
@@ -87,9 +104,9 @@ async function smoke(): Promise<void> {
     await vscode.workspace.getConfiguration("wpilog-mcp").update("pitServerUrl", url, vscode.ConfigurationTarget.Global);
     await within(vscode.commands.executeCommand("wpilog-mcp.registerPitWithClaudeCode"), "pit registration command");
     const args = JSON.parse(fs.readFileSync(process.env.WPILOG_SMOKE_CALLS!, "utf8"));
-    assert.deepEqual(args, ["mcp", "add", "--scope", "user", "wpilog-pit", "--",
-      path.join(testHome, ".wpilog-mcp", "bin", "wpilog-mcp"), "connect", "--url", url],
-    "only a user-scope URL bridge reaches Claude; no key, password, headers or local log paths");
+    // Since direct connections the pit is registered as Claude Code's own HTTP server: no launcher.
+    assert.deepEqual(args, ["mcp", "add", "--scope", "user", "wpilog-pit", "--transport", "http", url],
+    "only a user-scope URL registration reaches Claude; no key, password, headers or local log paths");
     assert.ok(!fs.existsSync(path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, ".mcp.json")));
     record("pit command produces secret-free user-scope arguments");
     result.status = "ok";

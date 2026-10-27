@@ -34,6 +34,9 @@ class FollowLeaseTest {
        "session_id":"22222222-2222-4222-8222-222222222222","anchor_member":{"original_name":"capture.wpilog",
        "recording_started_at":"2026-01-01T00:00:00Z"}},"queries":[{"entry":"x","order":"file"}]}
       """;
+  /** Holds a follow inside its per-page access check, then fails the check as a torn-down owner would. */
+  record Gate(CountDownLatch entered, CountDownLatch release, java.io.IOException failure) {}
+  volatile Gate gate;
   @BeforeEach void start() throws Exception {
     var path = temp.resolve("capture.wpilog");
     try (var writer = new WpilogWriter(path, "")) {
@@ -50,6 +53,12 @@ class FollowLeaseTest {
           catch (java.lang.reflect.InvocationTargetException failure) { throw failure.getCause(); }
         });
         return new OrdinalFollow.Prefix("recording", 1, finalized.get(), List.of(new OrdinalFollow.Member("member", 0, snapshot)));
+      }
+      @Override public void authorize() throws java.io.IOException {
+        var held = gate; if (held == null) return;
+        held.entered().countDown();
+        try { held.release().await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        throw held.failure();
       }
       public boolean awaitChange(Duration wait, java.util.function.BooleanSupplier cancelled) throws java.io.IOException {
         if (changed.getAndSet(false)) return true;
@@ -93,6 +102,33 @@ class FollowLeaseTest {
     long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
     while (!ready.getAsBoolean() && System.nanoTime() < end) Thread.sleep(5);
     assertTrue(ready.getAsBoolean(), "Lifecycle condition did not arrive before deadline");
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"access", "unavailable", "catalog"})
+  void aFollowTheStopCatchesInsideItsAccessCheckEndsClosed(String kind) throws Exception {
+    // Each failure is one an owner torn down by the stop raises in its own words; Windows saw the first.
+    java.io.IOException failure = switch (kind) {
+      case "access" -> new java.nio.file.AccessDeniedException("Recording store is no longer configured");
+      case "unavailable" -> new java.io.IOException("SOURCE_UNAVAILABLE: recording store is no longer configured");
+      default -> new java.io.IOException("Source catalog is closed");
+    };
+    var lease = create(); String cursor = bootstrap(lease);
+    var held = new Gate(new CountDownLatch(1), new CountDownLatch(1), failure); gate = held;
+    var page = client.sendAsync(request("POST", path(lease) + "/next", body(cursor, 0)), HttpResponse.BodyHandlers.ofString());
+    assertTrue(held.entered().await(5, TimeUnit.SECONDS));
+    follows.close(); // The transport's stop closes follow admission first.
+    held.release().countDown();
+    var response = page.get(10, TimeUnit.SECONDS);
+    assertEquals(410, response.statusCode(), response.body());
+    assertEquals("CLOSED", JsonParser.parseString(response.body()).getAsJsonObject().get("code").getAsString());
+  }
+
+  @Test void withoutAStopAnAccessRefusalStillEndsTheFollowWithItsCode() throws Exception {
+    var lease = create(); String cursor = bootstrap(lease);
+    gate = new Gate(new CountDownLatch(1), new CountDownLatch(0), new java.nio.file.AccessDeniedException("Recording store is no longer configured"));
+    var response = call("POST", path(lease) + "/next", body(cursor, 0));
+    assertEquals(403, response.statusCode(), response.body());
   }
 
   @Test void idleExpiryClosesUnacknowledgedSnapshotsAndCachedBytesBeforeReusingCapacity() throws Exception {

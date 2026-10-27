@@ -125,9 +125,12 @@ class RecordingInventoriesTest {
       var admission = sources.admitRecording(ref); entered.countDown();
       boolean done = false; while (!done) try { release.await(); done = true; } catch (InterruptedException ignored) { /* Model an uninterruptible disk read. */ }
       return admission;
-    }, new RecordingInventories.Limits(32L << 20, 64L << 20, 8, 2, Duration.ofMinutes(1).toNanos(), Duration.ofMinutes(5).toNanos(), Duration.ofMillis(80).toNanos()), System::nanoTime);
+    // The deadline must outlast the admission before the stall: a timeout interrupts the builder
+    // wherever it is, and admission takes longer than 80 ms on Windows runners.
+    }, new RecordingInventories.Limits(32L << 20, 64L << 20, 8, 2, Duration.ofMinutes(1).toNanos(), Duration.ofMinutes(5).toNanos(), Duration.ofSeconds(2).toNanos()), System::nanoTime);
     try {
-      var failure = assertThrows(InventoryFailure.class, this::open); assertTrue(failure.retryable); assertTrue(entered.await(1, TimeUnit.SECONDS));
+      var failure = assertThrows(InventoryFailure.class, this::open); assertTrue(failure.retryable);
+      assertTrue(entered.await(1, TimeUnit.SECONDS), "Admission finished before the build deadline");
       assertEquals(32L << 20, inventories.retainedBytes()); assertEquals(1, inventories.retainedHandles());
       assertFalse(logs.release(temp).released(), "Uninterruptible admission still owns its prefix");
     } finally { release.countDown(); }
@@ -232,6 +235,22 @@ class RecordingInventoriesTest {
     assertTrue(bad.getAsJsonArray("schema_problems").asList().stream().anyMatch(p -> p.getAsJsonObject().get("code").getAsString().equals("INVALID_SCHEMA")));
   }
 
+  @Test void aFinishedBuildNoLongerHoldsABuilderWhileItsThreadReturnsToThePool() throws Exception {
+    // A build completes its caller's result while its thread is still finishing. The probe keeps two such threads
+    // there, as a busy machine can; the next build used to be refused as if both builders were busy.
+    var hold = new CountDownLatch(1); var held = new CountDownLatch(2);
+    inventories.afterBuild(() -> {
+      held.countDown();
+      try { hold.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    });
+    try {
+      open(); open();
+      assertTrue(held.await(5, TimeUnit.SECONDS), "both builders' threads stay after completing their results");
+      inventories.afterBuild(() -> {});
+      var other = new RecordingInventories.Client(Authority.HTTP_LOCAL, "other", () -> true);
+      assertTrue(inventories.open(other, fixture.reference).has("inventory_id"), "a third build is admitted");
+    } finally { hold.countDown(); }
+  }
   @Test void builderAndAggregateReservationsRejectWithoutAWaitingQueue() throws Exception {
     inventories.close(); var entered = new CountDownLatch(2); var release = new CountDownLatch(1);
     var defaults = RecordingInventories.Limits.defaults();

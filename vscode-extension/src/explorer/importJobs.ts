@@ -12,7 +12,7 @@ export interface ImportRequest {
   stated_robot: string | null;
 }
 export interface ImportResult {
-  files: { original_path: string; status: "imported" | "present" | "unassigned" | "refused"; path: string | null; reason: string | null }[];
+  files: { original_path: string; status: "imported" | "present" | "unassigned" | "deferred" | "refused"; path: string | null; reason: string | null }[];
   same_robots: { serial_number: string; directories: string[] }[];
 }
 export interface ImportJob {
@@ -41,9 +41,12 @@ export function progressText(job: ImportJob): string {
   return p ? `${p.phase}: ${p.path ?? ""} (${p.completed}/${p.total})` : job.state;
 }
 
+/** A deferred file met a passing condition, such as a busy store; importing it again later can succeed. */
 export function resultSummary(result: ImportResult): string {
   const count = (status: string) => result.files.filter(f => f.status === status).length;
-  return `${count("imported")} imported, ${count("present")} present, ${count("unassigned")} unassigned, ${count("refused")} refused`;
+  const deferred = count("deferred");
+  return `${count("imported")} imported, ${count("present")} present, ${count("unassigned")} unassigned, ${count("refused")} refused`
+    + (deferred > 0 ? `, ${deferred} deferred` : "");
 }
 
 export function resultDetails(result: ImportResult): string[] {

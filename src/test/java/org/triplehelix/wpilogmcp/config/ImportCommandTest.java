@@ -12,7 +12,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -31,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.HttpTransport;
@@ -163,8 +163,7 @@ class ImportCommandTest {
   }
 
   @Test void noAnswerExplicitlyUsesTheOfflineImporter() throws Exception {
-    int port;
-    try (var socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused(); // Nothing answers, and no other test can take it.
     assertEquals(0, run(port), text());
     assertTrue(text().contains("No running daemon"), text());
     assertFalse(text().lines().anyMatch(line -> line.startsWith("job ")), text());
@@ -174,6 +173,18 @@ class ImportCommandTest {
     assertEquals("imported", receipt.getAsJsonArray("files").get(0).getAsJsonObject()
         .get("status").getAsString(), text());
     assertTrue(Files.exists(destination.resolve("store.json")));
+  }
+
+  @Test void aFileAnotherImportIsMovingIsDeferredAndTheCommandReportsFailure() throws Exception {
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused();
+    try (var moving = org.triplehelix.wpilogmcp.log.LogFileAccess.reserveMove(List.of(source))) {
+      assertEquals(1, run(port), "A file not imported fails the command, deferred or refused: " + text());
+    }
+    var receipt = text().lines().filter(line -> line.startsWith("result "))
+        .map(line -> JsonParser.parseString(line.substring(7)).getAsJsonObject())
+        .reduce((first, last) -> last).orElseThrow();
+    assertEquals("deferred", receipt.getAsJsonArray("files").get(0).getAsJsonObject().get("status").getAsString(), text());
+    assertTrue(Files.exists(source), "A deferred file stays where it was");
   }
 
   @ParameterizedTest
@@ -197,8 +208,7 @@ class ImportCommandTest {
   }
 
   @Test void specificNonLoopbackBindRefusesInsteadOfCreatingASecondWriter() throws Exception {
-    int port;
-    try (var socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused();
     var ran = child("192.0.2.1", port);
     assertEquals(1, ran.code(),
         "A specific non-loopback bind cannot safely use the loopback-only path-import route:\n"
@@ -214,7 +224,7 @@ class ImportCommandTest {
   /** Environment belongs to a child process, so these cases never alter another test's bind. */
   private Ran child(String bind, int port) throws Exception {
     var log = Files.createTempFile(temp, "import-command-", ".txt");
-    var builder = new ProcessBuilder(ProcessHandle.current().info().command().orElse("java"),
+    var builder = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Duser.home=" + temp, "-cp", System.getProperty("java.class.path"),
         Child.class.getName(), temp.toString(), Integer.toString(port), source.toString(),
         destination.toString()).redirectErrorStream(true).redirectOutput(log.toFile());

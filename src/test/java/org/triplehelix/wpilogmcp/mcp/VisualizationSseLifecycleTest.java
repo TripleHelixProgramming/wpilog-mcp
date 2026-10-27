@@ -95,7 +95,7 @@ class VisualizationSseLifecycleTest {
       assertTrue(entered.await(5, TimeUnit.SECONDS)); var stopper = new AtomicReference<Thread>();
       var stopped = CompletableFuture.runAsync(() -> { stopper.set(Thread.currentThread()); server.stop(); });
       org.triplehelix.wpilogmcp.harness.HarnessHttp.await("shutdown drain reached", 5,
-          () -> stopper.get() != null && java.util.Arrays.stream(stopper.get().getStackTrace()).anyMatch(f -> f.getMethodName().equals("awaitInFlightRequests")));
+          () -> stopper.get() != null && java.util.Arrays.stream(stopper.get().getStackTrace()).anyMatch(f -> f.getMethodName().equals("drain")));
       finish.countDown(); var response = pending.get(5, TimeUnit.SECONDS); stopped.get(5, TimeUnit.SECONDS);
       var rpc = com.google.gson.JsonParser.parseString(response.body()).getAsJsonObject();
       var text = rpc.getAsJsonObject("result").getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString();

@@ -9,7 +9,6 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonParser;
-import java.net.ServerSocket;
 import java.time.Year;
 import java.util.ArrayList;
 import java.io.File;
@@ -36,6 +35,7 @@ import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.config.ConfigLoader;
 
 /**
@@ -88,7 +88,7 @@ class InstallerTest {
   void jarInstall(boolean jvmBanner) throws Exception {
     var root = tempDir.resolve("install with spaces");
     var env = jvmBanner ? Map.of("JAVA_TOOL_OPTIONS", "-Dwpilog.install.banner=true") : Map.<String, String>of();
-    var first = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), env, false);
+    var first = run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), env, false);
     assertEquals(0, first.exit(), first.output());
     var summary = JsonParser.parseString(first.stdout()).getAsJsonObject();
     assertFalse(first.stderr().contains("SecurityValidator"),
@@ -108,7 +108,7 @@ class InstallerTest {
     assertEquals(List.of("wpilog-mcp version " + Version.VERSION),
         launched.output().lines().filter(line -> line.startsWith("wpilog-mcp version ")).toList());
     checkDefaultConfig(root.resolve("servers.yaml"));
-    var again = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), env, false);
+    var again = run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), env, false);
     var second = JsonParser.parseString(again.stdout()).getAsJsonObject();
     assertEquals(0, again.exit(), again.output());
     assertFalse(second.get("repointed").getAsBoolean());
@@ -117,10 +117,10 @@ class InstallerTest {
 
   @Test void commandErrorsDoNotWriteAJsonSuccess() throws Exception {
     var blocked = Files.writeString(tempDir.resolve("not-a-directory"), "kept");
-    var failed = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", blocked.toString(), "--json"), Map.of(), false);
+    var failed = run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--install-dir", blocked.toString(), "--json"), Map.of(), false);
     assertEquals(1, failed.exit());
     assertTrue(failed.output().contains("Install failed:"), failed.output());
-    var bad = run(List.of(java(), "-jar", jar().toString(), "install", "--team", "nope", "--json"), Map.of(), false);
+    var bad = run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--team", "nope", "--json"), Map.of(), false);
     assertEquals(2, bad.exit());
     assertTrue(bad.output().contains("--team must be a positive integer"), bad.output());
     var classes = MainProcess.run(tempDir, List.of("install", "--install-dir", tempDir.resolve("classes").toString()), Map.of());
@@ -128,7 +128,7 @@ class InstallerTest {
     var root = Files.createDirectories(tempDir.resolve("locked"));
     try (var channel = FileChannel.open(root.resolve("install.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
         var lock = channel.lock()) {
-      var busy = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), Map.of(), false);
+      var busy = run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--install-dir", root.toString(), "--json"), Map.of(), false);
       assertEquals(1, busy.exit());
       assertTrue(busy.output().contains("Another installation is in progress"), busy.output());
     }
@@ -146,7 +146,7 @@ class InstallerTest {
     } catch (UnsupportedOperationException | IOException e) {
       Assumptions.abort("Symlinks unavailable: " + e.getMessage());
     }
-    var result = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(),
+    var result = run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--install-dir", root.toString(),
         "--force", "--json"), Map.of(), false);
     assertAll(
         () -> assertEquals(1, result.exit(), result.output()),
@@ -165,22 +165,20 @@ class InstallerTest {
     var home = Files.createDirectory(tempDir.resolve("home"));
     var root = home.resolve(".wpilog-mcp");
     var env = Map.of("JAVA_TOOL_OPTIONS", "-Duser.home=" + home);
-    assertEquals(0, run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString()), env, false).exit());
-    int port;
-    try (var socket = new ServerSocket(0)) {
-      port = socket.getLocalPort();
-    }
+    assertEquals(0, run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--install-dir", root.toString()), env, false).exit());
+    // A port the daemon binds later, from outside the range other tests' connections draw on.
+    int port = org.triplehelix.wpilogmcp.fixtures.TestPorts.unused();
     var config = root.resolve("servers.yaml");
     String settings = "# preserved comment\nteam: 2363\nlogdir: []\nservers:\n  http:\n    transport: http\n    port: " + port + "\n";
     Files.writeString(config, settings);
-    var started = run(List.of(java(), "-jar", jar().toString(), "start", "http", "--config", config.toString()), env, false);
+    var started = run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "start", "http", "--config", config.toString()), env, false);
     assertEquals(0, started.exit(), started.output());
     var pidFile = root.resolve("run").resolve("http.pid");
     long pid = Long.parseLong(Files.readAllLines(pidFile).get(0));
     var daemon = ProcessHandle.of(pid).orElseThrow();
     try {
       assertTrue(daemon.isAlive());
-      var refreshed = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(),
+      var refreshed = run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--install-dir", root.toString(),
           "--refresh", "--json"), env, false);
       assertEquals(0, refreshed.exit(), refreshed.output());
       var summary = JsonParser.parseString(refreshed.stdout()).getAsJsonObject();
@@ -210,7 +208,7 @@ class InstallerTest {
     var root = tempDir.resolve("standalone");
     var env = new HashMap<>(Map.of("JAVA_TOOL_OPTIONS", "-Duser.home=\"" + home + "\"", "PUBLIC", tempDir.resolve("public").toString(),
         "CODE_ARGS", capture.toString(), "CODE_EXIT", "0"));
-    var command = List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(),
+    var command = List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--install-dir", root.toString(),
         "--with-extension", "--vsix", vsix.toString(), "--json");
     var installed = run(command, env, false);
     assertEquals(0, installed.exit(), installed.output());
@@ -261,7 +259,7 @@ class InstallerTest {
     var env = Map.of("JAVA_TOOL_OPTIONS", "-Duser.home=\"" + home + "\"", "PUBLIC", tempDir.resolve("public").toString());
     var vsix = Files.writeString(tempDir.resolve("matching extension.vsix"), "synthetic vsix");
     var root = tempDir.resolve("standalone");
-    var refused = run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString(),
+    var refused = run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--install-dir", root.toString(),
         "--with-extension", "--vsix", vsix.toString(), "--json"), env, false);
     assertEquals(1, refused.exit(), refused.output());
     assertTrue(refused.stderr().contains("Install failed: No WPILib VS Code was found in "), refused.output());
@@ -271,13 +269,13 @@ class InstallerTest {
     wpilibCode(home, "2024", "1.0.0");
     wpilibCode(home, "2025", null);
     wpilibCode(home, "2026", minimumVsCode());
-    var listed = run(List.of(java(), "-jar", jar().toString(), "install", "--list-vscode"), env, false);
+    var listed = run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--list-vscode"), env, false);
     assertEquals(0, listed.exit(), listed.output());
     assertEquals(List.of("WPILib VS Code 2024 (version 1.0.0) is older than the extension needs (VS Code "
         + Version.VSCODE_ENGINE + "), so it is not offered.", "2026\t" + minimumVsCode(), "2025\tunknown"),
         listed.stdout().lines().toList(), "notes, then the offered editors newest first");
     assertFalse(Files.exists(root), "listing installs nothing");
-    assertEquals(2, run(List.of(java(), "-jar", jar().toString(), "install", "--list-vscode", "--json"), env, false).exit());
+    assertEquals(2, run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--list-vscode", "--json"), env, false).exit());
   }
 
   static Path jar() {
@@ -285,7 +283,7 @@ class InstallerTest {
   }
 
   static String java() {
-    return ProcessHandle.current().info().command().orElse("java");
+    return ChildJvms.JAVA;
   }
 
   @Test
@@ -497,7 +495,7 @@ class InstallerTest {
   @DisabledOnOs(OS.WINDOWS)
   void shellLauncherJavaLookupAndHeap() throws Exception {
     var root = tempDir.resolve("install");
-    assertEquals(0, run(List.of(java(), "-jar", jar().toString(), "install", "--install-dir", root.toString()), Map.of(), false).exit());
+    assertEquals(0, run(List.of(java(), ChildJvms.HEADLESS, "-jar", jar().toString(), "install", "--install-dir", root.toString()), Map.of(), false).exit());
     var home = tempDir.resolve("home with spaces");
     var javaHome = tempDir.resolve("fallback");
     executable(javaHome.resolve("bin").resolve("java"), FAKE_JAVA.replace("for arg", "echo JAVA_HOME\nfor arg"));

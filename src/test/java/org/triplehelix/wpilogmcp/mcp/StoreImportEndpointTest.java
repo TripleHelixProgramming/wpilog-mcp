@@ -120,7 +120,7 @@ class StoreImportEndpointTest {
     assertEquals("imported", job.getAsJsonObject("result").getAsJsonArray("files").get(0)
         .getAsJsonObject().get("status").getAsString());
     idle.advance(Duration.ofMillis(900));
-    assertEquals(0, exited.getCount(), "The daemon exits once its import finishes");
+    assertTrue(exited.await(5, TimeUnit.SECONDS), "The daemon exits once its import finishes, on the exit's own thread");
   }
 
   @Test void assignmentMovesOnlyUnassignedFilesAndKeepsOriginalProvenance() throws Exception {

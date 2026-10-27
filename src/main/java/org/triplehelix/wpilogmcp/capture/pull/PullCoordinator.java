@@ -178,13 +178,18 @@ public final class PullCoordinator implements AutoCloseable {
     var contact = remote.getAndSet(null);
     if (contact != null) try { contact.close(); } catch (IOException e) { LoggerFactory.getLogger(PullCoordinator.class).debug("SSH close failed: {}", e.getMessage()); }
   }
-  /** Transport shutdown must share the capture's deadline, not block before it begins. */
+  /**
+   * Transport shutdown must share the capture's deadline, not block before it begins. The close is
+   * complete once the worker's last step has ended: a busy transfer only records the close request,
+   * and that step writes the checkpoint as it unwinds. The pull's close once completed before it.
+   */
   public java.util.concurrent.CompletableFuture<Void> closeAsync() {
     if (stopped.compareAndSet(false, true)) {
       worker.close();
       var closer = new Thread(() -> {
-        try { closeRemote(); closing.complete(null); }
-        catch (RuntimeException e) { closing.completeExceptionally(e); }
+        try { closeRemote(); }
+        catch (RuntimeException e) { closing.completeExceptionally(e); return; }
+        worker.terminated().whenComplete((ignored, error) -> closing.complete(null));
       }, "robot-pull-close");
       closer.setDaemon(true); closer.start();
     }

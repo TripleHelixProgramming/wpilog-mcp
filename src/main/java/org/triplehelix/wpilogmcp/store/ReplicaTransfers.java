@@ -43,7 +43,15 @@ import org.triplehelix.wpilogmcp.store.StoreManifest.*;
  */
 final class ReplicaTransfers implements AutoCloseable {
   static final int BLOCK_BYTES = 65_536;
-  private static final ThreadPoolExecutor WORKERS = new ThreadPoolExecutor(0, 2, 30, TimeUnit.SECONDS,
+  /**
+   * Two transfer jobs at a time across every mirror in the process, one per mirror. The limit counts
+   * jobs, not threads: a job returns its permit before it reports its result, so the caller it wakes
+   * can start the next job while the job's thread is still on its way back to the pool. A pool of two
+   * threads refused that next job whenever both threads were still finishing, which rechecks lasting
+   * a few milliseconds made common on a busy machine.
+   */
+  private static final java.util.concurrent.Semaphore PERMITS = new java.util.concurrent.Semaphore(2);
+  private static final ThreadPoolExecutor WORKERS = new ThreadPoolExecutor(0, Integer.MAX_VALUE, 30, TimeUnit.SECONDS,
       new SynchronousQueue<>(), task -> { var t = new Thread(task, "replica-transfer"); t.setDaemon(true); return t; });
   private static final java.util.concurrent.ScheduledExecutorService DEADLINES = Executors.newScheduledThreadPool(2,
       task -> { var t = new Thread(task, "replica-deadline"); t.setDaemon(true); return t; });
@@ -86,6 +94,13 @@ final class ReplicaTransfers implements AutoCloseable {
   void idleTimeout(Duration value) { idleTimeout = value; }
   boolean active() { return busy.get(); }
   MirrorCapacity.Snapshot capacity() { return accounted; }
+  private final java.util.concurrent.atomic.AtomicLong measurements = new java.util.concurrent.atomic.AtomicLong();
+  /** How many times this owner measured its mirror, for tests that bound the cost of a reconciliation. */
+  long measurements() { return measurements.get(); }
+  private void measure(MirrorConfig requested) throws IOException {
+    measurements.incrementAndGet();
+    capacity = MirrorCapacity.measure(store.root(), store.replicaSecurity(), requested); accounted = capacity.snapshot();
+  }
 
   private final class Job {
     final long generation;
@@ -120,13 +135,18 @@ final class ReplicaTransfers implements AutoCloseable {
   void cancel() {
     generation.incrementAndGet(); var job = active.get(); if (job != null) job.result.cancel(true);
   }
+  /** A reconciliation that could not start: another job holds the owner, or it is closing. Nothing was
+   * started and a later attempt may succeed, so a caller retries instead of reporting a failure. */
+  static final class NotStarted extends IOException {
+    NotStarted(String message) { super(message); }
+  }
   /** The coordinator carries one cancellation epoch through every child job, including jobs
    * started after a network wait. Cancellation cannot accidentally grant the old loop a new epoch. */
-  long reconciliationEpoch(MirrorConfig requested) {
-    if (!busy.compareAndSet(false, true)) throw new IllegalStateException("BUSY: replica owner is occupied");
+  long reconciliationEpoch(MirrorConfig requested) throws NotStarted {
+    if (!busy.compareAndSet(false, true)) throw new NotStarted("BUSY: replica owner is occupied; retry");
     long epoch;
     try {
-      if (closed.get()) throw new IllegalStateException("CANCELLED: replica owner is closed");
+      if (closed.get()) throw new NotStarted("CANCELLED: replica owner is closed");
       if (!requested.equals(policy)) { policy = requested; generation.incrementAndGet(); }
       epoch = generation.get();
     } finally { busy.set(false); }
@@ -140,7 +160,16 @@ final class ReplicaTransfers implements AutoCloseable {
     var expected = reconciliationEpoch.get();
     if (closed.get() || expected == null || expected != generation.get()) throw new IOException("CANCELLED: reconciliation was revoked");
   }
-  private CompletableFuture<Receipt> start(MirrorConfig requested, Work work) {
+  private CompletableFuture<Receipt> start(MirrorConfig requested, Work work) { return start(requested, true, work); }
+
+  /**
+   * One transfer at a time, under the mirror's owner lock. A job that may write measures the mirror
+   * before and after its work, so its reservations rest on current usage. A held file's recheck
+   * only reads and hashes, so it measures nothing unless the journal makes it recover first:
+   * measuring the whole mirror twice per recheck made a cold reconciliation quadratic in the
+   * mirror's files, and 300 held files took over ten minutes on a Windows runner.
+   */
+  private CompletableFuture<Receipt> start(MirrorConfig requested, boolean accounts, Work work) {
     if (closed.get()) return CompletableFuture.failedFuture(new IOException("Replica owner is closed"));
     if (!store.root().equals(requested.folder().toAbsolutePath().normalize()))
       return CompletableFuture.failedFuture(new IOException("Mirror folder differs from selected owner"));
@@ -152,9 +181,14 @@ final class ReplicaTransfers implements AutoCloseable {
     long admitted = expected == null ? generation.get() : expected;
     if (!requested.equals(policy)) { policy = requested; admitted = generation.incrementAndGet(); }
     var job = new Job(admitted); active.set(job);
+    if (!PERMITS.tryAcquire()) {
+      active.compareAndSet(job, null); busy.set(false);
+      job.result.completeExceptionally(new IOException("BUSY: two replica workers are occupied; retry"));
+      return job.result;
+    }
     try {
       WORKERS.execute(() -> {
-        job.thread = Thread.currentThread(); Receipt value = null; Throwable failure = null;
+        job.thread = Thread.currentThread(); Receipt value = null; Throwable failure = null; boolean measures = accounts;
         long period = Math.max(1, Math.min(1000, idleTimeout.toMillis()));
         var deadline = DEADLINES.scheduleWithFixedDelay(job::expire, period, period, TimeUnit.MILLISECONDS);
         try {
@@ -167,31 +201,34 @@ final class ReplicaTransfers implements AutoCloseable {
             try { lock = channel.tryLock(); } catch (java.nio.channels.OverlappingFileLockException held) { lock = null; }
             if (lock == null) throw new IOException("BUSY: another process owns this mirror's transfer");
             try (var owned = lock) {
-              capacity = MirrorCapacity.measure(store.root(), store.replicaSecurity(), requested); accounted = capacity.snapshot();
+              if (measures) measure(requested);
               var recovery = ReplicaJournal.read(store.root(), io);
               if (recovery.pending() != null || !recovery.retired().isEmpty()) {
+                if (!measures) { measures = true; measure(requested); } // Recovery writes, whichever job finds it.
                 // Restart lost in-memory reservations, not the cost of replacing recovery metadata.
                 try (var charge = capacity.reserveMetadata(Math.multiplyExact(3, Math.addExact(bytes(recovery), bytes(header()))))) {
                   accounted = capacity.snapshot(); recoverCommitted(job); retire(job); job.check();
                 }
-                capacity = MirrorCapacity.measure(store.root(), store.replicaSecurity(), requested); accounted = capacity.snapshot();
+                measure(requested);
               }
               value = work.run(job);
             }
           }
         } catch (Throwable thrown) { failure = thrown; }
         finally {
-          deadline.cancel(false); Thread.interrupted(); job.phase.set(3);
-          try { capacity = MirrorCapacity.measure(store.root(), store.replicaSecurity(), requested); accounted = capacity.snapshot(); }
-          catch (IOException ignored) { /* Retain the last conservative reservation snapshot on an unreadable catalog. */ }
-          active.compareAndSet(job, null); busy.set(false);
+          try {
+            deadline.cancel(false); Thread.interrupted(); job.phase.set(3);
+            if (measures) try { measure(requested); }
+            catch (IOException ignored) { /* Retain the last conservative reservation snapshot on an unreadable catalog. */ }
+            active.compareAndSet(job, null); busy.set(false);
+          } finally { PERMITS.release(); } // Before the result wakes its caller, who may start the next job at once.
         }
         // No lease, file lock or accounting monitor is inherited by observers or continuations.
         if (job.published != null) store.replicaPublished(job.published);
         if (failure == null) job.result.complete(value); else job.result.completeExceptionally(failure);
       });
     } catch (java.util.concurrent.RejectedExecutionException full) {
-      active.compareAndSet(job, null); busy.set(false);
+      PERMITS.release(); active.compareAndSet(job, null); busy.set(false);
       job.result.completeExceptionally(new IOException("BUSY: two replica workers are occupied; retry", full));
     }
     return job.result;
@@ -664,7 +701,7 @@ final class ReplicaTransfers implements AutoCloseable {
       if (hashes.remembered(path, FileSnapshot.of(path), file.sha256())) return true;
     }
     try {
-      start(policy, job -> {
+      start(policy, false, job -> {
         if (!header().replicas().files().contains(file)) throw new IOException("SOURCE_CHANGED: held replica changed during recheck");
         verifyHeld(file); job.check(); return new Receipt(null, "already_present", header.replicas().revision(), file);
       }).get();

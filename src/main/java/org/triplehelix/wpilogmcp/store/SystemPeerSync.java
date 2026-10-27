@@ -330,7 +330,7 @@ final class SystemPeerSync {
           var copy = stage.path(to.getFileName());
           var copier = publication.store.mover();
           try {
-            if (!Files.getFileStore(copy.getParent()).equals(Files.getFileStore(to.getParent())))
+            if (!FilesystemIdentity.same(copy.getParent(), to.getParent()))
               throw new IOException("System sync placement stage is not on the destination filesystem");
             var attributes = copier.copy(from, copy, file.sizeBytes());
             copier.force(copy);

@@ -196,8 +196,21 @@ def keepTestCache = project.hasProperty('testCacheDir')
 def fixtureScratch = ['test-fixtures']
 def realLogScratch = ['replay-work', 'replay-pull', 'replay-pairs', 'real-log-conformance-export']
 def harnessScratch = ['replay-native', 'shop-harness']
+// Each test task's temporary folder: its JVMs' java.io.tmpdir, emptied before the tests start and
+// deleted after a passing run. The project tells JUnit never to delete a @TempDir
+// (junit-platform.properties: on Windows a memory-mapped log stays locked until a garbage
+// collection), so in the system's temporary folder they piled up for good: three days of builds
+// filled a Linux workstation's 15 GB /tmp, and its next build failed 1,450 tests. Each task has its
+// own folder, so another task's run cannot remove what a failed run kept.
+def tempScratch = ['test-tmp']
 tasks.withType(Test).configureEach {
     doFirst { delete fixtureScratch.collect { "$buildDir/$it" } }
+    systemProperty 'java.io.tmpdir', file("$buildDir/test-tmp/$name").absolutePath
+    // No test opens a window. Chart images draw through AWT, which on a Mac gave a test JVM a Dock
+    // icon that took focus; the JVMs a test starts are headless too (ChildJvms).
+    systemProperty 'java.awt.headless', 'true'
+    doFirst { delete tempScratch.collect { "$buildDir/$it/$name" }; file("$buildDir/test-tmp/$name").mkdirs() }
+    doLast { delete tempScratch.collect { "$buildDir/$it/$name" } }
 }
 
 // Make test task depend on native extraction and set the library path
@@ -372,7 +385,7 @@ def readerOwners = [
     'log/LogFileAccess', 'log/FileSnapshot', 'log/LogFileException', 'log/TimestampedValue',
     'log/RobotCandidates', 'log/LogData', 'log/NumericColumn', 'log/WallClock', 'log/subsystems/EntryDecoder', 'log/subsystems/BinaryReader',
     'log/subsystems/SecurityValidator', 'config/ClientLeases',
-    'store/StoreCatalog', 'store/StoreManifest', 'store/ReplicaCatalog', 'store/ReplicaJournal', 'store/ReplicaMasters', 'store/ReplicaPublications', 'store/ReplicaReads', 'store/StoreFiles', 'store/StoreJson', 'store/FileNameEncoding', 'store/CaptureRecording',
+    'store/StoreCatalog', 'store/StoreManifest', 'store/ReplicaCatalog', 'store/ReplicaJournal', 'store/ReplicaMasters', 'store/StoreBusyException', 'store/ReplicaPublications', 'store/ReplicaReads', 'store/StoreFiles', 'store/StoreJson', 'store/FileNameEncoding', 'store/CaptureRecording',
     'store/SystemLogState', 'store/SystemLogFiles', 'store/SystemLogIndex', 'store/ClockRecords', 'store/RecordedClocks',
     'store/StoreTransferInventory', 'capture/CaptureLease', 'capture/CaptureStats',
     'capture/TopicCost', 'capture/context/DeviceIdentity', 'capture/context/ProviderStatus',

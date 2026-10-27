@@ -25,6 +25,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.ZipInputStream;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.capture.context.PhotonSettings;
 import org.triplehelix.wpilogmcp.nt4.MessagePack;
 
@@ -63,7 +64,7 @@ public final class PhotonBackend implements AutoCloseable {
     var graphics = pixels.createGraphics(); graphics.setColor(java.awt.Color.WHITE); graphics.fillRect(0, 0, 640, 480); graphics.dispose();
     assertTrue(javax.imageio.ImageIO.write(pixels, "jpg", image.toFile()));
     var home = Files.createDirectory(work.resolve("home"));
-    process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(), "-Xmx512m", "-Djava.awt.headless=true",
+    process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS, "-Xmx512m",
         "-Duser.home=" + home, "-jar", jar.toString(), "--test-mode", "--disable-networking")
         .directory(work.toFile()).redirectErrorStream(true).redirectOutput(work.resolve("backend.log").toFile()).start();
     try { start(); }

@@ -669,7 +669,7 @@ public final class StoreSync {
     var path = stage.path(to.getFileName());
     DiskSpaceBudgets.Reservation reservation = null;
     try {
-      if (!Files.getFileStore(path.getParent()).equals(Files.getFileStore(to.getParent())))
+      if (!FilesystemIdentity.same(path.getParent(), to.getParent()))
         throw new IOException("Sync placement stage is not on the destination filesystem");
       reservation = store.reserveDiskCopy(path.getParent(), source.size());
       var attributes = store.mover().copy(from, path, source.size());

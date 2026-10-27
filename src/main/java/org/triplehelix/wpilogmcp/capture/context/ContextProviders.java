@@ -314,9 +314,19 @@ public final class ContextProviders implements AutoCloseable {
     if (jvm != null) snapshots.add(jvm.status());
     writer.providers(snapshots, kernel); live.providers(snapshots);
   }
+  /**
+   * Complete once the SSH hosts are closed and the statistics, tail and PhotonVision workers have
+   * ended: the close once covered only the SSH hosts. JMX is not waited for. Its RMI call can block
+   * as long as the robot's network does, and it delivers only through the closed capture loop.
+   */
   public CompletableFuture<Void> closeAsync() {
-    if (stopped.compareAndSet(false, true)) { connected = false; open = false; tails.forEach(t -> t.provider.close()); photons.forEach(PhotonVisionProvider::close); if (jvm != null) jvm.close(); worker.close(); }
-    return ssh.closeAsync();
+    if (stopped.compareAndSet(false, true)) {
+      connected = false; open = false; tails.forEach(t -> t.provider.close()); photons.forEach(PhotonVisionProvider::close); if (jvm != null) jvm.close(); worker.close();
+    }
+    var ended = new ArrayList<CompletableFuture<?>>(List.of(ssh.closeAsync(), worker.terminated()));
+    tails.forEach(t -> ended.add(t.provider.worker().terminated()));
+    photons.forEach(p -> ended.add(p.worker().terminated()));
+    return CompletableFuture.allOf(ended.toArray(CompletableFuture[]::new));
   }
   @Override public void close() { closeAsync(); }
 }
