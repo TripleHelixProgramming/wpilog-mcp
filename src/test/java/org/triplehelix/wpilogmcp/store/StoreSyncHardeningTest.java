@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 
 /** Payload admission and publication checks belong to sync's real store adapter. */
 class StoreSyncHardeningTest {
@@ -163,7 +164,7 @@ class StoreSyncHardeningTest {
       Files.createDirectories(marker.getParent());
       var ready = directory.resolve("lock-ready");
       var output = directory.resolve("lock-child.log");
-      var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+      var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
           "-cp", System.getProperty("java.class.path"), SyncLockProcess.class.getName(),
           marker.toString(), ready.toString())
           .redirectErrorStream(true).redirectOutput(output.toFile()).start();

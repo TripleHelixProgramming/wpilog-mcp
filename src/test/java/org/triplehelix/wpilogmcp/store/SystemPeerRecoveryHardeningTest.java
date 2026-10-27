@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.fixtures.SystemSessionFixture;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
@@ -129,7 +130,7 @@ class SystemPeerRecoveryHardeningTest {
     var root = Files.createTempDirectory(directory, "system-peer-crash-").toRealPath();
     var ready = root.resolve("ready.json");
     var output = root.resolve("child.log");
-    var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-cp", System.getProperty("java.class.path"), CrashProcess.class.getName(),
         root.toString(), ready.toString(), Boolean.toString(shared))
         .redirectErrorStream(true).redirectOutput(output.toFile()).start();

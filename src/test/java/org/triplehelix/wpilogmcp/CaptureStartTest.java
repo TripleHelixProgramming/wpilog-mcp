@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.nt4.server.Nt4Gateway;
 import org.triplehelix.wpilogmcp.store.StoreJson;
 
@@ -33,7 +34,7 @@ class CaptureStartTest {
     try (var socket = new ServerSocket()) { socket.bind(new InetSocketAddress("127.0.0.1", 0)); return socket.getLocalPort(); }
   }
   private Process run(String... arguments) throws Exception {
-    var command = new ArrayList<>(List.of(ProcessHandle.current().info().command().orElseThrow(),
+    var command = new ArrayList<>(List.of(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-jar", System.getProperty("install.testJar")));
     command.addAll(List.of(arguments));
     var builder = new ProcessBuilder(command).directory(temp.toFile()).redirectErrorStream(true)

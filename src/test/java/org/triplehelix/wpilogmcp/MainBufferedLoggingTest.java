@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 
 /**
  * A fresh JVM catches a logger that cached the original stream before Main replaced stderr.
@@ -106,7 +107,7 @@ class MainBufferedLoggingTest {
     var stderr = folder.resolve("stderr");
     var marker = folder.resolve("stream-owner");
     var command = new ArrayList<>(List.of(
-        ProcessHandle.current().info().command().orElseThrow(),
+        ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Duser.home=" + folder,
         "-Dorg.slf4j.simpleLogger.cacheOutputStream=" + cached,
         "-cp", System.getProperty("java.class.path"), Child.class.getName(),

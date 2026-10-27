@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.harness.FakeRoboRio;
 import org.triplehelix.wpilogmcp.harness.HarnessHttp;
 import org.triplehelix.wpilogmcp.store.StoreJson;
@@ -49,7 +50,7 @@ class ShopHarnessTest {
     Files.copy(timelinePath, run.resolve("timeline.json"));
     System.out.println("Shop harness artifacts: " + run);
     var store = run.resolve("store"); var home = Files.createDirectory(run.resolve("home"));
-    String javaExe = ProcessHandle.current().info().command().orElseThrow();
+    String javaExe = ChildJvms.JAVA;
     var robots = new ArrayList<Process>(); Process server = null;
     try (var rio = new FakeRoboRio(run.resolve("rio"), timeline.get("serial_number").getAsString(), timeline.get("comments").getAsString())) {
       int httpPort = port(), ntPort; do { ntPort = port(); } while (ntPort == httpPort);
@@ -62,7 +63,7 @@ class ShopHarnessTest {
           + "\n      gateway: {port: " + gatewayPort + "}"
           + "\n      period_sec: 0.01\n      pull:\n        enabled: true\n        rate_bytes: 65536\n        settle_sec: " + timeline.get("settle_sec")
           + "\n        ssh: {port: " + rio.port() + "}\n");
-      server = launch(List.of(javaExe, "-Xmx512m", "-Duser.home=" + home, "-jar", System.getProperty("harness.serverJar"),
+      server = launch(List.of(javaExe, ChildJvms.HEADLESS, "-Xmx512m", "-Duser.home=" + home, "-jar", System.getProperty("harness.serverJar"),
           "--internal-daemon", "harness", "--config", config.toString()), run, run.resolve("server.log"),
           java.util.Map.of("WPILOG_DISK_CACHE_DIR", run.resolve("cache").toString()));
       var http = new HarnessHttp(httpPort);
@@ -70,7 +71,7 @@ class ShopHarnessTest {
       for (int index = 0; index < timeline.getAsJsonArray("boots").size(); index++) {
         var control = Files.createDirectory(run.resolve("boot-" + index));
         var boot = timeline.getAsJsonArray("boots").get(index).getAsJsonObject();
-        var robot = launch(List.of(javaExe, "-Xmx256m", "-Djava.library.path=" + System.getProperty("harness.natives"),
+        var robot = launch(List.of(javaExe, ChildJvms.HEADLESS, "-Xmx256m", "-Djava.library.path=" + System.getProperty("harness.natives"),
             "-jar", System.getProperty("harness.robotJar"), timelinePath.toString(), Integer.toString(index),
             rio.logs().toString(), control.toString(), Integer.toString(ntPort), Integer.toString(gatewayPort),
             probes.resolve("boot-" + index + ".wpilog").toString()), run, control.resolve("robot.log"),

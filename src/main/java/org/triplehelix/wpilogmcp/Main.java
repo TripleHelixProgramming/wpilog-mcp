@@ -84,7 +84,16 @@ public class Main {
   private static boolean managed;
   private static boolean publicRun;
 
+  /**
+   * A server never shows a window. Chart images draw through AWT, which on a Mac otherwise gives the
+   * JVM a Dock icon that takes focus; a value set on the command line still wins.
+   */
+  static void headlessByDefault() {
+    if (System.getProperty("java.awt.headless") == null) System.setProperty("java.awt.headless", "true");
+  }
+
   public static void main(String[] args) {
+    headlessByDefault();
     // Configuration loading can log before transport selection. Keep short-lived CLI errors
     // direct, but install before any logger in a process that may become a server.
     boolean shortCommand = args.length > 0

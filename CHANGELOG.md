@@ -316,6 +316,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The server runs headless unless its command line says otherwise. A chart image draws through AWT,
+  which on a Mac gave the server's JVM a Dock icon that took focus.
 - **One owner per store folder:** a store folder has one store object in a process. A second one
   for a folder that is already open is refused when it is made, with `STORE_OWNED`, and closing a
   store waits, at most ten seconds, for its last queued turn before the folder is free. Two store
@@ -1010,6 +1012,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for that turn, once the close has stopped the store's imports and queue. It checked them after the
   close returned, which now comes only after the turn has unwound, so the turn's cleanup could
   already have removed them: it failed on Windows CI and on a Mac, and took ten seconds.
+
+- Every test JVM, and every JVM a test starts, is headless, and a check fails when a test starts one
+  any other way. On a Mac the chart tests and the servers and helper processes tests started could
+  open AWT with a Dock icon, which took focus while the suite ran.
 
 - The session expiry test now expires sessions as of a moment after its last request. Windows'
   clock moved in steps of about a millisecond on the test machines, so the last request and an

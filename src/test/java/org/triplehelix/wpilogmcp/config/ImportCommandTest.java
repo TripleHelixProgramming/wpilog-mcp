@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.HttpTransport;
@@ -223,7 +224,7 @@ class ImportCommandTest {
   /** Environment belongs to a child process, so these cases never alter another test's bind. */
   private Ran child(String bind, int port) throws Exception {
     var log = Files.createTempFile(temp, "import-command-", ".txt");
-    var builder = new ProcessBuilder(ProcessHandle.current().info().command().orElse("java"),
+    var builder = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Duser.home=" + temp, "-cp", System.getProperty("java.class.path"),
         Child.class.getName(), temp.toString(), Integer.toString(port), source.toString(),
         destination.toString()).redirectErrorStream(true).redirectOutput(log.toFile());

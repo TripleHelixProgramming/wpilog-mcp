@@ -131,6 +131,11 @@ This runs every test that needs nothing outside the repository. Three rules appl
 
 The tests run on Windows in CI too. Build an expected path with the same path API the code uses, never from a hand-written string; compare paths as the file system does; and don't assume a checked-out file has LF line endings.
 
+No JVM a test runs or starts opens a window. Every test task sets `java.awt.headless`; a test that
+starts a JVM takes its `java` and the headless option from `ChildJvms`, which a check enforces; and
+the server sets it itself unless its command line does. On a Mac a JVM that is not headless gets a
+Dock icon when it draws a chart, and test runs took focus that way.
+
 ### The systemd service check
 
 - `MainRunTest` starts isolated foreground children and checks stderr, exit status, ownership,

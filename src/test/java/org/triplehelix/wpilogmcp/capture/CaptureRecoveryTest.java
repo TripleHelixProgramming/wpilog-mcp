@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.config.CaptureConfig;
 import org.triplehelix.wpilogmcp.fixtures.WpilogWriter;
 import org.triplehelix.wpilogmcp.log.LogManager;
@@ -304,7 +305,7 @@ class CaptureRecoveryTest {
   }
 
   private Process child(String mode, Path store, Path output) throws Exception {
-    return new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    return new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Duser.home=" + directory, "-cp", System.getProperty("java.class.path"),
         CaptureRecoveryProcess.class.getName(), mode, store.toString())
         .redirectErrorStream(true).redirectOutput(output.toFile()).start();

@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Executors;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.capture.CaptureWriter;
 import org.triplehelix.wpilogmcp.capture.CapturePolicy;
 import org.triplehelix.wpilogmcp.capture.WpilogOutput;
@@ -269,7 +270,7 @@ class SystemPullPlacementTest {
     try (var fixture = new Fixture()) {
       var ready = temporary.resolve("copied.txt");
       var output = temporary.resolve("copy-process.log");
-      var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+      var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
           "-cp", System.getProperty("java.class.path"), AbandonedCopy.class.getName(),
           fixture.root.toString(), ready.toString(), phase).redirectErrorStream(true).redirectOutput(output.toFile()).start();
       try {

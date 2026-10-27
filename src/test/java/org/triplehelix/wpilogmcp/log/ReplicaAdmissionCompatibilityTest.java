@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 
 /** Replica checks augment established admission; they cannot silently replace the legacy cache
  * policy. A fresh JVM excludes the process-wide lease state left by transport tests. */
@@ -17,7 +18,7 @@ class ReplicaAdmissionCompatibilityTest {
   @TempDir Path temp;
   @Test void aLegacyCachedNonStoreLogKeepsItsAlreadyAdmittedReadPolicy() throws Exception {
     var output = temp.resolve("legacy-cache.txt");
-    var builder = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var builder = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-cp", System.getProperty("java.class.path"), LegacyProcess.class.getName(), temp.toRealPath().toString());
     builder.environment().put("WPILOG_DISK_CACHE_DIR", temp.resolve("cache").toString());
     var process = builder.redirectErrorStream(true).redirectOutput(output.toFile()).start();

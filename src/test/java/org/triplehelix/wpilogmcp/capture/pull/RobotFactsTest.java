@@ -15,6 +15,7 @@ import java.util.concurrent.*;
 import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.config.PullConfig;
 import org.triplehelix.wpilogmcp.harness.FakeRoboRio;
 import org.triplehelix.wpilogmcp.ssh.JschConnection;
@@ -264,7 +265,7 @@ class RobotFactsTest {
       Files.writeString(yaml, "servers:\n  pit:\n    transport: http\n    capture:\n      robot: {host: 127.0.0.1}\n"
           + "      store: '" + store + "'\n      pull:\n        ssh: {port: " + rio.port() + ", password: '${FACTS_TEST_PASSWORD}'}\n");
       var out = temp.resolve("cli.stdout"); var err = temp.resolve("cli.stderr");
-      var builder = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(), "-Xmx128m", "-Duser.home=" + temp,
+      var builder = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS, "-Xmx128m", "-Duser.home=" + temp,
           "-cp", System.getProperty("java.class.path"), "org.triplehelix.wpilogmcp.Main", "robot-facts", "--server", "pit",
           "--config", yaml.toString(), "--out", report.toString()).redirectOutput(out.toFile()).redirectError(err.toFile());
       builder.environment().put("FACTS_TEST_PASSWORD", secret); builder.environment().remove("WPILOG_DEBUG");

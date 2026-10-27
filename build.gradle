@@ -206,6 +206,9 @@ def tempScratch = ['test-tmp']
 tasks.withType(Test).configureEach {
     doFirst { delete fixtureScratch.collect { "$buildDir/$it" } }
     systemProperty 'java.io.tmpdir', file("$buildDir/test-tmp/$name").absolutePath
+    // No test opens a window. Chart images draw through AWT, which on a Mac gave a test JVM a Dock
+    // icon that took focus; the JVMs a test starts are headless too (ChildJvms).
+    systemProperty 'java.awt.headless', 'true'
     doFirst { delete tempScratch.collect { "$buildDir/$it/$name" }; file("$buildDir/test-tmp/$name").mkdirs() }
     doLast { delete tempScratch.collect { "$buildDir/$it/$name" } }
 }

@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.capture.pull.PullGate;
 import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
 import org.triplehelix.wpilogmcp.nt4.ValueFrame;
@@ -44,7 +45,7 @@ class CaptureBlockedLoggingTest {
 
   @Test void aCostReportDuringCloseCannotHoldTheNextListenerValues() throws Exception {
     var output = directory.resolve("child-output.txt");
-    var process = new ProcessBuilder(ProcessHandle.current().info().command().orElseThrow(),
+    var process = new ProcessBuilder(ChildJvms.JAVA, ChildJvms.HEADLESS,
         "-Dorg.slf4j.simpleLogger.defaultLogLevel=info", "-cp",
         System.getProperty("java.class.path"), CaptureProcess.class.getName(), directory.toString())
         .redirectErrorStream(true).redirectOutput(output.toFile()).start();

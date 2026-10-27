@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.harness.HarnessHttp;
 
 /** Optional visualization recovery must not stop an otherwise usable named server. */
@@ -43,7 +44,7 @@ class VisualizationStartupTest {
       if (failure.equals("unwritable")) assumeFalse(Files.isWritable(parent), "Account bypasses POSIX permissions");
       var config = Files.writeString(temp.resolve("servers.yaml"), "diskcachedisable: true\nservers:\n  fixture:\n    transport: http\n    port: 0\n");
       var err = temp.resolve("stderr.log");
-      var builder = new ProcessBuilder(List.of(ProcessHandle.current().info().command().orElseThrow(),
+      var builder = new ProcessBuilder(List.of(ChildJvms.JAVA, ChildJvms.HEADLESS,
           "-Duser.home=" + home, "-cp", System.getProperty("java.class.path"), Main.class.getName(),
           "run", "fixture", "--config", config.toString())).directory(temp.toFile())
           .redirectOutput(temp.resolve("stdout.log").toFile()).redirectError(err.toFile());

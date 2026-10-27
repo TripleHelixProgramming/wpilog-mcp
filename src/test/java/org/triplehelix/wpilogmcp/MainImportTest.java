@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.fixtures.ChildJvms;
 import org.triplehelix.wpilogmcp.fixtures.ImportFixture;
 import org.triplehelix.wpilogmcp.store.StoreJson;
 
@@ -32,7 +33,8 @@ class MainImportTest {
 
   private ProcessBuilder process(List<String> args, Path output) throws Exception {
     var command = new ArrayList<String>();
-    command.add(ProcessHandle.current().info().command().orElse("java"));
+    command.add(ChildJvms.JAVA);
+    command.add(ChildJvms.HEADLESS);
     command.add("-Duser.home=" + temp.toRealPath());
     command.add("-cp");
     command.add(System.getProperty("java.class.path"));
