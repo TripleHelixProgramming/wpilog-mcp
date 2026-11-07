@@ -67,9 +67,31 @@ class AnalysisGuidanceTest {
           "not_applicable",
           "looked_for",
           "numeric_leaf_paths",
-          "change_only");
+          "change_only", "legacy_unconfirmed", "authoritative_mismatch");
 
   private static final Pattern SNAKE_CASE = Pattern.compile("\\b[a-z]+(?:_[a-z0-9]+)+\\b");
+
+  @Test void replicaGuidanceDistinguishesUnconfirmedFromDisprovedBytes() {
+    String guidance = AnalysisGuidance.analysisPrinciples().toString();
+    assertTrue(guidance.contains("provisional") && guidance.contains("legacy_unconfirmed") && guidance.contains("not master-confirmed"));
+    assertTrue(guidance.contains("authoritative_mismatch") && guidance.contains("known to differ"));
+  }
+
+  @Test void instructionsKeepTheFourConcreteCautions() {
+    for (String phrase : List.of("whole-log numbers mix in disabled time and boot", "absent data is not absent problems",
+        "even when the user names a cause", "one log is one sample")) {
+      assertTrue(AnalysisGuidance.SERVER_INSTRUCTIONS.contains(phrase), phrase);
+    }
+  }
+
+  @Test void brownoutGuidanceDistinguishesOutputDisableFromTheEarlierRailDrop() {
+    String guidance = trapFix(AnalysisGuidance.analysisPrinciples(), "Presenting a voltage threshold crossing as a roboRIO brownout");
+    assertTrue(guidance.contains("6.3 V (roboRIO 1)"));
+    assertTrue(guidance.contains("roboRIO 2 defaults to 6.75 V"));
+    assertTrue(guidance.contains("6.8 V is the earlier rail-drop stage"));
+    assertTrue(guidance.contains("stated as an assumption"));
+    assertTrue(guidance.contains("only RIO_BROWNOUT_START/END"));
+  }
 
   @Test
   @DisplayName("server instructions fit within Claude Code's 2 KB truncation limit")
@@ -84,6 +106,16 @@ class AnalysisGuidanceTest {
     assertTrue(
         AnalysisGuidance.SERVER_INSTRUCTIONS.length() <= 2000,
         "Instructions are " + AnalysisGuidance.SERVER_INSTRUCTIONS.length() + " characters");
+  }
+
+  @Test void completeInstructionsLocateFreshDataBeforeTheAnalysisRulesAndFitTheLimit() {
+    for (String location : List.of(ToolRegistry.LOCAL_LOCATION, ToolRegistry.PIT_LOCATION)) {
+      String text = AnalysisGuidance.forLocation(location);
+      assertTrue(text.startsWith(location + "\n" + AnalysisGuidance.FRESH_DATA_INSTRUCTIONS + "\n"));
+      assertTrue(new Gson().toJson(text).getBytes(StandardCharsets.UTF_8).length <= AnalysisGuidance.INSTRUCTIONS_BYTE_LIMIT, text);
+      for (String tool : List.of("list_sessions", "get_latest_values", "wait_for_change", "list_available_logs")) assertTrue(text.contains(tool));
+      assertTrue(text.contains("recorded past")); assertTrue(text.contains("marks open"));
+    }
   }
 
   @Test

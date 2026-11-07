@@ -2,12 +2,34 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, development]
   pull_request:
-    branches: [main]
+    branches: [main, development]
+
+permissions:
+  contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      extension: ${{ steps.paths.outputs.extension }}
+      harness: ${{ steps.paths.outputs.harness }}
+      service: ${{ steps.paths.outputs.service }}
+      native: ${{ steps.paths.outputs.native }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: paths
+        env:
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 ci/changes.py
+      - name: Check path filters, service assertions and read-behavior gates
+        run: python3 -m unittest ci.test_changes ci.test_check_service ci.test_check_metrics ci.test_compare_read_behavior ci.test_capture_read_behavior ci.test_read_behavior_wiring ci.test_read_arrow_example
+
   build:
+    needs: changes
     strategy:
       # Let every OS finish, so one OS failing does not cancel (and hide) another's result
       fail-fast: false
@@ -27,30 +49,67 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Prove the mapping release check on Windows
+        if: matrix.os == 'windows-latest'
+        run: python ci/check_mapping_release.py
+      - name: Upload mapping release plant
+        if: always() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mapping-release-plant
+          path: build/reports/mapping-release-plant
+
       # license checks that every Java file carries the license header
-      - name: Build and test
-        run: ./gradlew test shadowJar license
+      - name: Build and test (Linux, with coverage)
+        if: matrix.os == 'ubuntu-latest'
+        run: ./gradlew build license -Pcoverage
+      - name: Build and test (Windows)
+        if: matrix.os == 'windows-latest'
+        run: ./gradlew build license
+
+      - name: Check filename refusals without a locale
+        if: matrix.os == 'ubuntu-latest'
+        run: env -u LANG -u LC_ALL ./gradlew filenameLocaleTest
 
       # The console names a failing test but not its assertion message; the report has both
       - name: Upload test report
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-report-${{ matrix.os }}
-          path: build/reports/tests/test
+          path: |
+            build/reports/tests/test
+            build/test-results/test
+            build/reports/tests/filenameLocaleTest
+            build/test-results/filenameLocaleTest
+            build/reports/jacoco
           retention-days: 14
 
       - name: Set up Node.js
+        if: needs.changes.outputs.extension == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       # npm test compiles the extension, then runs its tests
       - name: Build and test VS Code extension
+        if: needs.changes.outputs.extension == 'true'
         working-directory: vscode-extension
         run: |
           npm ci
           npm test
+
+      - name: Check shared follow broker against the real server
+        if: needs.changes.outputs.extension == 'true'
+        run: ./gradlew followBrokerTest
+
+      - name: Upload Arrow samples
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: arrow-samples
+          path: build/arrow-samples
+          retention-days: 14
 
       - name: Upload shadow JAR
         if: matrix.os == 'ubuntu-latest'
@@ -60,9 +119,206 @@ jobs:
           path: build/libs/wpilog-mcp-*-all.jar
           retention-days: 14
 
+      - name: Check the documented metrics stack
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 ci/check_metrics.py
+
+      - name: Upload metrics stack evidence
+        if: always() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-stack
+          path: build/metrics-smoke
+          retention-days: 14
+
   # GitHub's dependency graph does not read build.gradle, so Dependabot cannot see the libraries in
   # the server JAR on its own. This submits the dependencies Gradle resolves on main (runtime, test,
   # and build plugins), and Dependabot then alerts on them as it does on the extension's npm packages.
+  # The data endpoint's Arrow streams, read by the reference implementation: the server writes
+  # Arrow with no Arrow library, and its own tests read the streams with a reader written from
+  # the specification, which could share a misreading with the writer; pyarrow cannot. The Java
+  # test leaves its streams and CSVs under build/arrow-samples, and the script compares them.
+  arrow-crosscheck:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: arrow-samples
+          path: build/arrow-samples
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Read them with pyarrow
+        run: |
+          pip install pyarrow
+          python ci/check_arrow.py build/arrow-samples
+
+  shop-harness:
+    needs: changes
+    if: github.event_name == 'push' && github.ref == 'refs/heads/development' && needs.changes.outputs.harness == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      # Both GradleRIO's WPILib artifacts and the server dependencies use the Gradle cache.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          gradle-home-cache-includes: |
+            caches
+            notifications
+            permwrapper/dists
+      - name: Build the simulation robot once
+        run: ./gradlew -p harness/robot prepareHarness
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
+      - name: Build the synthetic roboRIO image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: harness/rio/Dockerfile
+          load: true
+          tags: wpilog-rio-harness:ci
+          cache-from: type=gha,scope=rio-harness
+          cache-to: type=gha,mode=max,scope=rio-harness
+      - name: Cache the pinned PhotonVision release
+        uses: actions/cache@v4
+        with:
+          path: build/harness-downloads
+          key: photonvision-linuxx64-${{ hashFiles('harness/photonvision/release.json') }}
+      - name: Check release download and cache verification
+        run: python3 -m unittest discover -s harness/photonvision -p 'test_*.py'
+      - name: Run the headless shop harness
+        env:
+          HARNESS_RIO_IMAGE: wpilog-rio-harness:ci
+        run: harness/run -PconformanceNative=${{ needs.changes.outputs.native }}
+      - name: Upload harness evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shop-harness
+          path: |
+            build/reports/tests/shopHarness
+            build/test-results/shopHarness
+            build/shop-harness
+            build/reports/replay
+          retention-days: 14
+
+  systemd:
+    needs: changes
+    if: needs.changes.outputs.service == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the service JAR
+        run: ./gradlew shadowJar
+      - name: Run the printed units under systemd
+        run: sudo --preserve-env=GITHUB_ACTIONS,PATH,JAVA_HOME python3 ci/check_service.py build/libs/wpilog-mcp-*-all.jar
+      - name: Prove the check rejects an unmanaged service
+        run: |
+          if sudo --preserve-env=GITHUB_ACTIONS,PATH,JAVA_HOME python3 ci/check_service.py build/libs/wpilog-mcp-*-all.jar --plant-unmanaged; then
+            echo 'Unmanaged service plant escaped'; exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('build/reports/systemd/unmanaged-plant.json').read_text())
+          assert 'Expected managed: true' in result.get('reason', ''), result
+          PY
+      - name: Upload the service journal and assertions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: systemd
+          path: build/reports/systemd
+          retention-days: 14
+
+  editor-smoke:
+    needs: changes
+    if: needs.changes.outputs.extension == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        vscode: ['1.101.0', 'stable']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/cache@v4
+        with:
+          path: vscode-extension/.vscode-test
+          key: vscode-smoke-${{ runner.os }}-${{ matrix.vscode }}-${{ github.run_id }}
+          restore-keys: vscode-smoke-${{ runner.os }}-${{ matrix.vscode }}-
+      - name: Prepare a server and a synthetic log
+        run: ./gradlew bundleExtension extensionSmokeFixture
+      - name: Run the actual editor
+        working-directory: vscode-extension
+        env:
+          VSCODE_VERSION: ${{ matrix.vscode }}
+        run: |
+          npm ci
+          xvfb-run -a npm run test:smoke
+      - name: Prove the smoke catches broken integration
+        working-directory: vscode-extension
+        env:
+          VSCODE_VERSION: ${{ matrix.vscode }}
+        run: xvfb-run -a npm run test:smoke:plants
+      - name: Upload editor evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-smoke-${{ matrix.vscode }}
+          # Keep assertions and host/daemon logs, not six copies of an installed JAR or browser cache.
+          include-hidden-files: true
+          path: |
+            build/extension-smoke/**/result.json
+            build/extension-smoke/**/plants.json
+            build/extension-smoke/**/install.json
+            build/extension-smoke/**/claude-args.json
+            build/extension-smoke/**/*.log
+            build/extension-smoke/fixture/*.wpilog
+          retention-days: 14
+
+  robot-dependency-submission:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/development'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - uses: gradle/actions/dependency-submission@v4
+        with:
+          # Use the repository wrapper for the separate robot project, including GradleRIO.
+          additional-arguments: -p harness/robot
+
   dependency-submission:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest

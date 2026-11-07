@@ -12,12 +12,16 @@ plugins {
 }
 
 group = 'org.triplehelix'
-version = '0.9.1'
+version = '0.10.0-dev5'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
 }
+
+// NT4 strings and hand-encoded fixture expectations must have the same source bytes on JDK 17
+// Windows (whose default compiler encoding is otherwise the local code page).
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
 
 license {
     header = file('gradle/license-header.txt')
@@ -33,10 +37,16 @@ license {
 // Generate Version.java from the Gradle project version — single source of truth.
 // The generated file goes to build/generated/sources so it doesn't conflict with src/.
 def generatedSrcDir = file("${buildDir}/generated/sources/version/java")
+// The extension's engines.vscode, so the installers offer only editors that accept it.
+def vscodeEngine = new groovy.json.JsonSlurper().parse(file('vscode-extension/package.json')).engines?.vscode
+if (!(vscodeEngine instanceof String)) {
+    throw new GradleException('vscode-extension/package.json has no engines.vscode')
+}
 
 tasks.register('generateVersionSource') {
     def outputFile = file("${generatedSrcDir}/org/triplehelix/wpilogmcp/Version.java")
     inputs.property('version', project.version)
+    inputs.property('vscodeEngine', vscodeEngine)
     outputs.file(outputFile)
     doLast {
         outputFile.parentFile.mkdirs()
@@ -49,6 +59,8 @@ package org.triplehelix.wpilogmcp;
  */
 public final class Version {
   public static final String VERSION = "${project.version}";
+  /** The VS Code versions the matching extension accepts: its package.json's engines.vscode. */
+  public static final String VSCODE_ENGINE = "${vscodeEngine}";
   private Version() {}
 }
 """
@@ -73,8 +85,19 @@ jacocoTestReport {
     }
 }
 
+// Instrument only an explicitly requested coverage run. A normal targeted test does no report work.
+def coverageRequested = project.hasProperty('coverage') || gradle.startParameter.taskNames.any {
+    it.tokenize(':').last() == 'jacocoTestReport'
+}
+tasks.withType(Test).configureEach { jacoco.enabled = name == 'test' && coverageRequested }
+jacocoTestReport.dependsOn test
+if (project.hasProperty('coverage')) test.finalizedBy jacocoTestReport
+
 test {
-    finalizedBy jacocoTestReport
+    // Two 768 MiB forks fit the four-core/7 GiB CI runners, alongside Gradle and child processes.
+    // Larger hosts stop at four; large opt-in corpora keep one explicitly budgeted heap below.
+    maxParallelForks = Math.max(1, Math.min(4, Runtime.runtime.availableProcessors().intdiv(2)))
+    maxHeapSize = '768m'
 }
 
 repositories {
@@ -93,12 +116,27 @@ dependencies {
 
     // JSON processing for MCP protocol
     implementation 'com.google.code.gson:gson:2.11.0'
+    // RFC 8785 number serialization, used by portable visualization template digests.
+    implementation 'io.github.erdtman:java-json-canonicalization:1.1'
+
+    // Arrow's IPC format (the Flatbuffers schema and message headers) for the data endpoint,
+    // written at the format level: no arrow-vector, no off-heap allocator (see ARCHITECTURE.md)
+    implementation 'org.apache.arrow:arrow-format:18.1.0'
 
     // YAML configuration support
     implementation 'org.yaml:snakeyaml:2.6'
 
     // Binary serialization for disk cache
     implementation 'org.msgpack:msgpack-core:0.9.12'
+
+    // NT4 gateway framing only (nt4/server); the client uses java.net.http.WebSocket.
+    implementation 'org.java-websocket:Java-WebSocket:1.6.0'
+
+    // DNS-SD/mDNS provider; no Bonjour/Avahi install or platform native library is required.
+    implementation 'org.jmdns:jmdns:3.6.2'
+
+    // SSH exec and SFTP confined to capture/pull; JDK 17 provides Ed25519 without extra crypto JARs.
+    implementation 'com.github.mwiede:jsch:2.28.7'
 
     // In-memory cache with weight-based eviction for lazy log value loading
     implementation 'com.github.ben-manes.caffeine:caffeine:3.1.8'
@@ -109,6 +147,10 @@ dependencies {
 
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    // Real SSH/SFTP for the synthetic roboRIO; never packaged in the server.
+    testImplementation 'org.apache.sshd:sshd-core:2.20.0'
+    testImplementation 'org.apache.sshd:sshd-sftp:2.20.0'
+    testImplementation 'net.i2p.crypto:eddsa:0.3.0' // MINA 2.x's Ed25519 provider (test only).
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     // WPILib C++ natives for DataLogWriter tests (JNI is bundled inside cpp artifacts in 2026)
@@ -144,12 +186,37 @@ def testCacheDir = project.hasProperty('testCacheDir')
     ? file(project.property('testCacheDir')) : file("$buildDir/test-disk-cache")
 def keepTestCache = project.hasProperty('testCacheDir')
 
+// Scratch a run leaves under build/ lasts until the next run of the same suite. A passing replay
+// deletes its own run folder and a failed one keeps it for diagnosis; each task empties the
+// folders listed here before its tests start, as it does its disk cache. Before, nothing emptied
+// them: every replay left a run folder, and fixture folders piled up because a test worker's
+// number keeps rising for the life of the Gradle daemon, until one checkout's build folder held
+// over 500 GiB. BuildScratchTest fails when a test names a folder under build/ that these lists,
+// a disk cache or its list of kept folders do not account for.
+def fixtureScratch = ['test-fixtures']
+def realLogScratch = ['replay-work', 'replay-pull', 'replay-pairs', 'real-log-conformance-export']
+def harnessScratch = ['replay-native', 'shop-harness']
+tasks.withType(Test).configureEach {
+    doFirst { delete fixtureScratch.collect { "$buildDir/$it" } }
+}
+
 // Make test task depend on native extraction and set the library path
 tasks.named('test') {
     dependsOn extractTestNatives
     systemProperty 'wpilib.natives.path', "$buildDir/testnatives"
     environment 'WPILOG_DISK_CACHE_DIR', testCacheDir.absolutePath
     doFirst { if (!keepTestCache) delete testCacheDir }
+    // The claim and documentation tests read these files while they run, so they are inputs: an
+    // edit to any of them puts this task out of date. Undeclared, a repeated test command after a
+    // documentation-only edit was answered "up to date" and reported success without running.
+    inputs.files(
+            fileTree('doc'), fileTree('examples'), fileTree('.github'), fileTree('gradle'),
+            fileTree('harness') { exclude '**/build/**', '**/.gradle/**', '**/node_modules/**' },
+            fileTree('vscode-extension/src/smoke'),
+            'README.md', 'CHANGELOG.md', 'CLAUDE.md', 'build.gradle', 'install.sh', 'install.ps1',
+            'vscode-extension/README.md', 'vscode-extension/package.json', 'vscode-extension/package-lock.json')
+        .withPropertyName('claimSources')
+        .withPathSensitivity(PathSensitivity.RELATIVE)
     // ToolConformanceTest: -PconformanceUpdate rewrites the known-failures list from current results
     if (project.hasProperty('conformanceUpdate')) {
         systemProperty 'conformance.update', 'true'
@@ -162,12 +229,17 @@ tasks.named('test') {
     if (project.hasProperty('goldenMatchLog')) {
         systemProperty 'golden.matchlog', project.property('goldenMatchLog')
     }
-    // Conformance rules on every real log in a directory (opt-in): -PconformanceLogDir=/path/to/logs
+    // Conformance on a deterministic sample (opt-in); -PconformanceSample=full includes every log.
     // (-PconformanceMaxLogs=N limits it to the first N)
     if (project.hasProperty('conformanceLogDir')) {
         systemProperty 'conformance.logdir', project.property('conformanceLogDir')
+        systemProperty 'conformance.sample', project.findProperty('conformanceSample') ?: 'sample'
         // The server's default heap (the launcher's WPILOG_MAX_HEAP), not the 512 MB test default
         maxHeapSize = project.findProperty('conformanceHeap') ?: '4g'
+        maxParallelForks = 1
+        // Only a real-log run empties these, so a targeted run while you look into a real-log
+        // failure keeps the failed run's folder.
+        doFirst { delete realLogScratch.collect { "$buildDir/$it" } }
     }
     // The simulated logs and their MANIFEST.md, for the claims test: -PsimLogDir=/path/to/sim-logs
     if (project.hasProperty('simLogDir')) {
@@ -190,24 +262,187 @@ application {
     mainClass = 'org.triplehelix.wpilogmcp.Main'
 }
 
+apply from: 'gradle/verify-runtime-native.gradle'
+
 shadowJar {
     archiveBaseName.set('wpilog-mcp')
     archiveClassifier.set('all')
     archiveVersion.set(version)
 
     manifest {
-        attributes 'Main-Class': 'org.triplehelix.wpilogmcp.Main'
+        attributes 'Main-Class': 'org.triplehelix.wpilogmcp.Main', 'Multi-Release': 'true'
     }
 }
 
 tasks.named('test') {
-    useJUnitPlatform()
+    useJUnitPlatform { excludeTags 'shop-harness', 'large-log', 'architecture-hardening-soak' }
     // Read by ExtensionVersionTest: a changed version must rerun the tests
     inputs.files('vscode-extension/package.json', 'vscode-extension/package-lock.json')
         .withPropertyName('extensionManifests')
 }
 
+// Replay policy is independent of the Java real-log selector. Ordinary test never runs natives.
+def nativeReplay = project.findProperty('conformanceNative') ?: 'sample'
+if (!(nativeReplay in ['none', 'sample', 'full'])) {
+    throw new GradleException('conformanceNative must be none, sample, or full')
+}
+
+// A separate opt-in process suite: harness/run builds the GradleRIO robot first.
+// Run separately so a locale regression cannot overwrite the ordinary suite's XML evidence.
+tasks.register('filenameLocaleTest', Test) {
+    description = 'Filename refusals with LANG and LC_ALL unset (native encoding is chosen at JVM startup)'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching '*FileNameEncodingTest'; includeTestsMatching '*StoreUploadEndpointTest' }
+    setEnvironment(environment.findAll { key, value -> key != 'LANG' && key != 'LC_ALL' })
+    dependsOn extractTestNatives
+    systemProperty 'wpilib.natives.path', "$buildDir/testnatives"
+    environment 'WPILOG_DISK_CACHE_DIR', "$buildDir/filename-locale-cache"
+    doFirst { delete "$buildDir/filename-locale-cache" }
+}
+
+// Deliberately opt-in: writes a 2.2 GB synthetic fixture and a capture of comparable size.
+tasks.register('largeLogTest', Test) {
+    dependsOn testClasses
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'large-log' }
+    maxParallelForks = 1
+    maxHeapSize = '768m'
+    environment 'WPILOG_DISK_CACHE_DIR', file("$buildDir/large-log-disk-cache").absolutePath
+    doFirst { delete file("$buildDir/large-log-disk-cache") }
+}
+
+// Sustained capture is opt-in; ordinary test runs must not start a ten-minute workload.
+tasks.register('architectureHardeningSoakTest', Test) {
+    description = 'Synthetic 100-topic 50 Hz capture under imports and HTTP analysis'
+    dependsOn testClasses
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'architecture-hardening-soak' }
+    maxParallelForks = 1
+    maxHeapSize = '768m'
+    systemProperty 'hardening.soak.seconds', project.findProperty('hardeningSoakSeconds') ?: '600'
+    systemProperty 'hardening.soak.label', project.findProperty('hardeningSoakLabel') ?: 'full'
+    systemProperty 'hardening.gate.seconds', project.findProperty('hardeningGateSeconds') ?: '600'
+    systemProperty 'hardening.gate.prefill.hours', project.findProperty('hardeningGatePrefillHours') ?: '2'
+    environment 'WPILOG_DISK_CACHE_DIR', file("$buildDir/hardening-soak-disk-cache").absolutePath
+    doFirst { delete file("$buildDir/hardening-soak-disk-cache") }
+    outputs.upToDateWhen { false }
+}
+
+tasks.register('shopHarness', Test) {
+    dependsOn testClasses, shadowJar
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'shop-harness' }
+    systemProperty 'conformance.native', nativeReplay
+    // Separate processes keep the two timeline stores and singleton managers independent.
+    maxParallelForks = project.hasProperty('harnessRio') ? 2 : 1
+    maxHeapSize = '768m'
+    if (project.hasProperty('harnessRio')) systemProperty 'harness.rio', project.property('harnessRio')
+    if (project.hasProperty('harnessPhoton')) systemProperty 'harness.photon', file(project.property('harnessPhoton')).absolutePath
+    systemProperty 'harness.timeline', file(project.findProperty('harnessTimeline') ?: 'harness/timelines/reboot-match.json').absolutePath
+    systemProperty 'harness.robotJar', file('harness/robot/build/libs/shop-robot.jar').absolutePath
+    systemProperty 'harness.natives', file('harness/robot/build/jni/release').absolutePath
+    systemProperty 'harness.serverJar', tasks.shadowJar.archiveFile.get().asFile.absolutePath
+    systemProperty 'harness.output', file('build/shop-harness').absolutePath
+    if (project.hasProperty('conformanceLogDir')) {
+        systemProperty 'conformance.logdir', project.property('conformanceLogDir')
+        systemProperty 'conformance.sample', project.findProperty('conformanceSample') ?: 'sample'
+        maxHeapSize = project.findProperty('conformanceHeap') ?: '4g'
+        maxParallelForks = 1
+    }
+    if (project.hasProperty('conformanceMaxLogs')) {
+        systemProperty 'conformance.maxlogs', project.property('conformanceMaxLogs')
+    }
+    environment 'WPILOG_DISK_CACHE_DIR', file('build/harness-test-disk-cache').absolutePath
+    doFirst { delete file('build/harness-test-disk-cache') }
+    doFirst { delete harnessScratch.collect { "$buildDir/$it" } }
+    outputs.upToDateWhen { false }
+}
+
+// The public reader is packaged separately from the application. An explicit class boundary
+// keeps CLI/manager/provider startup and native test dependencies out; ReadLibraryTest compiles
+// and runs a consumer with this JAR alone so the server's classpath cannot mask missing owners.
+def readerOwners = [
+    'log/EntryInfo', 'log/DecodeProblem', 'log/LogBytes', 'log/MappedLogBytes',
+    'log/LogReader', 'log/LogScan', 'log/RecordOffsets', 'log/ScopedLogReader',
+    'log/LogFileAccess', 'log/FileSnapshot', 'log/LogFileException', 'log/TimestampedValue',
+    'log/RobotCandidates', 'log/LogData', 'log/NumericColumn', 'log/WallClock', 'log/subsystems/EntryDecoder', 'log/subsystems/BinaryReader',
+    'log/subsystems/SecurityValidator', 'config/ClientLeases',
+    'store/StoreCatalog', 'store/StoreManifest', 'store/ReplicaCatalog', 'store/ReplicaJournal', 'store/ReplicaMasters', 'store/ReplicaPublications', 'store/ReplicaReads', 'store/StoreFiles', 'store/StoreJson', 'store/FileNameEncoding', 'store/CaptureRecording',
+    'store/SystemLogState', 'store/SystemLogFiles', 'store/SystemLogIndex', 'store/ClockRecords', 'store/RecordedClocks',
+    'store/StoreTransferInventory', 'capture/CaptureLease', 'capture/CaptureStats',
+    'capture/TopicCost', 'capture/context/DeviceIdentity', 'capture/context/ProviderStatus',
+    'capture/pull/KernelLines', 'capture/pull/SystemLogTime',
+    'sync/SyncResult', 'sync/SignalPair', 'sync/ConfidenceLevel', 'sync/SyncMethod', 'sync/Combination', 'sync/PullManifest', 'sync/RemoteFiles'
+]
+def readerIncludes = ['edu/wpi/first/util/datalog/DataLogAccess*',
+    'org/triplehelix/wpilogmcp/read/**', 'org/triplehelix/wpilogmcp/data/**',
+    'org/triplehelix/wpilogmcp/log/struct/**', 'org/triplehelix/wpilogmcp/revlog/**', 'dbc/**'] +
+    readerOwners.collect { "org/triplehelix/wpilogmcp/${it}*.class" }
+tasks.register('readerJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
+    dependsOn classes
+    group = 'build'
+    description = 'Build the standalone read-only Java library (no server bootstrap or native runtime)'
+    archiveBaseName = 'wpilog-reader'
+    archiveClassifier = ''
+    configurations = [project.configurations.runtimeClasspath]
+    from(sourceSets.main.output) {
+        include readerIncludes
+        exclude 'org/triplehelix/wpilogmcp/read/server/**'
+    }
+    dependencies {
+        include dependency('edu.wpi.first.wpiutil:wpiutil-java:.*')
+        include dependency('com.google.code.gson:gson:.*')
+        include dependency('com.github.ben-manes.caffeine:caffeine:.*')
+        include dependency('org.checkerframework:checker-qual:.*')
+        include dependency('com.google.errorprone:error_prone_annotations:.*')
+        include dependency('org.apache.arrow:arrow-format:.*')
+        include dependency('com.google.flatbuffers:flatbuffers-java:.*')
+        include dependency('org.slf4j:slf4j-api:.*')
+    }
+    // Keep the reader independent of the embedding application's WPILib season and JSON/Arrow
+    // versions. DataLogAccess moves with WPILib, avoiding an exported split package as well.
+    ['edu.wpi.first.util', 'com.google.gson', 'com.google.flatbuffers', 'org.apache.arrow', 'org.slf4j', 'com.github.benmanes.caffeine', 'org.checkerframework', 'com.google.errorprone'].each { name ->
+        relocate name, 'org.triplehelix.wpilogmcp.reader.internal.' + name
+    }
+    // Only the pure Java DataLog record classes are used; do not ship JNI loaders or their
+    // optional Jackson/QuickBuf dependencies from the rest of wpiutil-java.
+    exclude { entry ->
+        String path = entry.path
+        path.startsWith('edu/wpi/first/util/') && path.endsWith('.class') &&
+            !(path.startsWith('edu/wpi/first/util/struct/') ||
+              path == 'edu/wpi/first/util/WPISerializable.class' ||
+              path.matches('edu/wpi/first/util/datalog/DataLog(Access|Reader|Iterator|Record)(\\$.*)?\\.class'))
+    }
+    from('src/main/resources/META-INF/LICENSE-WPILib') { into 'META-INF' }
+    exclude 'module-info.class', 'META-INF/versions/**/module-info.class'
+    manifest { attributes 'Implementation-Version': project.version, 'Automatic-Module-Name': 'org.triplehelix.wpilog.reader' }
+    from('LICENSE') { into 'META-INF'; rename { 'LICENSE-wpilog-mcp' } }
+}
+tasks.named('assemble') { dependsOn tasks.named('readerJar') }
+tasks.named('test') {
+    dependsOn tasks.named('readerJar')
+    systemProperty 'read.testJar', tasks.named('readerJar').get().archiveFile.get().asFile.absolutePath
+}
+
 // Convenience task to build the fat JAR
+// Freeze once from the baseline; both server JARs consume these exact requests and files.
+tasks.register('readBehaviorCorpus', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.triplehelix.wpilogmcp.conformance.ReadBehaviorCorpus'
+    maxHeapSize = '768m'
+    environment 'WPILOG_DISK_CACHE_DIR', file("$buildDir/read-behavior-generator-cache").absolutePath
+    doFirst {
+        if (!project.hasProperty('readBehaviorDir')) throw new GradleException('Specify a new -PreadBehaviorDir=/path/to/corpus')
+        args file(project.property('readBehaviorDir')).absolutePath
+    }
+}
+
 tasks.register('buildMcp') {
     dependsOn shadowJar
     doLast {
@@ -216,196 +451,28 @@ tasks.register('buildMcp') {
 }
 
 // ==================== Install Task ====================
-// Installs wpilog-mcp to ~/.wpilog-mcp/ with versioned JAR, launcher script,
-// and a default config file (if none exists).
-//
-// Layout:
-//   ~/.wpilog-mcp/
-//   ├── jars/wpilog-mcp-{version}.jar    # versioned JARs (multiple versions can coexist)
-//   ├── bin/
-//   │   ├── wpilog-mcp-{version}[.bat]   # versioned launcher script
-//   │   └── wpilog-mcp[.bat]             # current version: a symlink (macOS, Linux) or a copy (Windows)
-//   └── servers.yaml                      # server configurations (preserved on upgrade)
-
-tasks.register('install') {
+// The JAR owns the layout. --force makes this development build current, even at the same version.
+// -PinstallDir is useful for an isolated install; existing YAML or legacy JSON is preserved.
+tasks.register('install', Exec) {
     dependsOn shadowJar
     group = 'application'
     description = 'Install wpilog-mcp to ~/.wpilog-mcp/'
+    doFirst {
+        def javaExe = new File(System.getProperty('java.home'),
+            System.getProperty('os.name').toLowerCase().startsWith('windows') ? 'bin/java.exe' : 'bin/java')
+        commandLine javaExe.absolutePath, '-jar', tasks.shadowJar.archiveFile.get().asFile.absolutePath,
+            'install', '--force', '--install-dir',
+            (findProperty('installDir') ?: new File(System.getProperty('user.home'), '.wpilog-mcp')).toString()
+    }
+}
 
-    doLast {
-        def home = System.getProperty('user.home')
-        def installDir = file("${home}/.wpilog-mcp")
-        def jarsDir = file("${installDir}/jars")
-        def binDir = file("${installDir}/bin")
-        def os = System.getProperty('os.name', '').toLowerCase()
-        def isWindows = os.contains('win')
-
-        // Create directory structure
-        jarsDir.mkdirs()
-        binDir.mkdirs()
-
-        // Copy the shadow JAR with versioned name
-        def jarName = "wpilog-mcp-${version}.jar"
-        def targetJar = file("${jarsDir}/${jarName}")
-        def sourceJar = file("${buildDir}/libs/wpilog-mcp-${version}-all.jar")
-        if (!sourceJar.exists()) {
-            throw new GradleException("Shadow JAR not found: ${sourceJar}")
-        }
-        copy {
-            from sourceJar
-            into jarsDir
-            rename { jarName }
-        }
-        println "Installed JAR: ${targetJar}"
-
-        if (isWindows) {
-            // Windows batch launcher
-            def batFile = file("${binDir}/wpilog-mcp-${version}.bat")
-            batFile.text = """\
-@echo off
-setlocal EnableDelayedExpansion
-REM wpilog-mcp ${version} launcher
-REM Auto-generated by ./gradlew install
-
-REM Memory management is automatic. Set WPILOG_MAX_HEAP to control heap size.
-set MAX_HEAP=%WPILOG_MAX_HEAP%
-if "%MAX_HEAP%"=="" set MAX_HEAP=4g
-
-REM Prefer WPILib JDK if available (scans for latest year)
-set JAVA_EXEC=java
-set WPILIB_FOUND=0
-for /f "tokens=*" %%D in ('dir /b /ad /o-n "%USERPROFILE%\\wpilib" 2^>nul') do (
-    if "!WPILIB_FOUND!"=="0" if exist "%USERPROFILE%\\wpilib\\%%D\\jdk\\bin\\java.exe" (
-        set JAVA_EXEC=%USERPROFILE%\\wpilib\\%%D\\jdk\\bin\\java.exe
-        set WPILIB_FOUND=1
-    )
-)
-if "!WPILIB_FOUND!"=="0" (
-    for /f "tokens=*" %%D in ('dir /b /ad /o-n "C:\\Users\\Public\\wpilib" 2^>nul') do (
-        if "!WPILIB_FOUND!"=="0" if exist "C:\\Users\\Public\\wpilib\\%%D\\jdk\\bin\\java.exe" (
-            set JAVA_EXEC=C:\\Users\\Public\\wpilib\\%%D\\jdk\\bin\\java.exe
-            set WPILIB_FOUND=1
-        )
-    )
-)
-
-"%JAVA_EXEC%" -Xmx%MAX_HEAP% -jar "${jarsDir.absolutePath.replace('/', '\\')}\\${jarName}" %*
-"""
-            println "Installed launcher: ${batFile}"
-
-            // Create "current" copy
-            def currentBat = file("${binDir}/wpilog-mcp.bat")
-            currentBat.text = batFile.text
-            println "Updated current: ${currentBat}"
-        } else {
-            // Unix shell launcher
-            def scriptFile = file("${binDir}/wpilog-mcp-${version}")
-            scriptFile.text = """\
-#!/bin/sh
-# wpilog-mcp ${version} launcher
-# Auto-generated by ./gradlew install
-
-# Memory management is automatic. Set WPILOG_MAX_HEAP to control JVM heap size.
-# More heap = more room for decoded log values in cache.
-MAX_HEAP="\${WPILOG_MAX_HEAP:-4g}"
-
-# Prefer WPILib JDK if available (scans for latest year)
-JAVA_EXEC="java"
-for year in \$(ls -1rd "\${HOME}/wpilib"/*/ 2>/dev/null | head -10); do
-    if [ -f "\${year}jdk/bin/java" ]; then
-        JAVA_EXEC="\${year}jdk/bin/java"
-        break
-    fi
-done
-# Fallback to JAVA_HOME if WPILib JDK not found
-if [ "\${JAVA_EXEC}" = "java" ] && [ -n "\${JAVA_HOME}" ] && [ -f "\${JAVA_HOME}/bin/java" ]; then
-    JAVA_EXEC="\${JAVA_HOME}/bin/java"
-fi
-
-exec "\${JAVA_EXEC}" -Xmx\${MAX_HEAP} -jar "${jarsDir.absolutePath}/${jarName}" "\$@"
-"""
-            scriptFile.setExecutable(true)
-            println "Installed launcher: ${scriptFile}"
-
-            // Create/update "current" symlink
-            def currentLink = file("${binDir}/wpilog-mcp").toPath()
-            java.nio.file.Files.deleteIfExists(currentLink)
-            java.nio.file.Files.createSymbolicLink(currentLink, scriptFile.toPath().fileName)
-            println "Updated symlink: ${currentLink} -> ${scriptFile.name}"
-        }
-
-        // Create default config if none exists (YAML preferred, but respect existing JSON)
-        // The ~/riologs path works cross-platform — the app expands ~ to the user's home dir.
-        def yamlConfig = file("${installDir}/servers.yaml")
-        def jsonConfig = file("${installDir}/servers.json")
-        if (!yamlConfig.exists() && !jsonConfig.exists()) {
-            yamlConfig.text = """\
-# wpilog-mcp server configuration
-# Documentation: https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md#configuration
-
-# ---- Defaults ----
-# Top-level settings are inherited by all server configurations below.
-# Individual servers can override any of these.
-
-# Your FRC team number, for The Blue Alliance match data when a log does not record one.
-# Remove the # and put in your number:
-# team: 1234
-
-# Directory containing .wpilog files downloaded from the roboRIO
-logdir: ~/riologs
-# Or several directories, listed together:
-# logdir:
-#   - ~/riologs
-#   - /Volumes/LOGS/archive
-
-# The Blue Alliance API key (get one at https://www.thebluealliance.com/account).
-# Remove the # and put in your key, or set the TBA_API_KEY environment variable instead:
-# tba_key: your-key-here
-
-# ---- Server Configurations ----
-servers:
-
-  # Default: stdio transport for MCP clients (Claude Desktop, etc.)
-  default:
-    transport: stdio
-
-  # HTTP transport for browser-based or multi-client access
-  http:
-    transport: http
-    port: 2363
-
-  # For the project's stress tests (./gradlew stressTest), with the settings above
-  stresstest: {}
-"""
-            println "Created default config: ${yamlConfig}"
-            println "  Edit this file to set your team number and log directory."
-        } else if (yamlConfig.exists()) {
-            println "Config file already exists: ${yamlConfig} (not overwritten)"
-        } else {
-            println "Config file already exists: ${jsonConfig} (not overwritten)"
-        }
-
-        println ""
-        if (isWindows) {
-            println "Add to your PATH:  ${binDir}"
-            println ""
-            println "Usage:"
-            println "  wpilog-mcp [options]              Legacy CLI mode"
-            println "  wpilog-mcp start default           Start named config (stdio)"
-            println "  wpilog-mcp start http              Start named config (HTTP daemon)"
-        } else {
-            // Check if bin dir is already on PATH
-            def pathDirs = System.getenv('PATH')?.split(':') ?: []
-            if (!pathDirs.contains(binDir.absolutePath)) {
-                println "Add to your shell profile (~/.zshrc or ~/.bashrc):"
-                println "  export PATH=\"\${HOME}/.wpilog-mcp/bin:\$PATH\""
-                println ""
-            }
-            println "Usage:"
-            println "  wpilog-mcp [options]              Legacy CLI mode"
-            println "  wpilog-mcp start default           Start named config (stdio)"
-            println "  wpilog-mcp start http              Start named config (HTTP daemon)"
-        }
+// Installer tests execute the same packaged JAR that the release scripts download.
+tasks.named('test') {
+    dependsOn shadowJar
+    systemProperty 'install.testJar', tasks.shadowJar.archiveFile.get().asFile.absolutePath
+    if (project.hasProperty('pullRobot')) {
+        systemProperty 'pull.robot', project.property('pullRobot')
+        systemProperty 'pull.user', project.findProperty('pullUser') ?: 'lvuser'
     }
 }
 
@@ -444,8 +511,7 @@ tasks.register('syncExtensionVersion') {
 }
 
 // Copies the shadow JAR into vscode-extension/server/ for local development.
-// After running this, cd into vscode-extension/ and run: npm install && npm run compile
-// Then press F5 in VS Code to launch an Extension Development Host.
+// runExtension compiles the UI, opens a development window, and watches for changes.
 
 tasks.register('bundleExtension', Copy) {
     dependsOn shadowJar, 'syncExtensionVersion'
@@ -455,6 +521,94 @@ tasks.register('bundleExtension', Copy) {
     from(shadowJar.archiveFile)
     into("${projectDir}/vscode-extension/server")
     rename { 'wpilog-mcp-all.jar' }
+}
+
+// One runtime lookup for compilation and watching, evaluated only when an extension task runs.
+def extensionCompilerCommand = {
+  def compiler = file('vscode-extension/node_modules/typescript/bin/tsc')
+  if (!compiler.isFile()) {
+    throw new GradleException('Extension dependencies are missing. Install Node.js with npm, ' +
+        'then run npm ci in vscode-extension/ once before running extension development tasks.')
+  }
+
+  def isWindows = System.getProperty('os.name').toLowerCase().startsWith('windows')
+  def nodeName = isWindows ? 'node.exe' : 'node'
+  def explicitNode = findProperty('nodeExecutable')
+  def candidates = explicitNode != null ? [file(explicitNode.toString())] :
+      (System.getenv('PATH') ?: '').split(java.util.regex.Pattern.quote(File.pathSeparator))
+          .findAll { !it.isEmpty() }.collect { new File(it, nodeName) }
+  if (explicitNode == null) {
+    candidates.add(new File(System.getProperty('user.home'),
+        ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/${nodeName}"))
+  }
+  def node = candidates.find { it.isFile() && (isWindows || it.canExecute()) }
+  if (node == null) {
+    throw new GradleException(explicitNode != null
+        ? "Node executable is not a runnable file: ${explicitNode}"
+        : 'Node.js was not found on PATH or in the Codex runtime cache. Install Node.js, ' +
+            'or pass -PnodeExecutable=/absolute/path/to/node.')
+  }
+  logger.lifecycle("Extension compiler uses ${node.absolutePath}")
+  [node.absolutePath, compiler.absolutePath, '-p', './']
+}
+
+tasks.register('compileExtension', Exec) {
+  dependsOn 'syncExtensionVersion'
+  group = 'application'
+  description = 'Compile the VS Code extension once, without packaging or installing it'
+  workingDir file('vscode-extension')
+  doFirst { commandLine extensionCompilerCommand() }
+}
+
+// Reuse the installer's editor discovery and Windows command quoting through a build-only helper.
+tasks.register('openExtension', JavaExec) {
+  dependsOn 'compileExtension', 'bundleExtension', testClasses
+  group = 'application'
+  description = 'Compile and open the local extension in a VS Code development window'
+  classpath = sourceSets.test.runtimeClasspath
+  mainClass = 'org.triplehelix.wpilogmcp.config.ExtensionDevelopmentHost'
+  doFirst {
+    args (findProperty('vscode') ?: 'system').toString(), file('vscode-extension').absolutePath
+    if (findProperty('extensionWorkspace')) {
+      args file(findProperty('extensionWorkspace')).absolutePath
+    }
+  }
+}
+
+['watchExtension', 'runExtension'].each { taskName ->
+  tasks.register(taskName, Exec) {
+    dependsOn taskName == 'runExtension' ? 'openExtension' : 'syncExtensionVersion'
+    group = 'application'
+    description = taskName == 'runExtension'
+        ? 'Open the local extension in VS Code and watch for TypeScript changes (Ctrl+C to stop watching)'
+        : 'Compile and watch TypeScript changes only; use runExtension to open VS Code too'
+    workingDir file('vscode-extension')
+    doFirst {
+      logger.lifecycle('Reload the Extension Development Host with Developer: Reload Window after changes. Ctrl+C stops watching.')
+      commandLine extensionCompilerCommand() + ['--watch', '--preserveWatchOutput']
+    }
+  }
+}
+
+// A real editor runs separately from the ordinary Java and Node suites, using no team's log.
+tasks.register('extensionSmokeFixture', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.triplehelix.wpilogmcp.fixtures.ExtensionSmokeFixture'
+    args file('build/extension-smoke/fixture/smoke.wpilog').absolutePath
+    doLast { file('build/extension-smoke/classpath.txt').text = sourceSets.test.runtimeClasspath.asPath }
+}
+
+// No editor or robot is needed: the Node broker drives a synthetic writer and the real HTTP routes.
+tasks.register('followBrokerTest', Exec) {
+    dependsOn 'testClasses', 'compileExtension'
+    workingDir file('vscode-extension')
+    doFirst {
+        environment 'WPILOG_FOLLOW_CLASSPATH', sourceSets.test.runtimeClasspath.asPath
+        environment 'WPILOG_FOLLOW_JAVA', new File(System.getProperty('java.home'),
+            System.getProperty('os.name').toLowerCase().startsWith('windows') ? 'bin/java.exe' : 'bin/java').absolutePath
+        commandLine extensionCompilerCommand()[0], '--test', 'out/test/liveBrokerReal.test.js', 'out/test/connectionsReal.test.js'
+    }
 }
 
 // ==================== Build VS Code Extension ====================
@@ -513,32 +667,23 @@ tasks.register('installExtension', Exec) {
     def extDir = "${projectDir}/vscode-extension"
     def extVersion = project.version
     def vsixFile = "wpilog-analyzer-${extVersion}.vsix"
-
-    // Find VS Code CLI — prefer WPILib VS Code, fall back to system 'code'
-    def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
-    def codeBin = 'code'
-    def wpiYear = java.time.Year.now().value
-    def wpiCodePaths = isWindows ? [
-        "C:/Users/Public/wpilib/${wpiYear}/vscode/bin/code.cmd",
-        "${System.getProperty('user.home')}/wpilib/${wpiYear}/vscode/bin/code.cmd",
-    ] : [
-        "${System.getProperty('user.home')}/wpilib/${wpiYear}/vscode/bin/code",
-        "/usr/local/bin/code",
-    ]
-    for (def p : wpiCodePaths) {
-        if (new File(p).exists()) { codeBin = p; break }
-    }
+    def isWindows = System.getProperty('os.name').toLowerCase().startsWith('windows')
 
     workingDir extDir
-    if (isWindows) {
-        commandLine 'cmd', '/c', "\"${codeBin}\" --install-extension ${vsixFile} --force"
-    } else {
-        commandLine 'bash', '-c', "\"${codeBin}\" --install-extension '${vsixFile}' --force"
-    }
 
     doFirst {
         println "Installing WPILog Analyzer VS Code extension v${extVersion}..."
+        def javaExe = new File(System.getProperty('java.home'), "bin/java${isWindows ? '.exe' : ''}")
+        def command = [javaExe.absolutePath, '-jar', tasks.shadowJar.archiveFile.get().asFile.absolutePath,
+            'install', '--force', '--with-extension', '--vsix', file("${extDir}/${vsixFile}").absolutePath,
+            '--install-dir', (findProperty('installDir') ?: new File(System.getProperty('user.home'), '.wpilog-mcp')).toString()]
+        // -Pvscode=<season|system> names the editor; without it, the newest WPILib season it accepts
+        if (findProperty('vscode')) {
+            command += ['--vscode', findProperty('vscode').toString()]
+        }
+        commandLine command
     }
+
     doLast {
         println "Extension installed. Restart VS Code to activate."
     }
@@ -636,6 +781,7 @@ tasks.register('stdioStressTest') {
 
             args 'execute',
                  '--select-class', 'org.triplehelix.wpilogmcp.integration.StressTest',
+                 '--select-method', 'org.triplehelix.wpilogmcp.conformance.LiveReplayTest#concurrentLiveCallsDuringReplay',
                  '--details', 'tree',
                  '--details-theme', 'unicode',
                  '--disable-banner'
@@ -693,6 +839,7 @@ tasks.register('httpStressTest') {
 
             args 'execute',
                  '--select-class', 'org.triplehelix.wpilogmcp.integration.HttpStressTest',
+                 '--select-method', 'org.triplehelix.wpilogmcp.conformance.LiveReplayTest#concurrentLiveCallsDuringReplay',
                  '--details', 'tree',
                  '--details-theme', 'unicode',
                  '--disable-banner'

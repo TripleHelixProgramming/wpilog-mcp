@@ -113,45 +113,147 @@ public record DataQuality(
    * @since 0.9.0
    */
   public static DataQuality fromSegments(List<List<TimestampedValue>> segments) {
-    int n = segments.stream().mapToInt(List::size).sum();
+    return fromSegments(segments, false);
+  }
+
+  /** A provider declares sampling; changing values or adaptive periods must not imply change-only logging. */
+  public static DataQuality fromSegments(org.triplehelix.wpilogmcp.log.LogData log, String entry,
+      List<List<TimestampedValue>> segments) {
+    var info = log.entries().get(entry);
+    return fromSegments(segments, info != null && sampled(info.metadata()));
+  }
+  static boolean sampled(String metadata) {
+    try {
+      var value = com.google.gson.JsonParser.parseString(metadata).getAsJsonObject().get("sampled");
+      return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isBoolean() && value.getAsBoolean();
+    } catch (RuntimeException invalid) { return false; }
+  }
+  /**
+   * As {@link #fromSegments(org.triplehelix.wpilogmcp.log.LogData, String, List)}, over samples by
+   * position, so a column file's samples are scored without making a value of each; equal values
+   * are told by their bits, which compare as the values' own {@code equals} does.
+   */
+  public static DataQuality fromSamples(org.triplehelix.wpilogmcp.log.LogData log, String entry,
+      List<org.triplehelix.wpilogmcp.read.NumericSamples> segments) {
+    var info = log.entries().get(entry);
+    return fromSamples(segments, info != null && sampled(info.metadata()));
+  }
+
+  static DataQuality fromSamples(List<org.triplehelix.wpilogmcp.read.NumericSamples> segments, boolean sampled) {
+    var accumulator = new Accumulator(sampled);
+    for (var samples : segments) {
+      accumulator.segment();
+      for (int i = 0; i < samples.size(); i++) accumulator.add(samples.seconds(i), samples.number(i), samples.valueBits(i));
+    }
+    return accumulator.result();
+  }
+
+  static DataQuality fromSegments(List<List<TimestampedValue>> segments, boolean sampled) {
+    var accumulator = new Accumulator(sampled);
+    for (var values : segments) {
+      accumulator.segment();
+      for (var value : values) accumulator.add(value.timestamp(), value.value());
+    }
+    return accumulator.result();
+  }
+
+  /**
+   * Scores samples seen one at a time, window by window, exactly as {@link #fromSegments} scores
+   * lists. A caller that reads cursors instead of holding a history (compare_sessions) keeps only
+   * the intervals the medians need and gets the score a tool holding the samples would get.
+   */
+  static final class Accumulator {
+    private final boolean sampled;
+    private int n;
+    private int nanCount;
+    private int pairs;
+    private int equalPairs;
+    private int count;
+    private double timeSpan;
+    private double first;
+    private double last;
+    private Object previous;
+    private long previousBits;
+    private boolean previousNumber;
+    private boolean inSegment;
+    private double[] intervals = new double[16];
+
+    Accumulator(boolean sampled) {
+      this.sampled = sampled;
+    }
+
+    /** Starts the next window: no interval spans the gap between two. */
+    void segment() {
+      close();
+    }
+
+    void add(double timestamp, Object value) {
+      n++;
+      // Count NaN/Infinity
+      if (value instanceof Number num && !Double.isFinite(num.doubleValue())) nanCount++;
+      if (!inSegment) {
+        inSegment = true;
+        first = timestamp;
+      } else if (timestamp > last) {
+        // Values sharing a timestamp (elements of one record) carry no timing information
+        if (count == intervals.length) intervals = Arrays.copyOf(intervals, count * 2);
+        intervals[count++] = timestamp - last;
+        pairs++;
+        if (Objects.equals(value, previous)
+            || (value instanceof double[] a && previous instanceof double[] b && Arrays.equals(a, b))) {
+          equalPairs++;
+        }
+      }
+      last = timestamp;
+      previous = value;
+      previousNumber = false;
+    }
+
+    /** As {@link #add(double, Object)}, for a number whose equality its bits tell. */
+    void add(double timestamp, double number, long bits) {
+      n++;
+      if (!Double.isFinite(number)) nanCount++;
+      if (!inSegment) {
+        inSegment = true;
+        first = timestamp;
+      } else if (timestamp > last) {
+        if (count == intervals.length) intervals = Arrays.copyOf(intervals, count * 2);
+        intervals[count++] = timestamp - last;
+        pairs++;
+        if (previousNumber && bits == previousBits) equalPairs++;
+      }
+      last = timestamp;
+      previous = null;
+      previousBits = bits;
+      previousNumber = true;
+    }
+
+    private void close() {
+      if (inSegment) timeSpan += last - first;
+      inSegment = false;
+      previous = null;
+      previousNumber = false;
+    }
+
+    DataQuality result() {
+      close();
+      return score(n, timeSpan, Arrays.copyOf(intervals, count), nanCount, pairs, equalPairs, sampled);
+    }
+  }
+
+  private static DataQuality score(int n, double timeSpan, double[] intervals, int nanCount,
+      int pairs, int equalPairs, boolean sampled) {
     if (n == 0) {
-      return new DataQuality(0, 0, 0, 0, 0, 0, 0, 0, Sampling.EVENT, 0,
+      return new DataQuality(0, 0, 0, 0, 0, 0, 0, 0, sampled ? Sampling.PERIODIC : Sampling.EVENT, 0,
           List.of("no samples"));
     }
 
-    double timeSpan = 0;
-    var intervalList = new ArrayList<Double>();
-    int nanCount = 0;
-    int pairs = 0;
-    int equalPairs = 0;
-    for (var values : segments) {
-      if (values.isEmpty()) continue;
-      timeSpan += values.get(values.size() - 1).timestamp() - values.get(0).timestamp();
-      for (int i = 0; i < values.size(); i++) {
-        // Count NaN/Infinity
-        if (values.get(i).value() instanceof Number num && !Double.isFinite(num.doubleValue())) {
-          nanCount++;
-        }
-        // Values sharing a timestamp (elements of one record) carry no timing information
-        if (i > 0 && values.get(i).timestamp() > values.get(i - 1).timestamp()) {
-          intervalList.add(values.get(i).timestamp() - values.get(i - 1).timestamp());
-          pairs++;
-          if (Objects.equals(values.get(i).value(), values.get(i - 1).value())
-              || (values.get(i).value() instanceof double[] a
-                  && values.get(i - 1).value() instanceof double[] b && Arrays.equals(a, b))) {
-            equalPairs++;
-          }
-        }
-      }
-    }
-
     var reasons = new ArrayList<String>();
-    if (intervalList.isEmpty()) {
+    if (intervals.length == 0) {
       reasons.add("one sample per window: no timing information");
-      return new DataQuality(n, timeSpan, 0, 0, 0, nanCount, 0, 0.4, Sampling.EVENT, 0, reasons);
+      return new DataQuality(n, timeSpan, 0, 0, 0, nanCount, 0, 0.4, sampled ? Sampling.PERIODIC : Sampling.EVENT, 0, reasons);
     }
 
-    double[] intervals = intervalList.stream().mapToDouble(Double::doubleValue).toArray();
     double medianDt = median(intervals.clone());
     double sampleRate = medianDt > 0 ? 1.0 / medianDt : 0;
 
@@ -164,7 +266,7 @@ public record DataQuality(
     }
     double regularFraction = (double) regular / intervals.length;
     Sampling sampling;
-    if (n >= 3 && regularFraction >= PERIODIC_FRACTION) {
+    if (sampled || n >= 3 && regularFraction >= PERIODIC_FRACTION) {
       sampling = Sampling.PERIODIC;
     } else if (n >= 3 && equalPairs <= pairs * 0.01) {
       sampling = Sampling.CHANGE_ONLY;

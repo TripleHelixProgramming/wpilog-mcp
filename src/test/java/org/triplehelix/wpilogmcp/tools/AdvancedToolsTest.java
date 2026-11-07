@@ -42,11 +42,13 @@ class AdvancedToolsTest extends ToolTestBase {
               "rate_of_change",
               "time_correlate",
               "align_entries",
+              "search_system_logs",
               "resolve_signals",
               "analyze_swerve",
               "power_analysis",
               "can_health",
               "compare_matches",
+              "compare_sessions",
               "get_code_metadata",
               "export_csv",
               "generate_report");
@@ -61,11 +63,9 @@ class AdvancedToolsTest extends ToolTestBase {
     @Test
     @DisplayName("total tool count is correct")
     void totalToolCountIsCorrect() {
-      // Core(9) + Query(4) + Statistics(7) + RobotAnalysis(7) + FrcDomain(9) + Pose(2) + Export(2) + TBA(2) + RevLog(5) + Discovery(2) = 49 total
-      // Core tools: list_available_logs, list_entries, get_entry_info, read_entry,
-      //   list_loaded_logs, list_struct_types, health_check, get_game_info
-      // (load_log, set_active_log, unload_log, unload_all_logs removed in path-per-call refactor)
-      assertEquals(49, tools.size());
+      // Includes the three server-library operations and compare_sessions; live tools register
+      // separately.
+      assertEquals(83, tools.size());
     }
   }
 
@@ -369,11 +369,11 @@ class AdvancedToolsTest extends ToolTestBase {
       var properties = schema.getAsJsonObject("properties");
 
       assertTrue(properties.has("brownout_threshold"));
-      // No fixed schema default: the log's BrownoutVoltage when logged, else 6.8 V (stated)
+      // No fixed schema default: the log's BrownoutVoltage when logged, else 6.3 V (stated)
       assertFalse(properties.getAsJsonObject("brownout_threshold").has("default"));
       var description = properties.getAsJsonObject("brownout_threshold").get("description")
           .getAsString();
-      assertTrue(description.contains("BrownoutVoltage") && description.contains("6.8"));
+      assertTrue(description.contains("BrownoutVoltage") && description.contains("6.3") && description.contains("6.75"));
     }
 
     @Test

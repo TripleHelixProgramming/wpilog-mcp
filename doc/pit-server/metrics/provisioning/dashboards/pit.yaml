@@ -1,0 +1,9 @@
+apiVersion: 1
+providers:
+  - name: Pit starter
+    folder: Pit
+    type: file
+    disableDeletion: true
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards

@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.regex.Matcher;
@@ -120,6 +121,16 @@ public class ConfigLoader {
    * @throws ConfigException if the config file is not found, unparseable, or the name is missing
    */
   public Loaded loadDetailed(String configName, Path explicitPath) throws ConfigException {
+    return loadDetailed(configName, explicitPath, false);
+  }
+
+  /** A foreground process can publish its OS-assigned port in stderr. Background daemons
+   * require a fixed port for discovery, so their normal loading path must still reject zero. */
+  public Loaded loadForegroundDetailed(String configName, Path explicitPath) throws ConfigException {
+    return loadDetailed(configName, explicitPath, true);
+  }
+
+  private Loaded loadDetailed(String configName, Path explicitPath, boolean foreground) throws ConfigException {
     var configFile = discoverConfigFile(explicitPath);
     var root = parseFile(configFile);
     var warnings = new LinkedHashSet<String>();
@@ -151,9 +162,36 @@ public class ConfigLoader {
     var config = parseServerBlock(configName, serverBlock, warnings).mergeWithDefaults(defaults);
 
     // Validate
-    validate(config);
+    validate(config, foreground);
 
     return new Loaded(config, configFile, List.copyOf(warnings));
+  }
+
+  /** A bridge joins a shared server; a project's servers block must never define that server. */
+  public Loaded loadHomeDetailed(String name, Path explicitPath) throws ConfigException {
+    if (explicitPath != null) return loadDetailed(name, explicitPath);
+    var home = homeConfigSearchPaths();
+    for (var path : home) {
+      if (Files.isRegularFile(path)) return loadDetailed(name, path);
+    }
+    throw new ConfigException("No home configuration file found. Searched: " + home);
+  }
+
+  public record ProjectLease(Path file, List<String> paths, Integer team, boolean serversIgnored) {}
+
+  /** Read only top-level permission hints, never a project key or a named server's settings. */
+  public ProjectLease projectLease(Path workingDirectory) throws ConfigException {
+    var file = workingDirectory.resolve(".wpilog-mcp.yaml");
+    if (!Files.isRegularFile(file)) return new ProjectLease(null, List.of(), null, false);
+    var root = parseFile(file);
+    var paths = getPathList(root, "logdir", new LinkedHashSet<>());
+    return new ProjectLease(file, paths == null ? List.of() : paths, getInteger(root, "team"),
+        root.has("servers"));
+  }
+
+  private List<Path> homeConfigSearchPaths() {
+    var home = Path.of(System.getProperty("user.home"), "." + APP_NAME);
+    return List.of(home.resolve("servers.yaml"), home.resolve("servers.json"));
   }
 
   /**
@@ -206,15 +244,13 @@ public class ConfigLoader {
    */
   List<Path> configSearchPaths() {
     var paths = new ArrayList<Path>();
-    String home = System.getProperty("user.home");
 
     // 1. Project-local override (YAML preferred, JSON fallback)
     paths.add(Path.of(".wpilog-mcp.yaml"));
     paths.add(Path.of(".wpilog-mcp.json"));
 
     // 2. Install directory (YAML preferred, JSON fallback)
-    paths.add(Path.of(home, "." + APP_NAME, "servers.yaml"));
-    paths.add(Path.of(home, "." + APP_NAME, "servers.json"));
+    paths.addAll(homeConfigSearchPaths());
 
     return paths;
   }
@@ -225,7 +261,7 @@ public class ConfigLoader {
    * all others are parsed as JSON.
    */
   private JsonObject parseFile(Path configFile) throws ConfigException {
-    var fileName = configFile.getFileName().toString().toLowerCase();
+    var fileName = configFile.getFileName().toString().toLowerCase(Locale.ROOT);
     if (fileName.endsWith(".yaml") || fileName.endsWith(".yml")) {
       return parseYamlFile(configFile);
     }
@@ -346,11 +382,42 @@ public class ConfigLoader {
         getBoolean(block, "diskcachedisable"),
         getBoolean(block, "debug"),
         expandPath(interpolate(getString(block, "exportdir"), warnings)),
-        getInteger(block, "scandepth")
+        getInteger(block, "scandepth"),
+        getInteger(block, "idle_exit_minutes"),
+        CaptureConfig.parse(block.get("capture"), path -> expandPath(interpolate(path, warnings)), text -> interpolate(text, warnings)),
+        MirrorConfig.parse(block.get("mirror"), path -> expandPath(interpolate(path, warnings))),
+        MetricsConfig.parse(block.get("metrics")),
+        ContextConfig.parse(block.get("context"), text -> interpolate(text, warnings)),
+        getBoolean(block, "experimental_data_store"),
+        mirrors(block, warnings)
     );
   }
 
-  private void validate(ServerConfig config) throws ConfigException {
+  private java.util.List<MirrorConfig> mirrors(JsonObject block, Collection<String> warnings) throws ConfigException {
+    if (!block.has("mirrors")) return null;
+    if (block.has("mirror")) throw new ConfigException("Choose mirror or mirrors, not both");
+    if (!block.get("mirrors").isJsonArray() || block.getAsJsonArray("mirrors").size() > 8)
+      throw new ConfigException("mirrors must be an array of at most eight policies");
+    var result = new java.util.ArrayList<MirrorConfig>();
+    for (var value : block.getAsJsonArray("mirrors")) {
+      var mirror = MirrorConfig.parse(value, path -> expandPath(interpolate(path, warnings)));
+      if (mirror == null) throw new ConfigException("mirrors entries cannot be null");
+      for (var prior : result) if (mirror.folder().startsWith(prior.folder()) || prior.folder().startsWith(mirror.folder()))
+        throw new ConfigException("mirrors folders cannot overlap");
+      result.add(mirror);
+    }
+    return java.util.List.copyOf(result);
+  }
+
+  private void validate(ServerConfig config, boolean foreground) throws ConfigException {
+    if (config.context() != null && config.context().jvm() != null && config.capture() == null) throw new ConfigException("context.jvm requires capture");
+    if (config.context() != null && !config.context().photonvision().isEmpty() && config.capture() == null) throw new ConfigException("context.photonvision requires capture");
+    if (config.capture() != null && !config.isHttp()) throw new ConfigException("capture requires transport: http");
+    if (!config.effectiveMirrors().isEmpty() && !config.isHttp()) throw new ConfigException("mirror requires transport: http");
+    for (var mirror : config.effectiveMirrors()) if (config.capture() != null
+        && (mirror.folder().startsWith(config.capture().store()) || config.capture().store().startsWith(mirror.folder())))
+      throw new ConfigException("mirror.folder cannot overlap capture.store");
+    if (config.capture() != null && config.idleExit().isPresent()) throw new ConfigException("capture requires idle_exit_minutes: 0 (recording must continue without MCP sessions)");
     var transport = config.effectiveTransport();
     if (!"stdio".equals(transport) && !"http".equals(transport)) {
       throw new ConfigException(
@@ -359,12 +426,18 @@ public class ConfigLoader {
     }
 
     int port = config.effectivePort();
-    if (port < 1 || port > 65535) {
+    int minimumPort = foreground && config.isHttp() ? 0 : 1;
+    if (port < minimumPort || port > 65535) {
       throw new ConfigException(
           "Invalid port " + port + " in configuration '" + config.name()
-              + "'. Must be between 1 and 65535.");
+              + "'. Must be between " + minimumPort + " and 65535.");
     }
 
+    if (config.idleExitMinutes() != null && config.idleExitMinutes() < 0) {
+      throw new ConfigException(
+          "Invalid idle_exit_minutes " + config.idleExitMinutes() + " in configuration '"
+              + config.name() + "'. Must be 0 (never) or a number of minutes.");
+    }
   }
 
   /**

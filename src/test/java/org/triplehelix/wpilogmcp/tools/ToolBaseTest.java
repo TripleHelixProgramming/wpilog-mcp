@@ -91,6 +91,24 @@ class ToolBaseTest {
   class TemplateMethodTests {
 
     @Test
+    void aFileDisappearingDuringAReadIsExplainedInsteadOfAnInternalError() throws Exception {
+      String path = java.nio.file.Path.of("synthetic", "capture.wpilog").toString();
+      var tool = new ToolBase() {
+        public String name() { return "disappearing_file"; }
+        public String description() { return "Reports an opening or reading failure"; }
+        public JsonObject inputSchema() { return new JsonObject(); }
+        protected JsonElement executeInternal(JsonObject arguments) throws Exception {
+          throw new java.nio.file.NoSuchFileException(path);
+        }
+      };
+      var result = tool.execute(new JsonObject()).getAsJsonObject();
+      assertEquals("error", result.get("status").getAsString());
+      String error = result.get("error").getAsString();
+      assertFalse(error.contains("Internal error"), error);
+      assertTrue(error.contains(path) && error.contains("moved or removed") && error.contains("list_available_logs"), error);
+    }
+
+    @Test
     @DisplayName("executeInternal result is returned")
     void executeInternalResultIsReturned() throws Exception {
       var tool = new NoLogTool();

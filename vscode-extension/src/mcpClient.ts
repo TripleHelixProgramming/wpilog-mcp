@@ -1,0 +1,486 @@
+/**
+ * The explorer's MCP client over the Streamable HTTP transport: `initialize`, then `tools/call`
+ * on `POST /mcp` with the session header, which the extension host can send where a webview could
+ * not (EXPLORER_PLAN.md decision 2 and §3). A tool's result is the parsed JSON of its text
+ * content; an error result is a rejected promise. Requests run in parallel: the transport serves
+ * each on its own thread.
+ *
+ * One session per client, opened at the first call and deleted on dispose, so that a server that
+ * exits when idle sees the viewer as a client while an editor is open. A session the server no
+ * longer knows (it was restarted, or let the session expire after an hour idle) is replaced by a
+ * new one, once per call, and the call sent again; a server that cannot be reached at all fails
+ * the call with a message that says so, and the caller (which started the server) decides what
+ * to do next. Needs Node's http only, so it is tested against a server in the test; nothing here
+ * touches the VS Code API.
+ */
+import { HttpHeaders, noHeaders } from "./pitCredential";
+import * as http from "http";
+import * as https from "https";
+import { leaseChanged, SessionRegistration } from "./directoryLease";
+import {
+  JsonRpcMessage,
+  SESSION_HEADER,
+  ToolOutcome,
+  initializeRequest,
+  initializedNotification,
+  parseToolResponse,
+  sessionLost,
+  toolCallRequest,
+} from "./explorer/mcpProtocol";
+
+/** A tool call on a large log can take a while; the bridge allows ten minutes too. */
+const REQUEST_TIMEOUT_MS = 600_000;
+
+/** A failed call: the reason, and the tool's own result when it gave one. */
+export class ToolError extends Error {
+  constructor(
+    message: string,
+    readonly tool: string,
+    readonly result?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = "ToolError";
+  }
+}
+
+/** One HTTP exchange, as the client sees it. */
+interface Exchange {
+  status: number;
+  body: string;
+  sessionId?: string;
+}
+
+/** Checked before any session is published or any directory/key registration is sent. */
+export interface ConnectionPolicy {
+  verify(capabilities: Record<string, unknown>): Promise<void>;
+  scopeId?: string;
+}
+
+export class McpClient {
+  private nextId = 1;
+  private sessionId?: string;
+  /** The handshake in progress, shared by calls that arrive while it runs. */
+  private initializing?: Promise<void>;
+  private disposed = false;
+  private updating: Promise<void> = Promise.resolve();
+  private registeredSession?: string;
+  private lastRegistration?: SessionRegistration;
+  private heartbeat?: ReturnType<typeof setInterval>;
+  private temporaryDirectories: readonly string[] = [];
+
+  private readonly visualizationListeners = new Set<(event: Record<string, unknown>) => void>();
+  private controlRequest?: http.ClientRequest;
+  private controlSession?: string;
+  private controlRetry?: ReturnType<typeof setTimeout>;
+  private lastControlEvent?: string;
+  private controlDelay = 250;
+  onVisualization(listener: (event: Record<string, unknown>) => void): { dispose(): void } {
+    this.visualizationListeners.add(listener);
+    void this.ensureSession().then(() => this.startControl()).catch(() => this.retryControl());
+    return { dispose: () => { this.visualizationListeners.delete(listener); if (!this.visualizationListeners.size) { clearTimeout(this.controlRetry); this.controlRequest?.destroy(); this.controlRequest = undefined; } } };
+  }
+  private notifyVisualization(value: Record<string, unknown>): void {
+    for (const listener of this.visualizationListeners) { try { listener(value); } catch { /* One closed UI cannot stop delivery to another. */ } }
+  }
+  private async startControl(): Promise<void> {
+    if (this.disposed || !this.visualizationListeners.size || !this.sessionId || this.controlRequest) return;
+    const session = this.sessionId;
+    if (this.controlSession !== session) {
+      this.lastControlEvent = undefined; this.controlSession = session;
+      this.notifyVisualization({ kind: "resync_required" });
+    }
+    const headers = { ...await this.headersFor(this.endpoint), Accept: "text/event-stream", [SESSION_HEADER]: session,
+      ...(this.lastControlEvent ? { "Last-Event-ID": this.lastControlEvent } : {}) };
+    if (this.disposed || this.sessionId !== session || this.controlRequest || !this.visualizationListeners.size) return;
+    const request = (new URL(this.endpoint).protocol === "https:" ? https : http).request(this.endpoint, { method: "GET", headers, timeout: 45000 }, response => {
+      if (response.statusCode !== 200) {
+        if (response.statusCode === 404 && this.sessionId === session) this.sessionId = undefined;
+        response.resume(); request.destroy(); return;
+      }
+      this.controlDelay = 250; response.setEncoding("utf8"); let buffer = "", data = "", eventId = "";
+      response.on("data", (chunk: string) => {
+        buffer += chunk;
+        if (Buffer.byteLength(buffer) + Buffer.byteLength(data) > 65536) { request.destroy(new Error("Control event exceeds its byte bound")); return; }
+        let end: number;
+        while ((end = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, end).replace(/\r$/, ""); buffer = buffer.slice(end + 1);
+          if (!line) {
+            if (data && eventId !== this.lastControlEvent) try {
+              const value = JSON.parse(data);
+              if (value.method === "notifications/experimental/visualization") this.notifyVisualization(value.params);
+              this.lastControlEvent = eventId || this.lastControlEvent;
+            } catch { this.notifyVisualization({ kind: "resync_required" }); }
+            data = ""; eventId = "";
+          } else if (line.startsWith("data:")) data += line.slice(5).trimStart();
+          else if (line.startsWith("id:")) eventId = line.slice(3).trimStart();
+        }
+      });
+      response.on("end", () => request.destroy()); response.on("error", () => request.destroy());
+    });
+    this.controlRequest = request;
+    request.on("error", () => {}); request.on("timeout", () => request.destroy());
+    request.on("close", () => {
+      if (this.controlRequest !== request) return;
+      this.controlRequest = undefined;
+      if (this.disposed || !this.visualizationListeners.size) return;
+      this.retryControl();
+    }); request.end();
+  }
+
+  private retryControl(): void {
+    if (this.disposed || !this.visualizationListeners.size) return;
+    clearTimeout(this.controlRetry);
+    this.controlRetry = setTimeout(() => {
+      void this.ensureSession().then(() => this.startControl()).catch(() => this.retryControl());
+    }, this.controlDelay + Math.floor(Math.random() * 100));
+    this.controlDelay = Math.min(10000, this.controlDelay * 2); this.controlRetry.unref();
+  }
+
+  /**
+   * @param endpoint the server's MCP endpoint, such as `http://127.0.0.1:41234/mcp`
+   * @param clientVersion the extension's version, sent as the client's
+   */
+  constructor(
+    readonly endpoint: string,
+    private readonly clientVersion: string,
+    private readonly registration?: () => Promise<SessionRegistration>,
+    private readonly headersFor: HttpHeaders = noHeaders,
+    private readonly policy?: ConnectionPolicy
+  ) {}
+
+  /** Whether a session is open. */
+  get connected(): boolean {
+    return this.sessionId !== undefined;
+  }
+
+  async connect(): Promise<void> { await this.ensureSession(); }
+
+  /** Data requests use the same verified owner and session as metadata and follows. */
+  async dataHeaders(endpoint: string): Promise<Record<string, string>> {
+    const url = new URL(endpoint), owner = new URL(this.endpoint);
+    if (url.origin !== owner.origin || url.username || url.password || url.hash || url.pathname !== "/data/entries")
+      throw new Error("Data credentials require this server's data route");
+    await this.ensureSession();
+    return { ...await this.headersFor(endpoint), [SESSION_HEADER]: this.sessionId! };
+  }
+
+  /** Native view follows borrow this window's registered authority. Refuse a different origin
+   * or route before consulting credentials; this never creates a second MCP directory lease. */
+  async followHeaders(endpoint: string): Promise<Record<string, string>> {
+    const url = new URL(endpoint);
+    if (url.origin !== new URL(this.endpoint).origin || url.username || url.password || url.search || url.hash
+      || !/^\/read\/v1\/follows(?:\/[^/]+(?:\/next)?)?$/.test(url.pathname)) throw new Error("Follow credentials require this server origin and follow route");
+    await this.updating.catch(() => {}); await this.ensureSession();
+    return { ...await this.headersFor(endpoint), [SESSION_HEADER]: this.sessionId! };
+  }
+
+  /**
+   * Calls a tool and returns its result. Rejects with a ToolError when the tool reports an error
+   * or the server cannot be reached.
+   */
+  async callTool(name: string, args: Record<string, unknown> = {}, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Record<string, unknown>> {
+    if (this.disposed) throw new ToolError("The client was disposed", name);
+    await this.updating;
+    await this.ensureSession();
+    if (this.policy?.scopeId && (typeof args.path === "string" || name === "list_available_logs")) {
+      if (args.scope_id !== undefined && args.scope_id !== this.policy.scopeId) throw new Error("This request belongs to another source scope");
+      args = { ...args, scope_id: this.policy.scopeId };
+    }
+    let calledSession = this.sessionId;
+    let exchange = await this.post(toolCallRequest(this.nextId++, name, args), this.sessionId, options);
+    if (sessionLost(exchange.status, this.sessionId !== undefined)) {
+      // The server forgot the session: open another and try once more
+      if (this.sessionId === calledSession) this.sessionId = undefined;
+      await this.ensureSession();
+      calledSession = this.sessionId;
+      exchange = await this.post(toolCallRequest(this.nextId++, name, args), this.sessionId, options);
+    }
+    if (this.disposed || this.sessionId !== calledSession) throw new ToolError("The connection changed during this request; retry on its original source", name);
+    const outcome = this.outcomeOf(exchange, name);
+    if (!outcome.ok) throw new ToolError(outcome.error, name, outcome.result);
+    return outcome.result;
+  }
+
+  private outcomeOf(exchange: Exchange, tool: string): ToolOutcome {
+    if (exchange.status !== 200) {
+      return { ok: false, error: `The server answered HTTP ${exchange.status}: ${exchange.body.trim()}` };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(exchange.body);
+    } catch {
+      return { ok: false, error: `The server's answer to ${tool} was not JSON` };
+    }
+    return parseToolResponse(parsed);
+  }
+
+  /** Opens a session when there is none; concurrent callers share one handshake. */
+  private ensureSession(): Promise<void> {
+    if (this.disposed) return Promise.reject(new ToolError("The client was disposed", "initialize"));
+    if (this.initializing) return this.initializing;
+    if (this.sessionId !== undefined) return Promise.resolve();
+    if (!this.initializing) {
+      this.initializing = this.initialize().finally(() => {
+        this.initializing = undefined;
+      });
+    }
+    return this.initializing;
+  }
+
+  private async initialize(): Promise<void> {
+    const exchange = await this.post(initializeRequest(this.nextId++, this.clientVersion), undefined, { timeoutMs: this.policy ? 5000 : undefined });
+    if (exchange.status !== 200 || !exchange.sessionId) {
+      throw new ToolError(
+        `The server did not open a session (HTTP ${exchange.status}: ${exchange.body.trim()})`,
+        "initialize"
+      );
+    }
+    const session = exchange.sessionId;
+    try {
+      await this.post(initializedNotification(), session, { timeoutMs: this.policy ? 5000 : undefined });
+      if (this.policy) {
+        const reply = await this.exchange(new URL("/visualizations/v2/capabilities", this.endpoint).toString(), "GET", undefined, session, 5000, undefined, 1 << 20);
+        if (reply.status !== 200) throw new Error(`This connection requires visualization API 2 (HTTP ${reply.status})`);
+        await this.policy.verify(JSON.parse(reply.body));
+      }
+      await this.register(session);
+      if (this.disposed) throw new ToolError("The client was disposed", "initialize");
+      this.sessionId = session;
+      if (this.controlSession && this.controlSession !== session) { this.controlRequest?.destroy(); this.controlRequest = undefined; }
+      void this.startControl();
+      // A window remains a lease holder even while only its agents are making tool calls.
+      if (this.registration && !this.heartbeat) {
+        this.heartbeat = setInterval(() => void this.keepAlive().catch(() => {}), 30_000);
+        this.heartbeat.unref();
+      }
+    } catch (error) {
+      await this.deleteSession(session);
+      throw error;
+    }
+  }
+
+  /** Serialize lease replacement so a slow old secret/directory read cannot win over new settings. */
+  refreshRegistration(): Promise<void> {
+    const update = this.updating.catch(() => {}).then(async () => {
+      if (this.disposed) throw new ToolError("The client was disposed", "registration");
+      await this.ensureSession();
+      try {
+        const ping = await this.post({ jsonrpc: "2.0", id: this.nextId++, method: "ping" }, this.sessionId);
+        if (ping.status !== 200) throw new RegistrationError(`Session ping refused (HTTP ${ping.status})`, ping.status);
+        await this.register(this.sessionId!);
+      } catch (error) {
+        if (!(error instanceof RegistrationError) || error.status !== 404) throw error;
+        this.sessionId = undefined;
+        await this.ensureSession();
+      }
+    });
+    this.updating = update;
+    return update;
+  }
+
+  /** Local controls use this client's existing lease; they never borrow another window's session. */
+  async requestLocalControl<T>(route: string, method: "GET" | "POST" | "PUT", body?: unknown): Promise<T> {
+    await this.refreshRegistration();
+    return this.localControl<T>(route, method, body);
+  }
+
+  /** Keep reviewed roots admitted through the save, then restore the ordinary window lease.
+   * The callback receives a request function to avoid waiting on its own serialized update. */
+  withTemporaryDirectories<T>(paths: readonly string[], action: (request: <R>(route: string,
+    method: "GET" | "POST" | "PUT", body?: unknown) => Promise<R>) => Promise<T>): Promise<T> {
+    const operation = this.refreshRegistration().then(async () => {
+      if (this.disposed) throw new ToolError("The client was disposed", "registration");
+      this.temporaryDirectories = [...paths];
+      try {
+        await this.register(this.sessionId!);
+        return await action((route, method, body) => this.localControl(route, method, body));
+      } finally {
+        this.temporaryDirectories = [];
+        if (!this.disposed && this.sessionId) await this.register(this.sessionId);
+      }
+    });
+    this.updating = operation.then(() => {}, () => {});
+    return operation;
+  }
+
+  /** Narrow local preview adapter; a lost response never replays a mutation automatically. */
+  async visualization<T>(route: string, body?: unknown, signal?: AbortSignal, options: VisualizationRequest = {}): Promise<T> {
+    if (!/^\/[a-zA-Z0-9_/-]+$/.test(route)) throw new Error("Invalid visualization route");
+    if (options.maxRequestBytes !== undefined && Buffer.byteLength(JSON.stringify(body ?? null)) > options.maxRequestBytes)
+      throw new Error("Visualization request exceeds its byte budget");
+    const controller = new AbortController(), cancel = () => controller.abort(signal?.reason);
+    signal?.addEventListener("abort", cancel, { once: true }); if (signal?.aborted) cancel();
+    const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => controller.abort(new Error("Visualization request deadline exceeded")), options.timeoutMs);
+    const check = () => { if (controller.signal.aborted) throw controller.signal.reason ?? new Error("Request cancelled"); };
+    const operation = async (): Promise<T> => {
+      if (options.session === undefined) { await this.updating.catch(() => {}); check(); await this.ensureSession(); }
+      check(); let called = options.session ?? this.sessionId;
+      const send = () => {
+        check(); options.captureSession?.(called!);
+        return this.exchange(new URL(`/visualizations/v${options.apiVersion ?? 1}` + route, this.endpoint).toString(),
+          body === undefined ? "GET" : "POST", body, called, options.timeoutMs ?? 600_000, controller.signal, options.maxResponseBytes ?? 16 << 20);
+      };
+      let reply = await send(); check();
+      if (reply.status === 404 && JSON.parse(reply.body).code === "SESSION_EXPIRED") {
+        if (this.sessionId === called) this.sessionId = undefined;
+        if (options.session === undefined) { await this.ensureSession(); check(); called = this.sessionId; reply = await send(); }
+      }
+      check(); const value = JSON.parse(reply.body);
+      if (reply.status !== 200) {
+        if (value.retryable !== undefined && typeof value.retryable !== "boolean") throw new Error("Invalid visualization refusal retryable flag");
+        throw new LocalControlError(`${value.code ?? "PREVIEW_FAILED"}: ${value.error ?? reply.status}`, reply.status, value.code, value.retryable);
+      }
+      if (this.disposed || this.sessionId !== called) throw new Error("The connection changed during this visualization request");
+      return value as T;
+    };
+    let abort!: () => void;
+    const stopped = new Promise<never>((_, reject) => { abort = () => reject(controller.signal.reason ?? new Error("Request cancelled"));
+      controller.signal.addEventListener("abort", abort, { once: true }); if (controller.signal.aborted) abort(); });
+    try { return await Promise.race([operation(), stopped]); }
+    finally { clearTimeout(timer); signal?.removeEventListener("abort", cancel); controller.signal.removeEventListener("abort", abort); }
+  }
+
+  private async localControl<T>(route: string, method: "GET" | "POST" | "PUT", body?: unknown): Promise<T> {
+    if (!/^\/store\/local-ingestion(?:[/?]|$)/.test(route)) throw new Error("Unknown local data-store control route");
+    const reply = await this.exchange(new URL(route, this.endpoint).toString(), method, body, this.sessionId);
+    let value: { error?: string; code?: string };
+    try { value = JSON.parse(reply.body); }
+    catch { throw new Error(`Data-store control returned invalid JSON (HTTP ${reply.status})`); }
+    if (reply.status < 200 || reply.status >= 300) {
+      throw new LocalControlError(value.error ?? `Data-store control failed (HTTP ${reply.status})`, reply.status, value.code);
+    }
+    return value as T;
+  }
+
+  /** A ping preserves the session's lifetime without changing which key or directory lease is newest. */
+  async keepAlive(): Promise<void> {
+    await this.updating.catch(() => {});
+    await this.ensureSession();
+    const session = this.sessionId;
+    const exchange = await this.post({ jsonrpc: "2.0", id: this.nextId++, method: "ping" }, session);
+    if (exchange.status === 404) {
+      if (this.sessionId === session) this.sessionId = undefined;
+      await this.ensureSession();
+    } else if (exchange.status !== 200) {
+      throw new ToolError(`The session ping failed (HTTP ${exchange.status})`, "ping");
+    }
+  }
+
+  private async register(session: string): Promise<void> {
+    if (!this.registration && !this.temporaryDirectories.length) return;
+    const base = this.registration ? await this.registration() : { directories: { paths: [], team: null }, key: null };
+    const known = new Set(base.directories.paths.map(item => item.path));
+    const registration: SessionRegistration = { ...base, directories: { ...base.directories,
+      paths: [...base.directories.paths, ...this.temporaryDirectories.filter(directory => !known.has(directory))
+        .map(directory => ({ path: directory, team: null }))] } };
+    if (!leaseChanged(this.lastRegistration, registration, this.registeredSession !== session)) return;
+    const changes: [string, unknown][] = [["/directories", registration.directories], ["/tba-key", { key: registration.key }]];
+    if (registration.pitCredential) changes.push(["/pit-credential", registration.pitCredential]);
+    for (const [route, payload] of changes) {
+      const reply = await this.exchange(new URL(route, this.endpoint).toString(), "POST", payload, session);
+      if (reply.status !== 200) {
+        // Directory errors explain the named path. Never echo a key response or request body.
+        let reason = `Registration refused (HTTP ${reply.status})`;
+        if (route === "/directories") {
+          try {
+            const body = JSON.parse(reply.body) as { error?: string; hint?: string };
+            reason = [body.error, body.hint].filter(Boolean).join(" ") || reason;
+          } catch { /* the HTTP status remains useful */ }
+        }
+        throw new RegistrationError(reason, reply.status);
+      }
+    }
+    this.registeredSession = session;
+    this.lastRegistration = JSON.parse(JSON.stringify(registration)) as SessionRegistration;
+  }
+
+  /** Ends the session even when disposal races its handshake, releasing directories and the key. */
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    clearInterval(this.heartbeat); clearTimeout(this.controlRetry); this.controlRequest?.destroy(); this.controlRequest = undefined; this.visualizationListeners.clear();
+    await this.initializing?.catch(() => {});
+    await this.updating.catch(() => {});
+    const session = this.sessionId;
+    this.sessionId = undefined;
+    if (session !== undefined) await this.deleteSession(session);
+  }
+
+  private async deleteSession(session: string): Promise<void> {
+    await this.exchange(this.endpoint, "DELETE", undefined, session, 5_000).catch(() => {});
+  }
+
+  /** Posts one message; rejects only when the server cannot be reached. */
+  private post(message: JsonRpcMessage, sessionId?: string, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Exchange> {
+    return this.exchange(this.endpoint, "POST", message, sessionId, options.timeoutMs, options.signal);
+  }
+
+  private async exchange(endpoint: string, method: string, payload?: unknown, sessionId?: string,
+    timeout = REQUEST_TIMEOUT_MS, signal?: AbortSignal, maxBytes = Infinity): Promise<Exchange> {
+    const body = payload === undefined ? "" : JSON.stringify(payload);
+    const headers: Record<string, string> = {
+      ...await this.headersFor(endpoint),
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "Content-Length": String(Buffer.byteLength(body)),
+    };
+    if (sessionId !== undefined) headers[SESSION_HEADER] = sessionId;
+    return new Promise((resolve, reject) => {
+      const request = (new URL(endpoint).protocol === "https:" ? https : http).request(
+        endpoint,
+        { method, headers, timeout },
+        (response) => {
+          let text = "", bytes = 0, exceeded = false;
+          response.setEncoding("utf8");
+          response.on("data", (chunk: string) => {
+            if (exceeded) return;
+            bytes += Buffer.byteLength(chunk);
+            if (bytes > maxBytes) { exceeded = true; request.destroy(new Error("Response exceeds its byte budget")); return; }
+            text += chunk;
+          });
+          response.on("end", () => {
+            // A reply that arrived whole before the destroy took effect still ends; it must not
+            // resolve with the text collected before the budget was exceeded.
+            if (exceeded) { reject(this.unreachable(method, new Error("Response exceeds its byte budget"))); return; }
+            const header = response.headers[SESSION_HEADER.toLowerCase()];
+            resolve({
+              status: response.statusCode ?? 0,
+              body: text,
+              sessionId: typeof header === "string" ? header : undefined,
+            });
+          });
+          response.on("error", (error) => reject(this.unreachable(method, error)));
+        }
+      );
+      request.on("timeout", () => request.destroy(new Error("the request timed out")));
+      const deadline = setTimeout(() => request.destroy(new Error("the request deadline expired")), timeout);
+      request.once("close", () => clearTimeout(deadline));
+      request.on("error", (error) => reject(this.unreachable(method, error)));
+      const abort = () => request.destroy(new Error("Request cancelled"));
+      signal?.addEventListener("abort", abort, { once: true });
+      request.once("close", () => signal?.removeEventListener("abort", abort));
+      if (signal?.aborted) abort(); else request.end(body);
+    });
+  }
+
+  private unreachable(method: string, error: Error): ToolError {
+    return new ToolError(`The server at ${this.endpoint} could not be reached: ${error.message}`, method);
+  }
+}
+
+class RegistrationError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+/** A conflict is shown to the person; the client never retries a policy replacement. */
+export class LocalControlError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string, readonly retryable?: boolean) { super(message); }
+}
+
+/** Inventory handles are session-owned; passing session prohibits automatic rebinding/replay. */
+export interface VisualizationRequest {
+  apiVersion?: 1 | 2;
+  maxRequestBytes?: number; maxResponseBytes?: number; timeoutMs?: number;
+  session?: string; captureSession?(session: string): void;
+}

@@ -47,8 +47,25 @@ class RevLogToolsTest extends ToolTestBase {
     logManager = LogManager.getInstance();
   }
 
+  @Test void syntheticRevFixturesRemainAdmittedAfterTransportEnforcesDirectoryGrants() throws Exception {
+    var leases = org.triplehelix.wpilogmcp.config.ClientLeases.getInstance();
+    var http = new org.triplehelix.wpilogmcp.mcp.HttpTransport(new ToolRegistry(), 0);
+    http.start();
+    leases.replaceDirectories("rev-fixture-admission", List.of());
+    try {
+      putLogWithRevLog(createMockWpilog(), createMockRevLog(), createGoodSyncResult());
+      var args = new JsonObject(); args.addProperty("path", "/test.wpilog");
+      var result = findTool("sync_status").execute(args).getAsJsonObject();
+      assertEquals("ok", result.get("status").getAsString(), result.toString());
+      assertEquals(1, result.get("revlog_count").getAsInt(), result.toString());
+    } finally {
+      leases.remove("rev-fixture-admission");
+      http.stop();
+    }
+  }
+
   private void putLogWithRevLog(ParsedLog wpilog, ParsedRevLog revlog, SyncResult syncResult) {
-    logManager.testPutLog(wpilog.path(), wpilog);
+    putLogInCache(wpilog);
 
     // Create synchronized logs and put in sync cache via reflection-free method
     SynchronizedLogs syncLogs = new SynchronizedLogs.Builder()
@@ -61,7 +78,7 @@ class RevLogToolsTest extends ToolTestBase {
   }
 
   private void putLogNoRevLog(ParsedLog wpilog) {
-    logManager.testPutLog(wpilog.path(), wpilog);
+    putLogInCache(wpilog);
     // Create synchronized logs with no revlogs
     SynchronizedLogs syncLogs = new SynchronizedLogs(wpilog);
     setSynchronizedLogs(wpilog.path(), syncLogs);
@@ -1132,7 +1149,7 @@ class RevLogToolsTest extends ToolTestBase {
     @DisplayName("unloadLog cancels in-progress sync for that log")
     void unloadLogCancelsSync() throws Exception {
       var wpilog = createMockWpilog();
-      logManager.testPutLog(wpilog.path(), wpilog);
+      putLogInCache(wpilog);
 
       // Create placeholder sync entry
       SynchronizedLogs syncLogs = new SynchronizedLogs(wpilog);
@@ -1153,7 +1170,7 @@ class RevLogToolsTest extends ToolTestBase {
     @DisplayName("isRevLogSyncInProgress with path works for non-active logs")
     void pathBasedSyncCheck() throws Exception {
       var wpilog = createMockWpilog();
-      logManager.testPutLog(wpilog.path(), wpilog);
+      putLogInCache(wpilog);
 
       var future = new java.util.concurrent.CompletableFuture<Void>();
       setSyncInProgress(wpilog.path(), future);
@@ -1170,7 +1187,9 @@ class RevLogToolsTest extends ToolTestBase {
       // Set up: load multiple logs, then evict one manually
 
       var wpilog1 = createMockWpilog();
-      logManager.testPutLog(wpilog1.path(), wpilog1);
+      // This check owns an evictable insertion: testPutLog pins synthetic tool inputs.
+      String path = java.nio.file.Path.of(wpilog1.path()).toAbsolutePath().normalize().toString();
+      logManager.testGetLogCache().put(path, wpilog1);
 
       // Simulate in-progress sync for wpilog1
       var future = new java.util.concurrent.CompletableFuture<Void>();
@@ -1178,19 +1197,8 @@ class RevLogToolsTest extends ToolTestBase {
 
       assertTrue(logManager.isRevLogSyncInProgress(wpilog1.path()));
 
-      // Load a second log with a small delay so Caffeine sees distinct access times
-      Thread.sleep(20);
-      var wpilog2 = new ParsedLog("/test2.wpilog",
-          new java.util.HashMap<>(), new java.util.HashMap<>(), 0, 1);
-      logManager.testPutLog(wpilog2.path(), wpilog2);
-
-      // Access wpilog2 to ensure wpilog1 is the LRU
-      Thread.sleep(20);
-      logManager.testGetLogCache().get(
-          java.nio.file.Path.of(wpilog2.path()).toAbsolutePath().normalize().toString());
-
       // Force LRU eviction (heap-pressure-based eviction won't trigger in tests)
-      logManager.testGetLogCache().evictOne();
+      assertTrue(logManager.testGetLogCache().evictOne(), "An ordinary cache entry must be evictable");
 
       // The eviction callback should have cancelled the sync for wpilog1
       assertTrue(future.isCancelled() || future.isDone(),
@@ -1319,7 +1327,7 @@ class RevLogToolsTest extends ToolTestBase {
     @DisplayName("offsets set on two buses at the same time are both kept")
     void twoBusesAtOnce() throws Exception {
       var wpilog = createMockWpilog();
-      logManager.testPutLog(wpilog.path(), wpilog);
+      putLogInCache(wpilog);
       var rio = createMockRevLog();
       var canivore = rio.at("/test/REV_second_canivore.revlog", rio.filenameTimestamp());
       setSynchronizedLogs(wpilog.path(), new SynchronizedLogs.Builder().wpilog(wpilog)

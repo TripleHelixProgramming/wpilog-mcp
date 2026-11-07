@@ -23,7 +23,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.IntPredicate;
 import java.util.stream.Stream;
@@ -31,6 +33,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.triplehelix.wpilogmcp.Version;
 import org.triplehelix.wpilogmcp.mcp.HttpTransport;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 
@@ -379,26 +382,30 @@ class DaemonManagerTest {
 
   /**
    * Stands in for the daemon process: counts the launches, and starts a server on the port only
-   * after {@code bootMillis}, as a real daemon answers only once its JVM is up. The "process" is
+   * after the test releases {@code finishBoot}, as a real daemon answers only once its JVM is up. The "process" is
    * this JVM, which is alive throughout.
    */
   private static final class FakeLauncher implements DaemonManager.Launcher {
     final AtomicInteger launches = new AtomicInteger();
     final List<HttpTransport> servers = new CopyOnWriteArrayList<>();
+    /** The stop token each launch was given in its environment. */
+    final List<String> tokens = new CopyOnWriteArrayList<>();
     final int port;
-    final long bootMillis;
+    final CountDownLatch finishBoot;
 
-    FakeLauncher(int port, long bootMillis) {
+    FakeLauncher(int port, boolean held) {
       this.port = port;
-      this.bootMillis = bootMillis;
+      this.finishBoot = new CountDownLatch(held ? 1 : 0);
     }
 
     @Override
-    public DaemonManager.Launched launch(List<String> command, java.io.File logFile) {
+    public DaemonManager.Launched launch(List<String> command,
+        java.util.Map<String, String> environment, java.io.File logFile) {
       launches.incrementAndGet();
+      tokens.add(environment.get(DaemonManager.STOP_TOKEN_ENV));
       var boot = new Thread(() -> {
         try {
-          Thread.sleep(bootMillis);
+          assertTrue(finishBoot.await(10, TimeUnit.SECONDS), "Test did not release daemon boot");
           var server = new HttpTransport(new ToolRegistry(), port);
           server.start();
           servers.add(server);
@@ -430,11 +437,7 @@ class DaemonManagerTest {
   }
 
   private static void await(java.util.function.BooleanSupplier condition) throws Exception {
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-    while (!condition.getAsBoolean()) {
-      assertTrue(System.nanoTime() < deadline, "condition not reached in 10 s");
-      Thread.sleep(5);
-    }
+    org.triplehelix.wpilogmcp.harness.HarnessHttp.await("daemon condition", 10, condition::getAsBoolean);
   }
 
   @Nested
@@ -447,7 +450,7 @@ class DaemonManagerTest {
       // The first start has spawned its server and recorded it; the server does not answer yet.
       // A second start used to take that record for a reused PID, delete it, and spawn again.
       int port = freePort();
-      var launcher = new FakeLauncher(port, 700);
+      var launcher = new FakeLauncher(port, true);
       var manager = new DaemonManager(tempDir, Duration.ofSeconds(8), launcher);
       var pool = Executors.newFixedThreadPool(2);
       try {
@@ -461,6 +464,7 @@ class DaemonManagerTest {
             return false;
           }
         });
+        manager.onJoiningStart(launcher.finishBoot::countDown);
         Future<Boolean> second = pool.submit(() -> manager.spawnDaemon("test", port, null));
 
         assertTrue(first.get(15, TimeUnit.SECONDS));
@@ -481,7 +485,7 @@ class DaemonManagerTest {
       for (int round = 0; round < 6; round++) {
         var runDir = Files.createDirectories(tempDir.resolve("round" + round));
         int port = freePort();
-        var launcher = new FakeLauncher(port, 150);
+        var launcher = new FakeLauncher(port, false);
         var manager = new DaemonManager(runDir, Duration.ofSeconds(8), launcher);
         manager.writePidFile("test", DEAD_PID, port);
         int starts = 12;
@@ -549,7 +553,7 @@ class DaemonManagerTest {
     @DisplayName("a start records its server as booting until it answers")
     void startRecordsBooting() throws Exception {
       int port = freePort();
-      var launcher = new FakeLauncher(port, 600);
+      var launcher = new FakeLauncher(port, true);
       var manager = new DaemonManager(tempDir, Duration.ofSeconds(8), launcher);
       var pool = Executors.newSingleThreadExecutor();
       try {
@@ -558,6 +562,7 @@ class DaemonManagerTest {
             && !pidLines(manager).contains(DaemonManager.STARTING_MARKER));
         assertEquals(List.of(Long.toString(OWN_PID), Integer.toString(port),
             DaemonManager.BOOTING_MARKER), pidLines(manager));
+        launcher.finishBoot.countDown();
         assertTrue(start.get(15, TimeUnit.SECONDS));
         assertEquals(record(OWN_PID, port), pidLines(manager));
       } finally {
@@ -626,7 +631,7 @@ class DaemonManagerTest {
   @DisplayName("a PID file that is open in another program (Windows refuses to replace it)")
   class BusyFileTests {
 
-    private final DaemonManager.Launcher noLauncher = (command, logFile) -> {
+    private final DaemonManager.Launcher noLauncher = (command, environment, logFile) -> {
       throw new IOException("no server is launched in this test");
     };
 
@@ -706,7 +711,7 @@ class DaemonManagerTest {
       // What failed on Windows: another start had the record open when this one replaced it,
       // and this start stopped the server it had just launched and reported failure
       int port = freePort();
-      var launcher = new FakeLauncher(port, 100);
+      var launcher = new FakeLauncher(port, false);
       var files = new BusyFiles(0, n -> n <= 2);
       var manager = managerOn(files, launcher);
       try {
@@ -723,7 +728,7 @@ class DaemonManagerTest {
     void recordsUnderTheLock() throws Exception {
       // Starts read the record under the lock; replacing it outside the lock is what collided
       int port = freePort();
-      var launcher = new FakeLauncher(port, 100);
+      var launcher = new FakeLauncher(port, false);
       var files = new BusyFiles(0, n -> false);
       var manager = managerOn(files, launcher);
       try {
@@ -740,7 +745,7 @@ class DaemonManagerTest {
     void runningServerIsNotReportedFailed() throws Exception {
       // The booting record is written; every replace after it is refused
       int port = freePort();
-      var launcher = new FakeLauncher(port, 100);
+      var launcher = new FakeLauncher(port, false);
       var files = new BusyFiles(0, n -> n >= 2);
       var manager = managerOn(files, launcher);
       try {
@@ -786,6 +791,706 @@ class DaemonManagerTest {
       var manager = createManager();
       // Port 1 is almost certainly not running an HTTP server
       assertFalse(manager.healthCheck(1));
+    }
+  }
+
+  // ==================== Restart, stop, and strangers ====================
+
+  /**
+   * Processes by ID as a test says they are: a fake daemon's ID is alive until it is ended; any
+   * other ID is asked of the system, so this JVM's ID is alive and the dead ID is dead.
+   */
+  private static final class FakeProcesses implements DaemonManager.Processes {
+    final java.util.Map<Long, Boolean> alive = new java.util.concurrent.ConcurrentHashMap<>();
+    final List<Long> destroyed = new CopyOnWriteArrayList<>();
+    final List<Long> forced = new CopyOnWriteArrayList<>();
+    /** Whether a plain destroy ends the process, as a signal does for a JVM. */
+    volatile boolean destroyWorks = true;
+    /** Whether even a forced termination can end the process. */
+    volatile boolean forceWorks = true;
+    /** Runs when a process is ended, so the fake daemon it stands for can close its port. */
+    volatile Runnable onEnd = () -> {};
+    /** Runs between the two steps of ending a process, so a test can hold that window open. */
+    volatile Runnable betweenEndSteps = () -> {};
+
+    @Override
+    public boolean isAlive(long pid) {
+      var known = alive.get(pid);
+      return known != null ? known : DaemonManager.SYSTEM_PROCESSES.isAlive(pid);
+    }
+
+    @Override
+    public boolean destroy(long pid) {
+      destroyed.add(pid);
+      if (destroyWorks) end(pid);
+      return true;
+    }
+
+    @Override
+    public boolean destroyForcibly(long pid) {
+      forced.add(pid);
+      if (forceWorks) {
+        end(pid);
+      }
+      return true;
+    }
+
+    /**
+     * A real process exit closes its ports before the system reports the process gone. Ending
+     * a fake in the other order let a restart see the process dead while its old port still
+     * answered, probe that port and refuse to launch.
+     */
+    void end(long pid) {
+      onEnd.run();
+      betweenEndSteps.run();
+      alive.put(pid, false);
+    }
+  }
+
+  /**
+   * A daemon as a start sees it from outside: answers {@code /health} with the version it is
+   * told (none for a daemon older than 0.9.2), and {@code /stop} with the token, as the real
+   * transport does, or 404 for a daemon too old to have the endpoint. It is "process"
+   * {@link #pid} in a {@link FakeProcesses}, and ending that process closes its port.
+   */
+  private static final class FakeDaemon implements AutoCloseable {
+    final com.sun.net.httpserver.HttpServer server;
+    final long pid;
+    final AtomicInteger stopRequests = new AtomicInteger();
+    final List<String> tokensPresented = new CopyOnWriteArrayList<>();
+    /** Whether an accepted stop request ends the process, as it does in a real daemon. */
+    volatile boolean exitsOnStop = true;
+    volatile boolean managed;
+    /** Runs after each {@code /health} answer, so a test can see who probed the port. */
+    volatile Runnable onHealth = () -> {};
+
+    FakeDaemon(int port, long pid, String version, boolean hasStop, String token,
+        FakeProcesses processes) throws IOException {
+      this.pid = pid;
+      processes.alive.put(pid, true);
+      server = com.sun.net.httpserver.HttpServer.create(
+          new java.net.InetSocketAddress("127.0.0.1", port), 0);
+      processes.onEnd = () -> {
+        // Called off the dispatcher thread, stop joins it and returns with the listener closed.
+        server.stop(0);
+        assertNotListening(port);
+      };
+      server.createContext("/health", exchange -> {
+        var body = "{\"status\":\"ok\",\"sessions\":0,\"pid\":" + pid
+            + (version == null ? "" : ",\"version\":\"" + version + "\"") + ",\"managed\":" + managed + "}";
+        reply(exchange, 200, body);
+        onHealth.run();
+      });
+      server.createContext("/stop", exchange -> {
+        if (!hasStop) {
+          reply(exchange, 404, "{\"error\":\"no such endpoint\"}");
+          return;
+        }
+        stopRequests.incrementAndGet();
+        var presented = exchange.getRequestHeaders().getFirst(HttpTransport.STOP_TOKEN_HEADER);
+        tokensPresented.add(presented);
+        if (!token.equals(presented)) {
+          reply(exchange, 403, "{\"error\":\"wrong token\"}");
+          return;
+        }
+        reply(exchange, 200, "{\"status\":\"stopping\"}");
+        if (exitsOnStop) {
+          new Thread(() -> processes.end(pid)).start();
+        }
+      });
+      server.start();
+    }
+
+    /** Nothing accepts: a refusal or an unanswered connect, never a connection. */
+    private static void assertNotListening(int port) {
+      try (var socket = new java.net.Socket()) {
+        socket.connect(new java.net.InetSocketAddress("127.0.0.1", port), 200);
+      } catch (IOException refusedOrUnanswered) {
+        return;
+      }
+      throw new AssertionError("The fake daemon's port " + port + " still accepts after it stopped");
+    }
+
+    private static void reply(com.sun.net.httpserver.HttpExchange exchange, int status,
+        String body) throws IOException {
+      var bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().set("Content-Type", "application/json");
+      exchange.sendResponseHeaders(status, bytes.length);
+      try (var os = exchange.getResponseBody()) {
+        os.write(bytes);
+      }
+    }
+
+    @Override
+    public void close() {
+      server.stop(0);
+    }
+  }
+
+  /** A program that is not wpilog-mcp, on a port: it answers HTTP, but not as the server. */
+  private static com.sun.net.httpserver.HttpServer stranger(int port) throws IOException {
+    var server = com.sun.net.httpserver.HttpServer.create(
+        new java.net.InetSocketAddress("127.0.0.1", port), 0);
+    server.createContext("/", exchange -> {
+      var bytes = "not here".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+      exchange.sendResponseHeaders(404, bytes.length);
+      try (var os = exchange.getResponseBody()) {
+        os.write(bytes);
+      }
+    });
+    server.start();
+    return server;
+  }
+
+  @Nested
+  @DisplayName("the version in /health: restart, stop, and strangers on the port")
+  class RestartAndStopTests {
+    private static final long FAKE_PID = 424242L;
+    private final FakeProcesses processes = new FakeProcesses();
+
+    @Test void aStalePidCannotAuthorizeStoppingAnUnrelatedLiveProcess() throws Exception {
+      int port = freePort();
+      var manager = managerWith(noLauncher, Duration.ofMillis(300));
+      processes.alive.put(FAKE_PID, true);
+      manager.writePidFile("test", FAKE_PID, port);
+      try (var current = new FakeDaemon(port, FAKE_PID + 1, Version.VERSION, true, "current", processes)) {
+        assertTrue(manager.stopDaemon("test"));
+        assertTrue(processes.destroyed.isEmpty(), "The stale record must not authorize killing another PID");
+        assertEquals(0, current.stopRequests.get());
+        assertTrue(manager.healthCheck(port));
+      }
+    }
+
+    @Test void aStopDecisionCannotOverwriteAReplacementClaimBeforeSignalling() throws Exception {
+      int port = freePort();
+      var manager = managerWith(noLauncher, Duration.ofMillis(300));
+      try (var daemon = new FakeDaemon(port, FAKE_PID, Version.VERSION, true, "old", processes)) {
+        manager.writePidFile("test", FAKE_PID + 1, port);
+        manager.writeToken("test", "replacement");
+        var stop = DaemonManager.class.getDeclaredMethod("endDaemon", String.class,
+            DaemonManager.RunningDaemon.class, boolean.class);
+        stop.setAccessible(true);
+        assertEquals(false, stop.invoke(manager, "test",
+            new DaemonManager.RunningDaemon(FAKE_PID, port, Version.VERSION), false));
+        assertEquals(0, daemon.stopRequests.get()); assertTrue(processes.destroyed.isEmpty());
+        assertEquals("replacement", manager.readToken("test"));
+        assertEquals(Long.toString(FAKE_PID + 1), Files.readAllLines(manager.pidFilePath("test")).get(0));
+      }
+    }
+
+    @Test void finishingAnOldStopPreservesANewDaemonsToken() throws Exception {
+      int port = freePort();
+      var reference = new java.util.concurrent.atomic.AtomicReference<DaemonManager>();
+      var published = new java.util.concurrent.atomic.AtomicBoolean();
+      var interleaving = new DaemonManager.Processes() {
+        public boolean isAlive(long pid) {
+          boolean alive = processes.isAlive(pid);
+          if (pid == FAKE_PID && !alive && published.compareAndSet(false, true)) {
+            try {
+              reference.get().writePidFile("test", FAKE_PID + 1, port);
+              reference.get().writeToken("test", "replacement");
+            } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
+          }
+          return alive;
+        }
+        public boolean destroy(long pid) { return processes.destroy(pid); }
+        public boolean destroyForcibly(long pid) { return processes.destroyForcibly(pid); }
+      };
+      var manager = new DaemonManager(tempDir, Duration.ofSeconds(2), noLauncher,
+          DaemonManager.FILE_SYSTEM, interleaving, Version.VERSION);
+      reference.set(manager);
+      manager.writePidFile("test", FAKE_PID, port); manager.writeToken("test", "old");
+      try (var current = new FakeDaemon(port, FAKE_PID, Version.VERSION, true, "old", processes)) {
+        assertTrue(manager.stopDaemon("test"));
+        assertTrue(published.get());
+        assertEquals("replacement", manager.readToken("test"));
+        assertEquals(record(FAKE_PID + 1, port), pidFileLines(manager, "test"));
+      }
+    }
+
+    private DaemonManager managerWith(DaemonManager.Launcher launcher, Duration timeout) {
+      return new DaemonManager(tempDir, timeout, launcher, DaemonManager.FILE_SYSTEM, processes,
+          org.triplehelix.wpilogmcp.Version.VERSION);
+    }
+
+    private final DaemonManager.Launcher noLauncher = (command, environment, logFile) -> {
+      throw new IOException("no server is launched in this test");
+    };
+
+    @Test void managedServersAreNeverAdoptedStoppedOrReplaced() throws Exception {
+      int port = freePort(); var launcher = new FakeLauncher(port, false);
+      var manager = managerWith(launcher, Duration.ofMillis(300));
+      for (String version : List.of(Version.VERSION, "0.1.0")) {
+        try (var daemon = new FakeDaemon(port, FAKE_PID, version, true, "tok", processes)) {
+          daemon.managed = true;
+          assertFalse(manager.spawnDaemon("pit", port, null), "A managed server is not a start-owned daemon");
+          assertFalse(Files.exists(manager.pidFilePath("pit")), "Do not adopt a managed server");
+          assertFalse(manager.stopDaemon("pit", port), "A managed service has no PID file");
+          manager.writePidFile("pit", FAKE_PID, port); // Even a stale claim grants no authority.
+          assertFalse(manager.stopDaemon("pit"), "Use systemctl, never the stop token or a signal");
+          assertFalse(manager.spawnDaemon("pit", port, null), "A newer JAR must not replace a managed server");
+          assertEquals(0, daemon.stopRequests.get()); assertTrue(processes.destroyed.isEmpty());
+          assertEquals(0, launcher.launches.get());
+          Files.deleteIfExists(manager.pidFilePath("pit"));
+        }
+      }
+    }
+
+    @Test
+    @DisplayName("the probe tells who holds a port: nobody, this server, or a stranger")
+    void probeTellsWhoHoldsThePort() throws Exception {
+      var manager = createManager();
+      assertEquals(DaemonManager.Holder.NOBODY, manager.probe(freePort()).holder());
+
+      var server = startServer();
+      try {
+        var probe = manager.probe(server.getPort());
+        assertEquals(DaemonManager.Holder.THIS_SERVER, probe.holder());
+        assertEquals(org.triplehelix.wpilogmcp.Version.VERSION, probe.version());
+        assertEquals(OWN_PID, probe.pid());
+      } finally {
+        server.stop();
+      }
+
+      int port = freePort();
+      var other = stranger(port);
+      try {
+        assertEquals(DaemonManager.Holder.STRANGER, manager.probe(port).holder());
+        assertFalse(manager.healthCheck(port), "a stranger is not a healthy daemon");
+      } finally {
+        other.stop(0);
+      }
+
+      // Something that accepts the connection and never speaks HTTP
+      try (var silent = new ServerSocket(0)) {
+        assertEquals(DaemonManager.Holder.STRANGER, manager.probe(silent.getLocalPort()).holder());
+      }
+    }
+
+    @Test
+    @DisplayName("a daemon of this version is left running; one of another version is restarted")
+    void restartsADaemonOfAnotherVersion() throws Exception {
+      int port = freePort();
+      var launcher = new FakeLauncher(port, false);
+      var manager = managerWith(launcher, Duration.ofSeconds(8));
+      manager.writeToken("test", "old-token");
+      manager.writePidFile("test", FAKE_PID, port);
+
+      // Same version: nothing to do
+      try (var same = new FakeDaemon(port, FAKE_PID, org.triplehelix.wpilogmcp.Version.VERSION,
+          true, "old-token", processes)) {
+        assertTrue(manager.spawnDaemon("test", port, null));
+        assertEquals(0, launcher.launches.get(), "a daemon of this version was restarted");
+        assertEquals(0, same.stopRequests.get());
+        assertEquals(record(FAKE_PID, port), pidFileLines(manager, "test"));
+      }
+
+      // Another version: stopped with the token from the file, and started again
+      try (var old = new FakeDaemon(port, FAKE_PID, "0.1.0", true, "old-token", processes)) {
+        assertTrue(manager.spawnDaemon("test", port, null));
+        assertEquals(1, old.stopRequests.get(), "the old daemon was not asked to stop");
+        assertEquals(List.of("old-token"), old.tokensPresented);
+        assertEquals(1, launcher.launches.get(), "a new daemon was not started");
+        assertEquals(record(OWN_PID, port), pidFileLines(manager, "test"));
+        var token = manager.readToken("test");
+        assertNotNull(token);
+        assertNotEquals("old-token", token, "the new daemon gets a token of its own");
+        assertEquals(List.of(token), launcher.tokens, "the daemon's environment holds its token");
+      } finally {
+        launcher.stop();
+      }
+    }
+
+    @Test
+    @DisplayName("a daemon from before /health carried a version is restarted, as a process")
+    void restartsAnOlderDaemonAsAProcess() throws Exception {
+      // It reports no version and has no /stop endpoint; its token file never existed
+      int port = freePort();
+      var launcher = new FakeLauncher(port, false);
+      var manager = managerWith(launcher, Duration.ofSeconds(8));
+      manager.writePidFile("test", FAKE_PID, port);
+      try (var old = new FakeDaemon(port, FAKE_PID, null, false, "none", processes)) {
+        assertTrue(manager.spawnDaemon("test", port, null));
+        assertEquals(List.of(FAKE_PID), processes.destroyed, "it was not ended as a process");
+        assertEquals(1, launcher.launches.get());
+        assertEquals(record(OWN_PID, port), pidFileLines(manager, "test"));
+      } finally {
+        launcher.stop();
+      }
+    }
+
+    @Test
+    @DisplayName("two starts at once during a restart leave one daemon of this version")
+    void twoStartsDuringARestart() throws Exception {
+      for (int round = 0; round < 4; round++) {
+        var runDir = Files.createDirectories(tempDir.resolve("round" + round));
+        int port = freePort();
+        var launcher = new FakeLauncher(port, false);
+        var rounds = new FakeProcesses();
+        var manager = new DaemonManager(runDir, Duration.ofSeconds(8), launcher,
+            DaemonManager.FILE_SYSTEM, rounds, org.triplehelix.wpilogmcp.Version.VERSION);
+        manager.writeToken("test", "tok");
+        manager.writePidFile("test", FAKE_PID, port);
+        var pool = Executors.newFixedThreadPool(2);
+        try (var old = new FakeDaemon(port, FAKE_PID, "0.1.0", true, "tok", rounds)) {
+          var go = new CountDownLatch(1);
+          Future<Boolean> first = pool.submit(() -> {
+            go.await();
+            return manager.spawnDaemon("test", port, null);
+          });
+          Future<Boolean> second = pool.submit(() -> {
+            go.await();
+            return manager.spawnDaemon("test", port, null);
+          });
+          go.countDown();
+          assertTrue(first.get(20, TimeUnit.SECONDS), "round " + round);
+          assertTrue(second.get(20, TimeUnit.SECONDS), "round " + round);
+          assertEquals(1, launcher.launches.get(), "round " + round + ": daemons started");
+          assertEquals(1, old.stopRequests.get(), "round " + round + ": stop requests");
+          assertEquals(record(OWN_PID, port), Files.readAllLines(manager.pidFilePath("test")));
+        } finally {
+          pool.shutdownNow();
+          launcher.stop();
+        }
+      }
+    }
+
+    @Test
+    @DisplayName("a restart launches only after the old daemon's port has closed")
+    void aRestartLaunchesOnlyAfterTheOldPortCloses() throws Exception {
+      // The second hardening run's timeout: the fake reported its process dead while its port
+      // still answered, so the restart's probe found the old daemon there and refused to launch.
+      // The window between the two steps of ending the process stays open until the restart
+      // has acted in it: by waiting while nothing listens, or by probing a port that answers.
+      int port = freePort();
+      var launcher = new FakeLauncher(port, false);
+      var portClosed = new AtomicBoolean();
+      var actedInWindow = new CountDownLatch(1);
+      var observing = new DaemonManager.Processes() {
+        @Override
+        public boolean isAlive(long pid) {
+          boolean alive = processes.isAlive(pid);
+          if (pid == FAKE_PID && alive && portClosed.get()) actedInWindow.countDown();
+          return alive;
+        }
+
+        @Override
+        public boolean destroy(long pid) {
+          return processes.destroy(pid);
+        }
+
+        @Override
+        public boolean destroyForcibly(long pid) {
+          return processes.destroyForcibly(pid);
+        }
+      };
+      var manager = new DaemonManager(tempDir, Duration.ofSeconds(8), launcher,
+          DaemonManager.FILE_SYSTEM, observing, Version.VERSION);
+      manager.writeToken("test", "tok");
+      manager.writePidFile("test", FAKE_PID, port);
+      try (var old = new FakeDaemon(port, FAKE_PID, "0.1.0", true, "tok", processes)) {
+        var close = processes.onEnd;
+        processes.onEnd = () -> {
+          close.run();
+          portClosed.set(true);
+        };
+        old.onHealth = () -> {
+          if (old.stopRequests.get() > 0) actedInWindow.countDown();
+        };
+        processes.betweenEndSteps = () -> awaitLatch(actedInWindow);
+        assertTrue(manager.spawnDaemon("test", port, null), "the restart did not start its daemon");
+        assertEquals(1, launcher.launches.get(), "daemons started");
+        assertEquals(1, old.stopRequests.get(), "stop requests");
+        assertEquals(record(OWN_PID, port), pidFileLines(manager, "test"));
+        assertEquals(Version.VERSION, manager.probe(port).version(), "the daemon on the port");
+      } finally {
+        launcher.stop();
+      }
+    }
+
+    @Test
+    @DisplayName("a restart keeps its claim after the old daemon exits and before the new spawn")
+    void startAfterOldDaemonExitsJoinsTheRestart() throws Exception {
+      int port = freePort();
+      var launcher = new FakeLauncher(port, false);
+      var restartWaitingForExit = new CountDownLatch(1);
+      var continueRestart = new CountDownLatch(1);
+      var secondCheckedRecord = new CountDownLatch(1);
+      var allowLaunch = new CountDownLatch(1);
+      var restartingThread = new AtomicReference<Thread>();
+      var secondThread = new AtomicReference<Thread>();
+      var managerRef = new AtomicReference<DaemonManager>();
+      var secondClaimed = new AtomicBoolean();
+      var controlledProcesses = new DaemonManager.Processes() {
+        @Override
+        public boolean isAlive(long pid) {
+          if (pid == FAKE_PID && Thread.currentThread() == restartingThread.get()
+              && !managerRef.get().holdsStartLock("test")) {
+            // Pause outside the start lock, after /stop and before the restart cleans up.
+            restartWaitingForExit.countDown();
+            awaitLatch(continueRestart);
+          }
+          return processes.isAlive(pid);
+        }
+
+        @Override
+        public boolean destroy(long pid) {
+          return processes.destroy(pid);
+        }
+
+        @Override
+        public boolean destroyForcibly(long pid) {
+          return processes.destroyForcibly(pid);
+        }
+      };
+      var files = new DaemonManager.PidFileWriter() {
+        @Override
+        public void create(Path pidFile, String content) throws IOException {
+          boolean second = Thread.currentThread() == secondThread.get();
+          try {
+            DaemonManager.FILE_SYSTEM.create(pidFile, content);
+            if (second) {
+              secondClaimed.set(true);
+            }
+          } finally {
+            if (second) {
+              secondCheckedRecord.countDown();
+            }
+          }
+        }
+
+        @Override
+        public void replace(Path temp, Path pidFile) throws IOException {
+          DaemonManager.FILE_SYSTEM.replace(temp, pidFile);
+        }
+      };
+      var manager = new DaemonManager(tempDir, Duration.ofSeconds(8),
+          (command, environment, logFile) -> {
+            // Neither caller can boot before the second has inspected the dead daemon's record.
+            awaitLatch(allowLaunch);
+            return launcher.launch(command, environment, logFile);
+          }, files, controlledProcesses, Version.VERSION);
+      managerRef.set(manager);
+      manager.writeToken("test", "tok");
+      manager.writePidFile("test", FAKE_PID, port);
+      var pool = Executors.newFixedThreadPool(2);
+      try (var old = new FakeDaemon(port, FAKE_PID, "0.1.0", true, "tok", processes)) {
+        old.exitsOnStop = false;
+        Future<Boolean> first = pool.submit(() -> {
+          restartingThread.set(Thread.currentThread());
+          return manager.spawnDaemon("test", port, null);
+        });
+        awaitLatch(restartWaitingForExit);
+        var reserved = pidFileLines(manager, "test");
+        processes.end(FAKE_PID); // Close the old listener before letting the second start look.
+        Future<Boolean> second = pool.submit(() -> {
+          secondThread.set(Thread.currentThread());
+          return manager.spawnDaemon("test", port, null);
+        });
+        awaitLatch(secondCheckedRecord);
+        continueRestart.countDown();
+        allowLaunch.countDown();
+
+        assertTrue(first.get(20, TimeUnit.SECONDS));
+        assertTrue(second.get(20, TimeUnit.SECONDS));
+        assertAll(
+            () -> assertEquals(claim(OWN_PID, port), reserved,
+                "the restart must belong to its live starter before the old daemon exits"),
+            () -> assertFalse(secondClaimed.get(),
+                "the second start removed the stopping record and claimed an in-flight restart"),
+            () -> assertEquals(1, launcher.launches.get()));
+      } finally {
+        continueRestart.countDown();
+        allowLaunch.countDown();
+        pool.shutdownNow();
+        pool.awaitTermination(10, TimeUnit.SECONDS);
+        launcher.stop();
+      }
+    }
+
+    /** Latches choose the interleaving; the deadline only bounds a broken test's wait. */
+    private void awaitLatch(CountDownLatch latch) {
+      try {
+        assertTrue(latch.await(10, TimeUnit.SECONDS), "restart interleaving was not reached");
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new AssertionError("restart interleaving interrupted", e);
+      }
+    }
+
+    @Test
+    @DisplayName("a restart that cannot stop the old daemon restores its stopping record")
+    void failedRestartRestoresTheOldRecord() throws Exception {
+      int port = freePort();
+      var manager = managerWith(noLauncher, Duration.ofMillis(400));
+      manager.writeToken("test", "tok");
+      manager.writePidFile("test", FAKE_PID, port);
+      processes.forceWorks = false;
+      try (var old = new FakeDaemon(port, FAKE_PID, "0.1.0", true, "tok", processes)) {
+        old.exitsOnStop = false;
+        assertFalse(manager.spawnDaemon("test", port, null));
+        assertEquals(List.of(Long.toString(FAKE_PID), Integer.toString(port),
+            DaemonManager.STOPPING_MARKER), pidFileLines(manager, "test"),
+            "a failed restart must not leave a live starter's claim blocking later starts");
+      }
+    }
+
+    @Test
+    @DisplayName("a start waits for a daemon of its own version, not for the one being replaced")
+    void waitsForItsOwnVersion() throws Exception {
+      // Another start claimed the file; the old daemon still answers while it is stopped
+      int port = freePort();
+      var manager = managerWith(noLauncher, Duration.ofMillis(400));
+      assertTrue(manager.claimPidFile("test", port));
+      try (var old = new FakeDaemon(port, FAKE_PID, "0.1.0", true, "tok", processes)) {
+        assertFalse(manager.spawnDaemon("test", port, null),
+            "the old daemon answering was taken for the new one");
+      }
+    }
+
+    @Test
+    @DisplayName("a port held by another program is reported, and nothing is started")
+    void portHeldByAStranger() throws Exception {
+      int port = freePort();
+      var launcher = new FakeLauncher(port, false);
+      var manager = managerWith(launcher, Duration.ofSeconds(8));
+      var other = stranger(port);
+      try {
+        assertFalse(manager.spawnDaemon("test", port, null));
+        assertEquals(0, launcher.launches.get(), "a daemon was spawned onto a held port");
+        assertFalse(Files.exists(manager.pidFilePath("test")), "the claim must be released");
+        assertFalse(Files.exists(manager.tokenPath("test")));
+      } finally {
+        other.stop(0);
+      }
+    }
+
+    @Test
+    @DisplayName("a daemon of this version on the port with no record is recorded, not started")
+    void recordsADaemonWithoutARecord() throws Exception {
+      var server = startServer();
+      try {
+        int port = server.getPort();
+        var launcher = new FakeLauncher(port, false);
+        var manager = managerWith(launcher, Duration.ofSeconds(8));
+        var messages = new java.io.ByteArrayOutputStream();
+        var stderr = System.err;
+        try (var output = new java.io.PrintStream(messages, true, java.nio.charset.StandardCharsets.UTF_8)) {
+          System.setErr(output);
+          assertTrue(manager.spawnDaemon("test", port, null));
+        } finally { System.setErr(stderr); }
+        String warning = messages.toString(java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(warning.contains("WARN") && warning.contains("reports no configuration name")
+            && warning.contains(Version.VERSION), warning);
+        assertEquals(0, launcher.launches.get());
+        assertEquals(record(OWN_PID, port), pidFileLines(manager, "test"));
+      } finally {
+        server.stop();
+      }
+    }
+
+    @Test
+    @DisplayName("stop asks the daemon to stop with the token, waits, and removes its files")
+    void stopEndsTheDaemon() throws Exception {
+      int port = freePort();
+      var manager = managerWith(noLauncher, Duration.ofSeconds(8));
+      manager.writeToken("test", "tok");
+      manager.writePidFile("test", FAKE_PID, port);
+      try (var daemon = new FakeDaemon(port, FAKE_PID, org.triplehelix.wpilogmcp.Version.VERSION,
+          true, "tok", processes)) {
+        assertTrue(manager.stopDaemon("test"));
+        assertEquals(List.of("tok"), daemon.tokensPresented);
+        assertTrue(processes.destroyed.isEmpty(), "it stopped on request; nothing to end");
+        assertFalse(processes.isAlive(FAKE_PID));
+        assertFalse(Files.exists(manager.pidFilePath("test")));
+        assertFalse(Files.exists(manager.tokenPath("test")));
+      }
+    }
+
+    @Test
+    @DisplayName("stop when nothing runs succeeds and leaves no files")
+    void stopWhenNothingRuns() throws Exception {
+      var manager = managerWith(noLauncher, Duration.ofSeconds(8));
+      manager.writeToken("test", "tok");
+      assertTrue(manager.stopDaemon("test"));
+      assertFalse(Files.exists(manager.tokenPath("test")), "a stale token file is removed");
+
+      manager.writePidFile("test", DEAD_PID, 2363);
+      assertTrue(manager.stopDaemon("test"));
+      assertFalse(Files.exists(manager.pidFilePath("test")), "a stale record is removed");
+    }
+
+    @Test
+    @DisplayName("a daemon that refuses the token, or has no /stop, is ended as a process")
+    void stopFallsBackToTheProcess() throws Exception {
+      int port = freePort();
+      var manager = managerWith(noLauncher, Duration.ofSeconds(8));
+      manager.writeToken("test", "wrong");
+      manager.writePidFile("test", FAKE_PID, port);
+      try (var daemon = new FakeDaemon(port, FAKE_PID, org.triplehelix.wpilogmcp.Version.VERSION,
+          true, "right", processes)) {
+        assertTrue(manager.stopDaemon("test"));
+        assertEquals(1, daemon.stopRequests.get());
+        assertEquals(List.of(FAKE_PID), processes.destroyed);
+        assertFalse(Files.exists(manager.pidFilePath("test")));
+      }
+    }
+
+    @Test
+    @DisplayName("a daemon that accepts the stop but does not exit is ended without asking")
+    void stopEndsAStuckDaemon() throws Exception {
+      int port = freePort();
+      var manager = managerWith(noLauncher, Duration.ofMillis(400));
+      manager.writeToken("test", "tok");
+      manager.writePidFile("test", FAKE_PID, port);
+      processes.destroyWorks = false;
+      try (var daemon = new FakeDaemon(port, FAKE_PID, org.triplehelix.wpilogmcp.Version.VERSION,
+          true, "tok", processes)) {
+        daemon.exitsOnStop = false;
+        assertTrue(manager.stopDaemon("test"));
+        assertEquals(1, daemon.stopRequests.get());
+        assertEquals(List.of(FAKE_PID), processes.forced, "it was not ended forcibly");
+        assertFalse(Files.exists(manager.pidFilePath("test")));
+      }
+    }
+
+    @Test
+    @DisplayName("a daemon being stopped is not running, until its stopper has been gone too long")
+    void stoppingRecord() throws Exception {
+      var server = startServer();
+      try {
+        int port = server.getPort();
+        var manager = createManager();
+        manager.writePidFile("test", OWN_PID, port, DaemonManager.STOPPING_MARKER);
+        var stopping = List.of(Long.toString(OWN_PID), Integer.toString(port),
+            DaemonManager.STOPPING_MARKER);
+
+        assertFalse(manager.isAlreadyRunning("test", port), "a daemon on its way out is not running");
+        assertEquals(stopping, pidFileLines(manager, "test"), "and its record is kept");
+        assertFalse(manager.claimPidFile("test", port), "and the file cannot be claimed");
+
+        // The stopper died long ago and the daemon still answers: it is running after all
+        Files.setLastModifiedTime(manager.pidFilePath("test"),
+            FileTime.from(Instant.now().minus(Duration.ofMinutes(10))));
+        assertTrue(manager.isAlreadyRunning("test", port));
+        assertEquals(record(OWN_PID, port), pidFileLines(manager, "test"));
+      } finally {
+        server.stop();
+      }
+    }
+
+    @Test
+    @DisplayName("the token file is readable by its owner alone where permissions exist")
+    void tokenFileIsPrivate() throws Exception {
+      var manager = createManager();
+      manager.writeToken("test", "tok");
+      assertEquals("tok", manager.readToken("test"));
+      var path = manager.tokenPath("test");
+      org.junit.jupiter.api.Assumptions.assumeTrue(
+          Files.getFileStore(path).supportsFileAttributeView("posix"),
+          "no POSIX permissions on this file system");
+      assertEquals("rw-------", java.nio.file.attribute.PosixFilePermissions.toString(
+          Files.getPosixFilePermissions(path)));
     }
   }
 }

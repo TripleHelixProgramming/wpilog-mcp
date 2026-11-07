@@ -1,0 +1,7 @@
+pluginManagement {
+  repositories {
+    gradlePluginPortal()
+    maven { url 'https://frcmaven.wpi.edu/artifactory/release/' }
+  }
+}
+rootProject.name = 'shop-robot'

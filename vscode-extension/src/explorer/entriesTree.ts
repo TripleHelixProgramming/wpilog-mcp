@@ -1,0 +1,216 @@
+/**
+ * The Entries view's model, built from `list_entries` and `get_entry_info` results
+ * (EXPLORER_PLAN.md §4): the active log's entries grouped by name segments or exact logged
+ * data types, each leaf with its type and sample count, and a struct or array entry expandable
+ * into the numeric field paths `get_entry_info` reports, which the numeric tools take appended
+ * to the entry's name. Pure functions, tested from recorded results.
+ */
+
+/** An entry as `list_entries` lists it. */
+export interface ListedEntry {
+  name: string;
+  type: string;
+  sample_count: number;
+}
+
+/** What `list_entries` returned, as the model reads it. */
+export interface EntryListing {
+  status?: string;
+  log_path?: string;
+  entry_count?: number;
+  time_range_sec?: { start?: number; end?: number; duration?: number };
+  truncated?: boolean;
+  warning?: string;
+  entries?: ListedEntry[];
+  error?: string;
+  hint?: string;
+  reason?: string;
+}
+
+/** The organization selected for the Entries view. */
+export type EntryGrouping = "path" | "type";
+
+/** A node of the tree. */
+export type EntryNode =
+  /** A name segment or data type with entries beneath it. */
+  | { kind: "group"; label: string; path: string; description?: string; children: EntryNode[] }
+  /** An entry: its displayed name, type and count, and whether it has field paths to show. */
+  | { kind: "entry"; label: string; description: string; tooltip: string; entry: ListedEntry; expandable: boolean }
+  /** A numeric field path inside an entry, as the numeric tools address it; a `[*]` path expands to its elements. */
+  | { kind: "field"; label: string; description: string; fieldPath: string; entry: ListedEntry; elements?: number }
+  /** A line that is not an entry: nothing matched, or the listing failed. */
+  | { kind: "note"; label: string; tooltip?: string };
+
+/**
+ * Whether an entry may hold numeric fields the tools address by path: a struct, a struct array,
+ * or a numeric array. A scalar number, a boolean, a string, or raw bytes has none.
+ */
+export function hasFieldPaths(type: string): boolean {
+  return type.startsWith("struct:") || type.endsWith("[]");
+}
+
+/** A count with thousands separators, as the tree shows sample counts. */
+export function formatCount(count: number): string {
+  return Number.isFinite(count) ? count.toLocaleString("en-US") : "";
+}
+
+function entryNode(entry: ListedEntry, label: string): EntryNode {
+  return {
+    kind: "entry",
+    label,
+    description: `${entry.type} · ${formatCount(entry.sample_count)}`,
+    tooltip: `${entry.name}\n${entry.type}, ${formatCount(entry.sample_count)} samples`,
+    entry,
+    expandable: hasFieldPaths(entry.type),
+  };
+}
+
+/**
+ * The tree for a listing: groups by name segment, with the groups before the entries at each
+ * level and both in name order, as `list_entries` orders them. An entry named like a group
+ * (`/Drive` beside `/Drive/Pose`) is an entry under the group's parent, not the group itself.
+ * Type grouping uses the exact recorded type, with full entry names beneath it: different
+ * numeric types, structs, and arrays must not acquire a shared meaning from this presentation.
+ * A listing that failed, or matched nothing, is one note with the server's words.
+ */
+export function buildEntryTree(listing: EntryListing, grouping: EntryGrouping = "path"): EntryNode[] {
+  if (listing.status === "error") {
+    return [{ kind: "note", label: listing.error ?? "The entry listing failed", tooltip: listing.hint }];
+  }
+  const entries = listing.entries ?? [];
+  if (entries.length === 0) {
+    return [{ kind: "note", label: listing.reason ?? "No entries", tooltip: listing.hint }];
+  }
+  if (grouping === "type") {
+    const byType = new Map<string, ListedEntry[]>();
+    for (const entry of entries) {
+      const group = byType.get(entry.type);
+      if (group) group.push(entry);
+      else byType.set(entry.type, [entry]);
+    }
+    return [...byType.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([type, group]) => ({
+        kind: "group",
+        label: type,
+        path: `Data type: ${type}`,
+        description: `${formatCount(group.length)} ${group.length === 1 ? "entry" : "entries"}`,
+        children: group.sort((a, b) => a.name.localeCompare(b.name)).map((entry) => entryNode(entry, entry.name)),
+      }));
+  }
+  interface Group {
+    children: Map<string, Group>;
+    entries: EntryNode[];
+  }
+  const root: Group = { children: new Map(), entries: [] };
+  for (const entry of entries) {
+    const segments = entry.name.split("/").filter((s) => s !== "");
+    const leaf = segments.pop() ?? entry.name;
+    let group = root;
+    for (const segment of segments) {
+      let next = group.children.get(segment);
+      if (!next) {
+        next = { children: new Map(), entries: [] };
+        group.children.set(segment, next);
+      }
+      group = next;
+    }
+    group.entries.push(entryNode(entry, leaf));
+  }
+  const toNodes = (group: Group, path: string): EntryNode[] => {
+    const groups: EntryNode[] = [...group.children.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([segment, child]) => ({
+        kind: "group" as const,
+        label: segment,
+        path: `${path}/${segment}`,
+        children: toNodes(child, `${path}/${segment}`),
+      }));
+    const own = [...group.entries].sort((a, b) => a.label.localeCompare(b.label));
+    return [...groups, ...own];
+  };
+  return toNodes(root, "");
+}
+
+/**
+ * The field nodes of an entry, from the `numeric_leaf_paths` of its `get_entry_info` result:
+ * each path as the numeric tools take it (`.translation.x`, `[*].tagCount`), with the field's
+ * type where the struct's fields say it.
+ */
+export function buildFieldNodes(entry: ListedEntry, info: Record<string, unknown>): EntryNode[] {
+  const paths = Array.isArray(info.numeric_leaf_paths)
+    ? info.numeric_leaf_paths.filter((p): p is string => typeof p === "string")
+    : [];
+  const struct = info.struct as { fields?: { name?: string; type?: string }[] } | undefined;
+  const types = new Map<string, string>();
+  for (const field of struct?.fields ?? []) {
+    if (field.name && field.type) types.set(field.name, field.type);
+  }
+  if (paths.length === 0) {
+    return [{ kind: "note", label: "No numeric fields" }];
+  }
+  const length = arrayLength(info);
+  return paths.map((fieldPath) => {
+    const first = /^(?:\[\*\])?\.?([^.[]+)/.exec(fieldPath)?.[1];
+    const type = first ? types.get(first) : undefined;
+    const pooled = fieldPath.includes("[*]");
+    return {
+      kind: "field",
+      label: fieldPath,
+      description: pooled && length > 0 ? `${type ?? ""}${type ? " · " : ""}${length} elements` : type ?? "",
+      fieldPath,
+      entry,
+      ...(pooled && length > 0 ? { elements: length } : {}),
+    };
+  });
+}
+
+/** How many elements the tree shows for an array: a PDH has 24 channels, a camera a few tags. */
+export const MAX_ELEMENTS_SHOWN = 100;
+
+/**
+ * The length of an array entry's values, from the representative samples `get_entry_info`
+ * gives (`value_length` where a long array was cut, else the value's own length), the longest
+ * of them: a struct array that is sometimes empty still has elements to plot.
+ */
+export function arrayLength(info: Record<string, unknown>): number {
+  const samples = Array.isArray(info.sample_values) ? info.sample_values : [];
+  let longest = 0;
+  for (const sample of samples) {
+    const s = sample as { value?: unknown; value_length?: unknown };
+    const n = typeof s.value_length === "number" ? s.value_length : Array.isArray(s.value) ? s.value.length : 0;
+    if (n > longest) longest = n;
+  }
+  return longest;
+}
+
+/**
+ * The elements of a `[*]` field path, each a field node the tools take by index
+ * (`[3].speed`), up to the shown limit, with a note when the array is longer.
+ */
+export function elementNodes(field: { fieldPath: string; entry: ListedEntry; elements?: number }): EntryNode[] {
+  const length = field.elements ?? 0;
+  if (!field.fieldPath.includes("[*]") || length <= 0) return [];
+  const shown = Math.min(length, MAX_ELEMENTS_SHOWN);
+  const nodes: EntryNode[] = [];
+  for (let i = 0; i < shown; i++) {
+    const fieldPath = field.fieldPath.replace("[*]", `[${i}]`);
+    nodes.push({ kind: "field", label: fieldPath, description: "", fieldPath, entry: field.entry });
+  }
+  if (length > shown) {
+    nodes.push({ kind: "note", label: `${length - shown} more elements; address one as ${field.fieldPath.replace("[*]", `[${shown}]`)}` });
+  }
+  return nodes;
+}
+
+/** The element paths to plot for a `[*]` path: the first `limit` elements. */
+export function elementPaths(entryName: string, fieldPath: string, length: number, limit: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < Math.min(length, limit); i++) out.push(entryName + fieldPath.replace("[*]", `[${i}]`));
+  return out;
+}
+
+/** Seconds as the editor shows a time range: `12.658 s`. */
+export function formatSeconds(seconds: number | undefined): string {
+  return typeof seconds === "number" && Number.isFinite(seconds) ? `${seconds.toFixed(3)} s` : "";
+}

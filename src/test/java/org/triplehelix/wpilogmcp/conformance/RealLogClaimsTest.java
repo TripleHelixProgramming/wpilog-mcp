@@ -71,6 +71,7 @@ class RealLogClaimsTest {
   static final String SIM_MANIFEST = "MANIFEST.md";
 
   static Path logDir;
+  static java.util.Set<Path> selectedLogs;
   static Path simLogDir; // the simulated logs and their manifest, or null
   static HttpTransport transport;
   static HttpClient http;
@@ -87,8 +88,9 @@ class RealLogClaimsTest {
     var property = System.getProperty("conformance.logdir");
     Assumptions.assumeTrue(property != null && !property.isBlank(),
         "conformance.logdir not set; run with -PconformanceLogDir=/path/to/logs");
-    logDir = Path.of(property).toAbsolutePath().normalize();
+    logDir = Path.of(property).toRealPath();
     Assumptions.assumeTrue(Files.isDirectory(logDir), "not a directory: " + logDir);
+    selectedLogs = new java.util.HashSet<>(ConformanceSample.configured(logDir, "claims").paths());
     var logManager = LogManager.getInstance();
     logManager.unloadAllLogs();
     logManager.addAllowedDirectory(logDir);
@@ -175,7 +177,9 @@ class RealLogClaimsTest {
   }
 
   static String path(String relative) {
-    return logDir.resolve(relative).toString();
+    var path = logDir.resolve(relative).toAbsolutePath().normalize();
+    if (path.startsWith(logDir)) needs(selectedLogs.contains(path), "selected real log", "outside the conformance sample: " + path);
+    return path.toString();
   }
 
   /** Records the claim as not verifiable here and skips, when its precondition fails. */

@@ -31,6 +31,8 @@ public final class ConformanceChecks {
     SILENT_EMPTY,
     /** The result differs when the log's entries iterate in a different order (rule B9). */
     NONDETERMINISTIC,
+    /** The result differs when the tools read the log's numbers from its column file. */
+    COLUMN_FILE,
     /**
      * {@code status} is missing or unknown, disagrees with {@code success}, or a
      * {@code not_applicable}/{@code no_match} result has no {@code reason} (rule R4).
@@ -47,7 +49,9 @@ public final class ConformanceChecks {
     /** A successful result of an analytical tool carries no {@code data_quality} (rule R6). */
     QUALITY_MISSING,
     /** A result computed from a log that was not read to its end does not say so. */
-    TRUNCATION_UNREPORTED;
+    TRUNCATION_UNREPORTED,
+    /** A tool image must decode, and a chart must use its requested pixel dimensions. */
+    IMAGE;
 
     public String label() {
       return name().toLowerCase();
@@ -73,7 +77,7 @@ public final class ConformanceChecks {
       "query", "task", "combine", "interpolation", "time_source");
 
   /** Tools whose successful results are statistics over samples and so carry data_quality. */
-  static final Set<String> QUALITY_TOOLS = Set.of("get_statistics", "detect_anomalies",
+  static final Set<String> QUALITY_TOOLS = Set.of("render_chart", "get_statistics", "detect_anomalies",
       "find_peaks", "rate_of_change", "time_correlate", "compare_entries", "find_condition",
       "compare_matches", "analyze_swerve", "power_analysis", "predict_battery_health",
       "profile_mechanism", "analyze_loop_timing", "analyze_can_bus", "compare_poses",
@@ -111,6 +115,24 @@ public final class ConformanceChecks {
     if (tool != null && QUALITY_TOOLS.contains(tool) && succeeded(obj)
         && "ok".equals(obj.get("status").getAsString()) && !hasQuality(obj, 3)) {
       failed.add(Check.QUALITY_MISSING);
+    }
+    // A timeout is an observation from a bounded wait, explicitly ok/changed:false in the
+    // live-tool contract. This exception is tool-specific; empty analyses still fail R4.
+    if ("wait_for_change".equals(tool) && new com.google.gson.JsonPrimitive("ok").equals(obj.get("status"))
+        && new com.google.gson.JsonPrimitive(false).equals(obj.get("changed"))) failed.remove(Check.SILENT_EMPTY);
+    if (obj.has("_content")) {
+      try {
+        for (var block : obj.getAsJsonArray("_content")) {
+          var image = block.getAsJsonObject();
+          if (!image.get("type").getAsString().equals("image")) continue;
+          var decoded = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(java.util.Base64.getDecoder().decode(image.get("data").getAsString())));
+          if (decoded == null) failed.add(Check.IMAGE);
+          else if (obj.has("chart_spec")) {
+            var spec = obj.getAsJsonObject("chart_spec");
+            if (decoded.getWidth() != spec.get("width").getAsInt() || decoded.getHeight() != spec.get("height").getAsInt()) failed.add(Check.IMAGE);
+          }
+        }
+      } catch (Exception e) { failed.add(Check.IMAGE); }
     }
     return failed;
   }
@@ -216,7 +238,34 @@ public final class ConformanceChecks {
     return true;
   }
 
+  /** Every {@code limits} in the result, at the top and on nested objects that page a list of their
+   * own (a chart series' points, a session's costs), matches the list it describes. */
   static boolean limitsConsistent(JsonObject obj) {
+    return limitsHere(obj) && nestedLimitsConsistent(obj);
+  }
+  private static boolean nestedLimitsConsistent(JsonObject obj) {
+    for (var entry : obj.entrySet()) if (!entry.getKey().equals("limits") && !nestedLimitsConsistent(entry.getValue())) return false;
+    return true;
+  }
+  private static boolean nestedLimitsConsistent(com.google.gson.JsonElement value) {
+    if (value.isJsonObject()) {
+      var nested = value.getAsJsonObject();
+      return (!pages(nested) || limitsHere(nested)) && nestedLimitsConsistent(nested);
+    }
+    if (value.isJsonArray()) for (var item : value.getAsJsonArray()) if (!nestedLimitsConsistent(item)) return false;
+    return true;
+  }
+  /** Whether a nested {@code limits} pages lists as the result contract writes it. Other objects may
+   * use the name for their own caps: a paged inventory reports the server's under it. */
+  private static boolean pages(JsonObject obj) {
+    var limits = obj.get("limits");
+    if (limits == null || !limits.isJsonObject() || limits.getAsJsonObject().size() == 0) return false;
+    for (var entry : limits.getAsJsonObject().entrySet()) {
+      if (!entry.getValue().isJsonObject() || !entry.getValue().getAsJsonObject().has("returned")) return false;
+    }
+    return true;
+  }
+  private static boolean limitsHere(JsonObject obj) {
     var limits = obj.get("limits");
     if (limits == null) return true;
     if (!limits.isJsonObject()) return false;
@@ -224,6 +273,14 @@ public final class ConformanceChecks {
       if (!entry.getValue().isJsonObject()) return false;
       var l = entry.getValue().getAsJsonObject();
       var list = obj.get(entry.getKey());
+      if (list == null) {
+        // A tool may retain its shared HTTP page inside a named MCP envelope.
+        com.google.gson.JsonElement value = obj;
+        for (String part : entry.getKey().split("\\.")) {
+          value = value != null && value.isJsonObject() ? value.getAsJsonObject().get(part) : null;
+        }
+        list = value;
+      }
       if (list == null || !list.isJsonArray() || !l.has("total") || !l.has("returned")) {
         return false;
       }
@@ -342,6 +399,12 @@ public final class ConformanceChecks {
     if (e == null || !e.isJsonObject()) return e;
     var copy = e.getAsJsonObject().deepCopy();
     copy.remove("_execution_time_ms");
+    if (copy.has("chart_spec") && copy.getAsJsonObject("chart_spec").has("open_url")) {
+      // A copied/promoted log has a new opening location, not new samples. Retain every
+      // selection parameter; RenderChartTest independently checks the link's actual path.
+      var spec = copy.getAsJsonObject("chart_spec");
+      spec.addProperty("open_url", spec.get("open_url").getAsString().replaceFirst("([?&]path=)[^&]*", "$1<log-path>"));
+    }
     return copy;
   }
 }

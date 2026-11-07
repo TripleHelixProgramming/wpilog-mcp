@@ -6,6 +6,7 @@ package org.triplehelix.wpilogmcp.tools;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import java.util.Locale;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.LogData;
@@ -43,13 +44,14 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
  *     {@literal @}Override
  *     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
  *         var path = getRequiredString(arguments, "path");
- *         var log = logManager.getOrLoad(path);
- *         var name = getRequiredString(arguments, "name");
- *         var values = requireEntry(log, name);
+ *         try (var use = logAccess.acquire(path)) {
+ *           var name = getRequiredString(arguments, "name");
+ *           var values = requireEntry(use.log(), name);
  *
- *         return success()
- *             .addProperty("count", values.size())
- *             .build();
+ *           return success()
+ *               .addProperty("count", values.size())
+ *               .build();
+ *         }
  *     }
  * }
  * }</pre>
@@ -64,6 +66,9 @@ public abstract class ToolBase implements McpServer.Tool {
 
   /** The injected LogManager instance (or from singleton if using no-arg constructor). */
   protected final LogManager logManager;
+
+  /** Shared read admission; domain and REV services remain on the manager. */
+  protected final org.triplehelix.wpilogmcp.read.server.ManagedLogAccess logAccess;
 
   /** The injected TbaClient instance (or from singleton if using no-arg constructor). */
   protected final TbaClient tbaClient;
@@ -92,6 +97,7 @@ public abstract class ToolBase implements McpServer.Tool {
    */
   protected ToolBase(ToolDependencies deps) {
     this.logManager = deps.logManager();
+    this.logAccess = logManager == null ? null : logManager.readAccess();
     this.tbaClient = deps.tbaClient();
     this.tbaConfig = deps.tbaConfig();
     this.logDirectory = deps.logDirectory();
@@ -154,7 +160,9 @@ public abstract class ToolBase implements McpServer.Tool {
   public final JsonElement execute(JsonObject arguments) throws Exception {
     JsonElement result;
     try {
-      result = executeInternal(arguments);
+      return ResultContract.enforce(executeInternal(arguments));
+    } catch (org.triplehelix.wpilogmcp.read.server.SourceScopes.Failure e) {
+      result = e.result();
     } catch (IllegalArgumentException e) {
       // Parameter validation errors - return user-friendly error
       result = errorResult(e.getMessage());
@@ -162,6 +170,11 @@ public abstract class ToolBase implements McpServer.Tool {
       // The file is missing, empty, not a log, or too large: a fact about the caller's file,
       // explained, not a server fault
       result = errorResult(e.getMessage());
+    } catch (java.nio.file.NoSuchFileException e) {
+      // A move can land between validation and opening a path. This is a retryable file
+      // change, not an unexplained server failure (seen during capture identity promotion).
+      result = errorResult("File was not found while opening or reading it: " + e.getFile()
+          + ". It may have been moved or removed. Retry with a path from list_available_logs.");
     } catch (Exception e) {
       // Unexpected errors - return error response instead of propagating
       // raw exceptions to the MCP layer
@@ -177,6 +190,10 @@ public abstract class ToolBase implements McpServer.Tool {
           + "of the file faulted: " + e.getMessage() + "), which happens when the file is "
           + "truncated or rewritten while it is loaded. Call again: the server loads a changed "
           + "file again.");
+    } catch (StackOverflowError e) {
+      // Unwind first; do not recursively render the arguments, result or full stack here.
+      result = errorResult("Stack overflow: this call exceeded the supported nesting or recursion "
+          + "depth. Reduce nested input; the server remains available for the next call.");
     } catch (OutOfMemoryError e) {
       // One call's allocations (usually decoding a dense entry of a very large log) exceeded the
       // heap; they are garbage once the call unwinds, so the server can go on serving
@@ -222,7 +239,7 @@ public abstract class ToolBase implements McpServer.Tool {
     if (values == null) {
       // Provide suggestions for similar entry names
       var suggestions = log.entries().keySet().stream()
-          .filter(n -> n.toLowerCase().contains(name.toLowerCase()))
+          .filter(n -> n.toLowerCase(Locale.ROOT).contains(name.toLowerCase(Locale.ROOT)))
           .limit(5)
           .toList();
 

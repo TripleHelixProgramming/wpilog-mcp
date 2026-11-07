@@ -32,11 +32,109 @@ public record ServerConfig(
     Boolean diskcachedisable,
     Boolean debug,
     String exportdir,
-    Integer scandepth
+    Integer scandepth,
+    Integer idleExitMinutes,
+    CaptureConfig capture,
+    MirrorConfig mirror,
+    MetricsConfig metrics,
+    ContextConfig context,
+    Boolean experimentalDataStore,
+    List<MirrorConfig> mirrors
 ) {
 
   public ServerConfig {
     logdirs = logdirs == null ? null : List.copyOf(logdirs);
+    mirrors = mirrors == null ? null : List.copyOf(mirrors);
+  }
+  public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
+      String transport, Integer port, String diskcachedir, Long diskcachesize,
+      Boolean diskcachedisable, Boolean debug, String exportdir, Integer scandepth, Integer idleExitMinutes,
+      CaptureConfig capture, MirrorConfig mirror, MetricsConfig metrics, ContextConfig context, Boolean experimentalDataStore) {
+    this(name, logdirs, team, tbaKey, transport, port, diskcachedir, diskcachesize, diskcachedisable, debug,
+        exportdir, scandepth, idleExitMinutes, capture, mirror, metrics, context, experimentalDataStore, null);
+  }
+  /** Plural configuration preserves explicit owners; the singular form remains compatible. */
+  public List<MirrorConfig> effectiveMirrors() { return mirrors != null ? mirrors : mirror == null ? List.of() : List.of(mirror); }
+
+  /** Existing callers have not opted into experimental local-folder enrollment. */
+  public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
+      String transport, Integer port, String diskcachedir, Long diskcachesize,
+      Boolean diskcachedisable, Boolean debug, String exportdir, Integer scandepth, Integer idleExitMinutes,
+      CaptureConfig capture, MirrorConfig mirror, MetricsConfig metrics, ContextConfig context) {
+    this(name, logdirs, team, tbaKey, transport, port, diskcachedir, diskcachesize,
+        diskcachedisable, debug, exportdir, scandepth, idleExitMinutes, capture, mirror, metrics, context, null);
+  }
+
+  /** A saved policy is not opt-in to an experimental feature; each server must enable it. */
+  public boolean dataStoreEnabled() { return Boolean.TRUE.equals(experimentalDataStore); }
+
+  public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
+      String transport, Integer port, String diskcachedir, Long diskcachesize,
+      Boolean diskcachedisable, Boolean debug, String exportdir, Integer scandepth, Integer idleExitMinutes,
+      CaptureConfig capture, MirrorConfig mirror, MetricsConfig metrics) {
+    this(name, logdirs, team, tbaKey, transport, port, diskcachedir, diskcachesize,
+        diskcachedisable, debug, exportdir, scandepth, idleExitMinutes, capture, mirror, metrics, null);
+  }
+
+  /** Context is configured beside capture, and resolved only after named-server defaults merge. */
+  public CaptureConfig effectiveCapture() {
+    if (capture == null || context == null) return capture;
+    var old = capture.providers();
+    return new CaptureConfig(capture.addresses(), capture.store(), capture.periodSeconds(), capture.policy(),
+        capture.hotWindowUs(), capture.maxFileBytes(), capture.pull(), capture.gatewayPort(),
+        new ProviderConfig(old.robotSsh(), old.stats(), old.tails(), context.photonvision(), context.jvm()), capture.diskPolicy());
+  }
+
+  public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
+      String transport, Integer port, String diskcachedir, Long diskcachesize,
+      Boolean diskcachedisable, Boolean debug, String exportdir, Integer scandepth, Integer idleExitMinutes,
+      CaptureConfig capture, MirrorConfig mirror) {
+    this(name, logdirs, team, tbaKey, transport, port, diskcachedir, diskcachesize,
+        diskcachedisable, debug, exportdir, scandepth, idleExitMinutes, capture, mirror, null);
+  }
+
+  public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
+      String transport, Integer port, String diskcachedir, Long diskcachesize,
+      Boolean diskcachedisable, Boolean debug, String exportdir, Integer scandepth, Integer idleExitMinutes,
+      CaptureConfig capture) {
+    this(name, logdirs, team, tbaKey, transport, port, diskcachedir, diskcachesize,
+        diskcachedisable, debug, exportdir, scandepth, idleExitMinutes, capture, null);
+  }
+
+  public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
+      String transport, Integer port, String diskcachedir, Long diskcachesize,
+      Boolean diskcachedisable, Boolean debug, String exportdir, Integer scandepth, Integer idleExitMinutes) {
+    this(name, logdirs, team, tbaKey, transport, port, diskcachedir, diskcachesize,
+        diskcachedisable, debug, exportdir, scandepth, idleExitMinutes, null);
+  }
+
+  /** Naming a capture store grants this server access to it, alongside its other directories. */
+  public List<String> effectiveLogdirs() {
+    var paths = new java.util.LinkedHashSet<String>(logdirs == null ? List.of() : logdirs);
+    if (capture != null) paths.add(capture.store().toString());
+    effectiveMirrors().forEach(mirror -> paths.add(mirror.folder().toString()));
+    return List.copyOf(paths);
+  }
+
+  /** A configuration without an idle exit, as every configuration was before the idle exit existed. */
+  public ServerConfig(String name, List<String> logdirs, Integer team, String tbaKey,
+      String transport, Integer port, String diskcachedir, Long diskcachesize,
+      Boolean diskcachedisable, Boolean debug, String exportdir, Integer scandepth) {
+    this(name, logdirs, team, tbaKey, transport, port, diskcachedir, diskcachesize,
+        diskcachedisable, debug, exportdir, scandepth, null);
+  }
+
+  /**
+   * How long an {@code http} server started in the background runs with no MCP session and no
+   * request before it exits on its own, or null for never. Meant for the server the VS Code
+   * extension manages, which nobody started by hand and nobody would think to stop; a server
+   * someone started with {@code start} stays until {@code stop} unless its configuration says
+   * otherwise.
+   */
+  public java.util.Optional<java.time.Duration> idleExit() {
+    return idleExitMinutes == null || idleExitMinutes <= 0
+        ? java.util.Optional.empty()
+        : java.util.Optional.of(java.time.Duration.ofMinutes(idleExitMinutes));
   }
 
   /** Returns true if this config uses HTTP transport. */
@@ -72,7 +170,14 @@ public record ServerConfig(
         diskcachedisable != null ? diskcachedisable : defaults.diskcachedisable(),
         debug != null ? debug : defaults.debug(),
         exportdir != null ? exportdir : defaults.exportdir(),
-        scandepth != null ? scandepth : defaults.scandepth()
+        scandepth != null ? scandepth : defaults.scandepth(),
+        idleExitMinutes != null ? idleExitMinutes : defaults.idleExitMinutes(),
+        capture != null ? capture : defaults.capture(),
+        mirrors != null ? null : mirror != null ? mirror : defaults.mirror(),
+        metrics != null ? metrics : defaults.metrics(),
+        context != null ? context : defaults.context(),
+        experimentalDataStore != null ? experimentalDataStore : defaults.experimentalDataStore(),
+        mirrors != null ? mirrors : mirror != null ? null : defaults.mirrors()
     );
   }
 }

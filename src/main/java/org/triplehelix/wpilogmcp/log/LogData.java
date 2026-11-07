@@ -16,6 +16,7 @@ import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
  * <ul>
  *   <li>{@link ParsedLog} — eagerly loaded, all values in memory (used by tests, disk cache)</li>
  *   <li>{@link LazyParsedLog} — lazily loaded, values decoded on demand from memory-mapped file</li>
+ *   <li>{@link LiveLog.View} — a fixed prefix of the index the capture writer builds</li>
  * </ul>
  *
  * <p>Tools interact with log data exclusively through this interface via
@@ -28,22 +29,46 @@ public interface LogData {
   /** The file path of the log. */
   String path();
 
+  /** The complete session prefix this call could see, independent of a requested analysis scope. */
+  record SessionTimeRange(double startSec, double endSec) {}
+  default Optional<SessionTimeRange> sessionTimeRange() { return Optional.empty(); }
+
   /** Entry metadata keyed by entry name. */
   Map<String, EntryInfo> entries();
 
   /**
-   * Timestamped values keyed by entry name.
+   * Timestamped values keyed by entry name, in stable chronological order within each entry.
+   * Equal timestamps retain record order; raw file offsets remain in file order.
    *
    * <p>For {@link LazyParsedLog}, this returns a lazy map that decodes values on first access
    * and caches them with LRU eviction. For {@link ParsedLog}, this returns the eagerly-loaded map.
    */
   Map<String, List<TimestampedValue>> values();
 
+  /** Existential evidence for selection, without requiring a materialized history. Native
+   * fixed-prefix adapters stream until the first witness and can refuse bounded work. */
+  default boolean anyValue(String entry, java.util.function.Predicate<Object> predicate) {
+    var samples = values().get(entry);
+    return samples != null && samples.stream().anyMatch(sample -> predicate.test(sample.value()));
+  }
+
+  /** Last matching value in stable timestamp order. Selection must not replace this with
+   * file order: backward timestamps are legal, and equal timestamps retain record order. */
+  default Optional<TimestampedValue> lastValue(String entry, java.util.function.Predicate<Object> predicate) {
+    var samples = values().get(entry);
+    if (samples != null) for (int i = samples.size() - 1; i >= 0; i--)
+      if (predicate.test(samples.get(i).value())) return Optional.of(samples.get(i));
+    return Optional.empty();
+  }
+
   /** The earliest timestamp in the log (seconds). */
   double minTimestamp();
 
   /** The latest timestamp in the log (seconds). */
   double maxTimestamp();
+
+  /** Anchor for a relative scope: the call's robot time when live, otherwise the last record. */
+  default double timeScopeEnd() { return maxTimestamp(); }
 
   /** Whether the log was truncated during parsing. */
   boolean truncated();
@@ -93,6 +118,23 @@ public interface LogData {
    * @return The problem, or empty when every record decoded
    */
   default Optional<DecodeProblem> decodeProblem(String entryName) {
+    return Optional.empty();
+  }
+
+  /**
+   * This log's time mapped to UTC by its measured clock. A loaded log keeps its mapping; a view of
+   * a recording extends its recording's readings rather than reading the clock entry again.
+   */
+  default org.triplehelix.wpilogmcp.read.UtcTimeMapping utcMapping() {
+    return org.triplehelix.wpilogmcp.read.UtcTimeMapping.from(this);
+  }
+
+  /**
+   * The entry's numbers at {@code path} from columns that hold them exactly, a finished log's
+   * column file or a recording's own; empty otherwise, and the caller decodes the log as before.
+   * The samples belong to the caller's use of this log, on one thread.
+   */
+  default Optional<NumericColumn> numericColumn(String entryName, org.triplehelix.wpilogmcp.read.FieldPath path) {
     return Optional.empty();
   }
 

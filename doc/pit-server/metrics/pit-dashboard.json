@@ -1,0 +1,548 @@
+{
+  "uid": "wpilog-pit",
+  "title": "Pit sampled telemetry",
+  "tags": [
+    "wpilog-mcp"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 40,
+  "version": 1,
+  "refresh": "1s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "editable": true,
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "battery_topic",
+        "label": "Battery topic (volts)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": []
+      },
+      {
+        "name": "can_topic",
+        "label": "CAN utilization topic (fraction)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": []
+      },
+      {
+        "name": "loop_topic",
+        "label": "Loop duration topic (seconds)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": []
+      },
+      {
+        "name": "cpu_topic",
+        "label": "Robot CPU topic (fraction)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": []
+      },
+      {
+        "name": "disk_topic",
+        "label": "Robot free disk topic (bytes)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Session state",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "wpilog_capture_open{job=\"pit\"}",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bool"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "NT4 connected",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "wpilog_nt_connected{job=\"pit\"}",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bool"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Capture bytes / second",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(wpilog_capture_bytes_total{job=\"pit\"}[1m]))",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Battery",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "nt_value{job=\"pit\",topic=\"$battery_topic\"}",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "volt"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "CAN utilization",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 8,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "nt_value{job=\"pit\",topic=\"$can_topic\"}",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Loop duration",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "nt_value{job=\"pit\",topic=\"$loop_topic\"}",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Robot CPU",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "nt_value{job=\"pit\",topic=\"$cpu_topic\"}",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Robot free disk",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 8,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "nt_value{job=\"pit\",topic=\"$disk_topic\"}",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Server heap",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 16,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "wpilog_jvm_memory_used_bytes{job=\"pit\",area=\"heap\"}",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Battery publication age",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "nt_age_seconds{job=\"pit\",topic=\"$battery_topic\"}",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Files waiting at the pull gate",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 8,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "wpilog_pull_files_waiting{job=\"pit\"}",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "NT4 round trip",
+      "description": "Sampled latest values; the capture file is the record of every change. Robot panels stay empty until an exact topic with the stated unit is selected.",
+      "gridPos": {
+        "x": 16,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pit-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "wpilog_nt_round_trip_seconds{job=\"pit\"}",
+          "legendFormat": "{{topic}} {{field}} {{index}} {{robot}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    }
+  ]
+}

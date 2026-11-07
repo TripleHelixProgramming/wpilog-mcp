@@ -20,6 +20,25 @@ class VisionFixtureTest extends FixtureToolTestBase {
         .orElseThrow(() -> new AssertionError("no stream for " + camera + ": " + r));
   }
 
+  @Test void capturedSettingsBelongOnlyToTheExactCameraAndRespectTheWindow() {
+    var r = call("analyze_vision", "vision_photon_akit", "start_time", 10., "end_time", 20.);
+    var settings = r.getAsJsonObject("camera_settings").getAsJsonObject("Camera0");
+    assertEquals("captured", settings.get("status").getAsString());
+    assertEquals("/Daemon/PhotonVision/Camera0/Settings", settings.get("entry").getAsString());
+    var snapshot = settings.getAsJsonArray("snapshots").get(0).getAsJsonObject();
+    assertEquals(1., snapshot.get("timestamp_sec").getAsDouble(), "The held settings keep their original receipt time");
+    var value = snapshot.getAsJsonObject("settings");
+    assertEquals("AprilTag", value.getAsJsonObject("pipeline").get("type").getAsString());
+    assertEquals(.25, value.getAsJsonArray("calibrations").get(0).getAsJsonObject().getAsJsonArray("mean_reprojection_errors_px").get(0).getAsDouble());
+    assertEquals("none_captured", r.getAsJsonObject("camera_settings").getAsJsonObject("Camera1").get("status").getAsString());
+    var before = call("analyze_vision", "vision_photon_akit", "start_time", .1, "end_time", .9);
+    assertEquals("none_captured", before.getAsJsonObject("camera_settings").getAsJsonObject("Camera0").get("status").getAsString());
+    assertTrue(r.getAsJsonObject("inputs").toString().contains("/Daemon/PhotonVision/Camera0/Settings"));
+    var scalar = call("analyze_vision", "vision_pose3d", "start_time", 1., "end_time", 2.);
+    assertEquals(0, scalar.get("jump_count").getAsInt());
+    assertEquals("none_captured", scalar.getAsJsonObject("camera_settings").getAsJsonObject("Camera0").get("status").getAsString());
+  }
+
   @Test
   @DisplayName("PhotonVision PoseObservation[] streams: counts, tags, latency, residuals (B4)")
   void photonStreams() {

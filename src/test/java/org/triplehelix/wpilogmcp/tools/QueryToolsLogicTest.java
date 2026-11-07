@@ -33,6 +33,23 @@ class QueryToolsLogicTest extends ToolTestBase {
   class SearchEntriesToolTests {
 
     @Test
+    @DisplayName("matches names alike in every default locale")
+    void matchesNamesAlikeInEveryDefaultLocale() throws Exception {
+      // In a Turkish locale "I".toLowerCase() is the dotless "\u0131", so "/IMU" would not contain "imu".
+      var log = new MockLogBuilder().setPath("/test/locale.wpilog")
+          .addNumericEntry("/IMU/Yaw", new double[]{0}, new double[]{0}).build();
+      putLogInCache(log);
+      var previous = java.util.Locale.getDefault();
+      try {
+        java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr-TR"));
+        var args = new JsonObject(); args.addProperty("path", "/test/locale.wpilog"); args.addProperty("pattern", "imu");
+        var result = findTool("search_entries").execute(args).getAsJsonObject();
+        assertEquals("ok", result.get("status").getAsString(), result::toString);
+        assertEquals(1, result.get("match_count").getAsInt(), result::toString);
+      } finally { java.util.Locale.setDefault(previous); }
+    }
+
+    @Test
     @DisplayName("finds entries matching substring")
     void findsEntriesMatchingSubstring() throws Exception {
       var log = new MockLogBuilder()
@@ -184,6 +201,20 @@ class QueryToolsLogicTest extends ToolTestBase {
       var transitions = result.getAsJsonArray("transitions");
       assertEquals(2.0, transitions.get(0).getAsJsonObject().get("timestamp_sec").getAsDouble(), 0.001);
       assertEquals(10.0, transitions.get(0).getAsJsonObject().get("value").getAsDouble(), 0.001);
+    }
+
+    @Test
+    @DisplayName("a non-finite sample holds the previous value instead of deciding the condition")
+    void nonFiniteSamplesHoldThePreviousValue() throws Exception {
+      var log = buildNumericLog("/Speed", new double[]{0, 1, 2, 3},
+          new double[]{5, Double.POSITIVE_INFINITY, 15, Double.NEGATIVE_INFINITY});
+      putLogInCache(log);
+      var result = tool.execute(makeArgs("/Speed", "gt", 10)).getAsJsonObject();
+      assertEquals(1, result.get("transition_count").getAsInt(), result::toString);
+      var transition = result.getAsJsonArray("transitions").get(0).getAsJsonObject();
+      assertEquals(2.0, transition.get("timestamp_sec").getAsDouble(), 1e-12);
+      assertEquals(15.0, transition.get("value").getAsDouble(), 1e-12);
+      assertEquals(1.0, result.get("total_true_sec").getAsDouble(), 1e-12, "true from 2 s to the log's end at 3 s");
     }
 
     @Test

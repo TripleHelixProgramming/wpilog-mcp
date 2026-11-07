@@ -1,6 +1,6 @@
 # Claude Code Project Instructions
 
-This document provides context and coding guidelines for Claude Code when working on wpilog-mcp.
+Context and coding rules for Claude Code when working on wpilog-mcp.
 
 ## Project Overview
 
@@ -13,11 +13,15 @@ Before working on this codebase, scan the package structure and read the key fil
 The server has a layered architecture (`doc/ARCHITECTURE.md` has the code map):
 
 1. **Transport layer** — MCP JSON-RPC 2.0 over stdio (one client, one message at a time) or HTTP (several clients, sessions, parallel requests). Message routing is transport-independent.
-2. **Tool layer** — Dozens of tools in modules grouped by subject, registered at startup. Every tool runs through one base that turns bad arguments, unreadable files, exceptions, and heap exhaustion into error results and enforces the result contract on every result. Tools that read a log share a second base that adds the `path` parameter, loads the log, and records which entries the tool read. Shared services: the signal resolver, time scopes and windows, field paths into structs and arrays, data quality, the response builder, and the reasoning guidance. There is no "active log": each call stands alone.
+2. **Tool layer** — Dozens of tools in modules grouped by subject, registered at startup. Every tool runs through one base that turns bad arguments, unreadable files, exceptions, stack exhaustion, and heap exhaustion into error results and enforces the result contract on every result. Tools that read a log share a second base that adds the `path` parameter, loads the log, and records which entries the tool read. Shared services: the signal resolver, time scopes and windows, field paths into structs and arrays, data quality, the response builder, and the reasoning guidance. There is no "active log": each call stands alone.
 3. **Log layer** — Logs are read lazily: one scan indexes a file, values are decoded on demand and cached, and loaded logs are unloaded when memory runs short. A loaded log follows its file: a file that changed on disk is loaded again, a result read across the change is discarded with an explained error, and each session is told once. Structs decode with the schemas the log records. The scan is built for logs that were not closed cleanly.
 4. **RevLog layer** — REV log parsing with DBC-based CAN signal decoding, and synchronization to the wpilog's clock by cross-correlation, where names only nominate signal pairs and the data decides. Results are cached on disk (see Disk Cache).
 5. **External integrations** — The Blue Alliance API for match data, bundled game data, named server configurations with environment variable interpolation, and a background server for the standalone install.
-6. **VS Code extension** — Registers the server with VS Code's agents, adds an entry for Claude Code in robot projects, keeps settings and the TBA key in a per-project configuration file in its own storage, and keeps the key in VS Code's secret storage.
+6. **VS Code extension** — Installs and updates the standalone server, registers its HTTP endpoint with VS Code’s agents and its bridge with Claude Code at user scope, and leases each window’s directories and secret-storage TBA key to its MCP session. The home YAML remains the user’s permanent configuration.
+7. **NetworkTables recording** — The shared server can record NetworkTables into ordinary WPILOG files. One ordered listener feeds the writer, live index and optional read-only gateway; recording policy and topic costs belong to the writer. Readers take a fixed prefix. See `doc/pit-server/ARCHITECTURE.md` for ownership and `doc/pit-server/STANDALONE.md` for configuration.
+8. **File catalog** — Store manifests record robots, sessions, files and provenance. Import, inbox, pull, sync and mirror share content-based placement rules. The store owns its writes; only mirror synchronization evicts mirror files. See `doc/ARCHITECTURE.md` and `doc/pit-server/PIT_SERVER_PLAN.md`.
+9. **Live tools and metrics** — Live tools read the open recording and latest-value table through published snapshots, without joining recording or store work. Metrics are a sampled view; the WPILOG is the record. `doc/TOOLS.md` owns the result contract and `doc/pit-server/STANDALONE.md` the metrics configuration.
+10. **HTTP services** — The shared transport provides loopback-only registration and credential routes, catalog-backed reads and uploads. The optional read-only NT4 gateway uses a separate port and never forwards client writes. Route admission belongs to `doc/STANDALONE.md` and `doc/pit-server/STANDALONE.md`; ownership belongs to their architecture guides.
 
 ## Java 17 Best Practices
 
@@ -39,6 +43,7 @@ All code should follow JDK 17 idioms:
 - Javadoc explains why, not only what: the rule a class follows, the convention it reads, and the failure that motivated it, as `doc/ARCHITECTURE.md` does. A comment that dates a change names a release that exists or is being prepared, never a later one; a test enforces this against the version in `build.gradle`.
 - Result fields are `snake_case`, and a number's name carries its unit where the unit is not obvious (`loop_time_ms`, `auto_duration_sec`, `mean_abs_speed_mps`).
 - Commit messages: a subject that states the change in the project's terms, often prefixed by the component or tool (`Extension:`, `Release workflow:`, `power_analysis:`), and a body that says why, what was wrong before, and how the change was verified.
+- This is a public repository: never push, tag, bump the version, or merge to main without the maintainer's explicit consent in words for that specific action. A go-ahead for a task is not consent for the push that ends it; commits stay local, one per change, until the maintainer says push.
 
 ## FRC Domain Knowledge
 
@@ -70,7 +75,9 @@ This codebase implements strategies to prevent LLM overconfidence when interpret
 Return raw statistics (mean, std, percentiles, sample sizes, p-values), timestamps, and event lists rather than pre-computed interpretations. There is no "diagnose my robot" tool. The few summaries for a pit crew in a hurry (a battery health score, a brownout risk, a CAN health level) report the facts they summarize and the rule that decided them, beside the summary (`..._basis` fields).
 
 ### The Server Does Not Guess
-A tool uses an entry for a role (battery voltage, robot pose, swerve states, loop time, the auto chooser, ...) only when the caller named it, it follows a convention a logging or vendor library publishes, or it is the only entry of the right type. Anything else that looks right is listed as a candidate and not used. A word in a name is not evidence, and neither is the shape of the data. Every tool asks the shared signal resolver, so no two tools disagree about which entry is the battery voltage, and `resolve_signals` shows the agent the same choices. An entry named explicitly that is missing or of the wrong type is an error, not a reason to fall back on something else.
+A tool uses an entry for a role (battery voltage, robot pose, swerve states, loop time, the auto chooser, ...) only when the caller named it, it follows a convention a logging or vendor library publishes, or it is the only entry of the right type. Anything else that looks right is listed as a candidate and not used. A word in a name is not evidence, and neither is the shape of the data.
+
+Every tool asks the shared signal resolver, so no two tools disagree about which entry is the battery voltage, and `resolve_signals` shows the agent the same choices. An entry named explicitly that is missing or of the wrong type is an error, not a reason to fall back on something else.
 
 ### The Result Contract
 Every result has a `status`: `ok`, `partial` (what was skipped is in `skipped`), `not_applicable`, `no_match` (with `looked_for` and a `hint`), or `error`. A tool that finds nothing to analyze never returns an empty success. Successful results that read a log name their `inputs`; a list cut by a limit reports `limits` with the true total; a result from a log not read to its end says so. The contract is enforced in the tool base for every result; see `doc/TOOLS.md` ("Response Fields").
@@ -89,7 +96,9 @@ Results that rest on statistics carry `data_quality`, scored on the samples in t
 Embed interpretation guidance in tool descriptions ("Trojan horse" pattern). Name every output the tool returns and say what the numbers do and don't show; a test fails when a description names an output no result contains. Include sample size considerations, correlation vs causation caveats, single-match limitations, and appropriate uncertainty language.
 
 ### Server-Level Guidance
-General reasoning guidance (scientific method, confabulation traps) lives in one class and is delivered two ways: as the MCP `instructions` field on `initialize` (clients such as Claude Code put it in the system prompt; it must fit a size limit a test checks, most important rules first, ASCII only) and as `analysis_principles` in the `get_server_guide` result (reaches every client). Keep rules concrete and checkable, scope heavy rules to causal questions so they don't fire on lookups, and never phrase `confidence_level` as a blanket ceiling — it is driven by sample counts, holds, and timing (with `data_quality.reasons`), and reads "low" on sparse change-only signals whose events are perfectly clear, so it bounds statistics, not directly observed events. One rule sends the agent to the robot's source code for what a log cannot say: which mechanism an entry belongs to, its units, and whether it is measured or commanded. A test verifies every tool name the guidance mentions exists and that the text fits its size limit.
+General reasoning guidance (scientific method, confabulation traps) lives in one class and is delivered two ways: as the MCP `instructions` field on `initialize` (clients such as Claude Code put it in the system prompt; it must fit a size limit a test checks, most important rules first, ASCII only) and as `analysis_principles` in the `get_server_guide` result (reaches every client).
+
+Keep rules concrete and checkable, and scope heavy rules to causal questions so they don't fire on lookups. Never phrase `confidence_level` as a blanket ceiling: it is driven by sample counts, holds, and timing (with `data_quality.reasons`), and reads "low" on sparse change-only signals whose events are perfectly clear, so it bounds statistics, not directly observed events. One rule sends the agent to the robot's source code for what a log cannot say: which mechanism an entry belongs to, its units, and whether it is measured or commanded. A test verifies every tool name the guidance mentions exists and that the text fits its size limit.
 
 ## Tool Architecture
 
@@ -122,20 +131,31 @@ What the suite holds, and what a change must keep passing (`doc/DEVELOPMENT.md` 
 - **Windows**: CI runs everything on Windows too. Build an expected path with the same path API the code uses, never from a hand-written string; compare paths as the file system does; and don't assume a checked-out file has LF line endings.
 - **Logs**: no robot log belongs in the repository, and neither does a value taken from another team's log, even one number in a test, unless the log's license allows it and its notice comes with it.
 - **The disk cache**: every test task uses its own cache under `build/`, emptied first, never the user's; `-PtestCacheDir` names a folder to keep between runs instead.
+- **Scratch under `build/`**: what a test writes there for itself lasts until the next run of its suite. A passing run deletes it, a failed run keeps it for diagnosis, and the task empties the suite's folders before it starts; a claim check fails on a folder under `build/` that nothing empties. `doc/DEVELOPMENT.md` has the lists.
 
 ## Version Management
 
-There is a single source of truth for version numbers, auto-generated by the build. Update it in the build file when releasing new versions. The VS Code extension carries the same version: `./gradlew syncExtensionVersion` writes it into the extension's package files, and a test fails when they disagree. `doc/TOOL_RESPONSES.md` carries the version too and is regenerated for a release. A development build has a suffix (such as `-dev2`), is published as a pre-release, and skips the changelog and response-reference steps. Releases are immutable: a published release's files and tag cannot change, and a deleted release's tag name cannot be reused, so a release that went wrong gets a new version, never a moved tag. `doc/DEVELOPMENT.md` ("Releasing") has the steps.
+The version number has one source, in the build file, from which the build generates the version class; update it there when releasing. The VS Code extension carries the same version: `./gradlew syncExtensionVersion` writes it into the extension's package files, and a test fails when they disagree. `doc/TOOL_RESPONSES.md` carries the version too and is regenerated for a release.
+
+A development build has a suffix (such as `-dev2`), is published as a pre-release, and skips the changelog and response-reference steps. Releases are immutable: a published release's files and tag cannot change, and a deleted release's tag name cannot be reused, so a release that went wrong gets a new version, never a moved tag. `doc/DEVELOPMENT.md` ("Releasing") has the steps.
 
 ## Disk Cache
 
-REV log synchronizations are cached on disk, keyed by the two files and the CAN database, not by the code. Raise the cache's format version with any change to REV parsing, decoding, or synchronization: an entry of another version is ignored when read and deleted by a sweep at startup, so the fix reaches every user's existing cache. The server's version is not part of the key, since a release changes the server for many reasons. A result read from the cache must give the same answers as a fresh one; the in-process stress test compares them. The cache is input the server did not necessarily write: a corrupt or crafted file is rejected (every file carries a checksum and a format version), and reading one must never crash the server or exhaust the heap.
+REV log synchronizations are cached on disk, keyed by the two files and the CAN database, not by the code. Raise the cache's format version with any change to REV parsing, decoding, or synchronization: an entry of another version is ignored when read and deleted by a sweep at startup, so the fix reaches every user's existing cache. The server's version is not part of the key, since a release changes the server for many reasons.
+
+A result read from the cache must give the same answers as a fresh one; the in-process stress test compares them. The cache is input the server did not necessarily write: a corrupt or crafted file is rejected (every file carries a checksum and a format version), and reading one must never crash the server or exhaust the heap.
+
+Scan indexes of finished logs are cached beside REV results and share their size limit and cleanup. Raise the index's format or scan-recipe version with any change to how a log is scanned or an index is read; a test fails when the scan's source changes, until its recorded baseline says whether old indexes still give the same answers (`doc/DEVELOPMENT.md` describes the cache guards). An index follows the same rules as a REV result, with one decided exception: a corrupt or crafted file is rejected and the log scanned again, and an index gives the same answers as a fresh scan unless its file was rewritten in place with its size, modification time, identity and creation time all restored, because unchanged attributes are trusted without reading the file (`doc/ARCHITECTURE.md` gives the rule and its CRC32C fallback).
+
+Column files of finished logs are cached beside them, named by the content's SHA-256 that the scan index proved, and trimmed with them to the shared limit after each build. Raise the column file's format or recipe version with any change to what a file holds or how it is read; a test fails when one of the sources that shape a file changes, until its recorded baseline says whether files already written still give the same answers. Builds run in the background and never on a store's or the recording's threads, and asking for one touches only memory.
 
 ## Security
 
 - Path traversal prevention with symlink resolution is enforced for all file access. When handling file paths, always validate through the security validator; a path must resolve to a file inside the configured log directories. CSV exports are restricted to a configured export directory.
 - The HTTP transport listens on `127.0.0.1` by default, checks `Origin` against DNS rebinding, and has no authentication; binding it elsewhere exposes the logs to anyone who can reach the port.
-- The Blue Alliance key is never logged and never returned by a tool. Nothing this project writes or launches puts it on a command line (process lists are visible to other users) or into a project file: the extension keeps it in VS Code's secret storage and in a configuration file in its own storage that only the user can read. The standalone server still accepts a `-tba-key` flag, and `doc/STANDALONE.md` says why the configuration file or the environment variable is better.
+- Directory/key/credential registration, the credential bridge, peer-sync jobs and mirror controls are loopback-only, even when the read endpoints serve the network. Uploads are the deliberate network write surface: validate its destination through the store, and put proxy authentication on that path first. `doc/STANDALONE.md` and `doc/pit-server/STANDALONE.md` own the route policy.
+- The optional NT4 gateway follows the HTTP bind on a separate port with no authentication; keep it on the private network. Client writes never reach the robot, and bounded send queues disconnect slow subscribers without blocking recording.
+- The Blue Alliance key is never logged and never returned by a tool. Nothing this project writes or launches puts it on a command line (process lists are visible to other users) or into a project file: the extension keeps it in VS Code’s secret storage and registers it in memory with the shared server for the life of its session. The standalone server still accepts a `-tba-key` flag, and `doc/STANDALONE.md` says why the configuration file or the environment variable is better.
 - Dependencies: Dependabot covers the extension's npm packages and, through the dependency-submission job in CI, the server's Gradle dependencies, build plugins included. An alert on a build plugin or a packaging tool is about the build, not the server JAR or the `.vsix`; say which in the changelog.
 
 ## Concurrency
@@ -146,6 +166,9 @@ This server handles concurrent access from multiple MCP clients (especially in H
 - Assume any public method on shared state (caches, registries, managers) may be called concurrently.
 - Prefer Caffeine caches, `ConcurrentHashMap`, volatile fields, and atomics over manual locking, and keep the locks few.
 - When manual locking is necessary, hold locks for the shortest time possible and never perform I/O or blocking operations while holding a lock.
+- A single-thread loop serializes like a lock. Blocking work on it has a stated budget and outcome, and stays only where it supplies ordering or backpressure. Never charge the loop's own delay to a peer; detect loop stalls from outside the loop. See the Windows keepalive failure in `doc/pit-server/ARCHITECTURE.md`.
+- Serialize store mutations on the store queue and under its cross-process lock. Recording and snapshot readers must not wait behind imports: coalesce asynchronous manifest updates, and keep shutdown waits bounded. See `doc/ARCHITECTURE.md` and `doc/pit-server/ARCHITECTURE.md` for the ownership boundaries.
+- The live-value wait lock only orders registration, removal and shutdown admission. Claim a waiter under that lock and complete its future outside it; completion can run another caller's code. Never join the NT4 loop or store queue while holding it.
 - Watch for TOCTOU bugs: check-then-act sequences on shared state must be atomic (look again under the lock, compute through the cache's per-key computation, replace a placeholder only if it is still there, claim a file with an atomic create).
 - Background executors use daemon threads so they don't prevent JVM shutdown, and shutdown lets calls in progress finish before their logs are closed.
 
@@ -161,8 +184,9 @@ This server handles concurrent access from multiple MCP clients (especially in H
 
 When modifying tools or features, keep all documentation in sync:
 - Tool descriptions in Java code (shown to LLM agents via MCP; tested against real output)
-- `README.md` for the overview and the choice between the extension and the standalone install
-- `doc/STANDALONE.md` for standalone installation, configuration (`servers.yaml`, CLI flags, environment variables), and client setup
+- `README.md` for the overview, the choice between the extension and the standalone install, and the map of the documents
+- `doc/OPERATIONS.md` for the operations and usage manual: the precise steps to use the tools and to run the servers, with what the person should see at each step. A change to a command, a tool parameter, a result field, a provider state or a file location must keep its steps true
+- `doc/STANDALONE.md` for the standalone reference: installation, configuration (`servers.yaml`, CLI flags, environment variables), client setup, and the HTTP routes
 - `vscode-extension/README.md` for the VS Code extension's settings and behavior
 - `doc/TOOLS.md` for human reference on tool parameters and behavior (its parameter lists are tested against the schemas)
 - `doc/ARCHITECTURE.md` for the design: goals, principles, log loading, memory, caching, concurrency

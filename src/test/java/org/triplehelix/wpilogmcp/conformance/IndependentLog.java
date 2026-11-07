@@ -36,6 +36,67 @@ import java.util.Set;
  */
 final class IndependentLog {
 
+  /** Complete records for replay, retaining byte offsets rather than another copy of the log. */
+  static final class Records implements AutoCloseable {
+    record Start(long id, String name, String type, String metadata) {}
+    record Record(int offset, int end, long id, long timestampUs, int payloadOffset, int payloadSize) {}
+    private final ByteBuffer data;
+    final int first;
+    String stopped;
+
+    Records(Path file) throws IOException {
+      data = bytes(file);
+      if (data.limit() < 12 || unsigned(data, 0, 6) != 0x474F4C495057L || data.get(7) != 1) {
+        close(); throw new NotALog(file, Files.size(file));
+      }
+      long beginning = 12 + unsigned(data, 8, 4);
+      if (beginning > data.limit()) { close(); throw new IOException("Invalid WPILOG extra header: " + file); }
+      first = (int) beginning;
+    }
+
+    Record at(int offset) {
+      if (offset >= data.limit()) return null;
+      int bits = data.get(offset) & 255;
+      int ids = (bits & 3) + 1, sizes = ((bits >> 2) & 3) + 1, times = ((bits >> 4) & 7) + 1;
+      long payload = (long) offset + 1 + ids + sizes + times;
+      if (payload > data.limit()) { stopped = "incomplete_header"; return null; }
+      long size = unsigned(data, offset + 1L + ids, sizes);
+      if (payload + size > data.limit()) { stopped = "incomplete_payload"; return null; }
+      return new Record(offset, (int) (payload + size), unsigned(data, offset + 1L, ids),
+          unsigned(data, offset + 1L + ids + sizes, times), (int) payload, (int) size);
+    }
+
+    int control(Record record) { return record.id() == 0 && record.payloadSize() > 0 ? data.get(record.payloadOffset()) & 255 : -1; }
+    long controlId(Record record) { return record.payloadSize() >= 5 ? unsigned(data, record.payloadOffset() + 1L, 4) : -1; }
+    Start start(Record record) {
+      var cursor = new long[] {record.payloadOffset() + 5L};
+      String name = string(data, cursor, record.end()), type = string(data, cursor, record.end());
+      String metadata = string(data, cursor, record.end());
+      return name == null || type == null || metadata == null ? null : new Start(controlId(record), name, type, metadata);
+    }
+    String metadata(Record record) { return string(data, new long[] {record.payloadOffset() + 5L}, record.end()); }
+    byte[] payload(Record record) {
+      byte[] bytes = new byte[record.payloadSize()]; data.get(record.payloadOffset(), bytes); return bytes;
+    }
+    boolean samePayload(Record record, Records other, Record expected) {
+      return record.payloadSize() == expected.payloadSize()
+          && data.slice(record.payloadOffset(), record.payloadSize())
+              .equals(other.data.slice(expected.payloadOffset(), expected.payloadSize()));
+    }
+    String extraHeader() {
+      byte[] bytes = new byte[first - 12]; data.get(12, bytes); return new String(bytes, StandardCharsets.UTF_8);
+    }
+    @Override public void close() {
+      if (!data.isDirect()) return;
+      // The independent reader owns this mapping. Releasing it here lets Windows delete a
+      // completed replay's scratch capture without waiting for an unrelated GC cycle.
+      try {
+        var field = sun.misc.Unsafe.class.getDeclaredField("theUnsafe"); field.setAccessible(true);
+        ((sun.misc.Unsafe) field.get(null)).invokeCleaner(data);
+      } catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+    }
+  }
+
   /** The file does not start with the WPILOG header. */
   static final class NotALog extends IOException {
     NotALog(Path file, long bytes) {
@@ -76,15 +137,28 @@ final class IndependentLog {
     /** Of those, the finite ones. */
     int finite;
     double[] times = new double[0];
+    /** Raw coordinates keep the bucket oracle independent of double-second rounding. */
+    long[] micros = new long[0];
     double[] values = new double[0];
     /** How many times and values are kept: {@link #numeric} when kept, otherwise 0. */
     int n;
+    /** Whether every record's byte offset, microseconds and payload size are kept, in file order. */
+    final boolean keptFacts;
+    long[] factOffsets = new long[0];
+    long[] factMicros = new long[0];
+    long[] factSizes = new long[0];
+    int facts;
 
     Series(String name, String type, boolean kept, boolean keptRaw) {
+      this(name, type, kept, keptRaw, false);
+    }
+
+    Series(String name, String type, boolean kept, boolean keptRaw, boolean keptFacts) {
       this.name = name;
       this.type = type;
       this.kept = kept;
       this.keptRaw = keptRaw;
+      this.keptFacts = keptFacts;
       this.width = switch (type) {
         case "double", "int64" -> 8;
         case "float" -> 4;
@@ -93,13 +167,27 @@ final class IndependentLog {
       };
     }
 
-    private void add(double time, double value) {
+    private void fact(long offset, long timeMicros, long size) {
+      if (facts == factOffsets.length) {
+        int capacity = Math.max(64, facts * 2);
+        factOffsets = Arrays.copyOf(factOffsets, capacity);
+        factMicros = Arrays.copyOf(factMicros, capacity);
+        factSizes = Arrays.copyOf(factSizes, capacity);
+      }
+      factOffsets[facts] = offset;
+      factMicros[facts] = timeMicros;
+      factSizes[facts++] = size;
+    }
+
+    private void add(long timeMicros, double value) {
       if (n == times.length) {
         int capacity = Math.max(64, n * 2);
         times = Arrays.copyOf(times, capacity);
+        micros = Arrays.copyOf(micros, capacity);
         values = Arrays.copyOf(values, capacity);
       }
-      times[n] = time;
+      times[n] = timeMicros / 1e6;
+      micros[n] = timeMicros;
       values[n++] = value;
     }
 
@@ -171,6 +259,15 @@ final class IndependentLog {
   /** As {@link #read(Path, Set)}, also keeping the raw payloads of the entries in {@code keepRaw}. */
   static IndependentLog read(Path file, Set<String> keep, Set<String> keepRaw)
       throws IOException {
+    return read(file, keep, keepRaw, Set.of());
+  }
+
+  /**
+   * As above, also keeping each record's byte offset, microseconds and payload size, in file
+   * order, for the entries in {@code keepFacts}.
+   */
+  static IndependentLog read(Path file, Set<String> keep, Set<String> keepRaw, Set<String> keepFacts)
+      throws IOException {
     var b = bytes(file);
     long length = b.limit();
     if (length < 12 || unsigned(b, 0, 6) != 0x474F4C495057L) { // "WPILOG", little-endian
@@ -214,7 +311,7 @@ final class IndependentLog {
           }
           var existing = log.series.get(name);
           if (existing == null) {
-            existing = new Series(name, type, keep.contains(name), keepRaw.contains(name));
+            existing = new Series(name, type, keep.contains(name), keepRaw.contains(name), keepFacts.contains(name));
             log.series.put(name, existing);
             active.put(entry, existing);
           } else {
@@ -240,6 +337,7 @@ final class IndependentLog {
           log.lastRecords.addLast(s.name);
           if (log.lastRecords.size() > NEAR_DAMAGE) log.lastRecords.removeFirst();
           s.records++;
+          if (s.keptFacts) s.fact(pos, micros, size);
           log.dataRecords++;
           if (s.keptRaw) {
             var raw = new byte[(int) size];
@@ -258,7 +356,7 @@ final class IndependentLog {
             };
             s.numeric++;
             if (Double.isFinite(value)) s.finite++;
-            if (s.kept) s.add(time, value);
+            if (s.kept) s.add(micros, value);
           }
         }
       }

@@ -2,7 +2,7 @@
   "name": "wpilog-analyzer",
   "displayName": "WPILog Analyzer",
   "description": "AI-powered FRC robot log analysis via MCP. Analyzes .wpilog telemetry from the roboRIO.",
-  "version": "0.9.1",
+  "version": "0.10.0-dev5",
   "publisher": "TripleHelixProgramming",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -36,7 +36,8 @@
     "wpilog"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onUri"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -44,6 +45,71 @@
       {
         "id": "wpilog-analyzer.mcpServer",
         "label": "WPILog Analyzer"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "wpilog-explorer",
+          "title": "WPILog Explorer",
+          "icon": "images/explorer.svg"
+        }
+      ]
+    },
+    "views": {
+      "wpilog-explorer": [
+        {
+          "id": "wpilog-mcp.logs",
+          "name": "Logs",
+          "icon": "images/explorer.svg",
+          "contextualTitle": "WPILog Explorer"
+        },
+        {
+          "id": "wpilog-mcp.entries",
+          "type": "webview",
+          "name": "Entries",
+          "icon": "images/explorer.svg",
+          "contextualTitle": "WPILog Explorer"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "wpilog-mcp.entries",
+        "contents": "Open a log in WPILog Explorer to list its entries: click one in the Logs view, or double-click a `.wpilog` file.",
+        "when": "!wpilog-mcp.hasActiveLog"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "wpilog-mcp.explorer",
+        "displayName": "WPILog Explorer",
+        "selector": [
+          {
+            "filenamePattern": "*.wpilog"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "wpilog-mcp.sourceOverview",
+        "displayName": "WPILog Source Overview (Preview)",
+        "selector": [
+          {
+            "filenamePattern": "*.wpilog"
+          }
+        ],
+        "priority": "option"
+      },
+      {
+        "viewType": "wpilog-mcp.visualization",
+        "displayName": "WPILog Visualization (Preview)",
+        "selector": [
+          {
+            "filenamePattern": "*.wpiview"
+          }
+        ],
+        "priority": "default"
       }
     ],
     "commands": [
@@ -58,11 +124,397 @@
         "category": "WPILog Analyzer"
       },
       {
-        "command": "wpilog-mcp.addToClaudeCode",
-        "title": "Add to Claude Code in This Folder",
+        "command": "wpilog-mcp.registerWithClaudeCode",
+        "title": "Register with Claude Code",
         "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.showServerLog",
+        "title": "Show Server Log",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.installStandaloneServer",
+        "title": "Install Standalone Server",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.restartServer",
+        "title": "Restart Server",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.registerPitWithClaudeCode",
+        "title": "Register Pit Server with Claude Code",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.mirrorActions",
+        "title": "Mirror Actions",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.pinSession",
+        "title": "Pin Session",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.unpinSession",
+        "title": "Unpin Session",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.syncNow",
+        "title": "Sync Now",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.openMirrorFolder",
+        "title": "Open Mirror Folder",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.syncFromLaptop",
+        "title": "Sync from Laptop",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.uploadToPitServer",
+        "title": "Upload Logs to Pit Server\u2026",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.setPitProxyCredential",
+        "title": "Set Pit Proxy Credential",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.clearPitProxyCredential",
+        "title": "Clear Pit Proxy Credential",
+        "category": "WPILog Analyzer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.setupDataStore",
+        "enablement": "wpilog-mcp.dataStoreEnabled",
+        "title": "Set Up Data Store\u2026",
+        "category": "WPILog Explorer",
+        "icon": "$(database)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.manageDataStore",
+        "enablement": "wpilog-mcp.dataStoreEnabled",
+        "title": "Manage Data Store\u2026",
+        "category": "WPILog Explorer",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.syncDataStore",
+        "enablement": "wpilog-mcp.dataStoreEnabled",
+        "title": "Sync Data Store Now",
+        "category": "WPILog Explorer",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.pauseDataStore",
+        "enablement": "wpilog-mcp.dataStoreEnabled",
+        "title": "Pause or Resume Data Store Sync",
+        "category": "WPILog Explorer",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.organizeLogs",
+        "title": "Organize Logs\u2026",
+        "category": "WPILog Explorer",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.importLogs",
+        "title": "Import\u2026",
+        "category": "WPILog Explorer",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.assignRobot",
+        "title": "Assign to Robot\u2026",
+        "category": "WPILog Explorer",
+        "icon": "$(circuit-board)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.refreshLogs",
+        "title": "Refresh Logs",
+        "category": "WPILog Explorer",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.filterLogs",
+        "title": "Filter Logs",
+        "category": "WPILog Explorer",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.clearLogFilter",
+        "title": "Clear Log Filter",
+        "category": "WPILog Explorer",
+        "icon": "$(filter-filled)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.filterEntries",
+        "title": "Filter Entries",
+        "category": "WPILog Explorer",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.clearEntryFilter",
+        "title": "Clear Entry Filter",
+        "category": "WPILog Explorer",
+        "icon": "$(filter-filled)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.collapseEntries",
+        "title": "Collapse All Entries",
+        "category": "WPILog Explorer",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.openLog",
+        "title": "Open in WPILog Explorer",
+        "category": "WPILog Explorer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.revealLog",
+        "title": "Reveal in File Explorer",
+        "category": "WPILog Explorer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.copyLogPath",
+        "title": "Copy Path",
+        "category": "WPILog Explorer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.showEntry",
+        "title": "Show Entry Details",
+        "category": "WPILog Explorer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.plotEntry",
+        "title": "Plot Entry",
+        "category": "WPILog Explorer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.plotElements",
+        "title": "Plot Every Element",
+        "category": "WPILog Explorer"
+      },
+      {
+        "command": "wpilog-mcp.explorer.refreshLog",
+        "title": "Reload Log",
+        "category": "WPILog Explorer",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.openInNotebook",
+        "title": "Open in Notebook",
+        "category": "WPILog Explorer",
+        "icon": "$(notebook)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.askAboutSelection",
+        "title": "Ask about This Selection",
+        "category": "WPILog Explorer",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "wpilog-mcp.explorer.openSourceOverview",
+        "title": "Open Source Overview (Preview)",
+        "category": "WPILog Explorer"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "wpilog-mcp.explorer.filterLogs",
+          "when": "view == wpilog-mcp.logs && !wpilog-mcp.logFilter",
+          "group": "navigation@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.clearLogFilter",
+          "when": "view == wpilog-mcp.logs && wpilog-mcp.logFilter",
+          "group": "navigation@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.refreshLogs",
+          "when": "view == wpilog-mcp.logs",
+          "group": "navigation@2"
+        },
+        {
+          "command": "wpilog-mcp.explorer.filterEntries",
+          "when": "view == wpilog-mcp.entries && wpilog-mcp.hasActiveLog",
+          "group": "navigation@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.collapseEntries",
+          "when": "view == wpilog-mcp.entries && wpilog-mcp.hasActiveLog",
+          "group": "navigation@2"
+        },
+        {
+          "command": "wpilog-mcp.explorer.organizeLogs",
+          "when": "view == wpilog-mcp.logs",
+          "group": "navigation@3"
+        },
+        {
+          "command": "wpilog-mcp.explorer.setupDataStore",
+          "when": "view == wpilog-mcp.logs && wpilog-mcp.dataStoreEnabled",
+          "group": "dataStore@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.manageDataStore",
+          "when": "view == wpilog-mcp.logs && wpilog-mcp.dataStoreEnabled",
+          "group": "dataStore@2"
+        },
+        {
+          "command": "wpilog-mcp.explorer.syncDataStore",
+          "when": "view == wpilog-mcp.logs && wpilog-mcp.dataStoreEnabled",
+          "group": "dataStore@3"
+        },
+        {
+          "command": "wpilog-mcp.explorer.pauseDataStore",
+          "when": "view == wpilog-mcp.logs && wpilog-mcp.dataStoreEnabled",
+          "group": "dataStore@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "wpilog-mcp.explorer.revealLog",
+          "when": "view == wpilog-mcp.logs && (viewItem == wpilogLog || viewItem == wpilogPlainLog)",
+          "group": "navigation@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.copyLogPath",
+          "when": "view == wpilog-mcp.logs && (viewItem == wpilogLog || viewItem == wpilogPlainLog)",
+          "group": "navigation@2"
+        },
+        {
+          "command": "wpilog-mcp.explorer.importLogs",
+          "when": "view == wpilog-mcp.logs && (viewItem == wpilogImportGroup || viewItem == wpilogImportFile || viewItem == wpilogDirectory || viewItem == wpilogPlainLog)",
+          "group": "inline@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.assignRobot",
+          "when": "view == wpilog-mcp.logs && viewItem == wpilogUnassignedGroup",
+          "group": "inline@1"
+        },
+        {
+          "command": "wpilog-mcp.explorer.assignRobot",
+          "when": "view == wpilog-mcp.logs && viewItem == wpilogUnassigned",
+          "group": "navigation@1"
+        },
+        {
+          "command": "wpilog-mcp.pinSession",
+          "when": "view == wpilog-mcp.logs && viewItem == wpilogPitLog",
+          "group": "navigation@4"
+        },
+        {
+          "command": "wpilog-mcp.unpinSession",
+          "when": "view == wpilog-mcp.logs && viewItem == wpilogPitLog",
+          "group": "navigation@4"
+        },
+        {
+          "command": "wpilog-mcp.explorer.openSourceOverview",
+          "when": "view == wpilog-mcp.logs && viewItem =~ /^wpilog(Plain|Pit)?Log$/",
+          "group": "open@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "wpilog-mcp.explorer.refreshLog",
+          "when": "activeCustomEditorId == wpilog-mcp.explorer",
+          "group": "navigation"
+        },
+        {
+          "command": "wpilog-mcp.explorer.openInNotebook",
+          "when": "activeCustomEditorId == wpilog-mcp.explorer",
+          "group": "navigation@5"
+        },
+        {
+          "command": "wpilog-mcp.explorer.askAboutSelection",
+          "when": "activeCustomEditorId == wpilog-mcp.explorer",
+          "group": "navigation@6"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "wpilog-mcp.explorer.setupDataStore",
+          "when": "wpilog-mcp.dataStoreEnabled"
+        },
+        {
+          "command": "wpilog-mcp.explorer.manageDataStore",
+          "when": "wpilog-mcp.dataStoreEnabled"
+        },
+        {
+          "command": "wpilog-mcp.explorer.syncDataStore",
+          "when": "wpilog-mcp.dataStoreEnabled"
+        },
+        {
+          "command": "wpilog-mcp.explorer.pauseDataStore",
+          "when": "wpilog-mcp.dataStoreEnabled"
+        },
+        {
+          "command": "wpilog-mcp.explorer.importLogs",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.assignRobot",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.openLog",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.revealLog",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.copyLogPath",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.showEntry",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.plotEntry",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.plotElements",
+          "when": "false"
+        },
+        {
+          "command": "wpilog-mcp.explorer.clearLogFilter",
+          "when": "wpilog-mcp.logFilter"
+        },
+        {
+          "command": "wpilog-mcp.explorer.clearEntryFilter",
+          "when": "wpilog-mcp.entryFilter"
+        },
+        {
+          "command": "wpilog-mcp.explorer.collapseEntries",
+          "when": "wpilog-mcp.hasActiveLog"
+        },
+        {
+          "command": "wpilog-mcp.explorer.refreshLog",
+          "when": "activeCustomEditorId == wpilog-mcp.explorer"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "wpilog-mcp.explorer.askAboutSelection",
+          "when": "webviewId == 'wpilog-mcp.explorer'",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": [
       {
         "title": "WPILog Analyzer",
@@ -70,7 +522,7 @@
           "wpilog-mcp.logDirectory": {
             "type": "string",
             "default": "",
-            "order": 1,
+            "order": 10,
             "scope": "resource",
             "markdownDescription": "Path to the directory containing `.wpilog` files. Leave blank to auto-detect. Set it in your User settings for every project; a project's own (Workspace) setting overrides it there. A path starting with `~/` is in your home folder, on macOS, Linux, and Windows alike (`~/riologs`); write paths with forward slashes, which work on every system. A relative path is a folder inside the project."
           },
@@ -80,7 +532,7 @@
               "type": "string"
             },
             "default": [],
-            "order": 2,
+            "order": 20,
             "scope": "resource",
             "markdownDescription": "More directories of `.wpilog` files, listed and searched along with **Log Directory** (for example an archive drive, or logs another team published). As there, `~/` is your home folder on every system, and forward slashes work everywhere. A relative path is a folder inside the project (for example, if your robot code writes simulation logs to a `logs` folder, `logs` lists them). A project's own (Workspace) list replaces your User list there. REV logs are matched to a wpilog only within the directory that holds it."
           },
@@ -90,7 +542,7 @@
               "null"
             ],
             "default": null,
-            "order": 3,
+            "order": 30,
             "minimum": 1,
             "scope": "resource",
             "markdownDescription": "Your FRC team number, for The Blue Alliance match data when a log does not record one. Empty until you set it. A project's own (Workspace) setting overrides your User setting there."
@@ -98,33 +550,189 @@
           "wpilog-mcp.tbaApiKey": {
             "type": "string",
             "default": "",
-            "order": 4,
+            "order": 40,
             "markdownDescription": "Your read API key from [thebluealliance.com/account](https://www.thebluealliance.com/account), for match data. Paste it here, in your **User** settings: a few seconds later the extension moves it into VS Code's secret storage (your operating system's keychain) and clears this field, which shows empty once you leave it, so the key never stays in a settings file. The field shows no key even when one is stored. Paste a new key to replace it, or [remove the stored key](command:wpilog-mcp.clearTbaApiKey). To enter the key without it showing on screen, run [Set The Blue Alliance API Key](command:wpilog-mcp.setTbaApiKey).",
             "ignoreSync": true
           },
           "wpilog-mcp.enableForClaudeCode": {
             "type": "boolean",
             "default": true,
-            "order": 5,
-            "markdownDescription": "**Claude Code only** (Copilot and other VS Code agents always have the server). Make WPILog Analyzer available to Claude Code, which finds servers in a project's `.mcp.json` rather than in VS Code: the extension adds a `wpilog-analyzer` entry to the `.mcp.json` of each WPILib robot project you open, and keeps any existing entry up to date. For a folder that is not a robot project, run **WPILog Analyzer: Add to Claude Code in This Folder**. The entry holds this computer's paths, so it is never written into a `.mcp.json` that git tracks, and the extension offers to add `.mcp.json` to `.gitignore`. The TBA API key is never written into it."
+            "order": 130,
+            "markdownDescription": "Register the shared server\u2019s bridge with Claude Code once at user scope. [Register with Claude Code](command:wpilog-mcp.registerWithClaudeCode) repeats this on demand. Projects with their own log directories are offered a `.wpilog-mcp.yaml` for terminal sessions. The extension never writes a project `.mcp.json` entry."
           },
           "wpilog-mcp.javaPath": {
             "type": "string",
             "default": "",
-            "order": 6,
-            "markdownDescription": "Path to the `java` executable. Leave blank to auto-detect the WPILib JDK."
+            "order": 140,
+            "markdownDescription": "Java executable used to run the bundled installer. Leave blank to auto-detect the WPILib JDK. The installed launcher chooses the daemon\u2019s Java. [Install Standalone Server](command:wpilog-mcp.installStandaloneServer) installs or updates it on demand."
           },
           "wpilog-mcp.wpiLibYear": {
             "type": "string",
             "default": "",
-            "order": 7,
-            "markdownDescription": "WPILib installation year (e.g., `2026`). Leave blank to auto-detect the latest installed year."
+            "order": 150,
+            "markdownDescription": "WPILib year for finding Java to run the installer (for example `2026`). Leave blank for the latest installed year."
           },
           "wpilog-mcp.maxHeap": {
             "type": "string",
             "default": "4g",
-            "order": 8,
-            "markdownDescription": "Maximum JVM heap size. Examples: `2g`, `4g`, `8g`."
+            "order": 160,
+            "markdownDescription": "Maximum JVM heap for the server (for example `4g`, or `8g` for logs of several hundred MB), applied when this extension starts or restarts it, and for the bundled installer. A server another client started keeps its heap until it is restarted."
+          },
+          "wpilog-mcp.pitServerUrl": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "Pit server HTTP MCP URL (for example `http://pit:2363/mcp`). Adds a second server for agents and sessions to Logs. [Register the pit server with Claude Code](command:wpilog-mcp.registerPitWithClaudeCode) at user scope. Use [Upload Logs to Pit Server](command:wpilog-mcp.uploadToPitServer) to copy laptop logs into its store. For a password-protected reverse proxy, use [Set Pit Proxy Credential](command:wpilog-mcp.setPitProxyCredential); it stays in SecretStorage. [Clear Pit Proxy Credential](command:wpilog-mcp.clearPitProxyCredential) revokes this window's lease.",
+            "order": 50
+          },
+          "wpilog-mcp.mirror.enabled": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Configure one mirror of the pit server's finalized logs. Use mirrors instead for several independent masters. Explicit format-2 migration is required; only the server's mirror engine writes here. [Sync Now](command:wpilog-mcp.syncNow).",
+            "order": 60
+          },
+          "wpilog-mcp.mirror.folder": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "Absolute path for the mirror, or empty for a mirror under this extension\u2019s storage. Only synchronization writes here. [Open Mirror Folder](command:wpilog-mcp.openMirrorFolder).",
+            "order": 70
+          },
+          "wpilog-mcp.mirror.days": {
+            "type": "integer",
+            "default": 14,
+            "minimum": 0,
+            "markdownDescription": "Acquire finalized files with known dates in this window. Named events and pins extend acquisition; changing the window never deletes held files.",
+            "order": 80
+          },
+          "wpilog-mcp.mirror.maxSizeGb": {
+            "type": "number",
+            "default": 20,
+            "exclusiveMinimum": 0,
+            "markdownDescription": "Storage cap in decimal GB, including staging, replacement generations and reserved metadata. At capacity synchronization pauses and never automatically deletes held files. Pins do not bypass the cap.",
+            "order": 90
+          },
+          "wpilog-mcp.mirror.robots": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "markdownDescription": "Robot serials to mirror; empty includes every robot. Pins override the filter.",
+            "order": 100
+          },
+          "wpilog-mcp.mirror.events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "markdownDescription": "Exact event names to keep in full, beyond the day window and within the size cap.",
+            "order": 110
+          },
+          "wpilog-mcp.mirror.intervalSec": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 30,
+            "markdownDescription": "Seconds between mirror attempts. An interrupted copy resumes from its verified prefix.",
+            "order": 120
+          },
+          "wpilog-mcp.mirrors": {
+            "type": "array",
+            "default": [],
+            "maxItems": 8,
+            "markdownDescription": "Independent server-owned mirrors. Each names its master origin and exclusive local folder; none is a default source. Disable mirror.enabled when using this list. Manual peers use the replica handshake; discovery supplies provisional candidates only. Closing a window does not stop synchronization. [Mirror Actions](command:wpilog-mcp.mirrorActions).",
+            "items": {
+              "type": "object",
+              "required": ["origin", "folder"],
+              "additionalProperties": false,
+              "properties": {
+                "origin": { "type": "string", "description": "Master HTTP(S) endpoint; append ?store=<UUID> when needed." },
+                "folder": { "type": "string", "description": "Exclusive absolute mirror directory; must not overlap another mirror or live capture." },
+                "masterStoreId": { "type": "string", "description": "Pinned master UUID, needed to accept provisional peers before the first direct master handshake." },
+                "scope": { "type": "string", "enum": ["all", "filtered"], "default": "filtered" },
+                "days": { "type": "integer", "minimum": 0, "default": 14 },
+                "maxSizeGb": { "type": "number", "exclusiveMinimum": 0, "default": 20 },
+                "robots": { "type": "array", "items": { "type": "string" }, "default": [] },
+                "events": { "type": "array", "items": { "type": "string" }, "default": [] },
+                "intervalSec": { "type": "integer", "minimum": 1, "default": 30 },
+                "rateBytes": { "type": "integer", "minimum": 0, "default": 0 },
+                "metadataReserveBytes": { "type": "integer", "minimum": 4096, "maximum": 134217728, "default": 1048576 },
+                "peers": { "type": "array", "maxItems": 64, "items": { "type": "string" }, "default": [] },
+                "discovery": { "type": "boolean", "default": true }
+              }
+            },
+            "order": 121
+          },
+          "wpilog-mcp.live.enabled": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Record live NetworkTables from the pit server's gateway into a folder on this laptop when a pit server URL is set, so live views read local files. Has no effect without a URL.",
+            "order": 122
+          },
+          "wpilog-mcp.live.folder": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "Absolute path for live recordings, or empty for a folder under this extension\u2019s storage. Must differ from the mirror folder.",
+            "order": 124
+          },
+          "wpilog-mcp.live.gatewayPort": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535,
+            "default": 5810,
+            "markdownDescription": "Port of the pit server's NetworkTables gateway, on the pit server's host. The gateway has no login, so it must be reachable on the team's own network.",
+            "order": 126
+          },
+          "wpilog-mcp.visualization.decodedBufferMiB": {
+            "type": "integer",
+            "default": 64,
+            "minimum": 16,
+            "maximum": 1024,
+            "scope": "window",
+            "order": 170,
+            "markdownDescription": "Shared decoded-data allowance in MiB for recorded and live visualization previews in this window, including plot and table copies. Higher values permit more recorded samples before server reduction; lower values reduce sooner or refuse admission. Reload the window to apply a change. Encoded responses have a separate 64 MiB cap."
+          },
+          "wpilog-mcp.connections": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "default": null,
+            "order": 45,
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "label",
+                "kind"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9_-]{1,64}$"
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "local",
+                    "remote"
+                  ]
+                },
+                "url": {
+                  "type": "string"
+                },
+                "serverInstanceId": {
+                  "type": "string"
+                }
+              }
+            },
+            "markdownDescription": "Named server connections shown as collapsed Logs roots and agent servers. No default is chosen. Set a remote-only array to browse and visualize without starting a laptop server. Null keeps This laptop and the optional `pitServerUrl` connection. Server identity is pinned at first use; a replacement server needs a new connection id."
           }
         }
       }
@@ -134,12 +742,18 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "test": "tsc -p ./ && node out/test/runTests.js",
-    "package": "vsce package"
+    "test:smoke": "tsc -p ./ && node out/smoke/run.js",
+    "test:smoke:plants": "tsc -p ./ && node out/smoke/plants.js",
+    "package": "vsce package",
+    "test:visualization": "tsc -p ./ && node out/smoke/visualizationRun.js",
+    "test:inventory-overview": "tsc -p ./ && node out/smoke/overviewRun.js",
+    "test:recorded-visualization": "tsc -p ./ && node out/smoke/recordedRun.js"
   },
   "devDependencies": {
-    "@types/vscode": "^1.101.0",
     "@types/node": "^20.0.0",
-    "typescript": "^5.5.0",
-    "@vscode/vsce": "^3.0.0"
+    "@types/vscode": "^1.101.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.5.0"
   }
 }

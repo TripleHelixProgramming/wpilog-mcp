@@ -124,23 +124,12 @@ public final class MatchTimeline {
   private final GameData game;
 
   private MatchTimeline(LogData log) {
-    var enabled = findBoolean(log, "enabled");
-    var auto = findBoolean(log, "autonomous");
-    var test = findBoolean(log, "test");
-    var fms = findBoolean(log, "fmsattached");
-    String control = findControlWord(log).orElse(null);
-    var ignored = new ArrayList<String>();
-    for (var leaf : List.of("enabled", "autonomous", "test", "fmsattached")) {
-      var all = candidates(log, leaf);
-      if (all.size() > 1) all.subList(1, all.size()).forEach(e -> ignored.add(e.name()));
-    }
-    this.sources = new Sources(enabled.orElse(null), auto.orElse(null), test.orElse(null),
-        fms.orElse(null), control, List.copyOf(ignored));
+    this.sources = sourcesOf(log);
     this.enabledValues = values(log, sources.enabled());
     this.autoValues = values(log, sources.autonomous());
     this.testValues = values(log, sources.test());
     this.fmsValues = values(log, sources.fmsAttached());
-    this.controlValues = values(log, control);
+    this.controlValues = values(log, sources.controlWord());
     // The control word decides enabled state and mode only when no boolean entry does
     this.stateFromControl = enabledValues.isEmpty() && !controlValues.isEmpty();
     this.season = seasonOf(log);
@@ -153,6 +142,22 @@ public final class MatchTimeline {
     this.game = g;
     this.segments = buildSegments(log.minTimestamp(), log.maxTimestamp());
     this.matches = findMatches();
+  }
+
+  /** Resolve declarations without decoding a timeline just to select a role. */
+  static Sources sourcesOf(LogData log) {
+    var enabled = findBoolean(log, "enabled");
+    var auto = findBoolean(log, "autonomous");
+    var test = findBoolean(log, "test");
+    var fms = findBoolean(log, "fmsattached");
+    String control = findControlWord(log).orElse(null);
+    var ignored = new ArrayList<String>();
+    for (var leaf : List.of("enabled", "autonomous", "test", "fmsattached")) {
+      var all = candidates(log, leaf);
+      if (all.size() > 1) all.subList(1, all.size()).forEach(e -> ignored.add(e.name()));
+    }
+    return new Sources(enabled.orElse(null), auto.orElse(null), test.orElse(null),
+        fms.orElse(null), control, List.copyOf(ignored));
   }
 
   /** Builds the timeline for a log. */

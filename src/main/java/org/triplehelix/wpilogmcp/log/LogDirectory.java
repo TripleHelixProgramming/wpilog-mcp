@@ -5,24 +5,27 @@
 package org.triplehelix.wpilogmcp.log;
 
 import edu.wpi.first.util.datalog.DataLogAccess;
-import edu.wpi.first.util.datalog.DataLogReader;
 import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Predicate;
@@ -30,6 +33,10 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.config.ClientLeases;
+import org.triplehelix.wpilogmcp.log.subsystems.SecurityValidator;
+import org.triplehelix.wpilogmcp.store.StoreCatalog;
+import org.triplehelix.wpilogmcp.tools.SignalResolver.MetadataRole;
 
 /**
  * Manages the configured directories of WPILOG files for browsing and discovery.
@@ -80,7 +87,8 @@ public class LogDirectory {
   private volatile int scanDepth = 5;
 
   /** Private constructor for singleton pattern. */
-  private LogDirectory() {}
+  private LogDirectory() {
+  }
 
   /**
    * Gets the singleton instance of LogDirectory.
@@ -115,7 +123,7 @@ public class LogDirectory {
 
     public static MatchType fromString(String value) {
       if (value == null || value.isEmpty()) return null;
-      var lower = value.toLowerCase().trim();
+      var lower = value.toLowerCase(Locale.ROOT).trim();
       if (lower.contains("practice") || lower.equals("p")) return PRACTICE;
       if (lower.contains("qualification") || lower.contains("qual") || lower.equals("q")
           || lower.equals("qm")) {
@@ -156,9 +164,9 @@ public class LogDirectory {
         .toList();
     this.logDirectories = dirs;
     if (dirs.isEmpty()) {
-      logger.info("Log directories cleared");
+      logger.debug("Log directories cleared");
     } else {
-      logger.info("Log directories set to: {}", dirs);
+      logger.debug("Log directories set to: {}", dirs);
     }
   }
 
@@ -176,7 +184,24 @@ public class LogDirectory {
    * @since 0.9.0
    */
   public List<Path> getLogDirectories() {
-    return logDirectories;
+    var paths = new ArrayList<>(logDirectories);
+    ClientLeases.getInstance().directories().forEach(directory -> paths.add(directory.path()));
+    paths.addAll(ingestionDirectories());
+    return paths.stream().distinct().toList();
+  }
+
+  private final org.triplehelix.wpilogmcp.read.server.SourceScopes scopes =
+      new org.triplehelix.wpilogmcp.read.server.SourceScopes(() -> Set.copyOf(getLogDirectories()));
+  public org.triplehelix.wpilogmcp.read.server.SourceScopes sourceScopes() { return scopes; }
+
+  private List<Path> ingestionDirectories() {
+    var service = LogManager.getInstance().stores().localIngestion();
+    if (service == null || service.preferredStore() == null) return List.of();
+    var policy = service.snapshot().policy();
+    var roots = new ArrayList<Path>(); roots.add(service.preferredStore());
+    if (policy.enabled()) policy.sources().stream().filter(org.triplehelix.wpilogmcp.store.LocalIngestion.Source::enabled)
+        .map(source -> Path.of(source.path())).forEach(roots::add);
+    return List.copyOf(roots);
   }
 
   /**
@@ -220,16 +245,16 @@ public class LogDirectory {
 
   /** Whether at least one configured directory exists. */
   public boolean isConfigured() {
-    return logDirectories.stream().anyMatch(Files::isDirectory);
+    return getLogDirectories().stream().anyMatch(Files::isDirectory);
   }
 
   /** Cache size, hits, and misses, in that order (Map.of's order changes from run to run). */
   public Map<String, Long> getCacheStats() {
-    var stats = new java.util.LinkedHashMap<String, Long>();
+    var stats = new LinkedHashMap<String, Long>();
     stats.put("size", (long) metadataCache.size());
     stats.put("hits", cacheHits.sum());
     stats.put("misses", cacheMisses.sum());
-    return java.util.Collections.unmodifiableMap(stats);
+    return Collections.unmodifiableMap(stats);
   }
 
   public void clearCache() {
@@ -257,7 +282,12 @@ public class LogDirectory {
    * @since 0.9.0
    */
   public record DirectoryScan(List<Path> directories, List<LogFileInfo> logs,
-      List<UnavailableDirectory> unavailable) {
+      List<UnavailableDirectory> unavailable, List<StoreCatalog.Snapshot> stores) implements RobotCandidates.DirectoryFacts {
+
+    @Override public java.util.Optional<String> loggedSerial(Path path) {
+      return logs.stream().filter(log -> Path.of(log.path()).equals(path) && log.robot() != null)
+          .map(log -> log.robot().serialNumber()).findFirst();
+    }
 
     /** Whether no configured directory could be scanned. */
     public boolean noneReadable() {
@@ -287,22 +317,71 @@ public class LogDirectory {
    * @throws IOException if no directory is configured
    * @since 0.9.0
    */
-  public DirectoryScan scanLogs() throws IOException {
-    var dirs = logDirectories;
+  public DirectoryScan scanLogs() throws IOException { return scanLogs(false); }
+
+  /** The default view removes a source only after its current version has a surviving receipt. */
+  public DirectoryScan scanLogs(boolean allSources) throws IOException {
+    var preferred = ingestionDirectories();
+    var dirs = allSources || preferred.isEmpty() ? getLogDirectories() : preferred;
+    return scanLogs(dirs, allSources, true);
+  }
+
+  /** A source-qualified listing never scans a neighbor or hides its own files using import
+   * destination preferences. Ordinary directory scopes exclude nested stores. */
+  public DirectoryScan scanLogs(org.triplehelix.wpilogmcp.read.server.SourceScopes.Scope scope) throws IOException {
+    var spelling = getLogDirectories().stream().filter(path -> realPath(path).equals(scope.root())).findFirst().orElse(scope.root());
+    return scanLogs(List.of(spelling), true, !scope.kind().equals("directory"));
+  }
+
+  private DirectoryScan scanLogs(List<Path> dirs, boolean allSources, boolean includeStores) throws IOException {
+    var service = LogManager.getInstance().stores().localIngestion();
     if (dirs.isEmpty()) throw new IOException("Log directory not configured");
 
     var unavailable = new ArrayList<UnavailableDirectory>();
-    var logs = findFiles(dirs, WPILOG_FILE, unavailable).stream()
-        .map(this::getOrExtractLogInfo)
-        .sorted(NEWEST_LOG_FIRST)
-        .toList();
-    unavailable.forEach(u -> logger.warn("Log directory {} skipped: it {}", u.directory(),
-        u.reason()));
-
+    var stores = new ArrayList<StoreCatalog.Snapshot>();
+    var found = new ArrayList<LogFileInfo>();
+    var security = new SecurityValidator();
+    dirs.forEach(security::addAllowedDirectory);
+    var seenStores = new HashSet<Path>();
+    for (var dir : dirs) {
+      var problem = unavailableReason(dir);
+      if (problem.isPresent()) {
+        unavailable.add(new UnavailableDirectory(dir, problem.get()));
+        continue;
+      }
+      try {
+        for (var root : includeStores ? StoreCatalog.discover(dir) : List.<Path>of()) {
+          if (!seenStores.add(root)) continue;
+          var store = StoreCatalog.read(root, security);
+          stores.add(store);
+          LogManager.getInstance().stores().discovered(root);
+          for (var file : store.allFiles()) {
+            if (!file.file().kind().equals("wpilog") || file.session() == null) continue;
+            var session = file.session();
+            found.add(new LogFileInfo(file.path().toString(), file.path().getFileName().toString(),
+                session.event(), session.matchType(), session.matchNumber(),
+                session.teamNumber() != null ? session.teamNumber() : teamFor(file.path()),
+                getLastModified(file.path()), file.file().sizeBytes(),
+                Instant.parse(session.startedAt()).toEpochMilli(), file,
+                java.util.Optional.ofNullable(getOrExtractLogInfo(file.path()).robot()).orElse(file.robot())));
+          }
+        }
+        if (!StoreCatalog.isStore(dir)) {
+          findFiles(List.of(dir), WPILOG_FILE, unavailable).stream()
+              .map(this::getOrExtractLogInfo).forEach(found::add);
+        }
+      } catch (IOException e) {
+        unavailable.add(new UnavailableDirectory(dir, "could not be read (" + e.getMessage() + ")"));
+      }
+    }
+    var seen = new HashSet<Path>();
+    var logs = found.stream().filter(l -> seen.add(realPath(Path.of(l.path()))))
+        .filter(l -> allSources || service == null || service.visible(realPath(Path.of(l.path()))))
+        .sorted(NEWEST_LOG_FIRST).toList();
+    unavailable.forEach(u -> logger.warn("Log directory {} skipped: {}", u.directory(), u.reason()));
     logger.info("Found {} log files in {} of {} directories. Cache hits: {}, misses: {}",
-        logs.size(), dirs.size() - unavailable.size(), dirs.size(), cacheHits.sum(),
-        cacheMisses.sum());
-    return new DirectoryScan(dirs, logs, List.copyOf(unavailable));
+        logs.size(), dirs.size() - unavailable.size(), dirs.size(), cacheHits.sum(), cacheMisses.sum());
+    return new DirectoryScan(dirs, logs, List.copyOf(unavailable), List.copyOf(stores));
   }
 
   /**
@@ -334,7 +413,7 @@ public class LogDirectory {
    */
   public List<Path> directoriesContaining(Path file) {
     var real = realPath(file);
-    return logDirectories.stream().filter(dir -> real.startsWith(realPath(dir))).toList();
+    return getLogDirectories().stream().filter(dir -> real.startsWith(realPath(dir))).toList();
   }
 
   /**
@@ -354,18 +433,36 @@ public class LogDirectory {
         continue;
       }
       List<Path> files;
-      try (var paths = Files.walk(dir, scanDepth)) {
-        files = paths.filter(Files::isRegularFile).filter(wanted).toList();
+      try {
+        // Resolve only the requested root. FOLLOW_LINKS would also traverse child links,
+        // admitting cycles and unrelated directories. Rebase loose files onto the caller's
+        // spelling; store members keep the catalog's canonical identity.
+        var realDir = dir.toRealPath();
+        Path storeRoot = realDir;
+        while (storeRoot != null && !StoreCatalog.isStore(storeRoot)) storeRoot = storeRoot.getParent();
+        if (storeRoot != null) {
+          var security = new SecurityValidator();
+          getLogDirectories().forEach(security::addAllowedDirectory);
+          var store = StoreCatalog.read(storeRoot, security);
+          files = store.allFiles().stream().filter(f -> f.session() != null)
+              .filter(f -> wanted == REVLOG_FILE ? f.file().kind().equals("revlog") : f.file().kind().equals("wpilog"))
+              .map(StoreCatalog.StoredFile::path).filter(p -> p.startsWith(realDir)).toList();
+        } else {
+          try (var paths = Files.walk(realDir, scanDepth)) {
+            files = paths.filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)).filter(wanted)
+                .filter(p -> StoreCatalog.containing(p).isEmpty())
+                .map(p -> dir.resolve(realDir.relativize(p))).toList();
+          }
+        }
       } catch (IOException | UncheckedIOException e) {
-        // Files.walk stops at the first subdirectory it cannot read
         var cause = e instanceof UncheckedIOException u ? u.getCause() : e;
-        var reason = "could not be read (" + cause.getClass().getSimpleName() + ": "
-            + cause.getMessage() + ")";
-        unavailable.add(new UnavailableDirectory(dir, reason));
+        unavailable.add(new UnavailableDirectory(dir, "could not be read (" + cause.getMessage() + ")"));
         continue;
       }
       for (var file : files) {
-        if (seen.add(realPath(file))) found.add(file);
+        var real = realPath(file);
+        if (dirs.stream().map(LogDirectory::realPath).anyMatch(real::startsWith)
+            && seen.add(real)) found.add(file);
       }
     }
     return found;
@@ -395,54 +492,55 @@ public class LogDirectory {
     var cached = metadataCache.get(pathKey);
     if (cached != null && cached.cachedLastModified() == currentLastModified) {
       cacheHits.increment();
-      return cached.info();
+      return withFallbackTeam(cached.info());
     }
 
     cacheMisses.increment();
     var info = extractLogInfo(path);
     metadataCache.put(pathKey, new CachedLogInfo(info, currentLastModified));
-    return info;
+    return withFallbackTeam(info);
+  }
+
+  /** Apply leases after the metadata cache, so changing a lease cannot leave an old team cached. */
+  private LogFileInfo withFallbackTeam(LogFileInfo info) {
+    if (info.teamNumber() != null) return info;
+    var team = teamFor(Path.of(info.path()));
+    if (team == null) return info;
+    return new LogFileInfo(info.path(), info.filename(), info.eventName(), info.matchType(),
+        info.matchNumber(), team, info.lastModified(), info.fileSize(),
+        info.logCreationTime(), info.stored(), info.robot());
+  }
+
+  private Integer teamFor(Path file) {
+    var leased = ClientLeases.getInstance().teamFor(realPath(file));
+    return leased == null ? defaultTeamNumber : leased;
+  }
+
+  /** Permanent origins win duplicate paths; their team still follows the active lease precedence. */
+  public List<DirectoryOrigin> directoryOrigins() {
+    var configured = new ArrayList<>(logDirectories.stream().map(LogDirectory::realPath).toList());
+    ingestionDirectories().stream().map(LogDirectory::realPath).forEach(configured::add);
+    return getLogDirectories().stream().map(dir -> new DirectoryOrigin(dir.toString(),
+        configured.contains(realPath(dir)) ? "configured" : "leased", teamFor(dir))).toList();
+  }
+
+  public record DirectoryOrigin(String path, String origin, Integer team) {}
+
+  /** A discovered store may sit below a configured root, including a root spelled through a
+   * symlink. Describe the actual search root while preserving its grant's origin and team. */
+  public DirectoryOrigin directoryOrigin(Path root) {
+    var actual = realPath(root);
+    var inherited = directoryOrigins().stream().filter(origin -> actual.startsWith(realPath(Path.of(origin.path()))))
+        .max(java.util.Comparator.comparingInt(origin -> realPath(Path.of(origin.path())).getNameCount()));
+    return new DirectoryOrigin(root.toString(), inherited.map(DirectoryOrigin::origin).orElse("configured"), teamFor(root));
   }
 
   /**
-   * The entries that carry a log's event, match, and team by convention: AdvantageKit's
-   * {@code /DriverStation/} and {@code /SystemStats/} tables, and NetworkTables' {@code FMSInfo}
-   * table as DataLogManager records it ({@code NT:/FMSInfo/...}). An entry is one of them by
-   * its table, its leaf name, and its type. A name that only contains "MatchType" or
-   * "TeamNumber" is some team's own entry, and is not read: the listing's event, match, and team
-   * choose the Blue Alliance data shown for the log.
-   */
-  private enum MatchFact {
-    EVENT("string", "/driverstation/eventname", "/fmsinfo/eventname"),
-    MATCH_TYPE("int64", "/driverstation/matchtype", "/fmsinfo/matchtype"),
-    MATCH_NUMBER("int64", "/driverstation/matchnumber", "/fmsinfo/matchnumber"),
-    TEAM("int64", "/systemstats/teamnumber");
-
-    private final String type;
-    private final List<String> names;
-
-    MatchFact(String type, String... names) {
-      this.type = type;
-      this.names = List.of(names);
-    }
-
-    static Optional<MatchFact> of(String entryName, String entryType) {
-      var lower = entryName.toLowerCase(Locale.ROOT);
-      return Arrays.stream(values())
-          .filter(f -> f.type.equals(entryType) && f.names.stream().anyMatch(lower::endsWith))
-          .findFirst();
-    }
-  }
-
-  /**
-   * Extracts metadata from a log file by reading the first few records, then its file name for
-   * what the records leave unset (see {@link LogFileName}). Robot code starts logging before the
-   * Driver Station has connected, so the first records usually hold no event or match yet, and
-   * the name the logging framework gave the file later is what carries them.
+   * Reads the bounded metadata prefix through the resolver roles, then the file name for facts
+   * not recorded there. Import inspection, unlike a directory listing, can read late identity.
    *
-   * <p>Note: WPILib's DataLogReader does not implement AutoCloseable, so we cannot use
-   * try-with-resources. The reader uses memory-mapped buffers internally which are released
-   * when the reader is garbage collected. We rely on the JVM's GC to clean up these resources.
+   * <p>The reader releases its mapping before returning, so browsing a folder does not prevent
+   * a later import from moving those files on Windows.
    */
   private LogFileInfo extractLogInfo(Path path) {
     var filename = path.getFileName().toString();
@@ -450,31 +548,33 @@ public class LogDirectory {
     var matchType = (MatchType) null;
     var matchNumber = (Integer) null;
     var teamNumber = (Integer) null;
+    org.triplehelix.wpilogmcp.store.StoreManifest.Robot robot = null;
+    String serialNumber = null, comments = null;
     // The Driver Station's match type and number as the records go by. A number counts only
     // while a match type is set: with match type None there is no match, and the number can
     // hold anything (real logs start with a five-digit one).
     long currentType = 0;
     long currentNumber = 0;
 
-    try {
-      var reader = new DataLogReader(path.toString());
+    try (var scoped = new ScopedLogReader(path)) {
+      var reader = scoped.reader();
       if (reader.isValid()) {
-        var facts = new HashMap<Integer, MatchFact>();
+        var facts = new HashMap<Integer, MetadataRole>();
         int recordCount = 0;
         // Walk records by their own bounds, as the log scan does: WPILib's iterator skips a
         // short final record
-        int pos = DataLogAccess.firstRecordOffset(path);
-        int size = DataLogAccess.size(reader);
+        long pos = DataLogAccess.firstRecordOffset(path);
+        long size = DataLogAccess.size(reader);
         while (pos >= 12 && pos < size) {
-          if (recordCount++ > LogManager.MAX_METADATA_RECORDS) break;
-          int next = DataLogAccess.recordEnd(reader, pos);
+          if (recordCount++ >= LogManager.MAX_METADATA_RECORDS) break;
+          long next = DataLogAccess.recordEnd(reader, pos);
           if (next < 0) break; // the file ends inside this record
           var record = DataLogAccess.getRecord(reader, pos);
           pos = next;
 
           if (record.isStart()) {
             var startData = record.getStartData();
-            MatchFact.of(startData.name, startData.type)
+            MetadataRole.of(startData.name, startData.type)
                 .ifPresent(fact -> facts.put(startData.entry, fact));
           } else if (!record.isFinish() && !record.isSetMetadata()) {
             var fact = facts.get(record.getEntry());
@@ -493,6 +593,8 @@ public class LogDirectory {
                 var v = integerOf(record);
                 if (v != null) currentNumber = v;
               }
+              case SERIAL -> { var v = stringOf(record); if (v != null && !v.isBlank()) serialNumber = v.strip(); }
+              case COMMENTS -> { var v = stringOf(record); if (v != null && !v.isBlank()) comments = v.strip(); }
               case TEAM -> {
                 var v = integerOf(record);
                 if (v != null && v > 0 && v <= Integer.MAX_VALUE) teamNumber = v.intValue();
@@ -504,13 +606,17 @@ public class LogDirectory {
                 matchNumber = (int) currentNumber;
               }
             }
-            if (eventName != null && matchType != null && matchNumber != null && teamNumber != null) break;
+            if (eventName != null && matchType != null && matchNumber != null && teamNumber != null
+                && serialNumber != null && comments != null) break;
           }
         }
       }
     } catch (Exception e) {
       logger.debug("Metadata extraction error for {}: {}", filename, e.getMessage());
     }
+
+    if (serialNumber != null) robot = new org.triplehelix.wpilogmcp.store.StoreManifest.Robot(
+        serialNumber, serialNumber, null, comments, "logged");
 
     // What the records leave unset comes from the file name. The match is taken whole from one
     // or the other: the name's number under the records' type would be neither's match.
@@ -520,7 +626,6 @@ public class LogDirectory {
       matchType = name.matchType();
       matchNumber = name.matchNumber();
     }
-    if (teamNumber == null) teamNumber = defaultTeamNumber;
 
     // A replay or simulation output (_sim) is marked in its match type, whichever gave it
     String matchTypeLabel = matchType == null ? null
@@ -530,7 +635,7 @@ public class LogDirectory {
         path.toString(), filename, eventName,
         matchTypeLabel,
         matchNumber, teamNumber, getLastModified(path), getFileSize(path),
-        creationTime(name));
+        creationTime(name), null, robot);
   }
 
   /** The record's string, or null when it cannot be read as one. */
@@ -575,7 +680,21 @@ public class LogDirectory {
 
   public record LogFileInfo(String path, String filename, String eventName, String matchType,
                             Integer matchNumber, Integer teamNumber, long lastModified, long fileSize,
-                            Long logCreationTime) {
+                            Long logCreationTime, StoreCatalog.StoredFile stored,
+                            org.triplehelix.wpilogmcp.store.StoreManifest.Robot robot) {
+
+    public LogFileInfo(String path, String filename, String eventName, String matchType,
+        Integer matchNumber, Integer teamNumber, long lastModified, long fileSize, Long logCreationTime,
+        StoreCatalog.StoredFile stored) {
+      this(path, filename, eventName, matchType, matchNumber, teamNumber, lastModified, fileSize,
+          logCreationTime, stored, stored == null ? null : stored.robot());
+    }
+
+    public LogFileInfo(String path, String filename, String eventName, String matchType,
+        Integer matchNumber, Integer teamNumber, long lastModified, long fileSize, Long logCreationTime) {
+      this(path, filename, eventName, matchType, matchNumber, teamNumber, lastModified, fileSize,
+          logCreationTime, null);
+    }
 
     /** Overloaded constructor for backwards compatibility with tests. */
     public LogFileInfo(String path, String filename, String eventName, String matchType,
@@ -663,7 +782,7 @@ public class LogDirectory {
    * @since 0.5.0
    */
   public List<RevLogFileInfo> listRevLogFiles() throws IOException {
-    var dirs = logDirectories;
+    var dirs = getLogDirectories();
     if (dirs.isEmpty()) throw new IOException("Log directory not configured");
 
     var unavailable = new ArrayList<UnavailableDirectory>();

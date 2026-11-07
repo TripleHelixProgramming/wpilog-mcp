@@ -15,9 +15,47 @@ import org.triplehelix.wpilogmcp.conformance.ConformanceChecks.Check;
 /** The rules the sweep applies, on hand-written results (review 6, section 6.2). */
 @DisplayName("ConformanceChecks")
 class ConformanceChecksTest {
+  @org.junit.jupiter.api.Test void nestedListLimitsStillCheckActualReturnedCounts() {
+    var result = com.google.gson.JsonParser.parseString("""
+        {"page":{"entries":[{"name":"a"},{"name":"b"}]},
+         "limits":{"page.entries":{"total":9,"returned":2,"limit":2}}}
+        """).getAsJsonObject();
+    assertTrue(ConformanceChecks.limitsConsistent(result));
+    result.getAsJsonObject("limits").getAsJsonObject("page.entries").addProperty("returned", 1);
+    assertFalse(ConformanceChecks.limitsConsistent(result));
+    result.getAsJsonObject("limits").getAsJsonObject("page.entries").addProperty("returned", 2);
+    result.getAsJsonObject("limits").getAsJsonObject("page.entries").addProperty("total", 1);
+    assertFalse(ConformanceChecks.limitsConsistent(result));
+    result.getAsJsonObject("page").remove("entries"); assertFalse(ConformanceChecks.limitsConsistent(result));
+  }
+
+  @Test void limitsOnANestedObjectAreCheckedAgainstItsOwnList() {
+    // A chart series pages its points, and a session row its costs, each with limits of its own.
+    var result = json("""
+        {"chart_spec":{"series":[{"name":"a","points":[[0,1],[1,2]],"limits":{"points":{"total":5,"returned":2,"limit":2}}}]},
+         "sessions":[{"cost":[{"name":"x"}],"limits":{"cost":{"total":1,"returned":1,"limit":10}}}]}
+        """);
+    assertTrue(ConformanceChecks.limitsConsistent(result));
+    var series = result.getAsJsonObject("chart_spec").getAsJsonArray("series").get(0).getAsJsonObject();
+    series.getAsJsonObject("limits").getAsJsonObject("points").addProperty("returned", 3);
+    assertFalse(ConformanceChecks.limitsConsistent(result), "a series claiming three returned points holds two");
+    series.getAsJsonObject("limits").getAsJsonObject("points").addProperty("returned", 2);
+    result.getAsJsonArray("sessions").get(0).getAsJsonObject().getAsJsonObject("limits").getAsJsonObject("cost").addProperty("total", 0);
+    assertFalse(ConformanceChecks.limitsConsistent(result), "a total below the returned count");
+    // A paged inventory names the server's own caps limits: a different meaning, not a page.
+    assertTrue(ConformanceChecks.limitsConsistent(json("{\"inventory\":{\"limits\":{\"max_handles\":4,\"max_page_rows\":256}}}")));
+  }
 
   static JsonObject json(String s) {
     return JsonParser.parseString(s).getAsJsonObject();
+  }
+
+  @Test void aLiveWaitTimeoutIsAnObservedAbsenceNotAnEmptyAnalysis() {
+    var result = json("{\"success\":true,\"status\":\"ok\",\"changed\":false,\"inputs\":{\"session\":\"/capture.wpilog\"}}");
+    assertEquals(java.util.List.of(), ConformanceChecks.check(result, null, false, "wait_for_change", new JsonObject()));
+    assertTrue(ConformanceChecks.check(result, null, false, "find_peaks", new JsonObject()).contains(Check.SILENT_EMPTY));
+    result.remove("status");
+    assertTrue(ConformanceChecks.check(result, null, false, "wait_for_change", new JsonObject()).contains(Check.STATUS));
   }
 
   @Test

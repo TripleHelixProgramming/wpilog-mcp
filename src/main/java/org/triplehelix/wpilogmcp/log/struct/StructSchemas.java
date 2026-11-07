@@ -9,6 +9,7 @@ import edu.wpi.first.util.struct.StructDescriptor;
 import edu.wpi.first.util.struct.StructDescriptorDatabase;
 import edu.wpi.first.util.struct.StructFieldDescriptor;
 import edu.wpi.first.util.struct.StructFieldType;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -47,6 +48,9 @@ import org.triplehelix.wpilogmcp.log.EntryInfo;
  * @since 0.9.0
  */
 public final class StructSchemas {
+
+  // An untrusted acyclic chain can overflow the stack just as a cycle can.
+  private static final int MAX_DEPTH = 64;
 
   /** Where a struct's schema came from. */
   public enum Source {
@@ -92,9 +96,7 @@ public final class StructSchemas {
    * @param entries Struct name to the schema entry's name (for reporting)
    */
   public static StructSchemas of(Map<String, String> logged, Map<String, String> entries) {
-    var s = new StructSchemas();
-    logged.forEach((name, schema) -> s.add(name, schema, Source.LOGGED));
-    s.schemaEntries.putAll(entries);
+    var s = recordedOnly(logged, entries);
     CanonicalSchemas.WPILIB.forEach((name, schema) -> {
       if (!s.sources.containsKey(name)) s.add(name, schema, Source.WPILIB);
     });
@@ -102,6 +104,50 @@ public final class StructSchemas {
       if (!s.sources.containsKey(name)) s.add(name, schema, Source.ASSUMED);
     });
     return s;
+  }
+
+  /** A dashboard cannot disclose schema assumptions beside each number. Decode only the
+   * schemas actually published, including nested types; missing dependencies stay missing. */
+  public static StructSchemas recordedOnly(Map<String, String> logged, Map<String, String> entries) {
+    var s = new StructSchemas();
+    logged.forEach((name, schema) -> s.add(name, schema, Source.LOGGED));
+    s.schemaEntries.putAll(entries);
+    return s;
+  }
+
+  /**
+   * Reconstructs a remote snapshot without relabelling its assumptions as logged schemas.
+   * No local fallbacks are added: the sender's set is the boundary. Sizes, validity and fields
+   * are recompiled from schema text, never trusted from the wire. The metadata budget bounds
+   * work before the descriptor compiler sees untrusted text; decoding retains its depth bound.
+   */
+  public static StructSchemas fromDescriptions(List<StructInfo> descriptions) {
+    if (descriptions == null || descriptions.size() > 4096) {
+      throw new IllegalArgumentException("remote schema count exceeds 4096");
+    }
+    long bytes = 0;
+    var names = new java.util.HashSet<String>();
+    for (var info : descriptions) {
+      if (info == null || info.name() == null || info.name().isBlank() || info.source() == null
+          || info.schema() == null || !names.add(info.name())) {
+        throw new IllegalArgumentException("remote schema requires a unique name, source and text");
+      }
+      // Reject an oversized string before allocating its UTF-8 copy.
+      if (info.schema().length() > (4 << 20) || info.name().length() > 4096
+          || (info.schemaEntry() != null && info.schemaEntry().length() > 65536)) {
+        throw new IllegalArgumentException("remote schema metadata exceeds 4 MiB");
+      }
+      bytes += info.schema().getBytes(StandardCharsets.UTF_8).length
+          + info.name().getBytes(StandardCharsets.UTF_8).length
+          + (info.schemaEntry() == null ? 0 : info.schemaEntry().getBytes(StandardCharsets.UTF_8).length);
+      if (bytes > (4 << 20)) throw new IllegalArgumentException("remote schema metadata exceeds 4 MiB");
+    }
+    var result = new StructSchemas();
+    for (var info : descriptions) {
+      result.add(info.name(), info.schema(), info.source());
+      if (info.schemaEntry() != null) result.schemaEntries.put(info.name(), info.schemaEntry());
+    }
+    return result;
   }
 
   /** A schema entry's name: {@code /.schema/struct:Name}, also under a prefix such as NT:. */
@@ -156,6 +202,8 @@ public final class StructSchemas {
     schemaText.put(name, schema);
     try {
       db.add(name, schema);
+    } catch (StackOverflowError e) {
+      errors.put(name, "schema depth exceeds the supported limit for " + name);
     } catch (BadSchemaException | RuntimeException e) {
       errors.put(name, "invalid schema for " + name + " (" + e.getMessage() + "): " + schema);
     }
@@ -265,6 +313,17 @@ public final class StructSchemas {
    * @throws StructDecodeException when there is no usable schema or the length does not fit
    */
   public Object decode(String type, byte[] data) {
+    return decode(type, data, false);
+  }
+
+  /** Native readers keep every uint64 field as a BigInteger, regardless of its value. This
+   * gives the field one stable unsigned type while compatibility tools retain their existing
+   * Long/Double representation. Layout, validation and derived fields still have one owner. */
+  public Object decodeRecorded(String type, byte[] data) {
+    return decode(type, data, true);
+  }
+
+  private Object decode(String type, byte[] data, boolean sourceValues) {
     var name = structName(type);
     if (name == null) throw new StructDecodeException("not a struct type: " + type);
     var plan = plan(name);
@@ -286,14 +345,14 @@ public final class StructSchemas {
             + "the " + plan.size + "-byte " + name + " schema (" + sources.get(name).wire() + ")");
       }
       var elements = new Object[data.length / plan.size];
-      for (int i = 0; i < elements.length; i++) elements[i] = plan.decode(buffer, i * plan.size);
+      for (int i = 0; i < elements.length; i++) elements[i] = plan.decode(buffer, i * plan.size, sourceValues);
       return List.of(elements);
     }
     if (data.length != plan.size) {
       throw new StructDecodeException("record is " + data.length + " bytes; the " + name
           + " schema (" + sources.get(name).wire() + ") is " + plan.size + " bytes");
     }
-    return plan.decode(buffer, 0);
+    return plan.decode(buffer, 0, sourceValues);
   }
 
   /** The compiled decode plan for a struct, or null when it has no valid schema. */
@@ -302,33 +361,41 @@ public final class StructSchemas {
     if (cached != null) return cached;
     var desc = db.find(name);
     if (desc == null || !desc.isValid() || errors.containsKey(name)) return null;
-    var plan = compile(desc, new HashMap<>());
+    var plan = compile(desc, new HashMap<>(), 0);
     plans.putIfAbsent(name, plan);
     return plans.get(name);
   }
 
-  private Plan compile(StructDescriptor desc, Map<String, Plan> inProgress) {
+  private Plan compile(StructDescriptor desc, Map<String, Plan> inProgress, int depth) {
+    if (depth >= MAX_DEPTH) throw new StructDecodeException("schema depth exceeds " + MAX_DEPTH
+        + " at " + desc.getName());
     var existing = inProgress.get(desc.getName());
-    if (existing != null) return existing;
+    if (existing != null) {
+      if (depth + existing.depth() > MAX_DEPTH) throw new StructDecodeException("schema depth exceeds " + MAX_DEPTH
+          + " at " + desc.getName());
+      return existing;
+    }
     var fields = new ArrayList<FieldPlan>();
     var enricher = enricherFor(desc.getName());
     var names = new ArrayList<String>();
     desc.getFields().forEach(f -> names.add(f.getName()));
     if (enricher != null) names.add(DERIVED);
-    var plan = new Plan(desc.getSize(), fields, enricher, names.toArray(String[]::new));
-    inProgress.put(desc.getName(), plan);
+    int planDepth = 1;
     for (var f : desc.getFields()) {
       Map<Long, String> labels = null;
       if (f.hasEnum()) {
         labels = new HashMap<>();
         for (var e : f.getEnumValues().entrySet()) labels.put(e.getValue(), e.getKey());
       }
-      Plan nested = f.getType() == StructFieldType.kStruct ? compile(f.getStruct(), inProgress)
+      Plan nested = f.getType() == StructFieldType.kStruct ? compile(f.getStruct(), inProgress, depth + 1)
           : null;
+      if (nested != null) planDepth = Math.max(planDepth, 1 + nested.depth());
       fields.add(new FieldPlan(f.getName(), f.getType(), f.getOffset(), f.getSize(),
           f.getArraySize(), f.isBitField(), f.getBitShift(), f.getBitWidth(), f.isInt(),
           labels, nested));
     }
+    var plan = new Plan(desc.getSize(), List.copyOf(fields), enricher, names.toArray(String[]::new), planDepth);
+    inProgress.put(desc.getName(), plan);
     return plan;
   }
 
@@ -349,10 +416,10 @@ public final class StructSchemas {
   // ==================== plans ====================
 
   /** How to decode one struct type; {@code keys} are its field names (and _derived), shared. */
-  private record Plan(int size, List<FieldPlan> fields, Enricher enricher, String[] keys) {
-    Map<String, Object> decode(ByteBuffer buffer, int base) {
+  private record Plan(int size, List<FieldPlan> fields, Enricher enricher, String[] keys, int depth) {
+    Map<String, Object> decode(ByteBuffer buffer, int base, boolean sourceValues) {
       var values = new Object[keys.length];
-      for (int i = 0; i < fields.size(); i++) values[i] = fields.get(i).read(buffer, base);
+      for (int i = 0; i < fields.size(); i++) values[i] = fields.get(i).read(buffer, base, sourceValues);
       var map = new StructMap(keys, values);
       if (enricher != null) values[keys.length - 1] = enricher.derive(map);
       return map;
@@ -363,7 +430,7 @@ public final class StructSchemas {
       int arraySize, boolean bitField, int shift, int width, boolean signed,
       Map<Long, String> labels, Plan nested) {
 
-    Object read(ByteBuffer buffer, int base) {
+    Object read(ByteBuffer buffer, int base, boolean sourceValues) {
       int start = base + offset;
       if (type == StructFieldType.kChar) {
         var bytes = new byte[arraySize];
@@ -374,14 +441,14 @@ public final class StructSchemas {
       }
       if (arraySize > 1) {
         var elements = new Object[arraySize];
-        for (int i = 0; i < arraySize; i++) elements[i] = readOne(buffer, start + i * size);
+        for (int i = 0; i < arraySize; i++) elements[i] = readOne(buffer, start + i * size, sourceValues);
         return List.of(elements);
       }
-      return readOne(buffer, start);
+      return readOne(buffer, start, sourceValues);
     }
 
-    private Object readOne(ByteBuffer buffer, int pos) {
-      if (nested != null) return nested.decode(buffer, pos);
+    private Object readOne(ByteBuffer buffer, int pos, boolean sourceValues) {
+      if (nested != null) return nested.decode(buffer, pos, sourceValues);
       switch (type) {
         case kDouble:
           return buffer.getDouble(pos);
@@ -404,6 +471,11 @@ public final class StructSchemas {
         value = (raw & (1L << (bits - 1))) != 0 ? raw - (1L << bits) : raw;
       } else {
         value = raw;
+      }
+      if (sourceValues && !signed && size == 8) {
+        var unsigned = BigInteger.valueOf(value & Long.MAX_VALUE);
+        if (value < 0) unsigned = unsigned.setBit(63);
+        return labels != null ? new UnsignedEnumValue(unsigned, labels.get(value)) : unsigned;
       }
       Object number = !signed && size == 8 && value < 0
           ? (Object) Double.parseDouble(Long.toUnsignedString(value)) : (Object) value;

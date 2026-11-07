@@ -32,6 +32,16 @@ class LogSynchronizerTest {
     synchronizer = new LogSynchronizer();
   }
 
+  @Test void advantageKitCapturePrefixRetainsMeasuredPositiveNegativeAndLargeOffsets() {
+    var source = createWpilogWithSignalAtTime("/RealOutputs/drive/output", 10, 2000);
+    for (double shift : List.of(0.0, 0.04, 0.12, 0.20, -0.12, 6.0, -6.0)) {
+      var capture = createWpilogWithSignalAtTime("NT:/AdvantageKit/RealOutputs/drive/output", 10 + shift, 2000);
+      var result = synchronizer.synchronize(capture, source);
+      assertEquals(SyncMethod.CROSS_CORRELATION, result.method());
+      assertEquals(shift, result.offsetSeconds(), 0.005);
+    }
+  }
+
   @Test
   void testSynchronizeWithMatchingSignals() {
     // Create wpilog and revlog with correlated signals
@@ -644,6 +654,9 @@ class LogSynchronizerTest {
     // in each half. This test verifies the path executes without error.
     // With 20 minutes of varied data, drift estimation should engage.
     assertNotNull(result.explanation());
+    assertNotEquals(0, result.driftRateNanosPerSec(), "The varied 20-minute fixture must measure drift");
+    assertTrue(result.explanation().contains(String.format(java.util.Locale.ROOT,
+        "%.1f ms/hr", result.driftRateNanosPerSec() * 3600 / 1_000_000)), result.explanation());
   }
 
   @Test

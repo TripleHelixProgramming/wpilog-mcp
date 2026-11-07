@@ -99,6 +99,34 @@ final class ToolArguments {
     String toolName = tool.name();
 
     switch (toolName) {
+      case "get_latest_values", "wait_for_change" -> {
+        var names = log == null ? List.<String>of() : log.entries().keySet().stream().sorted().limit(3).toList();
+        var args = base.deepCopy();
+        if (toolName.equals("get_latest_values")) {
+          var entries = new com.google.gson.JsonArray(); names.forEach(entries::add);
+          if (entries.isEmpty()) entries.add("/Missing/Entry");
+          args.add("entries", entries);
+        } else {
+          args.addProperty("entry", names.isEmpty() ? "/Missing/Entry" : names.get(0));
+          args.addProperty("timeout_ms", 0);
+        }
+        return List.of(new Variant("latest-or-timeout", args));
+      }
+
+      case "render_chart" -> {
+        String numeric = pick(log, Kind.NUMERIC).orElse("/Missing/Entry");
+        for (String kind : List.of("time_series", "histogram", "scatter", "field")) {
+          var args = base.deepCopy(); args.addProperty("kind", kind); args.addProperty("width", 320); args.addProperty("height", 180);
+          if (kind.equals("scatter")) {
+            var names = new com.google.gson.JsonArray(); names.add(numeric);
+            names.add(pick(log, Kind.NUMERIC, n -> !n.equals(numeric), 0).orElse("/Missing/Other")); args.add("entries", names);
+          } else args.addProperty("name", kind.equals("field")
+              ? log.entries().values().stream().filter(e -> e.type().equals("struct:Pose2d") || e.type().equals("struct:Pose3d")).map(EntryInfo::name).sorted().findFirst().orElse("/Missing/Pose") : numeric);
+          variants.add(new Variant(kind, args));
+        }
+        return withLimitVariant(tool, variants);
+      }
+
       case "get_entry_info", "read_entry", "get_statistics", "detect_anomalies", "find_peaks",
           "rate_of_change", "find_condition", "export_csv" -> {
         for (var kind : Kind.values()) {
@@ -115,6 +143,23 @@ final class ToolArguments {
                 .resolve(fixture.id() + "-" + kind.label() + ".csv").toString());
           }
           variants.add(new Variant(kind.label(), args));
+          if (toolName.equals("read_entry") && (kind == Kind.NUMERIC || kind == Kind.STRING)) {
+            // At a resolution: bucketed for a numeric entry, skipped for a string one
+            var atResolution = args.deepCopy();
+            atResolution.addProperty("max_points", 5);
+            variants.add(new Variant(kind.label() + "-max_points", atResolution));
+          }
+          if (toolName.equals("read_entry") && kind == Kind.NUMERIC) {
+            for (String unit : List.of("degrees", "radians")) {
+              var angle = args.deepCopy();
+              angle.addProperty("angle", unit);
+              variants.add(new Variant(kind.label() + "-angle-" + unit, angle));
+              var atResolution = angle.deepCopy();
+              atResolution.addProperty("max_points", 5);
+              variants.add(new Variant(kind.label() + "-angle-" + unit + "-max_points",
+                  atResolution));
+            }
+          }
         }
         if (variants.isEmpty()) {
           var args = base.deepCopy();
@@ -165,7 +210,7 @@ final class ToolArguments {
           args.addProperty("name2", "/Missing/B");
           variants.add(new Variant("missing", args));
         }
-        return variants;
+        return withLimitVariant(tool, variants);
       }
       case "compare_poses" -> {
         // reference_entry is required: the second pose entry, else the first against itself
@@ -180,7 +225,7 @@ final class ToolArguments {
         var reference = args.deepCopy();
         reference.addProperty("frame", "reference");
         variants.add(new Variant("reference-frame", reference));
-        return variants;
+        return withLimitVariant(tool, variants);
       }
       case "pose_corrections" -> {
         // The default threshold, and one low enough that fixtures produce corrections
@@ -219,7 +264,7 @@ final class ToolArguments {
           explicit.addProperty("measurement_entry", "/Elevator/PositionMeters");
         }
         if (explicit.size() > base.size()) variants.add(new Variant("explicit-roles", explicit));
-        return variants;
+        return withLimitVariant(tool, variants);
       }
       case "analyze_cycles" -> {
         // cycle_start_state is optional in the schema but needed in the default mode: use the
@@ -253,6 +298,11 @@ final class ToolArguments {
       limited.addProperty("limit", 2);
       variants.add(new Variant(variants.get(0).label() + "-limit2", limited));
     }
+    if (props != null && props.has("last_seconds") && !variants.isEmpty()) {
+      var recent = variants.get(0).args().deepCopy(); recent.remove("start_time"); recent.remove("end_time");
+      recent.addProperty("last_seconds", 2);
+      variants.add(new Variant(variants.get(0).label() + "-recent", recent));
+    }
     return variants;
   }
 
@@ -262,13 +312,45 @@ final class ToolArguments {
     for (var param : required) {
       if (param.equals("path")) continue;
       switch (param) {
+        case "api_version", "expected_revision" -> args.addProperty(param, 1);
+        case "request_id", "view_id", "store_id" -> args.addProperty(param, "00000000-0000-4000-8000-000000000001");
+        case "inventory_id" -> args.addProperty(param, "00000000-0000-4000-8000-000000000001.00000000-0000-4000-8000-000000000002.expired");
+        case "row_ids" -> args.add(param, com.google.gson.JsonParser.parseString("[\"00000000-0000-4000-8000-000000000001\"]"));
+        case "description" -> args.addProperty(param, "Conformance fixture");
+        case "configuration_json" -> args.addProperty(param, org.triplehelix.wpilogmcp.visualization.VisualizationContracts.blank().toString());
+        case "x_entry", "y_entry" -> args.addProperty(param, "/Example/Counter");
+        case "source_ref" -> args.add(param, com.google.gson.JsonParser.parseString("{\"kind\":\"unmanaged\",\"source_id\":\"00000000-0000-4000-8000-000000000001\"}"));
+        case "entry" -> args.addProperty(param, log == null ? "/Missing/Entry" : pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
+        case "template_ref" -> args.add(param, org.triplehelix.wpilogmcp.visualization.TemplateDefinition.reference(null, org.triplehelix.wpilogmcp.visualization.BundledTemplates.all().get(0)));
+        case "kind" -> args.addProperty(param, "view");
+        case "legacy_ref" -> args.add(param, com.google.gson.JsonParser.parseString("{\"store_id\":\"00000000-0000-4000-8000-000000000001\",\"saved_view_id\":\"00000000-0000-4000-8000-000000000002\",\"revision\":1}"));
+        case "saved_view_ref" -> args.add(param, com.google.gson.JsonParser.parseString("{\"server_instance_id\":\"00000000-0000-4000-8000-000000000001\",\"library_id\":\"00000000-0000-4000-8000-000000000002\",\"saved_view_id\":\"00000000-0000-4000-8000-000000000003\",\"revision\":1}"));
+        case "envelope_json" -> args.addProperty(param, "{}"); // Invalid import exercises the adapter's refusal; the isolated workflow covers success.
         case "compare_path" -> {
           var other = all.stream()
               .filter(f -> !f.id().equals(fixture.id()) && f.id().startsWith("akit_"))
               .findFirst().orElse(fixture);
           args.addProperty(param, other.path().toString());
         }
-        case "name" -> args.addProperty(param, pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
+        case "name" -> args.addProperty(param, log == null ? "Fixture template" : pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
+        // compare_sessions takes sessions of a store or mirror; the fixtures' sources answer with
+        // their explicit refusals (a plain folder, or several sources without a scope_id).
+        case "sessions" -> {
+          var sessions = new com.google.gson.JsonArray();
+          var session = new JsonObject();
+          session.addProperty("session_id", "conformance-session");
+          sessions.add(session);
+          args.add(param, sessions);
+        }
+        case "metrics" -> {
+          var metrics = new com.google.gson.JsonArray();
+          var metric = new JsonObject();
+          metric.addProperty("id", "conformance");
+          metric.addProperty("name", log == null ? "/Missing/Entry" : pick(log, Kind.NUMERIC).orElse("/Missing/Entry"));
+          metric.addProperty("statistic", "mean");
+          metrics.add(metric);
+          args.add(param, metrics);
+        }
         case "velocity_entry" -> args.addProperty(param,
             pick(log, Kind.NUMERIC, n -> n.contains("Velocity"), 0)
                 .or(() -> pick(log, Kind.NUMERIC)).orElse("/Missing/Velocity"));

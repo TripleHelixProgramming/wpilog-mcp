@@ -87,6 +87,15 @@ class MainDebugLoggingTest {
     }
 
     @Test
+    void configuredDirectoriesAreAnnouncedOnceWithoutValidatorChatter() throws Exception {
+      var output = runMain(List.of("-logdir", tempDir.toString(), "-diskcachedisable"), Map.of());
+      assertEquals(1, output.lines().filter(line -> line.contains("Configuring log directory: " + tempDir)).count(), output);
+      assertFalse(output.lines().anyMatch(line -> line.contains(" INFO ") && line.contains("Log directories set to:")), output);
+      assertFalse(output.lines().anyMatch(line -> line.contains(" INFO ") && line.contains("SecurityValidator")),
+          "Containment validators must not announce directories at INFO:\n" + output);
+    }
+
+    @Test
     @DisplayName("debug: true in the configuration file turns on DEBUG output")
     void debugConfig() throws Exception {
       var config = tempDir.resolve("servers.yaml");

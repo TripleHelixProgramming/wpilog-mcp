@@ -11,11 +11,13 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Comparator;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 import org.triplehelix.wpilogmcp.mcp.McpServer.SchemaBuilder;
+import org.triplehelix.wpilogmcp.read.NumericSamples;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.*;
 
@@ -42,6 +44,7 @@ public final class QueryTools {
     registry.registerTool(new GetTypesTool());
     registry.registerTool(new FindConditionTool());
     registry.registerTool(new SearchStringsTool());
+    registry.registerTool(new SearchSystemLogsTool());
   }
 
   static class SearchEntriesTool extends LogRequiringTool {
@@ -80,7 +83,7 @@ public final class QueryTools {
 
       for (var entry : log.entries().values()) {
         if (typeFilter != null && !entry.type().contains(typeFilter)) continue;
-        if (nameContains != null && !entry.name().toLowerCase().contains(nameContains.toLowerCase())) continue;
+        if (nameContains != null && !entry.name().toLowerCase(Locale.ROOT).contains(nameContains.toLowerCase(Locale.ROOT))) continue;
 
         if (minSamples != null && log.sampleCount(entry.name()) < minSamples) continue;
 
@@ -285,19 +288,21 @@ public final class QueryTools {
       var scope = TimeScope.fromArguments(log, null, arguments);
 
       // Values are known once every condition's entry has logged
+      int n = conditions.size();
+      var series = new NumericSamples[n];
       double firstKnown = Double.NEGATIVE_INFINITY;
-      for (var c : conditions) {
-        if (c.signal().values().isEmpty()) {
-          throw new IllegalArgumentException("No values for entry: " + c.signal().label());
+      for (int k = 0; k < n; k++) {
+        series[k] = conditions.get(k).signal().samples();
+        if (series[k].size() == 0) {
+          throw new IllegalArgumentException("No values for entry: " + conditions.get(k).signal().label());
         }
-        firstKnown = Math.max(firstKnown, c.signal().values().get(0).timestamp());
+        firstKnown = Math.max(firstKnown, series[k].seconds(0));
       }
 
       var transitions = new ArrayList<JsonObject>();
       var intervals = new ArrayList<JsonObject>();
       double totalTrue = 0;
       double knownDuration = 0;
-      int n = conditions.size();
       for (var window : scope.windows()) {
         double windowStart = Math.max(window.start(), firstKnown);
         double windowEnd = window.end();
@@ -308,7 +313,7 @@ public final class QueryTools {
         var truth = new Boolean[n];
         var current = new double[n];
         for (int k = 0; k < n; k++) {
-          var before = lastFiniteBefore(conditions.get(k).signal().values(), windowStart);
+          var before = lastFiniteBefore(series[k], windowStart);
           if (before != null) {
             current[k] = before;
             truth[k] = evaluateCondition(before, conditions.get(k).operator(),
@@ -324,23 +329,23 @@ public final class QueryTools {
         // Every sample of every entry in the window, in time order
         var cursors = new int[n];
         for (int k = 0; k < n; k++) {
-          cursors[k] = firstAtOrAfter(conditions.get(k).signal().values(), windowStart);
+          cursors[k] = firstAtOrAfter(series[k], windowStart);
         }
         while (true) {
           double t = Double.POSITIVE_INFINITY;
           for (int k = 0; k < n; k++) {
-            var values = conditions.get(k).signal().values();
-            if (cursors[k] < values.size() && window.contains(values.get(cursors[k]).timestamp())) {
-              t = Math.min(t, values.get(cursors[k]).timestamp());
+            var values = series[k];
+            if (cursors[k] < values.size() && window.contains(values.seconds(cursors[k]))) {
+              t = Math.min(t, values.seconds(cursors[k]));
             }
           }
           if (t == Double.POSITIVE_INFINITY) break;
           Double trigger = null;
           for (int k = 0; k < n; k++) {
-            var values = conditions.get(k).signal().values();
-            while (cursors[k] < values.size() && values.get(cursors[k]).timestamp() == t) {
-              var v = toDouble(values.get(cursors[k]).value());
-              if (v != null && Double.isFinite(v)) {
+            var values = series[k];
+            while (cursors[k] < values.size() && values.seconds(cursors[k]) == t) {
+              double v = values.number(cursors[k]);
+              if (Double.isFinite(v)) {
                 current[k] = v;
                 truth[k] = evaluateCondition(v, conditions.get(k).operator(),
                     conditions.get(k).threshold());
@@ -370,10 +375,18 @@ public final class QueryTools {
       var intervalsArray = new JsonArray();
       intervals.stream().limit(limit).forEach(intervalsArray::add);
 
+      // Zero transitions is a finding only when samples were evaluated: say how many
+      int samplesEvaluated = 0;
+      for (var samples : series) {
+        for (var segment : scope.split(samples)) samplesEvaluated += segment.size();
+      }
       var description = n == 1 ? conditions.get(0).describe()
           : String.join(all ? " AND " : " OR ",
               conditions.stream().map(c -> "(" + c.describe() + ")").toList());
-      var builder = success();
+      var builder = intervals.isEmpty() && samplesEvaluated == 0
+          ? ResponseBuilder.noMatch("The condition did not hold in the requested time window")
+              .lookedFor(List.of(description)).hint("Check the resolved window and the entry's held value; widen the window to search earlier records")
+          : success();
       if (n == 1) builder.addProperty("name", conditions.get(0).signal().label());
       builder.addProperty("condition", description);
       if (n > 1) {
@@ -388,11 +401,6 @@ public final class QueryTools {
           .addLimitedList("intervals", intervalsArray, intervals.size(), limit)
           .addProperty("total_true_sec", totalTrue)
           .addProperty("window_sec", knownDuration);
-      // Zero transitions is a finding only when samples were evaluated: say how many
-      int samplesEvaluated = 0;
-      for (var c : conditions) {
-        for (var segment : scope.split(c.signal().values())) samplesEvaluated += segment.size();
-      }
       builder.addProperty("samples_evaluated", samplesEvaluated);
       for (int k = 0; k < n; k++) {
         builder.addInputSignal(n == 1 ? "entry" : "condition" + k, conditions.get(k).signal());
@@ -403,8 +411,8 @@ public final class QueryTools {
       }
       // Quality of the entries the intervals rest on (the worst of them), over the scope
       DataQuality quality = null;
-      for (var c : conditions) {
-        var q = DataQuality.fromSegments(scope.split(c.signal().values()));
+      for (int k = 0; k < n; k++) {
+        var q = DataQuality.fromSamples(log, conditions.get(k).signal().entry(), scope.split(series[k]));
         if (quality == null || q.qualityScore() < quality.qualityScore()) quality = q;
       }
       builder.addDataQuality(quality).addDirectives(AnalysisDirectives.fromQuality(quality)
@@ -459,22 +467,20 @@ public final class QueryTools {
     }
 
     /** The last finite value strictly before {@code t}, or null. */
-    private static Double lastFiniteBefore(List<org.triplehelix.wpilogmcp.log.TimestampedValue>
-        values, double t) {
+    private static Double lastFiniteBefore(NumericSamples values, double t) {
       for (int i = firstAtOrAfter(values, t) - 1; i >= 0; i--) {
-        var v = toDouble(values.get(i).value());
-        if (v != null && Double.isFinite(v)) return v;
+        double v = values.number(i);
+        if (Double.isFinite(v)) return v;
       }
       return null;
     }
 
-    private static int firstAtOrAfter(List<org.triplehelix.wpilogmcp.log.TimestampedValue> values,
-        double t) {
+    private static int firstAtOrAfter(NumericSamples values, double t) {
       int lo = 0;
       int hi = values.size();
       while (lo < hi) {
         int mid = (lo + hi) >>> 1;
-        if (values.get(mid).timestamp() < t) lo = mid + 1;
+        if (values.seconds(mid) < t) lo = mid + 1;
         else hi = mid;
       }
       return lo;
@@ -618,7 +624,7 @@ public final class QueryTools {
      * A view of a string whose {@code charAt} checks a deadline, so a catastrophically
      * backtracking user regex fails fast instead of hanging the server.
      */
-    private static final class DeadlineCharSequence implements CharSequence {
+    static final class DeadlineCharSequence implements CharSequence {
       private final CharSequence text;
       private final long deadlineNanos;
 
@@ -651,14 +657,14 @@ public final class QueryTools {
           getOptDouble(arguments, "end_time"));
       var pattern = getOptString(arguments, "pattern", null);
       boolean regex = getOptBoolean(arguments, "regex");
-      var level = getOptString(arguments, "level", "any").toLowerCase();
+      var level = getOptString(arguments, "level", "any").toLowerCase(Locale.ROOT);
       if (!level.equals("any") && !level.equals("error") && !level.equals("warning")
           && !level.equals("info")) {
         throw new IllegalArgumentException("level must be 'error', 'warning', 'info', or 'any' "
             + "(got '" + level + "')");
       }
       var entryPattern = getOptString(arguments, "entry_pattern", null);
-      var entryPatternLower = entryPattern == null ? null : entryPattern.toLowerCase();
+      var entryPatternLower = entryPattern == null ? null : entryPattern.toLowerCase(Locale.ROOT);
       var startTime = getOptDouble(arguments, "start_time");
       var endTime = getOptDouble(arguments, "end_time");
       int offset = Math.max(0, getOptInt(arguments, "offset", 0));

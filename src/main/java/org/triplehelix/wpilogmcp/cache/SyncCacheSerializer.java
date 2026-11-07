@@ -7,6 +7,7 @@ package org.triplehelix.wpilogmcp.cache;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -50,7 +51,26 @@ public class SyncCacheSerializer {
    * 3: SPARK devices labeled and keyed by the model their status 0 frames report, and the DBC's
    * hash is part of the cache key (0.9.0).
    */
-  public static final int CURRENT_FORMAT_VERSION = 3;
+  // Version 7 invalidates synchronization decisions made before AdvantageKit topic-prefix
+  // normalization and the NT:systemTime calendar role were recognized during replay.
+  // Version 8 accompanies portable CAN-bus naming, following the rule to invalidate older
+  // REV synchronization state when its interpretation changes.
+  // Version 9 makes store associations use their recorded alignment, including in a mirror,
+  // rather than letting a previous automatic correlation replace the manifest's evidence.
+  // Version 10 rejects corrupt recorded alignment evidence as an explained failed companion.
+  // Version 11 accompanies import's same-boot correlation gate (0.10.0-dev1). Existing store
+  // receipts remain authoritative; no already-placed association is rewritten.
+  // Version 12 corrects the cached clock-drift explanation's ms/hour conversion.
+  // Version 13 retains exact WPILOG microsecond order (0.10.0), which can change the
+  // wall-clock readings and numeric samples used to compute a cached REV synchronization.
+  public static final int CURRENT_FORMAT_VERSION = 13;
+
+  /**
+   * Whole-payload decoding retains encoded bytes and decoded objects at the same time. A 64 MiB
+   * encoded ceiling bounds that optional cache input independently of the source log's size;
+   * larger entries are cache misses, rebuilt from the logs. This is not a bound on total heap.
+   */
+  public static final int MAX_CACHE_FILE_BYTES = 64 * 1024 * 1024;
 
   /** Container for a cached sync entry. */
   public record CachedSyncEntry(
@@ -86,8 +106,14 @@ public class SyncCacheSerializer {
 
   public CachedSyncEntry read(Path cacheFile) {
     try {
-      byte[] allBytes = Files.readAllBytes(cacheFile);
-      if (allBytes.length < 4) return null;
+      long size = checkedSize(cacheFile);
+      byte[] allBytes;
+      try (var in = openInput(cacheFile)) {
+        // Cache files are immutable after publication. One sentinel byte detects growth after
+        // the stat without allowing a concurrent writer to turn this into an unbounded read.
+        allBytes = in.readNBytes((int) size + 1);
+      }
+      if (allBytes.length != size || allBytes.length < 4) return null;
       var crc = new CRC32();
       crc.update(allBytes, 0, allBytes.length - 4);
       int storedCrc = ByteBuffer.wrap(allBytes, allBytes.length - 4, 4)
@@ -102,8 +128,8 @@ public class SyncCacheSerializer {
         String wpilogFp = unpacker.unpackString();
         String revlogFp = unpacker.unpackString();
         long createdAt = unpacker.unpackLong();
-        ParsedRevLog revlog = unpackRevLog(unpacker);
-        SyncResult syncResult = unpackSyncResult(unpacker);
+        ParsedRevLog revlog = unpackRevLog(unpacker, allBytes.length - 4);
+        SyncResult syncResult = unpackSyncResult(unpacker, allBytes.length - 4);
         return new CachedSyncEntry(revlog, syncResult, wpilogFp, revlogFp, createdAt);
       }
     } catch (Exception e) {
@@ -113,12 +139,28 @@ public class SyncCacheSerializer {
   }
 
   public int readFormatVersion(Path cacheFile) {
-    try (var in = new BufferedInputStream(Files.newInputStream(cacheFile));
-         var unpacker = MessagePack.newDefaultUnpacker(in)) {
-      return unpacker.unpackInt();
+    try {
+      checkedSize(cacheFile); // Startup sweeps discard oversized files before reading contents.
+      try (var in = new BufferedInputStream(openInput(cacheFile));
+           var unpacker = MessagePack.newDefaultUnpacker(in)) {
+        return unpacker.unpackInt();
+      }
     } catch (Exception e) {
       return -1;
     }
+  }
+
+  private long checkedSize(Path cacheFile) throws IOException {
+    long size = Files.size(cacheFile);
+    if (size > MAX_CACHE_FILE_BYTES) {
+      throw new IOException("Sync cache exceeds the " + MAX_CACHE_FILE_BYTES + " byte file limit");
+    }
+    return size;
+  }
+
+  // A boundary seam lets tests prove that refusal precedes any content read or allocation.
+  InputStream openInput(Path cacheFile) throws IOException {
+    return Files.newInputStream(cacheFile);
   }
 
   private void packRevLog(MessagePacker p, ParsedRevLog revlog) throws IOException {
@@ -154,13 +196,13 @@ public class SyncCacheSerializer {
     }
   }
 
-  private ParsedRevLog unpackRevLog(MessageUnpacker u) throws IOException {
+  private ParsedRevLog unpackRevLog(MessageUnpacker u, int payloadSize) throws IOException {
     String path = unpackNullableString(u);
     String filenameTimestamp = unpackNullableString(u);
     double minTs = u.unpackDouble();
     double maxTs = u.unpackDouble();
     long recordCount = u.unpackLong();
-    int deviceCount = u.unpackInt();
+    int deviceCount = count(u, payloadSize, 4, "devices");
     // In the order written, which is the parser's (the order the REV log first shows each), so
     // a cached result lists devices and signals in the same order as a fresh one
     Map<Integer, RevLogDevice> devices = new LinkedHashMap<>();
@@ -171,14 +213,14 @@ public class SyncCacheSerializer {
       String firmware = unpackNullableString(u);
       devices.put(key, new RevLogDevice(canId, deviceType, firmware));
     }
-    int signalCount = u.unpackInt();
+    int signalCount = count(u, payloadSize, 5, "signals");
     Map<String, RevLogSignal> signals = new LinkedHashMap<>();
     for (int i = 0; i < signalCount; i++) {
       String sigKey = u.unpackString();
       String name = u.unpackString();
       String deviceKey = u.unpackString();
       String unit = unpackNullableString(u);
-      int valueCount = u.unpackInt();
+      int valueCount = count(u, payloadSize, 2, "values");
       List<TimestampedValue> values = new ArrayList<>(valueCount);
       for (int j = 0; j < valueCount; j++) {
         double ts = u.unpackDouble();
@@ -208,15 +250,17 @@ public class SyncCacheSerializer {
     }
   }
 
-  private SyncResult unpackSyncResult(MessageUnpacker u) throws IOException {
+  private SyncResult unpackSyncResult(MessageUnpacker u, int payloadSize) throws IOException {
     long offsetMicros = u.unpackLong();
     double confidence = u.unpackDouble();
     ConfidenceLevel level = ConfidenceLevel.valueOf(u.unpackString());
     SyncMethod method = SyncMethod.valueOf(u.unpackString());
+    // Only correlations are cached; a combination is derived from a store's records when read.
+    if (method == SyncMethod.COMBINED) throw new IOException("A cached synchronization cannot be combined");
     String explanation = unpackNullableString(u);
     double driftRate = u.unpackDouble();
     double refTime = u.unpackDouble();
-    int pairCount = u.unpackInt();
+    int pairCount = count(u, payloadSize, 5, "signal pairs");
     List<SignalPairResult> pairs = new ArrayList<>(pairCount);
     for (int i = 0; i < pairCount; i++) {
       pairs.add(new SignalPairResult(
@@ -229,6 +273,16 @@ public class SyncCacheSerializer {
 
   private void packNullableString(MessagePacker p, String value) throws IOException {
     if (value == null) { p.packNil(); } else { p.packString(value); }
+  }
+
+  /** Every field needs at least one byte, even when its MessagePack value is nil or zero.
+   * A CRC is not authority for an application count: check it before allocating or looping. */
+  private int count(MessageUnpacker u, int payloadSize, int fields, String label) throws IOException {
+    int count = u.unpackInt();
+    if (count < 0 || count > (payloadSize - u.getTotalReadBytes()) / fields) {
+      throw new IOException("Invalid cached " + label + " count: " + count);
+    }
+    return count;
   }
 
   private String unpackNullableString(MessageUnpacker u) throws IOException {

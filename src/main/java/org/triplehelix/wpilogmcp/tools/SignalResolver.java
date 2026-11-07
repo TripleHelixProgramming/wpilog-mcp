@@ -9,6 +9,8 @@ import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.Optional;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -39,9 +41,34 @@ import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
  *
  * @since 0.9.0
  */
-final class SignalResolver {
+public final class SignalResolver {
 
   private SignalResolver() {}
+
+  /** Metadata names are shared with the directory scanner; suggestive leaf names do not count. */
+  public enum MetadataRole {
+    SERIAL("string", "/systemstats/serialnumber"),
+    COMMENTS("string", "/systemstats/comments"),
+    EVENT("string", "/driverstation/eventname", "/fmsinfo/eventname"),
+    MATCH_TYPE("int64", "/driverstation/matchtype", "/fmsinfo/matchtype"),
+    MATCH_NUMBER("int64", "/driverstation/matchnumber", "/fmsinfo/matchnumber"),
+    TEAM("int64", "/systemstats/teamnumber");
+
+    private final String type;
+    private final List<String> names;
+
+    MetadataRole(String type, String... names) {
+      this.type = type;
+      this.names = List.of(names);
+    }
+
+    public static Optional<MetadataRole> of(String name, String type) {
+      var lower = name.toLowerCase(Locale.ROOT);
+      return Arrays.stream(values())
+          .filter(r -> r.type.equals(type) && r.names.stream().anyMatch(lower::endsWith))
+          .findFirst();
+    }
+  }
 
   /** Roles tools consume. */
   enum Role {
@@ -99,7 +126,7 @@ final class SignalResolver {
         if (r.wire().equals(wire.toLowerCase(Locale.ROOT))) return r;
       }
       throw new IllegalArgumentException("Unknown role '" + wire + "'. Roles: "
-          + String.join(", ", java.util.Arrays.stream(values()).map(Role::wire).toList()));
+          + String.join(", ", Arrays.stream(values()).map(Role::wire).toList()));
     }
   }
 
@@ -137,9 +164,9 @@ final class SignalResolver {
       boolean ambiguous, Double value, Tier tier) {
 
     /** The chosen entry, if any. */
-    java.util.Optional<String> chosen() {
-      return entries.isEmpty() ? java.util.Optional.empty()
-          : java.util.Optional.of(entries.get(0));
+    Optional<String> chosen() {
+      return entries.isEmpty() ? Optional.empty()
+          : Optional.of(entries.get(0));
     }
 
     /** Only candidates that match by name: the caller must confirm one and pass it. */
@@ -177,12 +204,35 @@ final class SignalResolver {
     }
   }
 
+  /** Visualization labels reuse resolver knowledge; no numerical scaling or name guess is added.
+   * Logged metadata wins. Published roles establish units only after that role selected an entry. */
+  static JsonObject visualizationUnit(LogData log, String entry, Role role) {
+    var unit = new JsonObject(); String symbol = null, basis = "unknown";
+    try {
+      var metadata = com.google.gson.JsonParser.parseString(log.entries().get(entry).metadata());
+      if (metadata.isJsonObject() && metadata.getAsJsonObject().has("unit")
+          && metadata.getAsJsonObject().get("unit").isJsonPrimitive()
+          && metadata.getAsJsonObject().getAsJsonPrimitive("unit").isString()) {
+        symbol = metadata.getAsJsonObject().get("unit").getAsString(); basis = "logged metadata";
+      }
+    } catch (RuntimeException ignored) { /* Metadata need not be JSON. */ }
+    if (symbol == null && role != null) {
+      symbol = switch (role) { case BATTERY_VOLTAGE -> "V"; case TOTAL_CURRENT -> "A"; case LOOP_TIME_USER -> "ms"; default -> null; };
+      if (symbol != null) basis = "published convention of resolved " + role.name().toLowerCase(Locale.ROOT);
+    }
+    unit.addProperty("symbol", symbol); unit.addProperty("basis", basis); return unit;
+  }
+
   // ==================== all roles ====================
 
-  /** Every role, in declaration order. */
+  /** Every role, in declaration order. The four DriverStation roles share one look at the log's sources. */
   static Map<Role, Resolution> resolveAll(LogData log) {
-    var out = new LinkedHashMap<Role, Resolution>();
-    for (var role : Role.values()) out.put(role, resolve(log, role));
+    var out = new LinkedHashMap<Role, Resolution>(); MatchTimeline.Sources sources = null;
+    for (var role : Role.values()) {
+      boolean station = switch (role) { case ROBOT_ENABLED, AUTONOMOUS, TEST_MODE, FMS_ATTACHED -> true; default -> false; };
+      if (station && sources == null) sources = MatchTimeline.sourcesOf(log);
+      out.put(role, station ? driverStation(log, role, sources) : resolve(log, role));
+    }
     return out;
   }
 
@@ -263,11 +313,27 @@ final class SignalResolver {
         var type = role == Role.CONSOLE_TEXT ? "string" : "string[]";
         var names = TextEvents.textEntries(log).stream().filter(e -> e.type().equals(type))
             .map(EntryInfo::name).toList();
-        yield new Resolution(role, names, names.isEmpty() ? "no " + type + " entries"
+        var followed = role == Role.CONSOLE_TEXT ? followedText(log) : java.util.Map.<String, java.util.List<String>>of();
+        yield new Resolution(role, names, !followed.isEmpty()
+            ? "followed-file roles " + followed.keySet() + " by /Daemon/Tail/<host>/<role> convention; other string entries by type"
+            : names.isEmpty() ? "no " + type + " entries"
             : "every " + type + " entry", names, false, null,
-            names.isEmpty() ? Tier.NONE : Tier.TYPE);
+            !followed.isEmpty() ? Tier.CONVENTION : names.isEmpty() ? Tier.NONE : Tier.TYPE);
       }
     };
+  }
+
+  /** Capture-owned roles, not words guessed from an arbitrary telemetry entry's name. */
+  public static java.util.Map<String, java.util.List<String>> followedText(LogData log) {
+    var result = new java.util.TreeMap<String, java.util.List<String>>();
+    for (var entry : byId(log)) {
+      var parts = entry.name().split("/", -1);
+      if (entry.type().equals("string") && parts.length == 5 && parts[1].equals("Daemon") && parts[2].equals("Tail")
+          && !parts[3].isEmpty() && java.util.Set.of("program_console", "kernel", "syslog", "journal").contains(parts[4])) {
+        result.computeIfAbsent(parts[4], ignored -> new java.util.ArrayList<>()).add(entry.name());
+      }
+    }
+    result.replaceAll((role, names) -> java.util.List.copyOf(names)); return java.util.Collections.unmodifiableSortedMap(result);
   }
 
   // ==================== shared helpers ====================
@@ -360,16 +426,16 @@ final class SignalResolver {
   }
 
   private static boolean hasFiniteSample(LogData log, String name) {
-    var values = log.values().get(name);
-    return values != null && values.stream()
-        .anyMatch(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()));
+    return log.anyValue(name, value -> value instanceof Number n && Double.isFinite(n.doubleValue()));
   }
 
   // ==================== DriverStation ====================
 
   /** DriverStation roles: AdvantageKit /DriverStation/..., WPILib DS:..., or FMSControlData. */
   private static Resolution driverStation(LogData log, Role role) {
-    var sources = MatchTimeline.of(log).sources();
+    return driverStation(log, role, MatchTimeline.sourcesOf(log));
+  }
+  private static Resolution driverStation(LogData log, Role role, MatchTimeline.Sources sources) {
     var entry = switch (role) {
       case ROBOT_ENABLED -> sources.enabled();
       case AUTONOMOUS -> sources.autonomous();
@@ -469,8 +535,8 @@ final class SignalResolver {
   }
 
   /**
-   * The total robot current: an explicit entry, else a leaf named TotalCurrent (AdvantageKit and
-   * WPILib power distribution), else names with total or battery current as candidates.
+   * The total robot current: an explicit entry, else a published power-distribution path;
+   * unrelated TotalCurrent leaves remain candidates, since they may describe one mechanism.
    */
   static Resolution totalCurrent(LogData log, String explicit) {
     if (explicit != null) {
@@ -480,7 +546,8 @@ final class SignalResolver {
     var numeric = byId(log).stream()
         .filter(e -> ToolUtils.isNumericType(e.type()) && log.sampleCount(e.name()) > 0)
         .toList();
-    var conventional = numeric.stream().filter(e -> leaf(e.name()).equals("totalcurrent"))
+    var conventional = numeric.stream().filter(e -> conventionName(e.name()).matches(
+        "/(?:RealOutputs/)?PowerDistribution/TotalCurrent|/SmartDashboard/PowerDistribution(?:\\[[0-9]+\\])?/TotalCurrent"))
         .map(EntryInfo::name).toList();
     if (!conventional.isEmpty()) {
       return ranked(Role.TOTAL_CURRENT, conventional.get(0), conventional, n -> 0,
@@ -504,7 +571,8 @@ final class SignalResolver {
   /**
    * Loop time. Full cycle: AdvantageKit LoggedRobot/FullCycleMS, else periods derived from
    * AdvantageKit's /Timestamp; user code: LoggedRobot/UserCodeMS. Names containing looptime or
-   * cycletime are candidates only.
+   * cycletime are candidates only. ReplayOutputs/LoggedRobot measures the replay host, so it
+   * cannot compete with the robot's original timing or become its automatic fallback.
    */
   static Resolution loopTime(LogData log, Role role, String explicit) {
     if (explicit != null) {
@@ -513,8 +581,11 @@ final class SignalResolver {
     var numeric = byId(log).stream()
         .filter(e -> ToolUtils.isNumericType(e.type()) && log.sampleCount(e.name()) > 0)
         .toList();
-    String want = role == Role.LOOP_TIME_FULL ? "fullcyclems" : "usercodems";
-    var conventional = numeric.stream().filter(e -> leaf(e.name()).equals(want))
+    String want = role == Role.LOOP_TIME_FULL ? "FullCycleMS" : "UserCodeMS";
+    var conventional = numeric.stream().filter(e -> {
+      String name = conventionName(e.name());
+      return name.equals("/LoggedRobot/" + want) || name.equals("/RealOutputs/LoggedRobot/" + want);
+    })
         .map(EntryInfo::name).toList();
     if (!conventional.isEmpty()) {
       return ranked(role, conventional.get(0), conventional, n -> 0,
@@ -523,7 +594,7 @@ final class SignalResolver {
     }
     var byName = numeric.stream().filter(e -> {
       var lower = e.name().toLowerCase(Locale.ROOT);
-      return lower.contains("looptime") || lower.contains("loop_time")
+      return leaf(e.name()).equals(want.toLowerCase(Locale.ROOT)) || lower.contains("looptime") || lower.contains("loop_time")
           || lower.contains("cycletime") || lower.contains("cycle_time");
     }).map(EntryInfo::name).toList();
     if (role == Role.LOOP_TIME_FULL) {
@@ -757,9 +828,7 @@ final class SignalResolver {
   private static boolean isSendableChooser(LogData log, String prefix) {
     var type = log.entries().get(prefix + "/.type");
     if (type != null && "string".equals(type.type())) {
-      var values = log.values().get(type.name());
-      if (values != null && values.stream()
-          .anyMatch(tv -> "String Chooser".equals(tv.value()))) {
+      if (log.anyValue(type.name(), "String Chooser"::equals)) {
         return true;
       }
     }
@@ -799,7 +868,7 @@ final class SignalResolver {
       new ModuleStateConvention("YAGSL telemetry", "swerve/advantagescope/currentStates",
           List.of("swerve/advantagescope/desiredStates")));
 
-  private static java.util.Optional<ModuleStateConvention> moduleConvention(String name) {
+  private static Optional<ModuleStateConvention> moduleConvention(String name) {
     return MODULE_STATE_CONVENTIONS.stream().filter(c -> c.tableOf(name) != null).findFirst();
   }
 
@@ -1068,29 +1137,43 @@ final class SignalResolver {
 
   private static Resolution chassisSpeeds(LogData log, Role role) {
     boolean wantSetpoint = role == Role.CHASSIS_SPEEDS_SETPOINT;
-    var word = wantSetpoint ? "setpoint" : "measured";
     var candidates = byId(log).stream()
         .filter(e -> e.type().equals("struct:ChassisSpeeds"))
         .filter(e -> log.sampleCount(e.name()) > 0)
-        .filter(e -> SETPOINT.matcher(e.name().substring(e.name().lastIndexOf('/') + 1)).find()
-            == wantSetpoint)
-        .sorted(Comparator.comparingInt((EntryInfo e) ->
-            e.name().toLowerCase(Locale.ROOT).contains(word) ? 0 : 1).thenComparingInt(EntryInfo::id))
         .map(EntryInfo::name).toList();
-    if (candidates.isEmpty()) {
-      return new Resolution(role, List.of(), "no struct:ChassisSpeeds entry "
-          + (wantSetpoint ? "named like a setpoint" : "not named like a setpoint"), candidates,
-          false, null, Tier.NONE);
+    var known = candidates.stream().filter(n -> {
+      String path = conventionName(n);
+      String leaf = wantSetpoint ? "Setpoints" : "Measured";
+      return path.equals("/SwerveChassisSpeeds/" + leaf)
+          || path.equals("/RealOutputs/SwerveChassisSpeeds/" + leaf)
+          || path.equals("/ReplayOutputs/SwerveChassisSpeeds/" + leaf)
+          // YAGSL SwerveDriveTelemetry publishes these exact SmartDashboard struct topics.
+          || path.equals("/SmartDashboard/swerve/advantagescope/"
+              + (wantSetpoint ? "desiredChassisSpeeds" : "measuredChassisSpeeds"))
+          || (!wantSetpoint && path.equals("/DriveState/Speeds"));
+    }).toList();
+    if (!known.isEmpty()) {
+      // Replay output describes rerunning the robot code; the original robot wins when present.
+      ToIntFunction<String> rank = n -> conventionName(n).startsWith("/ReplayOutputs/") ? 1 : 0;
+      String chosen = known.stream().min(java.util.Comparator.comparingInt(rank)).orElseThrow();
+      String basis = rank.applyAsInt(chosen) == 1
+          ? "AdvantageKit SwerveChassisSpeeds replayed value; no original chassis-speed convention present"
+          : "AdvantageKit SwerveChassisSpeeds, YAGSL telemetry or CTRE DriveState/Speeds";
+      return ranked(role, chosen, known, rank, basis, null, Tier.CONVENTION);
     }
-    boolean named = candidates.get(0).toLowerCase(Locale.ROOT).contains(word);
-    if (!named && candidates.size() > 1) {
-      return heuristic(role, candidates, "several struct:ChassisSpeeds entries");
+    if (!wantSetpoint && candidates.size() == 1) {
+      return ranked(role, candidates.get(0), candidates, n -> 0,
+          "the only struct:ChassisSpeeds entry; it may be a setpoint rather than measured speed; "
+              + "confirm its role from the robot source", null, Tier.TYPE);
     }
-    return ranked(role, candidates.get(0), candidates,
-        n -> n.toLowerCase(Locale.ROOT).contains(word) ? 0 : 1,
-        "struct:ChassisSpeeds, " + (named ? "named '" + word + "'" : "the only one "
-            + (wantSetpoint ? "named like a setpoint" : "not named like a setpoint")),
-        null, named ? Tier.CONVENTION : Tier.TYPE);
+    return heuristic(role, candidates, "no published chassis-speed role; confirm an entry");
+  }
+
+  /** Only transport/logger wrappers are removed; an arbitrary parent is never a convention. */
+  private static String conventionName(String name) {
+    if (name.startsWith("NT:")) name = name.substring(3);
+    if (name.startsWith("/AdvantageKit/")) name = name.substring("/AdvantageKit".length());
+    return name;
   }
 
   private static final Pattern GYRO_PATH = Pattern.compile(

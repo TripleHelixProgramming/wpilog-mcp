@@ -1,0 +1,313 @@
+/*
+ * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
+ * SPDX-License-Identifier: MIT
+ */
+package org.triplehelix.wpilogmcp.capture;
+
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
+import org.triplehelix.wpilogmcp.capture.pull.PullCoordinator;
+import org.triplehelix.wpilogmcp.nt4.ControlMessage.Announce;
+import org.triplehelix.wpilogmcp.nt4.TimeSync;
+import org.triplehelix.wpilogmcp.nt4.ValueFrame;
+import org.triplehelix.wpilogmcp.nt4.client.ClientScheduler;
+import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
+import org.triplehelix.wpilogmcp.store.CaptureStore;
+import org.triplehelix.wpilogmcp.store.LogStore;
+import org.triplehelix.wpilogmcp.store.StoreCatalog;
+import org.triplehelix.wpilogmcp.store.StoreManifest;
+
+/**
+ * Live tools read these published facts, never the filesystem or the store queue. Store writes
+ * replace one manifest view; imports refresh the inventory once per job. The small wait lock
+ * orders registration against delivery so the first received value cannot slip between them.
+ */
+public final class LiveCapture implements LogStore.Observer {
+  public record SessionView(Path directory, StoreManifest.Session session, StoreManifest.Robot robot) {}
+  public record Change(boolean changed, String reason, String type, ValueFrame frame) {}
+  private record Held(Path directory, StoreManifest.Session session, java.time.Instant started) {
+    Held(Path directory, StoreManifest.Session session) {
+      this(directory, session, java.time.Instant.parse(session.startedAt()));
+    }
+  }
+  private record Catalog(Map<String, Held> sessions, Map<String, StoreManifest.Robot> robots) {}
+  private record Wait(String session, String topic, CompletableFuture<Change> result) {}
+  private final Path root;
+  private final ClientScheduler clock;
+  private volatile Nt4Client client;
+  private final Map<String, Nt4Client.LatestValue> providerValues = new ConcurrentHashMap<>();
+  private final Map<String, Announce> providerTopics = new ConcurrentHashMap<>();
+  private volatile List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> providers = List.of();
+  public List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> providers() { return providers; }
+  public void providers(List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> value) { providers = List.copyOf(value); }
+  public void clearProviders() { providerValues.clear(); providerTopics.clear(); }
+  public void context(String name, String type, Object value, long timestampUs, long receivedUs, com.google.gson.JsonObject metadata) {
+    var topic = new Announce(name, -1, type, null, metadata);
+    providerTopics.put(name, topic);
+    providerValues.put(name, new Nt4Client.LatestValue(value, timestampUs, receivedUs, type));
+    changed(topic, new ValueFrame(-1, timestampUs, org.triplehelix.wpilogmcp.nt4.NtType.fromNt4(type).code(), value));
+  }
+  public Map<String, String> providerSources() {
+    var result = new HashMap<String, String>();
+    providerTopics.forEach((name, topic) -> result.put(name, topic.properties().get("source").getAsString()));
+    return result;
+  }
+  private final java.util.concurrent.atomic.AtomicLong receivedValues = new java.util.concurrent.atomic.AtomicLong();
+  public long receivedValues() { return receivedValues.get(); }
+  private volatile CaptureStore.Status current;
+  private volatile CaptureIndex.PublicationTiming publicationTiming;
+  public void publicationTiming(CaptureIndex.PublicationTiming value) { publicationTiming = value; }
+  public CaptureIndex.PublicationTiming publicationTiming() { return publicationTiming; }
+  private volatile long lastValueUs = Long.MIN_VALUE;
+  private volatile Catalog catalog = new Catalog(new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
+  private volatile StoreManifest.Header header;
+  private final Object waitLock = new Object();
+  private final Map<String, Map<String, Wait>> waiting = new HashMap<>();
+  private boolean stopped;
+  private volatile Supplier<Map<String, PullCoordinator.Progress>> pull = Map::of;
+  private volatile Supplier<org.triplehelix.wpilogmcp.nt4.server.GatewayStatus> gateway =
+      () -> org.triplehelix.wpilogmcp.nt4.server.GatewayStatus.DISABLED;
+
+  public LiveCapture(Path root, ClientScheduler clock) { this.root = root; this.clock = clock; }
+  public void attach(Nt4Client client) { this.client = client; }
+  public void attachPull(Supplier<Map<String, PullCoordinator.Progress>> progress) { pull = progress; }
+  public void attachGateway(Supplier<org.triplehelix.wpilogmcp.nt4.server.GatewayStatus> status) { gateway = status; }
+  public org.triplehelix.wpilogmcp.nt4.server.GatewayStatus gateway() { return gateway.get(); }
+  public record Metrics(boolean connected, String address, CaptureStore.Status current,
+      Map<String, Nt4Client.LatestValue> latest, TimeSync.Sample time,
+      Double robotNowUs, Map<String, PullCoordinator.Progress> pull,
+      List<org.triplehelix.wpilogmcp.capture.context.ProviderStatus> providers) {
+    public Metrics(boolean connected, String address, CaptureStore.Status current,
+        Map<String, Nt4Client.LatestValue> latest, TimeSync.Sample time, Double robotNowUs,
+        Map<String, PullCoordinator.Progress> pull) { this(connected, address, current, latest, time, robotNowUs, pull, List.of()); }
+  }
+  /** Independent published components, just like live tools; no event-loop call or store read. */
+  public Metrics metrics() {
+    var value = client;
+    var estimate = timeEstimate().orElse(null);
+    return new Metrics(connected(), value == null ? "" : value.connectedAddress(), current,
+        latest(), estimate, estimate == null ? null : (double) clock.nowUs() + estimate.offsetUs(), pull.get(), providers);
+  }
+  private volatile Supplier<CaptureProgress.Probe> captureProgress = () -> null;
+  /** Internal supplier reads only writer/watchdog atomics, never a queue or filesystem. */
+  void attachCaptureProgress(Supplier<CaptureProgress.Probe> supplier) { captureProgress = supplier; }
+  public CaptureProgress.Probe captureProgress() { return captureProgress.get(); }
+  public CaptureStore.Status current() { return current; }
+  public void status(CaptureStore.Status status) {
+    var previous = current;
+    if (previous == null || !previous.startedAt().equals(status.startedAt())) { lastValueUs = Long.MIN_VALUE; publicationTiming = null; }
+    current = status;
+    if (!status.open()) endWaits("The capture session ended");
+  }
+  /** A constant-space observation: a quiet change-only stream is still connected. Receipt age
+   * is freshness evidence only, and never supplies a sample timestamp or a timeout verdict. */
+  public record Health(org.triplehelix.wpilogmcp.store.CaptureRecording recording, boolean connected,
+      boolean synchronizedClock, boolean open, String reason, Double lastValueAgeMs) {}
+  public Health health() {
+    var state = current; var store = header; long received = lastValueUs;
+    var recording = state == null || store == null ? null
+        : new org.triplehelix.wpilogmcp.store.CaptureRecording(store.id(), state.startedAt().toString());
+    return new Health(recording, connected(), timeEstimate().isPresent(), state != null && state.open(),
+        disconnectReason(), received == Long.MIN_VALUE ? null : Math.max(0, clock.nowUs() - received) / 1000.0);
+  }
+  public boolean connected() { var value = client; return value != null && value.isConnected(); }
+  public String disconnectReason() { var value = client; return value == null ? "Not started" : value.disconnectReason(); }
+  public Map<String, Nt4Client.LatestValue> latest() {
+    var value = client; var result = new HashMap<String, Nt4Client.LatestValue>(value == null ? Map.of() : value.latestValues());
+    result.putAll(providerValues); return Map.copyOf(result);
+  }
+  public Map<String, Announce> topics() {
+    var value = client; var result = new HashMap<String, Announce>(value == null ? Map.of() : value.topics());
+    result.putAll(providerTopics); return Map.copyOf(result);
+  }
+  public java.util.Optional<org.triplehelix.wpilogmcp.nt4.TimeSync.Sample> timeEstimate() {
+    var value = client; return value == null ? java.util.Optional.empty() : value.timeEstimate();
+  }
+  public Double robotNowUs() {
+    var value = client; if (value == null) return null;
+    return value.timeEstimate().map(sample -> (double) clock.nowUs() + sample.offsetUs()).orElse(null);
+  }
+  /** Accept either the NT4 name or its DataLogManager capture name, without guessing a suffix. */
+  public String topic(String name) {
+    return topics().containsKey(name) ? name : name.startsWith("NT:") ? name.substring(3) : name;
+  }
+  @Override public void manifest(Path path, Object value) {
+    var known = catalog;
+    if (value instanceof StoreManifest.Header h) header = h;
+    else if (value instanceof StoreManifest.Robot robot) known.robots().put(robot.id(), robot);
+    else if (value instanceof StoreManifest.Session session) known.sessions().put(session.id(), new Held(path.getParent(), session));
+  }
+  @Override public void inventory(StoreCatalog.Snapshot snapshot) {
+    var sessions = new ConcurrentHashMap<String, Held>(); var robots = new ConcurrentHashMap<String, StoreManifest.Robot>();
+    snapshot.sessions().forEach(item -> sessions.put(item.session().id(), new Held(item.path(), item.session())));
+    snapshot.robots().forEach(item -> robots.put(item.robot().id(), item.robot()));
+    header = snapshot.header(); catalog = new Catalog(sessions, robots);
+  }
+  public Path resolve(Path path) {
+    var value = header; if (value == null) return path;
+    var seen = new java.util.HashSet<Path>();
+    while (seen.add(path)) {
+      Path old = path;
+      for (var move : value.moves()) if (Path.of(move.originalPath()).equals(old)) path = root.resolve(move.movedTo());
+      if (path.equals(old)) break;
+    }
+    return path;
+  }
+  /** Current identity lookup from the published manifests, without sorting the inventory. */
+  public String sessionId(Path file) {
+    Path directory = resolve(file).getParent();
+    for (var held : catalog.sessions().values()) if (resolve(held.directory()).equals(directory)) return held.session().id();
+    return null;
+  }
+  /** A capture file and when its session ended (null while it records). */
+  public record Location(String path, String endedAt) {}
+
+  /**
+   * The file a live read answers from: the capture recording now, else the newest session's
+   * captured file, as {@code list_sessions} names it; both null when the store holds none.
+   */
+  public static Location location(LiveCapture live, CaptureStore.Status current) {
+    if (current != null) return new Location(live.resolve(current.path()).toString(), current.endedAt() == null ? null : current.endedAt().toString());
+    if (live != null) for (var view : live.sessions()) {
+      var capture = view.session().files().stream().filter(f -> "captured".equals(f.provenance().kind())).findFirst();
+      if (capture.isPresent()) return new Location(live.resolve(view.directory().resolve(capture.get().path())).toString(), view.session().endedAt());
+    }
+    return new Location(null, null);
+  }
+
+  public List<SessionView> sessions() {
+    var known = catalog;
+    // ISO strings with and without fractional seconds do not sort chronologically. Parse
+    // once when a manifest is published, keeping repeated live queries free of that work.
+    return known.sessions().values().stream()
+        .sorted(java.util.Comparator.comparing(Held::started).reversed().thenComparing(v -> v.session().id()))
+        .map(item -> {
+      Path directory = directory(item);
+      var parts = root.relativize(directory);
+      var robot = parts.getNameCount() >= 2 && parts.getName(0).toString().equals("robots") ? known.robots().get(parts.getName(1).toString()) : null;
+      return new SessionView(directory, item.session(), robot);
+    }).toList();
+  }
+
+  /** A session's folder now: its manifest's, followed through a move of the files it names. */
+  private Path directory(Held item) {
+    var s = item.session(); Path directory = item.directory();
+    String relative = s.openCapture() != null ? s.openCapture().path() : s.files().stream().findFirst().map(StoreManifest.LogFile::path).orElse(null);
+    if (relative != null) {
+      Path moved = resolve(directory.resolve(relative));
+      for (int i = 0; i < Path.of(relative).getNameCount(); i++) moved = moved.getParent();
+      directory = moved;
+    }
+    return directory;
+  }
+
+  /** A closed file of the session recording now: where it is, and its records' span on the robot's clock. */
+  public record SessionFile(Path path, long minUs, long maxUs, String startedAt, String endedAt) {}
+
+  /** The capture recording now: its open file, and the closed files of its session, oldest first. */
+  public record Recording(Path open, List<SessionFile> earlier) {}
+
+  /**
+   * The capture recording now, or null when nothing records. A rollover and a same-boot reconnect
+   * each close a file and continue the session in the next, so the session's published manifest
+   * lists the closed ones. Only this recorder's own files count: a peer's capture of the same boot
+   * is filed under the session's peer folder, and it records the same minutes. Until the store's
+   * next update lists a file just closed, the manifest still names it open; it is closed once
+   * another file records.
+   */
+  public Recording recording() {
+    var status = current;
+    if (status == null || !status.open()) return null;
+    Path open = resolve(status.path());
+    var earlier = new ArrayList<SessionFile>();
+    for (var held : catalog.sessions().values()) {
+      Path folder = directory(held);
+      if (!folder.equals(open.getParent())) continue;
+      var session = held.session();
+      for (var file : session.files()) {
+        var provenance = file.provenance();
+        if (!"wpilog".equals(file.kind()) || provenance == null || !provenance.captured()
+            || !provenance.copiedFrom().isEmpty() || Path.of(file.path()).getNameCount() != 1) continue;
+        Path path = resolve(folder.resolve(file.path()));
+        if (!path.equals(open)) earlier.add(new SessionFile(path, micros(file.minTimestampSec()),
+            micros(file.maxTimestampSec()), file.startedAt(), file.endedAt()));
+      }
+      var named = session.openCapture();
+      if (named != null && Path.of(named.path()).getNameCount() == 1) {
+        Path path = resolve(folder.resolve(named.path()));
+        if (!path.equals(open) && earlier.stream().noneMatch(f -> f.path().equals(path)))
+          earlier.add(new SessionFile(path, micros(named.minTimestampSec()), micros(named.maxTimestampSec()),
+              session.startedAt(), null));
+      }
+      break;
+    }
+    earlier.sort(java.util.Comparator.comparingLong(SessionFile::maxUs).thenComparing(f -> f.path().toString()));
+    return new Recording(open, List.copyOf(earlier));
+  }
+
+  private static long micros(double seconds) { return Math.round(seconds * 1e6); }
+
+  public CompletableFuture<Change> waitFor(String session, String topic, int timeoutMs) {
+    var result = new CompletableFuture<Change>(); var wait = new Wait(session, topic, result);
+    synchronized (waitLock) {
+      if (stopped) return CompletableFuture.completedFuture(new Change(false, "The capture service is stopping", null, null));
+      if (current == null || !current.open()) return CompletableFuture.completedFuture(new Change(false, "No capture session is open", null, null));
+      if (!topics().containsKey(topic)) return CompletableFuture.completedFuture(new Change(false, "The topic was unannounced", null, null));
+      var slots = waiting.computeIfAbsent(topic, ignored -> new HashMap<>());
+      if (slots.putIfAbsent(session, wait) != null) throw new IllegalArgumentException("An outstanding wait already exists for this entry in this MCP session");
+      long deadline = clock.nowUs() + timeoutMs * 1000L;
+      // Enqueue before stop can close the clock. This is a nonblocking event-loop enqueue,
+      // not a wait on its thread; shutdown cannot overtake the timeout's installation.
+      clock.execute(() -> clock.schedule(() -> finish(wait, new Change(false, null, null, null)), Math.max(0, deadline - clock.nowUs())));
+    }
+    result.whenComplete((ignored, error) -> remove(wait));
+    return result;
+  }
+  private boolean remove(Wait wait) {
+    synchronized (waitLock) {
+      var slots = waiting.get(wait.topic());
+      boolean removed = slots != null && slots.remove(wait.session(), wait);
+      if (slots != null && slots.isEmpty()) waiting.remove(wait.topic());
+      return removed;
+    }
+  }
+  private void finish(Wait wait, Change change) { if (remove(wait)) wait.result().complete(change); }
+  /** Called by the same ordered listener after the writer saw this publication. */
+  public void value(Announce topic, ValueFrame frame) {
+    value(topic, frame, clock.nowUs());
+  }
+  public void value(Announce topic, ValueFrame frame, long receivedUs) {
+    lastValueUs = receivedUs; receivedValues.incrementAndGet(); changed(topic, frame);
+  }
+  private void changed(Announce topic, ValueFrame frame) {
+    List<Wait> targets;
+    synchronized (waitLock) {
+      var slots = waiting.remove(topic.name());
+      targets = slots == null ? List.of() : List.copyOf(slots.values());
+    }
+    for (var wait : targets) wait.result().complete(new Change(true, null, topic.type(), frame));
+  }
+  public void unannounce(String topic) {
+    List<Wait> targets;
+    synchronized (waitLock) { var slots = waiting.remove(topic); targets = slots == null ? List.of() : List.copyOf(slots.values()); }
+    targets.forEach(wait -> wait.result().complete(new Change(false, "The topic was unannounced", null, null)));
+  }
+  public void endWaits(String reason) {
+    var targets = new ArrayList<Wait>();
+    synchronized (waitLock) { waiting.values().forEach(slots -> targets.addAll(slots.values())); waiting.clear(); }
+    targets.forEach(wait -> wait.result().complete(new Change(false, reason, null, null)));
+  }
+  /** Close admission before the client closes its scheduler, including waits racing shutdown. */
+  public void stop() {
+    synchronized (waitLock) { stopped = true; }
+    endWaits("The capture service is stopping");
+  }
+  /** Visible for ordering tests; it reads no file and waits for no event-loop task. */
+  public int pendingWaits() { synchronized (waitLock) { return waiting.values().stream().mapToInt(Map::size).sum(); } }
+}

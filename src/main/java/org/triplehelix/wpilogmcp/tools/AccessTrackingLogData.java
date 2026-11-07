@@ -122,6 +122,15 @@ final class AccessTrackingLogData implements LogData {
     }
   }
 
+  /** A column read is a read of its entry, as a read of the entry's values is. */
+  @Override
+  public java.util.Optional<org.triplehelix.wpilogmcp.log.NumericColumn> numericColumn(String entryName,
+      org.triplehelix.wpilogmcp.read.FieldPath path) {
+    var column = delegate.numericColumn(entryName, path);
+    if (column.isPresent()) read.add(entryName);
+    return column;
+  }
+
   /** Most entry names {@link #recordInputs} lists before giving only the total. */
   static final int MAX_LISTED_INPUTS = 10;
 
@@ -131,7 +140,7 @@ final class AccessTrackingLogData implements LogData {
    * total). Tools that record their inputs by role keep their own block.
    */
   void recordInputs(JsonObject result) {
-    if (result.has("inputs")) return;
+    if (result.has("inputs")) { recordSessionRange(result.getAsJsonObject("inputs")); return; }
     var inputs = new JsonObject();
     inputs.addProperty("log", delegate.path());
     if (!read.isEmpty()) {
@@ -141,6 +150,14 @@ final class AccessTrackingLogData implements LogData {
       if (read.size() > MAX_LISTED_INPUTS) inputs.addProperty("entries_read_total", read.size());
     }
     result.add("inputs", inputs);
+    recordSessionRange(inputs);
+  }
+
+  void recordSessionRange(JsonObject inputs) {
+    delegate.sessionTimeRange().ifPresent(range -> {
+      var time = new JsonObject(); time.addProperty("start_sec", range.startSec()); time.addProperty("end_sec", range.endSec());
+      inputs.add("session_time_range", time);
+    });
   }
 
   /** The log being tracked. */
@@ -191,10 +208,12 @@ final class AccessTrackingLogData implements LogData {
   }
 
   @Override public String path() { return delegate.path(); }
+  @Override public Optional<SessionTimeRange> sessionTimeRange() { return delegate.sessionTimeRange(); }
   @Override public Map<String, EntryInfo> entries() { return delegate.entries(); }
   @Override public Map<String, List<TimestampedValue>> values() { return values; }
   @Override public double minTimestamp() { return delegate.minTimestamp(); }
   @Override public double maxTimestamp() { return delegate.maxTimestamp(); }
+  @Override public double timeScopeEnd() { return delegate.timeScopeEnd(); }
   @Override public boolean truncated() { return delegate.truncated(); }
   @Override public boolean damaged() { return delegate.damaged(); }
   @Override public String truncationMessage() { return delegate.truncationMessage(); }

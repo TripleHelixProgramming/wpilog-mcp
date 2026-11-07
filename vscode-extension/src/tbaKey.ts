@@ -84,7 +84,7 @@ export function planTbaKeyMove(found: TbaKeyFound): TbaKeyMove {
       move.store = user;
       notes.push(
         "TBA API key saved in VS Code's secret storage and cleared from your settings. " +
-          "The server restarts to use it."
+          "This window registers it with the shared server."
       );
     }
   }
@@ -115,25 +115,4 @@ export function planTbaKeyMove(found: TbaKeyFound): TbaKeyMove {
     move.message = `WPILog Analyzer: ${notes.join(" ")}`;
   }
   return move;
-}
-
-/**
- * The settings whose change restarts the server and rewrites Claude Code's configuration: every
- * setting the extension declares except the TBA API key field, which only feeds secret storage (a
- * stored key restarts the server by itself). With no declared settings to go by, the whole
- * `wpilog-mcp` section, so a change is never missed.
- *
- * @param manifest the extension's package.json
- */
-export function settingsThatRestartTheServer(manifest: unknown): string[] {
-  const configuration = (manifest as { contributes?: { configuration?: unknown } } | undefined)
-    ?.contributes?.configuration;
-  const sections = Array.isArray(configuration) ? configuration : [configuration];
-  const keys = sections
-    .flatMap((section) => {
-      const properties = (section as { properties?: unknown } | undefined)?.properties;
-      return properties && typeof properties === "object" ? Object.keys(properties) : [];
-    })
-    .filter((key) => key !== TBA_KEY_SETTING);
-  return keys.length > 0 ? keys : ["wpilog-mcp"];
 }

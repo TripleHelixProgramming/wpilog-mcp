@@ -5,12 +5,17 @@
 package org.triplehelix.wpilogmcp.log.subsystems;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.function.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.log.LogFileException;
+import org.triplehelix.wpilogmcp.config.ClientLeases;
 
 /**
  * Validates file paths against allowed directories to prevent path traversal attacks.
@@ -36,6 +41,26 @@ public class SecurityValidator {
 
   private final Set<Path> allowedDirectories = new CopyOnWriteArraySet<>();
 
+  private final ClientLeases leases;
+  private final java.util.concurrent.ConcurrentMap<String, PersistentGrant> persistentDirectories =
+      new java.util.concurrent.ConcurrentHashMap<>();
+  private record PersistentGrant(long generation, Set<Path> directories) {}
+  private final java.util.concurrent.atomic.AtomicLong grantSequence = new java.util.concurrent.atomic.AtomicLong();
+  private volatile boolean persistentPermissions;
+
+  public SecurityValidator() {
+    this(null);
+  }
+
+  /** Only the server's validator admits client leases; install/export containment never does. */
+  public SecurityValidator(ClientLeases leases) {
+    this.leases = leases;
+  }
+
+  private boolean leasedPermissions() {
+    return persistentPermissions || leases != null && leases.enforcesDirectories();
+  }
+
   /**
    * Adds a directory to the list of allowed directories for loading logs.
    *
@@ -46,18 +71,18 @@ public class SecurityValidator {
    */
   public void addAllowedDirectory(Path directory) {
     if (directory != null) {
-      // Use toRealPath() to resolve symlinks if the directory exists,
-      // so that the allowed path matches what toRealPath() returns during validation
+      // Admission and validation must resolve the same existing ancestors, even before
+      // capture creates a configured store below an alias such as macOS /var.
       Path normalized;
       try {
-        normalized = java.nio.file.Files.exists(directory)
-            ? directory.toRealPath()
-            : directory.toAbsolutePath().normalize();
-      } catch (java.io.IOException e) {
+        normalized = resolvePath(directory);
+      } catch (IOException e) {
         normalized = directory.toAbsolutePath().normalize();
       }
       allowedDirectories.add(normalized);
-      logger.info("Added allowed directory: {}", normalized);
+      // Validators also contain install writes and individual reads. The server's
+      // Main owns the operator-facing announcement of configured roots.
+      logger.debug("Added allowed directory: {}", normalized);
     }
   }
 
@@ -72,10 +97,42 @@ public class SecurityValidator {
     }
   }
 
+  /** Replaces one explicit machine-local policy grant without changing other owners. */
+  public void replacePersistentDirectories(String owner, Set<Path> directories) {
+    replacePersistentDirectories(owner, grantSequence.incrementAndGet(), directories);
+  }
+  /** An explicitly configured server service outlives the editor lease that configured it.
+   * The owner releases only its own grant; unrelated roots and services are left intact. */
+  public AutoCloseable retainServiceDirectory(Path canonical) {
+    String owner = "service:" + java.util.UUID.randomUUID();
+    replacePersistentDirectories(owner, Set.of(canonical));
+    return () -> persistentDirectories.remove(owner);
+  }
+
+  /** A completed older import must never reinstate a source a newer user edit revoked. */
+  public void replacePersistentDirectories(String owner, long generation, Set<Path> directories) {
+    java.util.Objects.requireNonNull(owner);
+    var resolved = new HashSet<Path>();
+    for (var directory : directories) {
+      if (!directory.isAbsolute()) throw new IllegalArgumentException("Persistent roots must be canonical absolute paths");
+      // Enrollment already resolved links. Republishing after an import must retain that
+      // spelling: resolving again would grant a replacement symlink's unapproved target.
+      // validate() still resolves every access, so a retarget cannot escape this stored root.
+      resolved.add(directory.normalize());
+    }
+    // Once explicit grants were installed, revoking the last must never restore unrestricted
+    // legacy access, including a cache hit. Empty initial policies do not alter legacy callers.
+    if (!resolved.isEmpty()) persistentPermissions = true;
+    var next = new PersistentGrant(generation, Set.copyOf(resolved));
+    persistentDirectories.compute(owner, (ignored, previous) ->
+        previous == null || generation >= previous.generation() ? next : previous);
+  }
+
   /** Clears all allowed directories. */
   public void clearAllowedDirectories() {
     allowedDirectories.clear();
-    logger.info("Cleared all allowed directories");
+    if (persistentDirectories.values().stream().allMatch(grant -> grant.directories().isEmpty())) persistentPermissions = false;
+    logger.debug("Cleared all allowed directories");
   }
 
   /**
@@ -84,7 +141,18 @@ public class SecurityValidator {
    * @return A new set containing the allowed directories
    */
   public Set<Path> getAllowedDirectories() {
-    return new HashSet<>(allowedDirectories);
+    var result = new HashSet<>(getConfiguredDirectories());
+    if (leases != null) {
+      leases.directories().forEach(directory -> result.add(directory.path()));
+    }
+    return result;
+  }
+
+  /** A store exposed to network peers must come from configuration, never a session lease. */
+  public Set<Path> getConfiguredDirectories() {
+    var result = new HashSet<>(allowedDirectories);
+    persistentDirectories.values().forEach(grant -> result.addAll(grant.directories()));
+    return Set.copyOf(result);
   }
 
   /**
@@ -97,7 +165,8 @@ public class SecurityValidator {
    * @throws IOException if the path is outside allowed directories
    */
   public void validate(Path filePath) throws IOException {
-    if (allowedDirectories.isEmpty()) {
+    var directories = getAllowedDirectories();
+    if (directories.isEmpty() && !leasedPermissions()) {
       // No restrictions configured - allow all paths (backwards compatibility)
       return;
     }
@@ -105,7 +174,7 @@ public class SecurityValidator {
     Path normalizedPath = resolvePath(filePath);
 
     // Check if path is within any allowed directory
-    for (Path allowedDir : allowedDirectories) {
+    for (Path allowedDir : directories) {
       if (normalizedPath.startsWith(allowedDir)) {
         return; // Path is allowed
       }
@@ -113,7 +182,7 @@ public class SecurityValidator {
 
     logger.warn("Access denied: path '{}' is outside allowed directories", normalizedPath);
     // A fact about the caller's path, reported as an ordinary error (not an internal one)
-    throw new org.triplehelix.wpilogmcp.log.LogFileException(
+    throw new LogFileException(
         "Access denied: path is outside configured log directories. "
             + "Configure allowed directories or use list_available_logs to find valid paths.");
   }
@@ -122,17 +191,20 @@ public class SecurityValidator {
    * Resolves a path, following symlinks where possible to prevent symlink-based path traversal.
    * If the file exists, uses toRealPath() which resolves all symlinks.
    * If not, walks up the ancestor chain to find the nearest existing directory, resolves
-   * symlinks there, and appends the remaining relative portion.
+   * symlinks there, and appends the remaining relative portion. A dangling link still exists
+   * for this walk: resolving it must fail, not authorize creating its outside target.
+   * Parent components are normalized only after resolving links: link/.. belongs to the
+   * target's parent, which need not be the link's own parent.
    */
   private Path resolvePath(Path filePath) throws IOException {
-    Path absPath = filePath.toAbsolutePath().normalize();
-    if (java.nio.file.Files.exists(absPath)) {
+    Path absPath = filePath.toAbsolutePath();
+    if (Files.exists(absPath, LinkOption.NOFOLLOW_LINKS)) {
       return absPath.toRealPath();
     }
     // Walk up the path to find the nearest existing ancestor
     Path current = absPath;
     Path relative = Path.of("");
-    while (current != null && !java.nio.file.Files.exists(current)) {
+    while (current != null && !Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
       relative = current.getFileName() != null
           ? current.getFileName().resolve(relative)
           : relative;
@@ -140,9 +212,9 @@ public class SecurityValidator {
     }
     if (current != null) {
       Path resolved = current.toRealPath();
-      return relative.toString().isEmpty() ? resolved : resolved.resolve(relative);
+      return relative.toString().isEmpty() ? resolved : resolved.resolve(relative).normalize();
     }
-    return absPath;
+    return absPath.normalize();
   }
 
   /**
@@ -155,29 +227,30 @@ public class SecurityValidator {
    * @param isInCache Function that returns true if the path is already cached
    * @throws IOException if the path is outside allowed directories and not cached
    */
-  public void validateOrAllowCached(Path filePath, java.util.function.Predicate<String> isInCache)
+  public void validateOrAllowCached(Path filePath, Predicate<String> isInCache)
       throws IOException {
-    if (allowedDirectories.isEmpty()) {
+    var directories = getAllowedDirectories();
+    if (directories.isEmpty() && !leasedPermissions()) {
       return;
     }
 
     Path normalizedPath = resolvePath(filePath);
 
     // Check if path is within any allowed directory
-    for (Path allowedDir : allowedDirectories) {
+    for (Path allowedDir : directories) {
       if (normalizedPath.startsWith(allowedDir)) {
         return; // Path is allowed
       }
     }
 
     // Check if already cached (allow re-access to cached logs)
-    if (isInCache.test(normalizedPath.toString())) {
+    if (!leasedPermissions() && isInCache.test(normalizedPath.toString())) {
       return; // Already cached, allow access
     }
 
     logger.warn("Access denied: path '{}' is outside allowed directories", normalizedPath);
     // A fact about the caller's path, reported as an ordinary error (not an internal one)
-    throw new org.triplehelix.wpilogmcp.log.LogFileException(
+    throw new LogFileException(
         "Access denied: path is outside configured log directories. "
             + "Configure allowed directories or use list_available_logs to find valid paths.");
   }

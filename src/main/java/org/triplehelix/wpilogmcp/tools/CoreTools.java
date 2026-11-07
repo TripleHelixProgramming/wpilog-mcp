@@ -8,6 +8,9 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.util.Comparator;
+import java.nio.file.Path;
+import java.util.Locale;
+import org.triplehelix.wpilogmcp.store.StoreJson;
 import org.triplehelix.wpilogmcp.log.EntryInfo;
 import org.triplehelix.wpilogmcp.log.LogData;
 import org.triplehelix.wpilogmcp.log.LogManager;
@@ -40,15 +43,49 @@ public final class CoreTools {
    * Registers all core tools with the MCP server.
    */
   public static void registerAll(ToolRegistry registry) {
+    registry.registerTool(new ListSourceScopesTool(registry));
     registry.registerTool(new ListAvailableLogsTool());
     registry.registerTool(new ListEntriesTool());
     registry.registerTool(new GetEntryInfoTool());
     registry.registerTool(new ReadEntryTool());
+    registry.registerTool(new RenderChartTool());
     registry.registerTool(new ListLoadedLogsTool());
     registry.registerTool(new ListStructTypesTool());
     registry.registerTool(new ResolveSignalsTool());
     registry.registerTool(new HealthCheckTool());
     // GetGameInfoTool is registered in FrcDomainTools to match the discovery catalog category
+  }
+
+  static final class ListSourceScopesTool extends ToolBase {
+    private final ToolRegistry registry;
+    ListSourceScopesTool(ToolRegistry registry) { this.registry = registry; }
+    public String name() { return "list_source_scopes"; }
+    public String description() {
+      return "List this server's configured source choices before reading logs. No default exists: when several choices exist, ask the user. "
+          + "Returns server_instance_id and source_scopes (scope_id, kind, path, available, and reason when unavailable), total, returned, offset, has_more, next_offset when shortened, and limits. "
+          + "Unavailable directories remain choices; a name match or a reachable neighbor does not choose for the user. "
+          + "Pass the chosen scope_id to list_available_logs; absolute listed paths then identify explicit files. This lists metadata only.";
+    }
+    public JsonObject inputSchema() {
+      return new SchemaBuilder().addIntegerProperty("offset", "Scopes to skip", false, 0)
+          .addIntegerProperty("limit", "Maximum scope descriptors, 1..64", false, 64).build();
+    }
+    protected JsonElement executeInternal(JsonObject arguments) throws Exception {
+      var page = new JsonObject();
+      if (arguments.has("offset")) page.add("offset", arguments.get("offset"));
+      if (arguments.has("limit")) page.add("limit", arguments.get("limit"));
+      for (var key : arguments.keySet()) if (!java.util.Set.of("offset", "limit").contains(key))
+        throw new IllegalArgumentException("Unknown source scope argument " + key);
+      var result = logDirectory.sourceScopes().describe(page);
+      result.addProperty("success", true); result.addProperty("status", "ok");
+      result.addProperty("server_instance_id", registry.serverIdentity().id().toString());
+      if (result.get("total").getAsInt() == 0) {
+        result.addProperty("status", "no_match"); result.addProperty("reason", "No source scopes are configured");
+        var looked = new JsonArray(); looked.add("Configured and leased source roots"); result.add("looked_for", looked);
+        result.addProperty("hint", "Configure a log directory or store on this server");
+      }
+      return result;
+    }
   }
 
   static class ListAvailableLogsTool extends ToolBase {
@@ -59,10 +96,13 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "List WPILOG files available in the configured log directories with friendly names, "
-          + "newest first, paged: log_count is the number matching the filters, offset/limit "
+      return "List WPILOG files in the selected source scope with friendly names, newest first, "
+          + "paged: log_count is the number matching the filters, offset/limit "
           + "select a page (default 50), has_more says whether another page exists. "
-          + "log_directories names the directories searched; one that could not be read (a drive "
+          + "Choose scope_id from list_source_scopes when several sources are configured; ask the user rather than choosing by availability or matching names. "
+          + "The selected scope is returned as source_scope. Import destination preferences never select a read source. "
+          + "log_directories names the directories searched with path, origin (configured or leased), and team; "
+          + "log_directory_paths keeps their plain paths; one that could not be read (a drive "
           + "not mounted, no permission) is listed in skipped with the reason, and the result is "
           + "partial: its logs are missing from the list, not absent. Filters: "
           + "name (substring of the file or friendly name), event (event code, e.g. VACHE), "
@@ -76,7 +116,19 @@ public final class CoreTools {
           + "match it came from: an 'Elimination N' log is read as double-elimination bracket "
           + "match N (sfNm1) since 2023, and a finals log by the log's time (nearest_time). Use "
           + "this tool first to find logs and get match results, then pass the path to other "
-          + "tools.";
+          + "tools. stores lists each store's path and robots; store on a log names its root. "
+          + "A file beyond the reader size limit, or a REV companion with an invalid recorded alignment, carries read_error instead of disappearing. "
+          + "A pulled or imported file kept in its own session carries matching_reason explaining why automatic placement was refused; a calendar-only import explains why no data anchor was available. "
+          + "Mirrored session metadata adds origin, complete, growing, last_sync, and age_sec; offline tools read the same local bytes. "
+          + "A mirror holds the logs its origin pulled or was given, not the origin's captures (read those on the origin); growing marks only an unrefreshed copy of an open capture that an earlier version made. "
+          + "A serial in the first 2000 records adds robot (serial_number, comments, basis logged) wherever the file is; stores supply device or stated identity when none is logged, session metadata, and revlogs companions; "
+          + "Captured members share session.open; while open, session.open_capture names the absolute path of the member currently being written. "
+          + "a companion's sync_method is its recorded alignment, or COMBINED when its offset and this log's were recorded against one capture; "
+          + "For store files only, robot_candidates names serial_number and evidence (kind, value) from import manifests for a unique exact fingerprint; a candidate never assigns a robot. "
+          + "inbox lists waiting or importing files (path, size in bytes, stated_robot when supplied by a batch), "
+          + "or refused files with their reason; "
+          + "unmanaged lists files absent from manifests outside the inbox, unassigned lists imported files awaiting "
+          + "assignment, and moved_to gives original paths and their destinations for seven days.";
     }
 
     static final int DEFAULT_LIMIT = 50;
@@ -93,6 +145,8 @@ public final class CoreTools {
               false)
           .addProperty("since", "string", "Only logs from this date on: 2026-03-20, or an "
               + "ISO-8601 instant", false)
+          .addProperty("view", "string", "Legacy default/all spelling; both stay within the selected scope", false)
+          .addProperty("scope_id", "string", "Explicit source from list_source_scopes; required when several sources are configured", false)
           .addIntegerProperty("offset", "Logs to skip", false, 0)
           .addIntegerProperty("limit", "Maximum logs to return (max 500)", false, DEFAULT_LIMIT)
           .build();
@@ -126,9 +180,13 @@ public final class CoreTools {
         return result;
       }
 
-      var scan = logDirectory.scanLogs();
-      var directories = new JsonArray();
-      scan.directories().forEach(dir -> directories.add(dir.toString()));
+      var view = getOptString(arguments, "view", "default");
+      if (!java.util.Set.of("default", "all").contains(view)) throw new IllegalArgumentException("view must be default or all");
+      var selected = logDirectory.sourceScopes().select(getOptString(arguments, "scope_id", null));
+      var scan = logDirectory.scanLogs(selected);
+      var directoryPaths = new JsonArray();
+      scan.directories().forEach(dir -> directoryPaths.add(dir.toString()));
+      var directories = StoreJson.JSON.toJsonTree(scan.directories().stream().map(logDirectory::directoryOrigin).toList());
       if (scan.noneReadable()) {
         var result = new JsonObject();
         result.addProperty("success", false);
@@ -137,8 +195,10 @@ public final class CoreTools {
                 .map(u -> u.directory() + " " + u.reason())
                 .collect(java.util.stream.Collectors.joining("; ")));
         result.add("log_directories", directories);
+        result.add("log_directory_paths", directoryPaths);
         result.addProperty("hint", "Check that each directory exists and can be read (a "
             + "removable drive may not be mounted)");
+        result.add("source_scope", selected.describe());
         return result;
       }
 
@@ -148,7 +208,7 @@ public final class CoreTools {
       var matchTypeArg = getOptString(arguments, "match_type", null);
       org.triplehelix.wpilogmcp.log.LogDirectory.MatchType matchTypeFilter = null;
       if (matchTypeArg != null) {
-        var code = matchTypeArg.strip().toLowerCase();
+        var code = matchTypeArg.strip().toLowerCase(Locale.ROOT);
         // qm/pm/em are the filename codes for q/p/e
         if (code.length() == 2 && code.endsWith("m")) code = code.substring(0, 1);
         matchTypeFilter = org.triplehelix.wpilogmcp.log.LogDirectory.MatchType.fromString(code);
@@ -164,8 +224,8 @@ public final class CoreTools {
       int limit = Math.min(MAX_LIMIT, Math.max(1, getOptInt(arguments, "limit", DEFAULT_LIMIT)));
       var logs = all.stream()
           .filter(l -> nameFilter == null
-              || l.filename().toLowerCase().contains(nameFilter.toLowerCase())
-              || l.friendlyName().toLowerCase().contains(nameFilter.toLowerCase()))
+              || l.filename().toLowerCase(Locale.ROOT).contains(nameFilter.toLowerCase(Locale.ROOT))
+              || l.friendlyName().toLowerCase(Locale.ROOT).contains(nameFilter.toLowerCase(Locale.ROOT)))
           .filter(l -> eventFilter == null || (l.eventName() != null
               && l.eventName().equalsIgnoreCase(eventFilter)))
           .filter(l -> wantedType == null || (l.matchType() != null
@@ -181,6 +241,7 @@ public final class CoreTools {
       String tbaFailure = null; // the first outage or rejected key ends the page's enrichment
 
       var logsArray = new JsonArray();
+      var knownRobots = org.triplehelix.wpilogmcp.log.RobotCandidates.known(scan);
       for (var log : page) {
         var logObj = new JsonObject();
         logObj.addProperty("friendly_name", log.friendlyName());
@@ -191,7 +252,57 @@ public final class CoreTools {
         if (log.matchNumber() != null) logObj.addProperty("match_number", log.matchNumber());
         if (log.teamNumber() != null) logObj.addProperty("team_number", log.teamNumber());
         logObj.addProperty("size_bytes", log.fileSize());
+        if (log.fileSize() > org.triplehelix.wpilogmcp.log.MappedLogBytes.MAX_FILE_BYTES) logObj.addProperty("read_error",
+            org.triplehelix.wpilogmcp.log.LogFileException.tooLarge(Path.of(log.path()), log.fileSize()).getMessage());
         logObj.addProperty("last_modified", log.lastModified());
+        if (log.stored() != null) {
+          var stored = log.stored();
+          var owner = scan.stores().stream().filter(s -> Path.of(log.path()).startsWith(s.root())).findFirst().orElseThrow();
+          logObj.addProperty("store", owner.root().toString());
+          var revlogs = new JsonArray();
+          var members = owner.allFiles().stream().filter(f -> f.manifestPath().equals(stored.manifestPath())).toList();
+          var clocks = org.triplehelix.wpilogmcp.store.RecordedClocks.origin(owner);
+          for (var f : members) org.triplehelix.wpilogmcp.store.RecordedClocks.revAlignment(f, stored, members, clocks).ifPresent(alignment -> {
+                var rev = new JsonObject();
+                rev.addProperty("path", f.path().toString());
+                rev.addProperty("filename", f.path().getFileName().toString());
+                rev.addProperty("size_bytes", f.file().sizeBytes());
+                rev.addProperty("sync_method", alignment.method().name());
+                if (!alignment.isSuccessful()) rev.addProperty("read_error", alignment.explanation());
+                revlogs.add(rev);
+              });
+          logObj.add("revlogs", revlogs);
+          var session = new JsonObject();
+          session.addProperty("id", stored.session().id());
+          session.addProperty("path", stored.manifestPath().getParent().toString());
+          session.addProperty("started_at", stored.session().startedAt());
+          session.addProperty("ended_at", stored.session().endedAt());
+          session.addProperty("start_basis", stored.session().startBasis());
+          if ("captured".equals(stored.file().provenance().kind())) {
+            session.addProperty("open", stored.session().openCapture() != null);
+            // All rollover members share the session span and liveness; only the manifest
+            // identifies the member that source admission can open as a live recording.
+            if (stored.session().openCapture() != null) session.addProperty("open_capture",
+                stored.manifestPath().getParent().resolve(stored.session().openCapture().path()).normalize().toString());
+          }
+          if (owner.header().mirror() && owner.header().origin() != null) {
+            var origin = owner.header().origin(); var mirrored = origin.sessions().get(stored.session().id());
+            session.addProperty("origin", origin.url());
+            if (mirrored != null) {
+              session.addProperty("complete", mirrored.complete()); session.addProperty("growing", mirrored.growing());
+              session.addProperty("last_sync", mirrored.lastSync());
+              session.addProperty("age_sec", Math.max(0, java.time.Duration.between(java.time.Instant.parse(mirrored.lastSync()), java.time.Instant.now()).getSeconds()));
+            }
+          }
+          logObj.add("session", session);
+          if (stored.file().matchingReason() != null) logObj.addProperty("matching_reason", stored.file().matchingReason());
+        }
+
+        if (log.robot() != null) logObj.add("robot", StoreJson.JSON.toJsonTree(log.robot()));
+        else {
+          var candidates = org.triplehelix.wpilogmcp.log.RobotCandidates.forFile(log.stored(), knownRobots);
+          if (!candidates.isEmpty()) logObj.add("robot_candidates", StoreJson.JSON.toJsonTree(candidates));
+        }
 
         if (tbaAvailable && tbaFailure == null && tbaEnrichment.isEligibleForEnrichment(log)) {
           try {
@@ -207,7 +318,9 @@ public final class CoreTools {
 
       var result = new JsonObject();
       result.addProperty("success", true);
+      result.add("source_scope", selected.describe());
       result.add("log_directories", directories);
+      result.add("log_directory_paths", directoryPaths);
       result.addProperty("log_count", logs.size());
       result.addProperty("total_logs", all.size());
       result.addProperty("offset", Math.min(offset, logs.size()));
@@ -233,6 +346,60 @@ public final class CoreTools {
         cacheStats.addProperty(entry.getKey(), entry.getValue());
       }
       result.add("metadata_cache", cacheStats);
+      if (!scan.stores().isEmpty()) {
+        var stores = new JsonArray();
+        var unmanaged = new JsonArray();
+        var inbox = new JsonArray();
+        var unassigned = new JsonArray();
+        var moved = new JsonArray();
+        for (var store : scan.stores()) {
+          var summary = new JsonObject();
+          summary.addProperty("path", store.root().toString());
+          summary.addProperty("mirror", store.header().mirror());
+          if (store.header().origin() != null) summary.add("origin", StoreJson.JSON.toJsonTree(store.header().origin()));
+          summary.add("robots", StoreJson.JSON.toJsonTree(store.robots().stream().map(r -> r.robot()).toList()));
+          stores.add(summary);
+          for (var entry : store.header().mirror() ? java.util.List.<org.triplehelix.wpilogmcp.store.StoreInbox.Entry>of()
+              : logManager.stores().store(store.root()).inbox().listing()) {
+            var item = StoreJson.JSON.toJsonTree(entry).getAsJsonObject();
+            item.addProperty("store", store.root().toString());
+            inbox.add(item);
+          }
+          for (var path : store.unmanaged()) {
+            var item = new JsonObject();
+            item.addProperty("path", path.toString());
+            item.addProperty("store", store.root().toString());
+            item.addProperty("reason", store.header().mirror()
+                ? "Not listed by a mirror manifest; mirror synchronization never adopts strays"
+                : "Not listed by a manifest; import this file to assign it");
+            unmanaged.add(item);
+          }
+          for (var file : store.files()) {
+            if (file.session() != null) continue;
+            var item = new JsonObject();
+            item.addProperty("path", file.path().toString());
+            item.addProperty("store", store.root().toString());
+            item.addProperty("kind", file.file().kind());
+            item.addProperty("sha256", file.file().sha256());
+            var candidates = org.triplehelix.wpilogmcp.log.RobotCandidates.forFile(file, knownRobots);
+            if (!candidates.isEmpty()) item.add("robot_candidates", StoreJson.JSON.toJsonTree(candidates));
+            unassigned.add(item);
+          }
+          for (var move : store.moved()) {
+            var item = new JsonObject();
+            item.addProperty("original_path", move.originalPath());
+            item.addProperty("moved_to", move.movedTo());
+            item.addProperty("moved_at", move.movedAt());
+            moved.add(item);
+          }
+        }
+        // These inventories are complete, independent of the log page's limit.
+        ResultContract.addLimitedList(result, "stores", stores, stores.size(), stores.size());
+        ResultContract.addLimitedList(result, "inbox", inbox, inbox.size(), inbox.size());
+        ResultContract.addLimitedList(result, "unmanaged", unmanaged, unmanaged.size(), unmanaged.size());
+        ResultContract.addLimitedList(result, "unassigned", unassigned, unassigned.size(), unassigned.size());
+        ResultContract.addLimitedList(result, "moved_to", moved, moved.size(), moved.size());
+      }
       ResultContract.addLimitedList(result, "logs", logsArray,
           Math.max(0, logs.size() - Math.min(offset, logs.size())), limit);
       // A directory that could not be read leaves its logs out of the list: said, not silent
@@ -255,8 +422,10 @@ public final class CoreTools {
       } else if (!scan.unavailable().isEmpty()) {
         result.addProperty("status", "partial");
       }
+      logDirectory.sourceScopes().recheck(selected);
       return result;
     }
+
   }
 
   static class ListEntriesTool extends LogRequiringTool {
@@ -288,7 +457,7 @@ public final class CoreTools {
 
       var entriesArray = new JsonArray();
       var sortedEntries = log.entries().values().stream()
-          .filter(e -> pattern == null || e.name().toLowerCase().contains(pattern.toLowerCase()))
+          .filter(e -> pattern == null || e.name().toLowerCase(Locale.ROOT).contains(pattern.toLowerCase(Locale.ROOT)))
           .sorted(Comparator.comparing(EntryInfo::name))
           .toList();
 
@@ -505,7 +674,17 @@ public final class CoreTools {
           + "(degrees; roll, pitch, yaw). A NaN or infinite value is returned as the string "
           + "'NaN', 'Infinity', or '-Infinity'. Records that could not be decoded are reported in "
           + "warnings. One page is not the whole signal: use get_statistics, find_condition, or "
-          + "find_peaks for claims about a window.";
+          + "find_peaks for claims about a window. max_points reads a numeric entry or field at "
+          + "a resolution: when the window holds more samples than max_points, it is divided "
+          + "into that many buckets of equal duration (bucketed is true, bucket_sec their "
+          + "length), and each bucket with samples gives timestamp_sec (its start), count, min, "
+          + "max, mean (null when no sample is finite), first, and last, so a spike one sample "
+          + "wide is still seen in min or max; with no more samples than max_points the read is "
+          + "exact (bucketed false). A non-numeric entry is read exactly and max_points is "
+          + "reported in skipped. Numeric presentation unwraps declared scalar angle fields "
+          + "before exact output or reduction; angle declares radians/degrees for a plain "
+          + "number, including without max_points. A wildcard [*] remains an arithmetic pool. "
+          + "With neither option, whole-value reads retain their recorded types and values.";
     }
 
     @Override
@@ -517,6 +696,12 @@ public final class CoreTools {
           .addIntegerProperty("limit", "Maximum number of samples to return (default: 100, "
               + "max: " + ReadEntryTool.MAX_SAMPLES + ")", false, 100)
           .addIntegerProperty("offset", "Number of samples to skip", false, 0)
+          .addIntegerProperty("max_points", "Read at a resolution: at most this many buckets "
+              + "of equal duration over the window, each with count, min, max, mean, first, and "
+              + "last (a numeric entry, or an entry with a field path appended, as get_statistics "
+              + "takes); a window with no more samples than this is read exactly (max: "
+              + ReadEntryTool.MAX_SAMPLES + ")", false, null)
+          .addProperty("angle", "string", NumericSignal.ANGLE_PARAM, false)
           .build();
     }
 
@@ -525,6 +710,20 @@ public final class CoreTools {
       validateTimeRange(getOptDouble(arguments, "start_time"),
           getOptDouble(arguments, "end_time"));
       var name = getRequiredString(arguments, "name");
+      var angle = NumericSignal.angleArgument(arguments);
+      Integer maxPoints = arguments.has("max_points") && !arguments.get("max_points").isJsonNull()
+          ? getOptInt(arguments, "max_points", 0) : null;
+      if (maxPoints != null) {
+        if (maxPoints <= 0) {
+          throw new IllegalArgumentException("Parameter 'max_points' must be positive, got "
+              + maxPoints);
+        }
+        maxPoints = Math.min(MAX_SAMPLES, maxPoints);
+        var bucketed = readAtResolution(log, name, maxPoints, arguments);
+        if (bucketed != null) return bucketed;
+        // Not numeric: read exactly below, saying why the resolution was not applied
+      }
+      if (angle != null) return readAtResolution(log, name, null, arguments);
       var allValues = requireEntry(log, name); // not found: error with suggestions
       var problem = log.decodeProblem(name);
       if (allValues.isEmpty() && problem.isPresent()) {
@@ -573,6 +772,107 @@ public final class CoreTools {
       result.addProperty("has_more", offset + paged.size() < totalInRange);
       ResultContract.addLimitedList(result, "samples", samples, Math.max(0, totalInRange - offset),
           limit);
+      if (maxPoints != null) {
+        // The entry exists and is not numeric: the read is exact, and the result says so
+        result.addProperty("bucketed", false);
+        result.addProperty("status", "partial");
+        var skipped = new JsonArray();
+        var section = new JsonObject();
+        section.addProperty("section", "max_points");
+        section.addProperty("reason", "Entry " + name + " is " + result.get("type").getAsString()
+            + ", which has no numeric value to bucket; every sample in the page is returned "
+            + "as logged.");
+        skipped.add(section);
+        result.add("skipped", skipped);
+      }
+      return result;
+    }
+
+    /**
+     * The read at a resolution (see {@link Buckets}): the numeric samples of the entry, or of
+     * the field the name's path names, over the window, exact when they number no more than
+     * {@code maxPoints}, else bucketed. Returns null when the entry exists but is not numeric,
+     * for the exact read to handle; an entry that does not exist is an error with suggestions.
+     * A null resolution is the caller's explicit angle presentation without reduction, whose
+     * paging retains the ordinary read's default.
+     */
+    private JsonObject readAtResolution(LogData log, String name, Integer maxPoints,
+        JsonObject arguments) {
+      NumericSignal signal;
+      try {
+        signal = NumericSignal.resolve(log, name, null).withAngleArgument(arguments);
+      } catch (IllegalArgumentException e) {
+        if (NumericSignal.angleArgument(arguments) == null && log.entries().containsKey(name)) return null;
+        throw e;
+      }
+      var startTime = getOptDouble(arguments, "start_time");
+      var endTime = getOptDouble(arguments, "end_time");
+      int offset = getOptInt(arguments, "offset", 0);
+      if (offset < 0) {
+        throw new IllegalArgumentException("Parameter 'offset' must be non-negative, got " + offset);
+      }
+      var window = new org.triplehelix.wpilogmcp.read.SecondsWindow(startTime, endTime);
+      var filtered = signal.inWindow(window);
+      if (!signal.multiValued()) filtered = signal.unwrap(filtered);
+      int totalInRange = filtered.size();
+
+      var result = new JsonObject();
+      result.addProperty("success", true);
+      result.addProperty("name", name);
+      result.addProperty("type", signal.type());
+      result.addProperty("total_in_range", totalInRange);
+      if (maxPoints != null) result.addProperty("max_points", maxPoints);
+      if (maxPoints == null || totalInRange <= maxPoints) {
+        // Exact: the page is the samples, as the plain read gives them
+        int limit = Math.min(MAX_SAMPLES, getOptInt(arguments, "limit", maxPoints == null ? 100 : maxPoints));
+        if (limit <= 0) {
+          throw new IllegalArgumentException("Parameter 'limit' must be positive, got " + limit);
+        }
+        int end = (int) Math.min(totalInRange, (long) offset + limit);
+        var samples = new JsonArray();
+        for (int i = offset; i < end; i++) {
+          var sample = new JsonObject();
+          sample.addProperty("timestamp_sec", filtered.seconds(i));
+          sample.add("value", sampleToJson(filtered.number(i)));
+          samples.add(sample);
+        }
+        int returned = Math.max(0, end - offset);
+        if (maxPoints != null) result.addProperty("bucketed", false);
+        result.addProperty("returned_count", returned);
+        result.addProperty("offset", offset);
+        result.addProperty("limit", limit);
+        result.addProperty("has_more", offset + returned < totalInRange);
+        ResultContract.addLimitedList(result, "samples", samples,
+            Math.max(0, totalInRange - offset), limit);
+        return result;
+      }
+      var bucketed = Buckets.of(filtered, startTime, endTime, maxPoints);
+      int limit = Math.min(MAX_SAMPLES, getOptInt(arguments, "limit", maxPoints));
+      if (limit <= 0) {
+        throw new IllegalArgumentException("Parameter 'limit' must be positive, got " + limit);
+      }
+      var paged = bucketed.buckets().stream().skip(offset).limit(limit).toList();
+      var samples = new JsonArray();
+      for (var b : paged) {
+        var sample = new JsonObject();
+        sample.addProperty("timestamp_sec", b.start());
+        sample.addProperty("count", b.count());
+        sample.add("min", sampleToJson(b.min()));
+        sample.add("max", sampleToJson(b.max()));
+        sample.add("mean", sampleToJson(b.mean()));
+        sample.add("first", sampleToJson(b.first()));
+        sample.add("last", sampleToJson(b.last()));
+        samples.add(sample);
+      }
+      result.addProperty("bucketed", true);
+      result.addProperty("bucket_sec", bucketed.bucketSec());
+      result.addProperty("bucket_count", bucketed.buckets().size());
+      result.addProperty("returned_count", paged.size());
+      result.addProperty("offset", offset);
+      result.addProperty("limit", limit);
+      result.addProperty("has_more", offset + paged.size() < bucketed.buckets().size());
+      ResultContract.addLimitedList(result, "samples", samples,
+          Math.max(0, bucketed.buckets().size() - offset), limit);
       return result;
     }
   }
@@ -764,62 +1064,65 @@ public final class CoreTools {
         return result;
       }
 
-      var log = logManager.getOrLoad(path);
-      var schemas = log.structSchemas();
-      // Declaration (entry id) order, whatever order the entry map iterates in
-      var usedBy = new java.util.LinkedHashMap<String, java.util.List<String>>();
-      var byId = log.entries().values().stream()
-          .sorted(Comparator.comparingInt(EntryInfo::id)).toList();
-      for (var entry : byId) {
-        var struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(entry.type());
-        if (struct != null) usedBy.computeIfAbsent(struct, k -> new java.util.ArrayList<>())
-            .add(entry.name());
-      }
-      var names = new java.util.LinkedHashSet<>(schemas.loggedStructs());
-      names.addAll(usedBy.keySet());
-      if (names.isEmpty()) {
-        // An empty list is not a listing: the log has no struct types
-        var none = ResponseBuilder.noMatch("The log declares no struct types: no entry has a "
-                + "struct:<Name> type and no /.schema/struct: schema is logged.")
-            .hint("list_entries shows the types the log has; list_struct_types without path "
-                + "lists the built-in WPILib struct layouts.")
-            .addProperty("log_path", log.path())
-            .build();
-        ToolUtils.noteTruncation(none, log);
-        return none;
-      }
-
-      var types = new JsonArray();
-      var warnings = new JsonArray();
-      for (var name : names) {
-        var info = schemas.info(name);
-        var o = info.map(i -> StructDescriptions.describe(schemas, i))
-            .orElseGet(() -> StructDescriptions.missing(name));
-        var entries = usedBy.getOrDefault(name, java.util.List.of());
-        var listed = new JsonArray();
-        entries.stream().limit(ENTRY_LIMIT).forEach(listed::add);
-        o.addProperty("entry_count", entries.size());
-        ResultContract.addLimitedList(o, "entries", listed, entries.size(), ENTRY_LIMIT);
-        types.add(o);
-        if (entries.isEmpty()) continue;
-        if (info.isEmpty() || !info.get().valid()) {
-          warnings.add(entries.size() + " entries of struct " + name + " cannot be decoded: "
-              + o.get("error").getAsString());
-        } else if (info.get().source()
-            == org.triplehelix.wpilogmcp.log.struct.StructSchemas.Source.ASSUMED) {
-          warnings.add(entries.size() + " entries of struct " + name + " are decoded by an "
-              + "assumed template layout; the log records no schema for it.");
+      try (var use = logAccess.acquire(path)) {
+        var log = use.log();
+        var schemas = log.structSchemas();
+        // Declaration (entry id) order, whatever order the entry map iterates in
+        var usedBy = new java.util.LinkedHashMap<String, java.util.List<String>>();
+        var byId = log.entries().values().stream()
+            .sorted(Comparator.comparingInt(EntryInfo::id)).toList();
+        for (var entry : byId) {
+          var struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(entry.type());
+          if (struct != null) usedBy.computeIfAbsent(struct, k -> new java.util.ArrayList<>())
+              .add(entry.name());
         }
+        var names = new java.util.LinkedHashSet<>(schemas.loggedStructs());
+        names.addAll(usedBy.keySet());
+        if (names.isEmpty()) {
+          // An empty list is not a listing: the log has no struct types
+          var none = ResponseBuilder.noMatch("The log declares no struct types: no entry has a "
+                  + "struct:<Name> type and no /.schema/struct: schema is logged.")
+              .hint("list_entries shows the types the log has; list_struct_types without path "
+                  + "lists the built-in WPILib struct layouts.")
+              .addProperty("log_path", log.path())
+              .build();
+          ToolUtils.noteTruncation(none, log);
+          return none;
+        }
+
+        var types = new JsonArray();
+        var warnings = new JsonArray();
+        for (var name : names) {
+          var info = schemas.info(name);
+          var o = info.map(i -> StructDescriptions.describe(schemas, i))
+              .orElseGet(() -> StructDescriptions.missing(name));
+          var entries = usedBy.getOrDefault(name, java.util.List.of());
+          var listed = new JsonArray();
+          entries.stream().limit(ENTRY_LIMIT).forEach(listed::add);
+          o.addProperty("entry_count", entries.size());
+          ResultContract.addLimitedList(o, "entries", listed, entries.size(), ENTRY_LIMIT);
+          types.add(o);
+          if (entries.isEmpty()) continue;
+          if (info.isEmpty() || !info.get().valid()) {
+            warnings.add(entries.size() + " entries of struct " + name + " cannot be decoded: "
+                + o.get("error").getAsString());
+          } else if (info.get().source()
+              == org.triplehelix.wpilogmcp.log.struct.StructSchemas.Source.ASSUMED) {
+            warnings.add(entries.size() + " entries of struct " + name + " are decoded by an "
+                + "assumed template layout; the log records no schema for it.");
+          }
+        }
+        result.addProperty("log_path", log.path());
+        var inputs = new JsonObject();
+        inputs.addProperty("log", log.path());
+        new AccessTrackingLogData(log).recordSessionRange(inputs);
+        result.add("inputs", inputs);
+        result.addProperty("struct_type_count", types.size());
+        result.add("struct_types", types);
+        if (!warnings.isEmpty()) result.add("warnings", warnings);
+        ToolUtils.noteTruncation(result, log);
+        return result;
       }
-      result.addProperty("log_path", log.path());
-      var inputs = new JsonObject();
-      inputs.addProperty("log", log.path());
-      result.add("inputs", inputs);
-      result.addProperty("struct_type_count", types.size());
-      result.add("struct_types", types);
-      if (!warnings.isEmpty()) result.add("warnings", warnings);
-      ToolUtils.noteTruncation(result, log);
-      return result;
     }
   }
 
@@ -831,7 +1134,14 @@ public final class CoreTools {
 
     @Override
     public String description() {
-      return "Verify server is working correctly and get system status.";
+      return "Verify server operation: success, server_version, loaded_logs, tba_available, "
+          + "revlog_sync_in_progress, jvm_memory (used_mb, total_mb, max_mb, free_mb), "
+          + "and jvm_heap_used_mb. sync_disk_cache reports enabled, directory, cached_files "
+          + "and total_size_mb. scan_index_disk_cache reports enabled, directory, entry_count, "
+          + "size_bytes, hits, misses, format_version and recipe_version. Hits and misses count "
+          + "eligible persistent-index lookups since this process started; memory-cache hits "
+          + "and disabled or growing-source bypasses are excluded. Disk sizes are sampled, "
+          + "not a performance or correctness verdict.";
     }
 
     @Override
@@ -849,7 +1159,7 @@ public final class CoreTools {
       result.addProperty("loaded_logs", logManager.getLoadedLogPaths().size());
 
       // TBA availability
-      result.addProperty("tba_available", tbaConfig.isConfigured());
+      result.addProperty("tba_available", tbaClient.isAvailable());
 
       // RevLog sync status
       result.addProperty("revlog_sync_in_progress", logManager.isAnyRevLogSyncInProgress());
@@ -866,37 +1176,37 @@ public final class CoreTools {
       // JVM heap usage (includes caches, tool execution, and all other allocations)
       result.addProperty("jvm_heap_used_mb", logManager.getEstimatedMemoryUsageMb());
 
-      // Disk caches, both in one directory. The revlog sync cache (SyncDiskCache) is in use.
-      // The parsed-log cache (DiskCache) has not been on the load path since 0.8.0 — logs are
-      // parsed lazily from memory-mapped files — but it is still configured and its directory
-      // cleaned at startup, so its state is reported under a label that says so.
+      // The shared directory owns capacity for both representations; only eligible disk
+      // lookups contribute to index counters, so loaded-memory hits cannot imply disk reuse.
       var syncCache = new JsonObject();
       syncCache.addProperty("enabled", logManager.getSyncDiskCache().isEnabled());
-      var parsedLogCache = new JsonObject();
-      parsedLogCache.addProperty("used_by_load_path", false);
-      parsedLogCache.addProperty("enabled", logManager.getDiskCache().isEnabled());
+      var scanCache = new JsonObject();
+      scanCache.addProperty("enabled", logManager.getDiskCache().isEnabled());
       try {
         var cacheDir = logManager.getCacheDirectory().getPath();
         syncCache.addProperty("directory", cacheDir.toString());
-        parsedLogCache.addProperty("directory", cacheDir.toString());
+        scanCache.addProperty("directory", cacheDir.toString());
         if (java.nio.file.Files.isDirectory(cacheDir)) {
-          java.util.Map<Boolean, java.util.List<java.nio.file.Path>> bySyncCache;
           try (var stream = java.nio.file.Files.list(cacheDir)) {
-            bySyncCache = stream.filter(f -> f.toString().endsWith(".msgpack"))
-                .collect(java.util.stream.Collectors.partitioningBy(
-                    f -> f.getFileName().toString().endsWith("-sync.msgpack")));
+            addCacheFileStats(syncCache,
+                stream.filter(f -> f.getFileName().toString().endsWith("-sync.msgpack")).toList());
           }
-          addCacheFileStats(syncCache, bySyncCache.get(true));
-          addCacheFileStats(parsedLogCache, bySyncCache.get(false));
         }
+        var stats = logManager.getDiskCache().scanStats();
+        scanCache.addProperty("entry_count", stats.entryCount());
+        scanCache.addProperty("size_bytes", stats.sizeBytes());
+        scanCache.addProperty("hits", stats.hits());
+        scanCache.addProperty("misses", stats.misses());
       } catch (Exception e) {
         syncCache.addProperty("error", e.getMessage());
-        parsedLogCache.addProperty("error", e.getMessage());
+        scanCache.addProperty("error", e.getMessage());
       }
-      parsedLogCache.addProperty("format_version",
-          org.triplehelix.wpilogmcp.cache.DiskCacheSerializer.CURRENT_FORMAT_VERSION);
+      scanCache.addProperty("format_version",
+          org.triplehelix.wpilogmcp.cache.ScanIndexSerializer.FORMAT_VERSION);
+      scanCache.addProperty("recipe_version",
+          org.triplehelix.wpilogmcp.cache.ScanIndexSerializer.RECIPE_VERSION);
       result.add("sync_disk_cache", syncCache);
-      result.add("parsed_log_disk_cache", parsedLogCache);
+      result.add("scan_index_disk_cache", scanCache);
 
       return result;
     }

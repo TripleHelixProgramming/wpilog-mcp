@@ -1,0 +1,153 @@
+/*
+ * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
+ * SPDX-License-Identifier: MIT
+ */
+package org.triplehelix.wpilogmcp.nt4.server;
+
+import static org.junit.jupiter.api.Assertions.*;
+import com.google.gson.JsonObject;
+import java.io.ByteArrayOutputStream;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.WebSocket;
+import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Test;
+import org.triplehelix.wpilogmcp.nt4.ControlMessage;
+import org.triplehelix.wpilogmcp.nt4.ControlMessage.*;
+import org.triplehelix.wpilogmcp.nt4.ValueFrame;
+import org.triplehelix.wpilogmcp.nt4.client.Nt4Client;
+import org.triplehelix.wpilogmcp.nt4.client.RobotAddress;
+
+class GatewaySocketTest {
+  static final class WireClient implements WebSocket.Listener, AutoCloseable {
+    final BlockingQueue<Object> events = new LinkedBlockingQueue<>();
+    final StringBuilder text = new StringBuilder();
+    final ByteArrayOutputStream binary = new ByteArrayOutputStream();
+    final java.util.concurrent.CompletableFuture<Integer> closed = new java.util.concurrent.CompletableFuture<>();
+    final WebSocket socket;
+    WireClient(int port, String protocol, String... fallbacks) throws Exception {
+      socket = HttpClient.newHttpClient().newWebSocketBuilder().subprotocols(protocol, fallbacks)
+          .buildAsync(RobotAddress.uri("127.0.0.1", port, "wire"), this).get(5, TimeUnit.SECONDS);
+    }
+    @Override public void onOpen(WebSocket socket) { socket.request(1); }
+    @Override public CompletionStage<?> onText(WebSocket socket, CharSequence data, boolean last) {
+      text.append(data);
+      if (last) { events.addAll(ControlMessage.decode(text.toString())); text.setLength(0); }
+      socket.request(1); return null;
+    }
+    @Override public CompletionStage<?> onBinary(WebSocket socket, ByteBuffer data, boolean last) {
+      var part = new byte[data.remaining()]; data.get(part); binary.writeBytes(part);
+      if (last) { events.addAll(ValueFrame.decode(binary.toByteArray())); binary.reset(); }
+      socket.request(1); return null;
+    }
+    @Override public CompletionStage<?> onClose(WebSocket socket, int status, String reason) {
+      closed.complete(status); return null;
+    }
+    @Override public void onError(WebSocket socket, Throwable error) { closed.completeExceptionally(error); }
+    void send(ControlMessage m) { socket.sendText(ControlMessage.encode(List.of(m)), true).join(); }
+    void send(ValueFrame v) { socket.sendBinary(ByteBuffer.wrap(v.encode()), true).join(); }
+    Object next() throws Exception {
+      var event = events.poll(5, TimeUnit.SECONDS); assertNotNull(event, "Expected gateway event"); return event;
+    }
+    @Override public void close() { socket.abort(); }
+  }
+
+  @Test void realClientsSeeEveryChangeOrLatestAndWritesDoNotLeak() throws Exception {
+    try (var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 1234567)) {
+      gateway.start().get(5, TimeUnit.SECONDS); gateway.announce("/x", "int", new JsonObject()).join();
+      try (var all = new WireClient(gateway.port(), Nt4Client.V41);
+           var sampled = new WireClient(gateway.port(), Nt4Client.V40)) {
+        all.send(GatewayCoreTest.sub(0, "", "{\"prefix\":true,\"all\":true,\"periodic\":60}"));
+        sampled.send(GatewayCoreTest.sub(0, "", "{\"prefix\":true,\"periodic\":60}"));
+        assertEquals("/x", ((Announce) all.next()).name()); assertEquals("/x", ((Announce) sampled.next()).name());
+        sampled.send(new Publish("/x", 99, "string", new JsonObject()));
+        var reply = (Announce) sampled.next(); assertEquals("int", reply.type()); assertEquals(99, reply.pubuid());
+        sampled.send(new ValueFrame(99, 500, 2, 999L));
+        var properties = new JsonObject(); properties.addProperty("retained", true);
+        sampled.send(new SetProperties("/x", properties));
+        var ack = (Properties) sampled.next(); assertTrue(ack.ack()); assertTrue(ack.update().get("retained").isJsonNull());
+        // One ordered TCP exchange proves the write was processed before the upstream feed.
+        sampled.send(new ValueFrame(-1, 0, 1, 2.5));
+        assertEquals(new ValueFrame(-1, 1234567, 1, 2.5), sampled.next());
+        for (long n = 1; n <= 3; n++) gateway.value("/x", 100 + n, 2, n).join();
+        gateway.unannounce("/x").join(); // Flushes while the 60 s period is still pending.
+        for (long n = 1; n <= 3; n++) {
+          var value = (ValueFrame) all.next(); assertEquals(n, value.value()); assertEquals(100 + n, value.timestampUs());
+        }
+        assertInstanceOf(Unannounce.class, all.next());
+        var last = (ValueFrame) sampled.next(); assertEquals(3L, last.value()); assertEquals(103, last.timestampUs());
+        assertInstanceOf(Unannounce.class, sampled.next());
+        for (var client : List.of(all, sampled)) {
+          client.send(new ValueFrame(-1, 0, 2, 7L)); assertEquals(-1, ((ValueFrame) client.next()).topicId());
+          assertTrue(client.events.isEmpty(), "No extra write or duplicate values before the barrier");
+        }
+      }
+    }
+  }
+
+  @Test void handshakeNeedsNtPathAndCommonSubprotocolOnAConfiguredNetworkBind() throws Exception {
+    try (var network = new Nt4Gateway(new InetSocketAddress("0.0.0.0", 0), () -> 0)) {
+      network.start().get(5, TimeUnit.SECONDS);
+      try (var valid = new WireClient(network.port(), Nt4Client.V40)) {
+        assertEquals(Nt4Client.V40, valid.socket.getSubprotocol());
+      }
+    }
+    try (var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 0)) {
+      gateway.start().get(5, TimeUnit.SECONDS);
+      var http = HttpClient.newHttpClient();
+      assertThrows(java.util.concurrent.ExecutionException.class, () -> http.newWebSocketBuilder().subprotocols("not-nt4")
+          .buildAsync(RobotAddress.uri("127.0.0.1", gateway.port(), "bad"), new WebSocket.Listener() {}).get(5, TimeUnit.SECONDS));
+      assertThrows(java.util.concurrent.ExecutionException.class, () -> http.newWebSocketBuilder().subprotocols(Nt4Client.V41)
+          .buildAsync(URI.create("ws://127.0.0.1:" + gateway.port() + "/other"), new WebSocket.Listener() {}).get(5, TimeUnit.SECONDS));
+      try (var valid = new WireClient(gateway.port(), Nt4Client.V41)) { assertEquals(Nt4Client.V41, valid.socket.getSubprotocol()); }
+    }
+  }
+
+  /** AdvantageScope 26 requests the root page and opens its WebSocket only after a 2xx answer. */
+  @Test void rootPageAnswersAsNtcoreDoesSoAdvantageScopeOpensItsWebSocket() throws Exception {
+    try (var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 0)) {
+      gateway.start().get(5, TimeUnit.SECONDS);
+      // An Electron fetch speaks HTTP/1.1; the JDK client would otherwise offer an h2c upgrade.
+      var http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
+      // The future bounds the body too: a request timeout ends once the headers arrive.
+      var root = http.sendAsync(java.net.http.HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + gateway.port())).build(),
+          java.net.http.HttpResponse.BodyHandlers.ofString()).get(5, TimeUnit.SECONDS);
+      assertEquals(200, root.statusCode(), "AdvantageScope keeps polling until this succeeds");
+      assertEquals("*", root.headers().firstValue("Access-Control-Allow-Origin").orElse(null),
+          "The request comes from AdvantageScope's page, another origin");
+      assertEquals("<html><head><title>NetworkTables</title></head><body><p>WebSockets must be used to access"
+          + " NetworkTables.</body></html>", root.body());
+      var other = http.sendAsync(java.net.http.HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + gateway.port() + "/other")).build(),
+          java.net.http.HttpResponse.BodyHandlers.ofString()).get(5, TimeUnit.SECONDS);
+      assertEquals(404, other.statusCode(), "Only the root page is new");
+      assertThrows(java.util.concurrent.ExecutionException.class, () -> http.newWebSocketBuilder().subprotocols(Nt4Client.V41)
+          .buildAsync(URI.create("ws://127.0.0.1:" + gateway.port() + "/"), new WebSocket.Listener() {}).get(5, TimeUnit.SECONDS),
+          "A WebSocket still needs /nt/<client name>");
+    }
+  }
+
+  /** After an NT4.1 handshake, AdvantageScope sends clock requests only on a second connection. */
+  @Test void timingConnectionAnswersClockRequestsAndIsNotAnotherDashboard() throws Exception {
+    try (var gateway = new Nt4Gateway(new InetSocketAddress("127.0.0.1", 0), () -> 1234567)) {
+      gateway.start().get(5, TimeUnit.SECONDS); gateway.announce("/x", "int", new JsonObject()).join();
+      try (var main = new WireClient(gateway.port(), Nt4Client.V41, Nt4Client.V40);
+           var timing = new WireClient(gateway.port(), "rtt.networktables.first.wpi.edu")) {
+        assertEquals(Nt4Client.V41, main.socket.getSubprotocol());
+        assertEquals("rtt.networktables.first.wpi.edu", timing.socket.getSubprotocol());
+        main.send(GatewayCoreTest.sub(0, "", "{\"prefix\":true,\"periodic\":60}"));
+        assertEquals("/x", ((Announce) main.next()).name());
+        // The client's send time comes back with the server's clock, as on the main connection.
+        timing.send(new ValueFrame(-1, 55, 2, 42L));
+        assertEquals(new ValueFrame(-1, 1234567, 2, 42L), timing.next());
+        assertEquals(1, gateway.clientCount(), "One dashboard, however many connections it opens");
+        assertTrue(timing.events.isEmpty(), "A timing connection carries nothing else");
+      }
+    }
+  }
+}

@@ -17,12 +17,14 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.triplehelix.wpilogmcp.config.ClientLeases;
 
 /**
  * Client for The Blue Alliance (TBA) API v3.
@@ -150,7 +152,8 @@ public class TbaClient {
    * @return true if TBA API is available
    */
   public boolean isAvailable() {
-    return apiKey != null && !apiKey.isEmpty();
+    var key = ClientLeases.getInstance().keyOr(apiKey);
+    return key != null && !key.isEmpty();
   }
 
   /**
@@ -161,7 +164,7 @@ public class TbaClient {
       return Optional.empty();
     }
 
-    var eventKey = year + eventCode.toLowerCase();
+    var eventKey = year + eventCode.toLowerCase(Locale.ROOT);
 
     // Check cache first
     var cached = eventCache.get(eventKey);
@@ -196,7 +199,7 @@ public class TbaClient {
       return Optional.empty();
     }
 
-    var matchKey = buildMatchKey(year, eventCode.toLowerCase(), matchType, matchNumber);
+    var matchKey = buildMatchKey(year, eventCode.toLowerCase(Locale.ROOT), matchType, matchNumber);
     if (matchKey == null) {
       return Optional.empty();
     }
@@ -255,7 +258,7 @@ public class TbaClient {
     var eventsOpt = getEventsForYear(year);
     if (eventsOpt.isEmpty()) return List.of();
 
-    var lowerQuery = query.toLowerCase();
+    var lowerQuery = query.toLowerCase(Locale.ROOT);
     var results = new java.util.ArrayList<String>();
 
     for (var element : eventsOpt.get()) {
@@ -268,9 +271,9 @@ public class TbaClient {
           ? event.get("city").getAsString() : "";
       String key = event.has("key") ? event.get("key").getAsString() : "";
 
-      if (eventCode.toLowerCase().contains(lowerQuery)
-          || name.toLowerCase().contains(lowerQuery)
-          || city.toLowerCase().contains(lowerQuery)) {
+      if (eventCode.toLowerCase(Locale.ROOT).contains(lowerQuery)
+          || name.toLowerCase(Locale.ROOT).contains(lowerQuery)
+          || city.toLowerCase(Locale.ROOT).contains(lowerQuery)) {
         results.add(eventCode + " (" + name + ")");
         if (results.size() >= maxResults) break;
       }
@@ -286,7 +289,7 @@ public class TbaClient {
       return Optional.empty();
     }
 
-    var eventKey = year + eventCode.toLowerCase();
+    var eventKey = year + eventCode.toLowerCase(Locale.ROOT);
 
     // Check cache first
     var cached = eventMatchesCache.get(eventKey);
@@ -358,7 +361,7 @@ public class TbaClient {
    * Checks if match type is a generic "Elimination" that needs smart matching.
    */
   public static boolean isGenericElimination(String matchType) {
-    var lower = matchType.toLowerCase();
+    var lower = matchType.toLowerCase(Locale.ROOT);
     return (lower.contains("elimination") || lower.contains("elim"))
         && !lower.contains("semi")
         && !lower.contains("quarter")
@@ -630,7 +633,7 @@ public class TbaClient {
       return null;
     }
 
-    var lower = matchType.strip().toLowerCase();
+    var lower = matchType.strip().toLowerCase(Locale.ROOT);
 
     // TBA's own comp_level codes, as list_available_logs reports match types
     switch (lower) {
@@ -695,9 +698,13 @@ public class TbaClient {
   }
 
   private <T> T fetchJson(String endpoint, Class<T> type) throws IOException {
+    // A lease may end after the caller's availability check. Report that as unavailable,
+    // rather than passing null to the HTTP builder and turning it into an internal error.
+    var key = ClientLeases.getInstance().keyOr(apiKey);
+    if (key == null || key.isEmpty()) throw new IOException("No TBA API key is configured");
     var request = HttpRequest.newBuilder()
         .uri(URI.create(baseUrl + endpoint))
-        .header("X-TBA-Auth-Key", apiKey)
+        .header("X-TBA-Auth-Key", key)
         .header("Accept", "application/json")
         .timeout(TIMEOUT)
         .GET()

@@ -22,6 +22,44 @@ public final class EntryDecoder {
 
   private EntryDecoder() {}
 
+  /** The client already decoded primitive NT4 values; only arrays and opaque types need conversion. */
+  public static Object decodeNetworkValue(Object value, String type, StructSchemas schemas) {
+    return decodeNetworkValue(value, type, schemas, false);
+  }
+
+  /** The read API retains unknown wire payloads, independently owned by each returned sample. */
+  public static Object decodeNetworkRecordedValue(Object value, String type, StructSchemas schemas) {
+    return decodeNetworkValue(value, type, schemas, true);
+  }
+
+  private static Object decodeNetworkValue(Object value, String type, StructSchemas schemas,
+      boolean preserveOpaque) {
+    return switch (type) {
+      case "boolean", "int64", "float", "double", "string", "json" -> value;
+      case "structschema" -> new String((byte[]) value, java.nio.charset.StandardCharsets.UTF_8);
+      case "raw" -> ((byte[]) value).clone();
+      case "boolean[]" -> {
+        var list = (java.util.List<?>) value; boolean[] array = new boolean[list.size()];
+        for (int i = 0; i < array.length; i++) array[i] = (Boolean) list.get(i);
+        yield array;
+      }
+      case "int64[]" -> ((java.util.List<?>) value).stream().mapToLong(v -> ((Number) v).longValue()).toArray();
+      case "float[]" -> {
+        var list = (java.util.List<?>) value; float[] array = new float[list.size()];
+        for (int i = 0; i < array.length; i++) array[i] = ((Number) list.get(i)).floatValue();
+        yield array;
+      }
+      case "double[]" -> ((java.util.List<?>) value).stream().mapToDouble(v -> ((Number) v).doubleValue()).toArray();
+      case "string[]" -> ((java.util.List<?>) value).toArray(String[]::new);
+      default -> {
+        var bytes = (byte[]) value;
+        yield isStruct(type) ? preserveOpaque ? schemas.decodeRecorded(type, bytes) : schemas.decode(type, bytes)
+            : preserveOpaque ? bytes.clone()
+            : bytes.length <= 100 ? BinaryReader.bytesToHex(bytes) : "<" + bytes.length + " bytes>";
+      }
+    };
+  }
+
   /**
    * Decodes a value from a DataLogRecord based on its type.
    *
@@ -33,6 +71,17 @@ public final class EntryDecoder {
    *     no usable schema or does not fit it
    */
   public static Object decodeValue(DataLogRecord record, String type, StructSchemas schemas) {
+    return decodeValue(record, type, schemas, false);
+  }
+
+  /** Source-preserving reads keep an opaque payload intact. Legacy tools retain their historical
+   * hex/size preview for unknown types; both paths share primitive and struct decoding. */
+  public static Object decodeRecordedValue(DataLogRecord record, String type, StructSchemas schemas) {
+    return decodeValue(record, type, schemas, true);
+  }
+
+  private static Object decodeValue(DataLogRecord record, String type, StructSchemas schemas,
+      boolean preserveOpaque) {
     return switch (type) {
       case "boolean" -> record.getBoolean();
       case "int64" -> record.getInteger();
@@ -47,11 +96,11 @@ public final class EntryDecoder {
       case "raw" -> record.getRaw();
       default -> {
         if (isStruct(type)) {
-          yield schemas.decode(type, record.getRaw());
+          yield preserveOpaque ? schemas.decodeRecorded(type, record.getRaw()) : schemas.decode(type, record.getRaw());
         }
         logger.debug("Unknown WPILib data type: '{}', falling back to raw bytes", type);
         byte[] raw = record.getRaw();
-        yield raw.length <= 100 ? BinaryReader.bytesToHex(raw) : "<" + raw.length + " bytes>";
+        yield preserveOpaque ? raw : raw.length <= 100 ? BinaryReader.bytesToHex(raw) : "<" + raw.length + " bytes>";
       }
     };
   }

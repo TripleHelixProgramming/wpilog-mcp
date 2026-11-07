@@ -112,9 +112,10 @@ class CacheDirectoryTest {
     @DisplayName("default path contains wpilog-mcp")
     void defaultPathContainsAppName() throws IOException {
       var dir = new CacheDirectory();
-      Path resolved = dir.getPath();
+      // getPath() uses Gradle's isolated cache, whose checkout directory can have any name.
+      Path resolved = dir.resolveOsDefault();
 
-      assertTrue(resolved.toString().contains("wpilog-mcp"),
+      assertTrue(resolved.endsWith(Path.of("wpilog-mcp", "cache")),
           "Default path should contain app name: " + resolved);
     }
   }

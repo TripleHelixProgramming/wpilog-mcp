@@ -93,7 +93,7 @@ class LazyParsedLogTest {
       dblEntry.append(0.0, 99_000_000L);
       log.flush();
     }
-    Thread.sleep(50);
+
     return logFile;
   }
 
@@ -167,7 +167,7 @@ class LazyParsedLogTest {
       try (var log = new DataLogWriter(logFile.toString())) {
         log.flush();
       }
-      Thread.sleep(50);
+
 
       try (var lazy = openLazy(logFile)) {
         assertEquals(0, lazy.entryCount());
@@ -821,13 +821,13 @@ class LazyParsedLogTest {
       // within the keepBytes range, and far enough from the start that we preserve
       // entry metadata and some data.
       int targetPos = -1;
-      int scanPos = startPos;
+      long scanPos = startPos;
       try {
         while (scanPos + 16 <= fullBytes.length) {
-          int nextPos = edu.wpi.first.util.datalog.DataLogAccess.getNextRecord(reader, scanPos);
+          long nextPos = edu.wpi.first.util.datalog.DataLogAccess.getNextRecord(reader, scanPos);
           // Pick a record near keepBytes (within the last 25% of the kept portion)
           if (scanPos > keepBytes * 0.75 && scanPos < keepBytes) {
-            targetPos = scanPos;
+            targetPos = Math.toIntExact(scanPos);
             break;
           }
           scanPos = nextPos;

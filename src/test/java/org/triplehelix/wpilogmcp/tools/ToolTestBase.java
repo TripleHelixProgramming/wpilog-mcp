@@ -23,9 +23,11 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry.Tool;
 abstract class ToolTestBase {
 
   protected List<Tool> tools;
+  private MockLogAdmission logs;
 
   @BeforeEach
   final void setUpToolRegistry() {
+    logs = new MockLogAdmission();
     tools = new ArrayList<>();
     var capturingRegistry = new ToolRegistry() {
       @Override
@@ -45,7 +47,7 @@ abstract class ToolTestBase {
 
   @AfterEach
   void tearDownLogManager() {
-    LogManager.getInstance().unloadAllLogs();
+    logs.close();
   }
 
   protected Tool findTool(String name) {
@@ -56,6 +58,6 @@ abstract class ToolTestBase {
   }
 
   protected void putLogInCache(ParsedLog log) {
-    LogManager.getInstance().testPutLog(log.path(), log);
+    logs.put(log);
   }
 }

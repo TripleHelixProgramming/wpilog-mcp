@@ -5,25 +5,105 @@ set -e
 
 REPO="TripleHelixProgramming/wpilog-mcp"
 INSTALL_DIR="$HOME/.wpilog-mcp"
+tag=""
+pre_release=false
+extension=""
+vscode=""
+interactive=auto
+has_logdir=false
+has_team=false
+advanced=false
 
-echo ""
-echo "========================================"
-echo "  wpilog-mcp Installer"
-echo "========================================"
-echo ""
+# Rotate forwarded arguments to the end; never split or eval a user's path.
+remaining=$#
+while [ "$remaining" -gt 0 ]; do
+    flag=$1
+    shift
+    remaining=$((remaining - 1))
+    case "$flag" in
+        --tag|--install-dir|--logdir|--team|--vscode)
+            if [ "$remaining" -eq 0 ] || [ -z "$1" ]; then
+                echo "ERROR: Missing value for $flag" >&2; exit 2
+            fi
+            value=$1; shift; remaining=$((remaining - 1))
+            case "$flag" in
+                --tag) tag=$value ;;
+                --install-dir) INSTALL_DIR=$value; advanced=true ;;
+                --logdir) set -- "$@" "$flag" "$value"; has_logdir=true; advanced=true ;;
+                --team) set -- "$@" "$flag" "$value"; has_team=true; advanced=true ;;
+                --vscode) vscode=$value ;;
+            esac ;;
+        --pre-release) pre_release=true ;;
+        --with-extension) extension=yes; advanced=true ;;
+        --without-extension) extension=no ;;
+        --interactive) interactive=yes ;;
+        --non-interactive) interactive=no ;;
+        --refresh|--force) set -- "$@" "$flag"; advanced=true ;;
+        *) echo "ERROR: Unknown installer argument: $flag" >&2; exit 2 ;;
+    esac
+done
+if [ -n "$tag" ] && [ "$pre_release" = true ]; then
+    echo "ERROR: Choose --tag or --pre-release, not both." >&2; exit 2
+fi
+case "$tag" in *[!0-9A-Za-z.-]*) echo "ERROR: Invalid release tag: $tag" >&2; exit 2 ;; esac
+# --vscode names the editor for the extension: a WPILib season, or system for any other VS Code.
+case "$vscode" in
+    ""|system|[0-9][0-9][0-9][0-9]) ;;
+    *) echo "ERROR: --vscode takes a WPILib season such as 2026, or system: $vscode" >&2; exit 2 ;;
+esac
+if [ -n "$vscode" ]; then
+    if [ "$extension" = no ]; then
+        echo "ERROR: Choose --vscode or --without-extension, not both." >&2; exit 2
+    fi
+    extension=yes; advanced=true
+fi
 
-# --- Find Java ---
+# Reading /dev/tty also works with curl | sh, whose stdin contains this script.
+if [ "$interactive" = auto ]; then
+    interactive=no
+    if [ -t 1 ] && (exec 3</dev/tty) 2>/dev/null; then interactive=yes; fi
+fi
+# Answers come from the terminal, or from stdin when --interactive is given without one.
+open_answers() {
+    if [ -t 1 ] && (exec 3</dev/tty) 2>/dev/null; then exec 3</dev/tty; else exec 3<&0; fi
+}
+if [ "$interactive" = yes ]; then
+    open_answers
+    if [ -f "$INSTALL_DIR/servers.yaml" ] || [ -f "$INSTALL_DIR/servers.json" ]; then
+        echo "Keeping your existing server settings, including during --refresh."
+    else
+        if [ "$has_logdir" = false ]; then
+            printf 'Log directory [%s/riologs]: ' "$HOME"
+            IFS= read -r answer <&3 || answer=""
+            set -- "$@" --logdir "${answer:-$HOME/riologs}"
+            while :; do
+                printf 'Another log directory (Enter to finish): '
+                IFS= read -r answer <&3 || answer=""
+                [ -n "$answer" ] || break
+                set -- "$@" --logdir "$answer"
+            done
+        fi
+        if [ "$has_team" = false ]; then
+            printf 'Team number (Enter to leave unset): '
+            IFS= read -r answer <&3 || answer=""
+            if [ -n "$answer" ]; then set -- "$@" --team "$answer"; fi
+        fi
+    fi
+    exec 3<&-
+fi
 
 find_java() {
-    # 1. WPILib JDK (scan for latest year)
-    if [ -d "$HOME/wpilib" ]; then
-        for year in $(ls -1rd "$HOME/wpilib"/[0-9][0-9][0-9][0-9] 2>/dev/null); do
-            if [ -x "$year/jdk/bin/java" ]; then
-                echo "Found WPILib $(basename "$year") JDK: $year/jdk/bin/java" >&2
-                echo "$year/jdk/bin/java"
-                return 0
-            fi
-        done
+    # 1. WPILib JDK, newest four-digit year; globbing preserves spaces in the home folder.
+    wpilib_java=""
+    for year in "$HOME"/wpilib/[0-9][0-9][0-9][0-9]; do
+        if [ -x "$year/jdk/bin/java" ]; then
+            wpilib_java="$year/jdk/bin/java"
+        fi
+    done
+    if [ -n "$wpilib_java" ]; then
+        echo "Found WPILib JDK: $wpilib_java" >&2
+        echo "$wpilib_java"
+        return 0
     fi
 
     # 2. JAVA_HOME
@@ -52,160 +132,126 @@ JAVA_VERSION=$("$JAVA_EXEC" -version 2>&1 | head -1)
 echo "Java version: $JAVA_VERSION"
 echo ""
 
-# --- Download latest release ---
+# A tag selects exactly one release; the first public release includes prereleases.
+api="https://api.github.com/repos/$REPO/releases/latest"
+if [ -n "$tag" ]; then api="https://api.github.com/repos/$REPO/releases/tags/$tag"; fi
+if [ "$pre_release" = true ]; then api="https://api.github.com/repos/$REPO/releases?per_page=1"; fi
+RELEASE_JSON=$(curl -fsSL "$api" -H "User-Agent: wpilog-mcp-installer")
+# Read every occurrence, even on one line. Then choose the exact asset name the release
+# workflow publishes, not whichever unrelated *-all.jar happens to be first or last.
+release_field() {
+    printf '%s\n' "$RELEASE_JSON" | awk -v key="$1" '
+      { while (match($0, "\"" key "\"[[:space:]]*:[[:space:]]*\"[^\"]*\"")) {
+          value = substr($0, RSTART, RLENGTH)
+          $0 = substr($0, RSTART + RLENGTH)
+          sub(/^[^:]*:[[:space:]]*"/, "", value); sub(/"$/, "", value)
+          print value
+      } }'
+}
+RELEASE_TAG=$(release_field tag_name | head -1)
+case "$RELEASE_TAG" in v*) ;; *) echo "ERROR: Release tag must start with v: $RELEASE_TAG" >&2; exit 1 ;; esac
+VERSION=${RELEASE_TAG#v}
+case "$VERSION" in ""|*[!0-9A-Za-z.-]*) echo "ERROR: Release tag is not a version: $RELEASE_TAG" >&2; exit 1 ;; esac
+release_asset() {
+    release_field browser_download_url | awk -v ending="/$1" '
+      length($0) >= length(ending) && substr($0, length($0) - length(ending) + 1) == ending { print; exit }'
+}
+JAR_URL=$(release_asset "wpilog-mcp-$VERSION-all.jar")
+VSIX_URL=$(release_asset "wpilog-analyzer-$VERSION.vsix")
+if [ -z "$JAR_URL" ]; then echo "ERROR: No JAR asset found in release $VERSION" >&2; exit 1; fi
+if [ "$extension" = yes ] && [ -z "$VSIX_URL" ]; then
+    echo "ERROR: No VSIX asset found in release $VERSION" >&2; exit 1
+fi
+echo "Installing release $VERSION"
 
-echo "Fetching latest release from GitHub..."
-RELEASE_JSON=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" -H "User-Agent: wpilog-mcp-installer")
-# Match each field's own value: compact JSON also has unrelated URLs on the same line.
-VERSION=$(printf '%s\n' "$RELEASE_JSON" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -1)
-JAR_URL=$(printf '%s\n' "$RELEASE_JSON" | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*-all\.jar\)".*/\1/p' | head -1)
+# One scratch directory owns every download, including a completely fetched fallback script.
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/wpilog-install.XXXXXX")
+trap 'rm -rf "$scratch"' EXIT HUP INT TERM
+TEMP_JAR="$scratch/server.jar"
+curl -fsSL -o "$TEMP_JAR" "$JAR_URL"
 
-if [ -z "$JAR_URL" ]; then
-    echo "ERROR: No JAR asset found in latest release" >&2
-    exit 1
+# The extension is offered only for a WPILib VS Code that the release's JAR finds and the
+# extension accepts. The JAR lists them newest first as a season, a tab and a version; its other
+# lines are notes for the person. Any other VS Code is opt-in with --vscode system, and a JAR
+# that cannot list editors offers nothing.
+tab=$(printf '\t')
+editor_label() {
+    printf 'WPILib VS Code %s (version %s)' "${1%%"$tab"*}" "${1#*"$tab"}"
+}
+offer_extension() {
+    "$JAVA_EXEC" -jar "$TEMP_JAR" install --list-vscode </dev/null >"$scratch/editors" 2>/dev/null || return 0
+    count=0
+    : >"$scratch/offered"
+    while IFS= read -r line; do
+        case "$line" in
+            [0-9][0-9][0-9][0-9]"$tab"?*) count=$((count + 1)); printf '%s\n' "$line" >>"$scratch/offered" ;;
+            ?*) printf '%s\n' "$line" ;;
+        esac
+    done <"$scratch/editors"
+    [ "$count" -gt 0 ] || return 0
+    chosen=""
+    open_answers
+    if [ "$count" -eq 1 ]; then
+        line=$(cat "$scratch/offered")
+        printf 'Install the matching extension into %s? [Y/n]: ' "$(editor_label "$line")"
+        IFS= read -r answer <&3 || answer=""
+        case "$answer" in n|N|no|No) ;; *) chosen=$line ;; esac
+    else
+        echo "Install the matching VS Code extension into:"
+        number=0
+        while IFS= read -r line; do
+            number=$((number + 1))
+            printf '  %s) %s\n' "$number" "$(editor_label "$line")"
+        done <"$scratch/offered"
+        echo "  n) none"
+        while :; do
+            printf 'Choice [1]: '
+            IFS= read -r answer <&3 || answer=""
+            case "$answer" in
+                "") answer=1 ;;
+                n|N|no|No) answer=""; break ;;
+            esac
+            case "$answer" in
+                *[!0-9]*) ;;
+                *) if [ "$answer" -ge 1 ] && [ "$answer" -le "$count" ]; then break; fi ;;
+            esac
+            echo "Choose a number from 1 to $count, or n for none."
+        done
+        if [ -n "$answer" ]; then chosen=$(sed -n "${answer}p" "$scratch/offered"); fi
+    fi
+    exec 3<&-
+    if [ -n "$chosen" ]; then
+        extension=yes; advanced=true; vscode=${chosen%%"$tab"*}
+    fi
+}
+if [ "$interactive" = yes ] && [ -z "$extension" ]; then
+    extension=no
+    if [ -n "$VSIX_URL" ]; then offer_extension; fi
 fi
 
-# The version names files below, so it must look like one
-case "$VERSION" in
-    ""|*[!0-9A-Za-z.-]*)
-        echo "ERROR: The latest release's tag is not a version: $VERSION" >&2
-        exit 1
-        ;;
-esac
-
-echo "Latest version: $VERSION"
-echo ""
-
-# --- Create directory structure ---
-
-JARS_DIR="$INSTALL_DIR/jars"
-BIN_DIR="$INSTALL_DIR/bin"
-mkdir -p "$JARS_DIR" "$BIN_DIR"
-
-# --- Download JAR ---
-
-JAR_NAME="wpilog-mcp-${VERSION}.jar"
-JAR_PATH="$JARS_DIR/$JAR_NAME"
-
-if [ -f "$JAR_PATH" ]; then
-    echo "JAR already exists: $JAR_PATH"
+if [ "$extension" = yes ]; then
+    curl -fsSL -o "$scratch/extension.vsix" "$VSIX_URL"
+    set -- "$@" --with-extension --vsix "$scratch/extension.vsix"
+    if [ -n "$vscode" ]; then set -- "$@" --vscode "$vscode"; fi
+fi
+if "$JAVA_EXEC" -jar "$TEMP_JAR" install --install-dir "$INSTALL_DIR" "$@" 2>"$scratch/error"; then
+    cat "$scratch/error" >&2
+    echo "Install path: release $VERSION install command."
 else
-    echo "Downloading $JAR_NAME..."
-    curl -fsSL -o "$JAR_PATH" "$JAR_URL"
-    echo "Downloaded: $JAR_PATH"
+    install_status=$?
+    cat "$scratch/error" >&2
+    # An actual install error must not trigger a second install or hide a failed refresh.
+    if ! grep -q 'Unknown option' "$scratch/error"; then exit "$install_status"; fi
+    if [ "$WPILOG_INSTALL_FALLBACK" = "1" ]; then
+        echo "ERROR: Release installer fallback already attempted (exit $install_status)." >&2
+        exit "$install_status"
+    fi
+    if [ "$advanced" = true ]; then
+        echo "ERROR: Release $VERSION predates the install command and cannot honor these options. Choose a newer --tag." >&2
+        exit "$install_status"
+    fi
+    INSTALLER_URL="https://raw.githubusercontent.com/$REPO/v$VERSION/install.sh"
+    echo "Install path: release $VERSION predates the install command; using $INSTALLER_URL."
+    curl -fsSL -o "$scratch/installer.sh" "$INSTALLER_URL"
+    WPILOG_INSTALL_FALLBACK=1 sh < "$scratch/installer.sh"
 fi
-
-# --- Create launchers ---
-# As ./gradlew install does: a launcher for this version, and wpilog-mcp, a symlink to it.
-# Earlier versions' launchers and JARs stay until you delete them.
-
-SCRIPT_PATH="$BIN_DIR/wpilog-mcp-$VERSION"
-{
-echo "#!/bin/sh"
-echo "# wpilog-mcp $VERSION launcher"
-echo "# Auto-generated by install.sh"
-cat << 'LAUNCHER'
-
-MAX_HEAP="${WPILOG_MAX_HEAP:-4g}"
-
-# Prefer WPILib JDK (scan for latest year), then JAVA_HOME, then system java
-JAVA_EXEC="java"
-if [ -d "$HOME/wpilib" ]; then
-    for year in $(ls -1rd "$HOME/wpilib"/[0-9][0-9][0-9][0-9] 2>/dev/null); do
-        if [ -x "$year/jdk/bin/java" ]; then
-            JAVA_EXEC="$year/jdk/bin/java"
-            break
-        fi
-    done
-fi
-if [ "$JAVA_EXEC" = "java" ] && [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
-    JAVA_EXEC="$JAVA_HOME/bin/java"
-fi
-
-LAUNCHER
-# The jar path, outside the quoted heredoc so that it expands
-echo "exec \"\$JAVA_EXEC\" -Xmx\"\$MAX_HEAP\" -jar \"$JAR_PATH\" \"\$@\""
-} > "$SCRIPT_PATH"
-chmod +x "$SCRIPT_PATH"
-echo "Created launcher: $SCRIPT_PATH"
-
-# Replace wpilog-mcp itself (an earlier launcher or symlink), never write through it
-CURRENT_PATH="$BIN_DIR/wpilog-mcp"
-rm -f "$CURRENT_PATH"
-ln -s "wpilog-mcp-$VERSION" "$CURRENT_PATH"
-echo "Updated symlink: $CURRENT_PATH -> wpilog-mcp-$VERSION"
-
-# --- Create default config ---
-
-CONFIG_PATH="$INSTALL_DIR/servers.yaml"
-if [ ! -f "$CONFIG_PATH" ]; then
-    cat > "$CONFIG_PATH" << 'CONFIG'
-# wpilog-mcp server configuration
-# Documentation: https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md#configuration
-
-# ---- Defaults ----
-# Top-level settings are inherited by all server configurations below.
-# Individual servers can override any of these.
-
-# Your FRC team number, for The Blue Alliance match data when a log does not record one.
-# Remove the # and put in your number:
-# team: 1234
-
-# Directory containing .wpilog files downloaded from the roboRIO
-logdir: ~/riologs
-# Or several directories, listed together:
-# logdir:
-#   - ~/riologs
-#   - /Volumes/LOGS/archive
-
-# The Blue Alliance API key (get one at https://www.thebluealliance.com/account).
-# Remove the # and put in your key, or set the TBA_API_KEY environment variable instead:
-# tba_key: your-key-here
-
-# ---- Server Configurations ----
-servers:
-
-  # Default: stdio transport for MCP clients (Claude Desktop, etc.)
-  default:
-    transport: stdio
-
-  # HTTP transport for browser-based or multi-client access
-  http:
-    transport: http
-    port: 2363
-
-  # For the project's stress tests (./gradlew stressTest), with the settings above
-  stresstest: {}
-CONFIG
-    echo "Created default config: $CONFIG_PATH"
-    echo "  Edit this file to set your team number and log directory."
-else
-    echo "Config already exists: $CONFIG_PATH (not overwritten)"
-fi
-
-# --- PATH instructions ---
-
-echo ""
-echo "========================================"
-echo "  Installation complete!"
-echo "========================================"
-echo ""
-
-case ":$PATH:" in
-    *":$BIN_DIR:"*)
-        echo "bin directory is already on your PATH."
-        ;;
-    *)
-        echo "Add to your shell profile (~/.zshrc or ~/.bashrc):"
-        echo ""
-        echo "  export PATH=\"\$HOME/.wpilog-mcp/bin:\$PATH\""
-        echo ""
-        echo "Then restart your terminal."
-        ;;
-esac
-
-echo ""
-echo "Usage:"
-echo "  wpilog-mcp                    Start MCP server (stdio)"
-echo "  wpilog-mcp start http         Start HTTP daemon"
-echo ""

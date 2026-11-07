@@ -45,7 +45,67 @@ class ConfigLoaderTest {
     return file;
   }
 
+  @Test void dataStoreIsExperimentalAndDefaultsOffUntilExplicitlyEnabled() throws Exception {
+    var loader = new ConfigLoader();
+    var path = writeYaml("servers: {example: {transport: http}}\n");
+    assertFalse(loader.loadDetailed("example", path).config().dataStoreEnabled());
+    writeYaml("experimental_data_store: true\nservers: {example: {transport: http}}\n");
+    assertTrue(loader.loadDetailed("example", path).config().dataStoreEnabled(), "Explicit defaults can opt servers in");
+    writeYaml("defaults: {experimental_data_store: true}\nservers: {example: {transport: http, experimental_data_store: false}}\n");
+    assertFalse(loader.loadDetailed("example", path).config().dataStoreEnabled(), "A named server can override enabled defaults");
+    writeYaml("defaults: {experimental_data_store: false}\nservers: {example: {transport: http, experimental_data_store: true}}\n");
+    assertTrue(loader.loadDetailed("example", path).config().dataStoreEnabled());
+  }
+
+  @Test
+  void connectLoadsOnlyHomeOrExplicitServerConfigurationAndOnlyTopLevelProjectHints() throws Exception {
+    var oldHome = System.getProperty("user.home");
+    try {
+      System.setProperty("user.home", tempDir.toString());
+      var home = Files.createDirectories(tempDir.resolve(".wpilog-mcp"));
+      var server = home.resolve("servers.json");
+      Files.writeString(server, "{\"servers\":{\"http\":{\"transport\":\"http\",\"port\":43123}}}");
+      var loader = new ConfigLoader(name -> { throw new AssertionError("Must not read project secrets"); });
+      assertEquals(43123, loader.loadHomeDetailed("http", null).config().port());
+      assertEquals(server, loader.loadHomeDetailed("http", null).file());
+      var project = tempDir.resolve(".wpilog-mcp.yaml");
+      Files.writeString(project, "logdir: [logs, more]\nteam: 12\ntba_key: ${SECRET}\n"
+          + "defaults: {team: 33, logdir: forbidden}\nservers: {http: {port: 43124}}\n");
+      var hints = loader.projectLease(tempDir);
+      assertEquals(project, hints.file());
+      assertEquals(List.of("logs", "more"), hints.paths());
+      assertEquals(12, hints.team());
+      assertTrue(hints.serversIgnored());
+      assertEquals(43124, new ConfigLoader().loadHomeDetailed("http", project).config().port());
+      Files.delete(project);
+      Files.writeString(tempDir.resolve(".wpilog-mcp.json"), "{\"logdir\":\"ignored\"}");
+      var absent = loader.projectLease(tempDir);
+      assertNull(absent.file());
+      assertEquals(List.of(), absent.paths());
+      assertNull(absent.team());
+      assertFalse(absent.serversIgnored());
+      Files.delete(server);
+      assertThrows(ConfigException.class, () -> loader.loadHomeDetailed("http", null));
+    } finally {
+      System.setProperty("user.home", oldHome);
+    }
+  }
+
   // ==================== JSON Parsing ====================
+
+  @Test void ephemeralPortsBelongOnlyToForegroundHttp() throws Exception {
+    var loader = new ConfigLoader();
+    var path = writeYaml("servers: {example: {transport: http, port: 0}}\n");
+    assertEquals(0, loader.loadForegroundDetailed("example", path).config().effectivePort());
+    assertThrows(ConfigException.class, () -> loader.loadDetailed("example", path));
+    assertThrows(ConfigException.class, () -> loader.loadHomeDetailed("example", path));
+    for (int invalid : List.of(-1, 65536)) {
+      writeYaml("servers: {example: {transport: http, port: " + invalid + "}}\n");
+      assertThrows(ConfigException.class, () -> loader.loadForegroundDetailed("example", path));
+    }
+    writeYaml("servers: {example: {transport: stdio, port: 0}}\n");
+    assertThrows(ConfigException.class, () -> loader.loadForegroundDetailed("example", path));
+  }
 
   @Nested
   @DisplayName("JSON parsing")
@@ -2130,6 +2190,85 @@ class ConfigLoaderTest {
       assertEquals(2363, config.team());
       assertEquals("old_key", config.tbaKey());
       assertEquals("stdio", config.effectiveTransport());
+    }
+  }
+
+  @Nested
+  @DisplayName("idle_exit_minutes")
+  class IdleExitTests {
+
+    @Test
+    @DisplayName("is read from a server block, in YAML and JSON")
+    void isRead() throws Exception {
+      var yaml = writeYaml("""
+          servers:
+            vscode:
+              transport: http
+              idle_exit_minutes: 30
+          """);
+      assertEquals(30, new ConfigLoader().load("vscode", yaml).idleExitMinutes());
+      assertEquals(java.time.Duration.ofMinutes(30),
+          new ConfigLoader().load("vscode", yaml).idleExit().orElseThrow());
+
+      var json = writeJson("""
+          { "servers": { "vscode": { "transport": "http", "idle_exit_minutes": 5 } } }
+          """);
+      assertEquals(5, new ConfigLoader().load("vscode", json).idleExitMinutes());
+    }
+
+    @Test
+    @DisplayName("is unset by default, and 0 means never: a hand-started server stays")
+    void unsetMeansNever() throws Exception {
+      var file = writeYaml("""
+          servers:
+            http:
+              transport: http
+            never:
+              transport: http
+              idle_exit_minutes: 0
+          """);
+      var http = new ConfigLoader().load("http", file);
+      assertNull(http.idleExitMinutes());
+      assertTrue(http.idleExit().isEmpty());
+      assertTrue(new ConfigLoader().load("never", file).idleExit().isEmpty());
+    }
+
+    @Test
+    @DisplayName("falls through from the defaults")
+    void fallsThroughFromDefaults() throws Exception {
+      var file = writeYaml("""
+          idle_exit_minutes: 15
+          servers:
+            a:
+              transport: http
+            b:
+              transport: http
+              idle_exit_minutes: 45
+          """);
+      assertEquals(15, new ConfigLoader().load("a", file).idleExitMinutes());
+      assertEquals(45, new ConfigLoader().load("b", file).idleExitMinutes());
+    }
+
+    @Test
+    @DisplayName("rejects a negative value")
+    void rejectsNegative() throws Exception {
+      var file = writeYaml("""
+          servers:
+            x:
+              transport: http
+              idle_exit_minutes: -1
+          """);
+      var ex = assertThrows(ConfigException.class, () -> new ConfigLoader().load("x", file));
+      assertTrue(ex.getMessage().contains("idle_exit_minutes"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("the twelve-field constructor leaves it unset")
+    void oldConstructor() {
+      var config = new ServerConfig("s", null, null, null, "http",
+          null, null, null, null, null, null, null);
+      assertNull(config.idleExitMinutes());
+      assertTrue(config.idleExit().isEmpty());
     }
   }
 }

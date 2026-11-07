@@ -40,11 +40,11 @@ class PowerFixtureTest extends FixtureToolTestBase {
   }
 
   @Test
-  @DisplayName("roboRIO 1 without a threshold entry: 6.8 V stated as an assumption; the flag counts")
+  @DisplayName("unknown controller: 6.3 V output-disable threshold stated as an assumption; the flag counts")
   void rio1FlagCounts() {
     var power = call("power_analysis", "brownout_rio1");
     var v = power.getAsJsonObject("voltage_analysis");
-    assertEquals(6.8, v.get("brownout_threshold").getAsDouble());
+    assertEquals(6.3, v.get("brownout_threshold").getAsDouble());
     assertTrue(v.get("brownout_threshold_basis").getAsString().contains("roboRIO 2"));
     var rio = power.getAsJsonObject("rio_brownouts");
     assertEquals(1, rio.get("count").getAsInt());

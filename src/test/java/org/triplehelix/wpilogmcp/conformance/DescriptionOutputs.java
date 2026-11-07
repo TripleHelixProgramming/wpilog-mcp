@@ -35,14 +35,30 @@ final class DescriptionOutputs {
    * by the named test instead.
    */
   static final Map<String, String> VERIFIED_ELSEWHERE = Map.ofEntries(
+      Map.entry("list_sessions | program_pids", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+      Map.entry("list_sessions | last_round_trip_ms", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+      Map.entry("list_sessions | robot_cpu_sec", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+      Map.entry("list_sessions | lines_per_sec", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+      Map.entry("list_sessions | dropped_lines", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+      Map.entry("list_sessions | dropped_before_sync", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+      Map.entry("list_sessions | sample_bytes", "ProviderCaptureTest.enabledRobotStatsAndTailReachFileLiveToolsManifestMetricsAndEveryLogTool"),
+
       Map.entry("detect_anomalies | spike_interval_sec", "ScopeToolsTest.spikeCadence"),
       Map.entry("get_entry_info | decode_problem", "StructToolsFixtureTest.entryInfoMystery"),
       Map.entry("get_statistics | records_in_window", "FieldPathToolsTest.wildcardPools"),
+      Map.entry("list_available_logs | read_error", "LogStoreTest.oversizedWpilogIsRefusedUntouchedAndListedWithTheSameReason"),
+      Map.entry("list_available_logs | stated_robot", "StoreInboxTest.batchIdentityIsListedAndAppliedButALooseDropHasNone"),
+      Map.entry("list_available_logs | serial_number", "LogStoreTest.storeListingUsesManifestsAndReportsStraysAndMoves"),
+      Map.entry("list_available_logs | moved_to", "LogStoreTest.storeListingUsesManifestsAndReportsStraysAndMoves"),
       Map.entry("list_available_logs | has_more", "CoreToolsLogicTest.paging (needs a log directory)"),
+      Map.entry("list_available_logs | log_directory_paths", "DirectoryLeaseTest.directoriesAreSharedAndMetadataUsesEachPathsTeamWithoutCachingIt"),
+      Map.entry("list_available_logs | origin", "DirectoryLeaseTest.directoriesAreSharedAndMetadataUsesEachPathsTeamWithoutCachingIt"),
       Map.entry("list_available_logs | log_directories",
           "CoreToolsLogicTest.severalDirectories (needs a log directory)"),
       Map.entry("list_available_logs | log_count", "CoreToolsLogicTest.paging (needs a log directory)"),
       Map.entry("list_revlog_signals | sync_confidence", "RevLogToolsTest (needs a synced revlog)"),
+      Map.entry("sync_status | max_error_ms", "CombinedRevAlignmentTest.theServerPairsThemWithoutCorrelatingAndTheToolsReportTheCombination"),
+      Map.entry("list_available_logs | sync_method", "CombinedRevAlignmentTest.theServerPairsThemWithoutCorrelatingAndTheToolsReportTheCombination"),
       Map.entry("profile_mechanism | needs_confirmation", "MechanismFixtureTest.stems"),
       Map.entry("get_tba_match_data | lookup_method", "TbaReplayTest.found (no TBA in the corpus)"),
       Map.entry("get_tba_match_data | match_key", "TbaReplayTest.found"),
@@ -97,7 +113,9 @@ final class DescriptionOutputs {
    * Guidance terms present only in situations the fixture sweep does not create, each checked
    * by the named test instead.
    */
-  static final Map<String, String> GUIDANCE_VERIFIED_ELSEWHERE = Map.ofEntries();
+  static final Map<String, String> GUIDANCE_VERIFIED_ELSEWHERE = Map.ofEntries(
+      Map.entry("authoritative_mismatch", "ReplicaTransfersTest.analysisWarnsWhenTheMasterHasDisprovedTheHeldBytes"),
+      Map.entry("legacy_unconfirmed", "ReplicaTransfersTest.unconfirmedAnalysisNeverClaimsMasterAuthority"));
 
   /**
    * Every snake_case term the server guidance names that is neither a tool, a parameter, a

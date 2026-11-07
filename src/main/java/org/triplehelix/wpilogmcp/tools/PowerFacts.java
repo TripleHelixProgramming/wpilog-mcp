@@ -21,8 +21,8 @@ import org.triplehelix.wpilogmcp.log.LogData;
  *
  * <ul>
  *   <li>The brownout threshold: the roboRIO's own setting when logged (AdvantageKit
- *       {@code /SystemStats/BrownoutVoltage}), otherwise the roboRIO 1 default of 6.8 V, stated as
- *       an assumption (a roboRIO 2 defaults to 6.3 V, which the log does not reveal).
+ *       {@code /SystemStats/BrownoutVoltage}), otherwise the roboRIO 1 default of 6.3 V, stated as
+ *       an assumption (a roboRIO 2 defaults to a configurable 6.75 V; without a logged setting the controller is unknown).
  *   <li>The roboRIO's brownout flag (AdvantageKit {@code /SystemStats/BrownedOut}): when it is
  *       logged, its true intervals are the brownouts — the times the roboRIO actually disabled
  *       outputs — as opposed to voltage threshold crossings.
@@ -34,8 +34,9 @@ final class PowerFacts {
 
   private PowerFacts() {}
 
-  /** roboRIO 1 default brownout threshold. */
-  static final double DEFAULT_THRESHOLD = 6.8;
+  /** roboRIO 1 output-disable threshold, not the earlier 6.8 V rail-drop stage.
+   * See <a href="https://docs.wpilib.org/en/stable/docs/software/roborio-info/roborio-brownouts.html#settable-brownout">WPILib's brownout reference</a>. */
+  static final double DEFAULT_THRESHOLD = 6.3;
 
   /** A threshold and where it came from. */
   record Threshold(double volts, String basis, String entry) {
@@ -71,17 +72,12 @@ final class PowerFacts {
         .sorted(Comparator.comparingInt(EntryInfo::id))
         .toList();
     for (var e : logged) {
-      var values = log.values().get(e.name());
-      if (values == null) continue;
-      for (int i = values.size() - 1; i >= 0; i--) {
-        if (values.get(i).value() instanceof Number n && Double.isFinite(n.doubleValue())
-            && n.doubleValue() > 0) {
-          return new Threshold(n.doubleValue(), "logged", e.name());
-        }
-      }
+      var last = log.lastValue(e.name(), value -> value instanceof Number n
+          && Double.isFinite(n.doubleValue()) && n.doubleValue() > 0);
+      if (last.isPresent()) return new Threshold(((Number) last.get().value()).doubleValue(), "logged", e.name());
     }
-    return new Threshold(DEFAULT_THRESHOLD, "default: roboRIO 1 (6.8 V); a roboRIO 2 defaults "
-        + "to 6.3 V, and this log does not record which is installed", null);
+    return new Threshold(DEFAULT_THRESHOLD, "default: roboRIO 1 (6.3 V); a roboRIO 2 defaults "
+        + "to configurable 6.75 V, and this log does not record which is installed", null);
   }
 
   /**
@@ -132,7 +128,10 @@ final class PowerFacts {
       e.addProperty("start", b.start());
       e.addProperty("end", b.end());
       e.addProperty("duration_sec", b.duration());
-      if (b.openAtLogEnd()) e.addProperty("open_at_log_end", true);
+      if (b.openAtLogEnd()) {
+        e.addProperty("open_at_scope_end", true);
+        e.addProperty("open_at_log_end", true); // Compatibility alias.
+      }
       events.add(e);
     }
     o.add("events", events);
@@ -146,17 +145,27 @@ final class PowerFacts {
   /** Volts a crossing must recover above the threshold to end (noisy voltage is one crossing). */
   static final double HYSTERESIS = 0.2;
 
-  /** An interval the battery voltage spent below the threshold (with hysteresis). */
-  record Crossing(double start, double end, double minVolts) {
+  /** An interval the battery voltage spent below the threshold (with hysteresis): the voltage of
+   * its first sample, and of the sample that ended it (null while it is open at the scope's end). */
+  record Crossing(double start, double end, double minVolts, boolean openAtEnd, double startVolts, Double endVolts) {
     double duration() {
       return end - start;
+    }
+
+    JsonObject toJson() {
+      var out = new JsonObject();
+      out.addProperty("start_time", start); out.addProperty("end_time", end);
+      out.addProperty("duration", duration()); out.addProperty("min_voltage", minVolts);
+      out.addProperty("open_at_scope_end", openAtEnd);
+      out.addProperty("open_at_log_end", openAtEnd); // Compatibility alias.
+      return out;
     }
   }
 
   /**
    * Battery voltage over a scope: sample count, minimum (and when), maximum, mean, samples below
    * the threshold, and crossings below it (each ending when the voltage recovers above the
-   * threshold plus {@value #HYSTERESIS} V, or at the scope's last sample).
+   * threshold plus {@value #HYSTERESIS} V, or at that scope window's end).
    */
   record VoltageFacts(int samples, double min, double minTime, double max, double mean,
       long samplesBelow, List<Crossing> crossings) {
@@ -174,6 +183,9 @@ final class PowerFacts {
       o.addProperty("samples_below_threshold", samplesBelow);
       o.addProperty("threshold_crossings", crossings.size());
       o.addProperty("seconds_below_threshold", secondsBelow());
+      var details = new JsonArray();
+      crossings.stream().limit(10).forEach(crossing -> details.add(crossing.toJson()));
+      ResultContract.addLimitedList(o, "crossing_details", details, crossings.size(), 10);
     }
   }
 
@@ -187,36 +199,38 @@ final class PowerFacts {
     double sum = 0;
     long below = 0;
     var crossings = new ArrayList<Crossing>();
-    Double openedAt = null;
-    double openMin = Double.MAX_VALUE;
-    double lastTime = 0;
-    for (var tv : values) {
-      if (!scope.contains(tv.timestamp())) continue;
-      if (!(tv.value() instanceof Number num) || !Double.isFinite(num.doubleValue())) continue;
-      double v = num.doubleValue();
-      double t = tv.timestamp();
-      n++;
-      sum += v;
-      if (v < min) {
-        min = v;
-        minTime = t;
-      }
-      max = Math.max(max, v);
-      if (v < threshold) below++;
-      if (openedAt == null && v < threshold) {
-        openedAt = t;
-        openMin = v;
-      } else if (openedAt != null) {
-        openMin = Math.min(openMin, v);
-        if (v >= threshold + HYSTERESIS) {
-          crossings.add(new Crossing(openedAt, t, openMin));
-          openedAt = null;
+    var segments = scope.split(values);
+    for (int window = 0; window < segments.size(); window++) {
+      Double openedAt = null;
+      double openMin = Double.MAX_VALUE, openVolts = Double.NaN;
+      for (var tv : segments.get(window)) {
+        if (!(tv.value() instanceof Number num) || !Double.isFinite(num.doubleValue())) continue;
+        double v = num.doubleValue();
+        double t = tv.timestamp();
+        n++;
+        sum += v;
+        if (v < min) {
+          min = v;
+          minTime = t;
+        }
+        max = Math.max(max, v);
+        if (v < threshold) below++;
+        if (openedAt == null && v < threshold) {
+          openedAt = t;
+          openMin = v;
+          openVolts = v;
+        } else if (openedAt != null) {
+          openMin = Math.min(openMin, v);
+          if (v >= threshold + HYSTERESIS) {
+            crossings.add(new Crossing(openedAt, t, openMin, false, openVolts, v));
+            openedAt = null;
+          }
         }
       }
-      lastTime = t;
+      // A held low voltage ends at this scope boundary, never at a later window's recovery.
+      if (openedAt != null) crossings.add(new Crossing(openedAt, scope.windows().get(window).end(), openMin, true, openVolts, null));
     }
     if (n == 0) return Optional.empty();
-    if (openedAt != null) crossings.add(new Crossing(openedAt, lastTime, openMin));
     return Optional.of(new VoltageFacts(n, min, minTime, max, sum / n, below, crossings));
   }
 

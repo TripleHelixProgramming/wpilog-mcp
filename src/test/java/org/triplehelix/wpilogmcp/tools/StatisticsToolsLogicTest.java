@@ -161,7 +161,7 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       assertEquals(42.0, resultObj.get("mean").getAsDouble(), 0.001);
       assertEquals(42.0, resultObj.get("min").getAsDouble(), 0.001);
       assertEquals(42.0, resultObj.get("max").getAsDouble(), 0.001);
-      assertEquals(0.0, resultObj.get("std_dev").getAsDouble(), 0.001);
+      assertTrue(resultObj.get("std_dev").isJsonNull(), "one value has no sample standard deviation");
     }
 
     @Test
@@ -305,8 +305,8 @@ class StatisticsToolsLogicTest extends ToolTestBase {
     }
 
     @Test
-    @DisplayName("returns error when all values are NaN")
-    void returnsErrorForAllNaNValues() throws Exception {
+    @DisplayName("reports no match when all values are NaN")
+    void reportsNoMatchForAllNaNValues() throws Exception {
       var log = new MockLogBuilder()
           .setPath("/test/stats_allnan.wpilog")
           .addNumericEntry("/Test/Values",
@@ -324,10 +324,12 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
-      assertFalse(resultObj.get("success").getAsBoolean(),
-          "Should fail when all values are NaN");
-      assertTrue(resultObj.get("error").getAsString().contains("No numeric data in range"),
-          "Error should mention 'No numeric data in range'");
+      assertEquals("no_match", resultObj.get("status").getAsString());
+      assertEquals(0, resultObj.get("count").getAsInt());
+      assertFalse(resultObj.has("mean"));
+      assertEquals(4, resultObj.getAsJsonObject("data_quality").get("nan_filtered").getAsInt());
+      assertTrue(resultObj.get("reason").getAsString().contains("No numeric data in range"));
+      assertTrue(resultObj.has("looked_for")); assertTrue(resultObj.has("hint"));
     }
   }
 
@@ -355,6 +357,29 @@ class StatisticsToolsLogicTest extends ToolTestBase {
 
       assertTrue(resultObj.get("success").getAsBoolean());
       assertEquals(0, resultObj.get("anomaly_count").getAsInt());
+    }
+
+    @Test
+    @DisplayName("counts NaN and both infinities as non-finite and leaves them out of the bounds")
+    void countsEveryNonFiniteSample() throws Exception {
+      var log = new MockLogBuilder()
+          .setPath("/test/anomaly_nonfinite.wpilog")
+          .addNumericEntry("/Test/Mixed", new double[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+              new double[]{1, 2, 3, 4, 5, Double.NaN, Double.POSITIVE_INFINITY,
+                  Double.NEGATIVE_INFINITY, 6, 7, 8})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name", "/Test/Mixed");
+      var result = findTool("detect_anomalies").execute(args).getAsJsonObject();
+      assertEquals(3, result.get("non_finite_count").getAsInt(), result::toString);
+      assertEquals(8, result.get("samples_analyzed").getAsInt());
+      // Finite values 1..8: Q1 at index 1.75 is 2.75, Q3 at index 5.25 is 6.25
+      var bounds = result.getAsJsonObject("bounds");
+      assertEquals(2.75, bounds.get("q1").getAsDouble(), 1e-12);
+      assertEquals(6.25, bounds.get("q3").getAsDouble(), 1e-12);
+      assertEquals(0, result.get("anomaly_count").getAsInt());
     }
 
     @Test
@@ -638,6 +663,33 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       var stats = resultObj.getAsJsonObject("statistics");
       double avgRate = stats.get("avg_rate").getAsDouble();
       assertEquals(10.0, avgRate, 0.5);
+    }
+
+    @Test
+    @DisplayName("each point's rate comes from its own intervals, the first and last too")
+    void eachRateUsesItsOwnIntervals() throws Exception {
+      // Uneven last interval: forward difference at the first point, interval-weighted central
+      // differences inside, backward difference at the last.
+      var log = new MockLogBuilder()
+          .setPath("/test/roc_ends.wpilog")
+          .addNumericEntry("/Position", new double[]{0, 1, 2, 3.5}, new double[]{0, 1, 4, 9})
+          .build();
+      putLogInCache(log);
+      var args = new JsonObject();
+      args.addProperty("path", log.path());
+      args.addProperty("name", "/Position");
+      var result = findTool("rate_of_change").execute(args).getAsJsonObject();
+      var samples = result.getAsJsonArray("samples");
+      double[] times = {0, 1, 2, 3.5};
+      double[] rates = {1, 2, (1.5 * 3 + 1 * (5 / 1.5)) / 2.5, 5 / 1.5};
+      assertEquals(4, samples.size(), samples::toString);
+      for (int i = 0; i < 4; i++) {
+        var sample = samples.get(i).getAsJsonObject();
+        assertEquals(times[i], sample.get("timestamp_sec").getAsDouble(), 1e-12);
+        assertEquals(rates[i], sample.get("rate").getAsDouble(), 1e-12, "rate " + i);
+      }
+      assertEquals((rates[0] + rates[1] + rates[2] + rates[3]) / 4,
+          result.getAsJsonObject("statistics").get("avg_rate").getAsDouble(), 1e-12);
     }
 
     @Test
@@ -1057,8 +1109,8 @@ class StatisticsToolsLogicTest extends ToolTestBase {
       // Zero variance → correlation is undefined: null (NaN is not valid JSON), explained
       assertTrue(resultObj.get("correlation").isJsonNull(),
           "Correlation with constant signal should be null");
-      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("near-zero variance"),
-          "Should warn about zero variance: " + resultObj);
+      assertTrue(resultObj.getAsJsonArray("warnings").toString().contains("constant at floating-point precision"),
+          "Should explain the constant-value rule: " + resultObj);
     }
 
     @Test
@@ -1322,9 +1374,8 @@ class StatisticsToolsLogicTest extends ToolTestBase {
     @Test
     @DisplayName("computes correlation for very small-scale signals")
     void testCorrelationWithSmallScaleSignals() throws Exception {
-      // Two perfectly correlated signals at small scale.
-      // The variance threshold is 1e-15 * n, so we need denX > 5e-15.
-      // Using 1e-5 scale: denX = sum((xi-mean)^2) ~ 1e-9, well above threshold.
+      // Two perfectly correlated signals at 1e-5 scale. Their logged ranges exceed
+      // the four-ulp constancy tolerance; changing units must not change correlation.
       var log = new MockLogBuilder()
           .setPath("/test/corr_small.wpilog")
           .addNumericEntry("/A",

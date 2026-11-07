@@ -11,6 +11,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -36,6 +37,22 @@ class RevLogParserNativeFormatTest {
   void setUp() throws IOException {
     DbcDatabase dbc = new DbcLoader().load(null);
     parser = new RevLogParser(dbc);
+  }
+
+  @Test void selectiveNativeReadKeepsOnlyTheRequestedModelAndSignal() throws Exception {
+    byte[] data = new byte[8]; data[6] = (byte) 0x80; // Status 0 declares SPARK MAX.
+    var path = writeRevlog("selection.revlog", buildRecord(2, concat(
+        buildPeriodicChunk(1000, 0x0205b804, data), buildPeriodicChunk(2000, 0x0205b804, data))));
+    var dbc = new DbcLoader().load(null);
+    var selected = RevLogParser.selected(dbc, 1 << 20, 1 << 20,
+        java.util.Set.of("SparkMax_4/AppliedOutput")).parse(path);
+    assertEquals(java.util.Set.of("SparkMax_4/AppliedOutput"), selected.signals().keySet());
+    var signal = selected.signals().get("SparkMax_4/AppliedOutput");
+    assertEquals(List.of(1., 2.), signal.values().stream().map(v -> v.timestamp()).toList());
+    assertEquals(List.of(0., 0.), signal.values().stream().map(v -> ((Number) v.value()).doubleValue()).toList());
+    assertEquals(parser.parse(path).signals().get("SparkMax_4/AppliedOutput"), signal);
+    assertTrue(RevLogParser.selected(dbc, 1 << 20, 1 << 20,
+        java.util.Set.of("SparkFlex_4/AppliedOutput")).parse(path).signals().isEmpty());
   }
 
   /**

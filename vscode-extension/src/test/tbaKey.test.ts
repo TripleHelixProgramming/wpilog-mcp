@@ -3,7 +3,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as fs from "fs";
 import * as path from "path";
-import { TBA_KEY_SETTING, planTbaKeyMove, settingsThatRestartTheServer } from "../tbaKey";
+import { TBA_KEY_SETTING, planTbaKeyMove } from "../tbaKey";
 
 const KEY = "a".repeat(64);
 const OTHER = "b".repeat(64);
@@ -118,28 +118,6 @@ test("no message ever contains the key", () => {
 const manifest = JSON.parse(
   fs.readFileSync(path.join(__dirname, "..", "..", "package.json"), "utf8")
 );
-
-test("every declared setting but the key field restarts the server", () => {
-  const keys = settingsThatRestartTheServer(manifest);
-  assert.ok(!keys.includes(TBA_KEY_SETTING));
-  assert.ok(keys.includes("wpilog-mcp.logDirectory"));
-  const declared = Object.keys(manifest.contributes.configuration[0].properties);
-  assert.deepEqual([...keys].sort(), declared.filter((k) => k !== TBA_KEY_SETTING).sort());
-});
-
-test("with no declared settings to go by, any change in the section restarts the server", () => {
-  for (const broken of [undefined, {}, { contributes: {} }, { contributes: { configuration: [] } },
-    { contributes: { configuration: { properties: { [TBA_KEY_SETTING]: {} } } } }]) {
-    assert.deepEqual(settingsThatRestartTheServer(broken), ["wpilog-mcp"], JSON.stringify(broken));
-  }
-});
-
-test("a configuration given as one object, not a list of sections, is read too", () => {
-  const keys = settingsThatRestartTheServer({
-    contributes: { configuration: { properties: { "wpilog-mcp.maxHeap": {}, [TBA_KEY_SETTING]: {} } } },
-  });
-  assert.deepEqual(keys, ["wpilog-mcp.maxHeap"]);
-});
 
 test("a key pasted after the stored key, in a field still showing it, is the new key", () => {
   // The Settings editor refreshes a focused field only once the user leaves it

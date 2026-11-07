@@ -36,7 +36,7 @@ public final class TimeScope {
     }
 
     public boolean contains(double t) {
-      return t >= start && (endInclusive ? t <= end : t < end);
+      return org.triplehelix.wpilogmcp.read.TimeWindows.contains(start, end, endInclusive, t);
     }
   }
 
@@ -50,6 +50,33 @@ public final class TimeScope {
       + "seconds, half-open [start, end) like get_match_phases segments, e.g. the intervals "
       + "returned by find_condition (whose end is the sample where the condition turned false). "
       + "Intersected with scope and start_time/end_time.";
+
+  public static final String LAST_SECONDS_DESCRIPTION = "Last N seconds ending at the call's current robot time for an open capture, or the last record for a closed log. N must be positive and finite. Cannot combine with start_time/end_time; scope and windows still intersect. inputs.window gives the resolved absolute bounds.";
+
+  static boolean acceptsRelative(JsonObject properties) {
+    return properties != null && List.of("scope", "windows", "start_time", "end_time").stream().anyMatch(properties::has);
+  }
+
+  /** Resolve once on the acquired view, before any tool reads entries or the writer appends. */
+  static JsonObject relativeArguments(LogData log, JsonObject arguments) {
+    if (!arguments.has("last_seconds") || arguments.get("last_seconds").isJsonNull()) return arguments;
+    var number = arguments.get("last_seconds");
+    if (!number.isJsonPrimitive() || !number.getAsJsonPrimitive().isNumber()) {
+      throw new IllegalArgumentException("last_seconds must be a positive finite number");
+    }
+    double seconds = number.getAsDouble();
+    if (!Double.isFinite(seconds) || seconds <= 0) throw new IllegalArgumentException("last_seconds must be a positive finite number");
+    for (String key : List.of("start_time", "end_time")) if (arguments.has(key) && !arguments.get(key).isJsonNull()) {
+      throw new IllegalArgumentException("last_seconds cannot be combined with " + key);
+    }
+    double end = log.timeScopeEnd();
+    var resolved = arguments.deepCopy(); resolved.remove("last_seconds");
+    // A declaration-only source has the empty LogData origin of zero. A finite negative
+    // live clock is still valid evidence; do not manufacture an inverted interval from it.
+    resolved.addProperty("start_time", Math.min(end, Math.max(log.minTimestamp(), end - seconds)));
+    resolved.addProperty("end_time", end);
+    return resolved;
+  }
 
   /** Windows listed in {@link #toJson()}, at most; the count is always complete. */
   static final int LISTED_WINDOWS = 50;
@@ -225,7 +252,7 @@ public final class TimeScope {
     var clipped = new ArrayList<Window>();
     for (var w : base) {
       double s = start != null ? Math.max(w.start(), start) : w.start();
-      boolean clippedEnd = end != null && end <= w.end();
+      boolean clippedEnd = end != null && end < w.end();
       double e = clippedEnd ? end : w.end();
       boolean inclusive = clippedEnd || w.endInclusive();
       if (e > s || (e == s && inclusive)) clipped.add(new Window(s, e, inclusive));
@@ -268,6 +295,18 @@ public final class TimeScope {
     return out;
   }
 
+  /** As {@link #split(List)}, by position over samples in time order, with nothing copied. */
+  public List<org.triplehelix.wpilogmcp.read.NumericSamples> split(org.triplehelix.wpilogmcp.read.NumericSamples samples) {
+    var out = new ArrayList<org.triplehelix.wpilogmcp.read.NumericSamples>(windows.size());
+    for (var w : windows) {
+      int from = org.triplehelix.wpilogmcp.read.TimeWindows.bound(samples.size(), i -> samples.seconds(i) < w.start());
+      int to = from;
+      while (to < samples.size() && w.contains(samples.seconds(to))) to++;
+      out.add(org.triplehelix.wpilogmcp.read.NumericSamples.range(samples, from, to));
+    }
+    return out;
+  }
+
   /** The values in any window, in time order. */
   public List<TimestampedValue> filter(List<TimestampedValue> values) {
     if (windows.size() == 1) return split(values).get(0);
@@ -277,14 +316,7 @@ public final class TimeScope {
   }
 
   private static int firstAtOrAfter(List<TimestampedValue> values, double t) {
-    int lo = 0;
-    int hi = values.size();
-    while (lo < hi) {
-      int mid = (lo + hi) >>> 1;
-      if (values.get(mid).timestamp() < t) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
+    return org.triplehelix.wpilogmcp.read.TimeWindows.bound(values.size(), i -> values.get(i).timestamp() < t);
   }
 
   /** Whether {@code t} lies in any window. */

@@ -23,17 +23,19 @@ class LogRequiringToolTest {
 
   private LogManager logManager;
   private MockLogBuilder mockLogBuilder;
+  private MockLogAdmission logs;
 
   @BeforeEach
   void setUp() {
     logManager = LogManager.getInstance();
     logManager.unloadAllLogs();
+    logs = new MockLogAdmission();
     mockLogBuilder = new MockLogBuilder();
   }
 
   @AfterEach
   void tearDown() {
-    logManager.unloadAllLogs();
+    logs.close();
   }
 
   // ===== TEST TOOL IMPLEMENTATIONS =====
@@ -121,7 +123,7 @@ class LogRequiringToolTest {
   }
 
   private void putLog(ParsedLog log) {
-    logManager.testPutLog(log.path(), log);
+    logs.put(log);
   }
 
   // ===== SCHEMA INJECTION TESTS =====

@@ -1,17 +1,71 @@
 # wpilog-mcp installer for Windows
 # Usage: irm https://raw.githubusercontent.com/TripleHelixProgramming/wpilog-mcp/main/install.ps1 | iex
-
 $ErrorActionPreference = "Stop"
 $repo = "TripleHelixProgramming/wpilog-mcp"
 $installDir = Join-Path $env:USERPROFILE ".wpilog-mcp"
-
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  wpilog-mcp Installer" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-
-# --- Find Java ---
+$tag = $null
+$preRelease = $false
+$extension = $null
+$vscode = $null
+$interactive = -not [Console]::IsInputRedirected
+$hasLogdir = $false
+$hasTeam = $false
+$advanced = $false
+$installArgs = @()
+for ($i = 0; $i -lt $args.Count; $i++) {
+    $flag = $args[$i]
+    switch ($flag) {
+        { $_ -in '--tag', '--install-dir', '--logdir', '--team', '--vscode' } {
+            $i++
+            if ($i -ge $args.Count -or [string]::IsNullOrWhiteSpace($args[$i])) { throw "Missing value for $flag" }
+            $value = $args[$i]
+            switch ($flag) {
+                '--tag' { $tag = $value }
+                '--install-dir' { $installDir = $value; $advanced = $true }
+                '--logdir' { $installArgs += @($flag, $value); $hasLogdir = $true; $advanced = $true }
+                '--team' { $installArgs += @($flag, $value); $hasTeam = $true; $advanced = $true }
+                '--vscode' { $vscode = $value }
+            }
+        }
+        '--pre-release' { $preRelease = $true }
+        '--with-extension' { $extension = $true; $advanced = $true }
+        '--without-extension' { $extension = $false }
+        '--interactive' { $interactive = $true }
+        '--non-interactive' { $interactive = $false }
+        { $_ -in '--refresh', '--force' } { $installArgs += $flag; $advanced = $true }
+        default { throw "Unknown installer argument: $flag" }
+    }
+}
+if ($tag -and $preRelease) { throw 'Choose --tag or --pre-release, not both.' }
+if ($tag -and $tag -notmatch '^[0-9A-Za-z.-]+$') { throw "Invalid release tag: $tag" }
+# --vscode names the editor for the extension: a WPILib season, or system for any other VS Code.
+if ($vscode) {
+    if ($vscode -cnotmatch '^(system|[0-9]{4})$') { throw "--vscode takes a WPILib season such as 2026, or system: $vscode" }
+    if ($extension -eq $false) { throw 'Choose --vscode or --without-extension, not both.' }
+    $extension = $true
+    $advanced = $true
+}
+if ($interactive) {
+    if ((Test-Path (Join-Path $installDir 'servers.yaml')) -or (Test-Path (Join-Path $installDir 'servers.json'))) {
+        Write-Host 'Keeping your existing server settings, including during --refresh.'
+    } else {
+        if (-not $hasLogdir) {
+            $defaultLogdir = Join-Path $env:USERPROFILE 'riologs'
+            $answer = Read-Host "Log directory [$defaultLogdir]"
+            if ([string]::IsNullOrWhiteSpace($answer)) { $answer = $defaultLogdir }
+            $installArgs += @('--logdir', $answer)
+            while ($true) {
+                $answer = Read-Host 'Another log directory (Enter to finish)'
+                if ([string]::IsNullOrWhiteSpace($answer)) { break }
+                $installArgs += @('--logdir', $answer)
+            }
+        }
+        if (-not $hasTeam) {
+            $answer = Read-Host 'Team number (Enter to leave unset)'
+            if (-not [string]::IsNullOrWhiteSpace($answer)) { $installArgs += @('--team', $answer) }
+        }
+    }
+}
 
 function Find-Java {
     # 1. WPILib JDK (scan for latest year)
@@ -19,16 +73,16 @@ function Find-Java {
         (Join-Path $env:USERPROFILE "wpilib"),
         "C:\Users\Public\wpilib"
     )
-    foreach ($base in $wpilibDirs) {
+    $candidates = foreach ($base in $wpilibDirs) {
         if (Test-Path $base) {
-            $years = Get-ChildItem -Path $base -Directory | Where-Object { $_.Name -match '^\d{4}$' } | Sort-Object Name -Descending
-            foreach ($year in $years) {
-                $javaExe = Join-Path $year.FullName "jdk\bin\java.exe"
-                if (Test-Path $javaExe) {
-                    Write-Host "Found WPILib $($year.Name) JDK: $javaExe" -ForegroundColor Green
-                    return $javaExe
-                }
-            }
+            Get-ChildItem -Path $base -Directory | Where-Object { $_.Name -match '^\d{4}$' }
+        }
+    }
+    foreach ($year in ($candidates | Sort-Object Name -Descending)) {
+        $javaExe = Join-Path $year.FullName "jdk\bin\java.exe"
+        if (Test-Path $javaExe) {
+            Write-Host "Found WPILib $($year.Name) JDK: $javaExe" -ForegroundColor Green
+            return $javaExe
         }
     }
 
@@ -61,180 +115,109 @@ $ErrorActionPreference = "Stop"
 Write-Host "Java version: $versionOutput"
 Write-Host ""
 
-# --- Download latest release ---
-
-# GitHub needs TLS 1.2, which Windows PowerShell 5.1 may not offer by default
+# GitHub needs TLS 1.2, which Windows PowerShell 5.1 may not offer by default.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-
-Write-Host "Fetching latest release from GitHub..." -ForegroundColor Cyan
-$releaseInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{ "User-Agent" = "wpilog-mcp-installer" }
+$api = "https://api.github.com/repos/$repo/releases/latest"
+if ($tag) { $api = "https://api.github.com/repos/$repo/releases/tags/$tag" }
+if ($preRelease) { $api = "https://api.github.com/repos/$repo/releases?per_page=1" }
+$releases = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'wpilog-mcp-installer' }
+$releaseInfo = @($releases)[0]
+if ($releaseInfo.tag_name -cnotmatch '^v') { throw "Release tag must start with v: $($releaseInfo.tag_name)" }
 $version = $releaseInfo.tag_name -replace '^v', ''
-$jarAsset = $releaseInfo.assets | Where-Object { $_.name -like "*-all.jar" } | Select-Object -First 1
+if ($version -notmatch '^[0-9A-Za-z.-]+$') { throw "Release tag is not a version: $($releaseInfo.tag_name)" }
+$jarAsset = $releaseInfo.assets | Where-Object { $_.name -eq "wpilog-mcp-$version-all.jar" } | Select-Object -First 1
+$vsixAsset = $releaseInfo.assets | Where-Object { $_.name -eq "wpilog-analyzer-$version.vsix" } | Select-Object -First 1
+if (-not $jarAsset) { throw "No JAR asset found in release $version" }
+if ($extension -and -not $vsixAsset) { throw "No VSIX asset found in release $version" }
+Write-Host "Installing release $version"
 
-if (-not $jarAsset) {
-    Write-Host "ERROR: No JAR asset found in release $($releaseInfo.tag_name)" -ForegroundColor Red
-    exit 1
-}
+$scratch = Join-Path ([System.IO.Path]::GetTempPath()) ('wpilog-install-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $scratch | Out-Null
+try {
+    $temporaryJar = Join-Path $scratch 'server.jar'
+    $errorFile = Join-Path $scratch 'stderr.txt'
+    Invoke-WebRequest -Uri $jarAsset.browser_download_url -OutFile $temporaryJar -UseBasicParsing
 
-# The version names files below, so it must look like one
-if ($version -notmatch '^[0-9A-Za-z.-]+$') {
-    Write-Host "ERROR: The latest release's tag is not a version: $($releaseInfo.tag_name)" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "Latest version: $version" -ForegroundColor Green
-Write-Host ""
-
-# --- Create directory structure ---
-
-$jarsDir = Join-Path $installDir "jars"
-$binDir = Join-Path $installDir "bin"
-New-Item -ItemType Directory -Path $jarsDir -Force | Out-Null
-New-Item -ItemType Directory -Path $binDir -Force | Out-Null
-
-# --- Download JAR ---
-
-$jarName = "wpilog-mcp-${version}.jar"
-$jarPath = Join-Path $jarsDir $jarName
-
-if (Test-Path $jarPath) {
-    Write-Host "JAR already exists: $jarPath" -ForegroundColor Yellow
-} else {
-    Write-Host "Downloading $($jarAsset.name)..." -ForegroundColor Cyan
-    Invoke-WebRequest -Uri $jarAsset.browser_download_url -OutFile $jarPath -UseBasicParsing
-    Write-Host "Downloaded: $jarPath" -ForegroundColor Green
-}
-
-# --- Create launchers ---
-# As ./gradlew install does: a launcher for this version, and wpilog-mcp.bat, a copy of it.
-# Earlier versions' launchers and JARs stay until you delete them.
-
-$batContent = @"
-@echo off
-setlocal EnableDelayedExpansion
-REM wpilog-mcp $version launcher
-REM Auto-generated by install.ps1
-
-REM Memory management is automatic. Set WPILOG_MAX_HEAP to control heap size.
-set MAX_HEAP=%WPILOG_MAX_HEAP%
-if "%MAX_HEAP%"=="" set MAX_HEAP=4g
-
-REM Prefer WPILib JDK if available (scans for latest year)
-set JAVA_EXEC=java
-set WPILIB_FOUND=0
-for /f "tokens=*" %%D in ('dir /b /ad /o-n "%USERPROFILE%\wpilib" 2^>nul') do (
-    if "!WPILIB_FOUND!"=="0" if exist "%USERPROFILE%\wpilib\%%D\jdk\bin\java.exe" (
-        set JAVA_EXEC=%USERPROFILE%\wpilib\%%D\jdk\bin\java.exe
-        set WPILIB_FOUND=1
-    )
-)
-if "!WPILIB_FOUND!"=="0" (
-    for /f "tokens=*" %%D in ('dir /b /ad /o-n "C:\Users\Public\wpilib" 2^>nul') do (
-        if "!WPILIB_FOUND!"=="0" if exist "C:\Users\Public\wpilib\%%D\jdk\bin\java.exe" (
-            set JAVA_EXEC=C:\Users\Public\wpilib\%%D\jdk\bin\java.exe
-            set WPILIB_FOUND=1
-        )
-    )
-)
-
-"%JAVA_EXEC%" -Xmx%MAX_HEAP% -jar "$($jarsDir.Replace('/', '\'))\$jarName" %*
-"@
-# cmd.exe reads batch files with CRLF line endings
-$batContent = $batContent -replace "`r?`n", "`r`n"
-
-$batPath = Join-Path $binDir "wpilog-mcp-$version.bat"
-[System.IO.File]::WriteAllText($batPath, $batContent, [System.Text.Encoding]::ASCII)
-Write-Host "Created launcher: $batPath" -ForegroundColor Green
-
-$currentBat = Join-Path $binDir "wpilog-mcp.bat"
-Copy-Item -Path $batPath -Destination $currentBat -Force
-Write-Host "Updated current: $currentBat" -ForegroundColor Green
-
-# --- Create default config ---
-
-$configPath = Join-Path $installDir "servers.yaml"
-if (-not (Test-Path $configPath)) {
-    # Single-quoted, so that PowerShell expands nothing in it
-    $configContent = @'
-# wpilog-mcp server configuration
-# Documentation: https://github.com/TripleHelixProgramming/wpilog-mcp/blob/main/doc/STANDALONE.md#configuration
-
-# ---- Defaults ----
-# Top-level settings are inherited by all server configurations below.
-# Individual servers can override any of these.
-
-# Your FRC team number, for The Blue Alliance match data when a log does not record one.
-# Remove the # and put in your number:
-# team: 1234
-
-# Directory containing .wpilog files downloaded from the roboRIO
-logdir: ~/riologs
-# Or several directories, listed together:
-# logdir:
-#   - ~/riologs
-#   - D:/frc-logs/archive
-
-# The Blue Alliance API key (get one at https://www.thebluealliance.com/account).
-# Remove the # and put in your key, or set the TBA_API_KEY environment variable instead:
-# tba_key: your-key-here
-
-# ---- Server Configurations ----
-servers:
-
-  # Default: stdio transport for MCP clients (Claude Desktop, etc.)
-  default:
-    transport: stdio
-
-  # HTTP transport for browser-based or multi-client access
-  http:
-    transport: http
-    port: 2363
-
-  # For the project's stress tests (./gradlew stressTest), with the settings above
-  stresstest: {}
-'@
-    # UTF-8 without a byte order mark (Set-Content -Encoding UTF8 adds one in Windows PowerShell)
-    [System.IO.File]::WriteAllText($configPath, $configContent + "`n")
-    Write-Host "Created default config: $configPath" -ForegroundColor Green
-    Write-Host "  Edit this file to set your team number and log directory." -ForegroundColor Yellow
-} else {
-    Write-Host "Config already exists: $configPath (not overwritten)" -ForegroundColor Yellow
-}
-
-# --- PATH instructions ---
-
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Installation complete!" -ForegroundColor Green
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-
-# Check if already on PATH
-$currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($currentPath -notlike "*$binDir*") {
-    Write-Host "Add to your PATH (run this once):" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  [Environment]::SetEnvironmentVariable('Path', `$env:Path + ';$binDir', 'User')" -ForegroundColor White
-    Write-Host ""
-    Write-Host "Then restart your terminal." -ForegroundColor Yellow
-} else {
-    Write-Host "bin directory is already on your PATH." -ForegroundColor Green
-}
-
-Write-Host ""
-Write-Host "Usage:" -ForegroundColor Cyan
-Write-Host "  wpilog-mcp                    Start MCP server (stdio)" -ForegroundColor White
-Write-Host "  wpilog-mcp start http         Start HTTP daemon" -ForegroundColor White
-Write-Host ""
-Write-Host "VS Code MCP setup - add to .vscode/mcp.json:" -ForegroundColor Cyan
-Write-Host @"
-  {
-    "servers": {
-      "wpilog": {
-        "command": "$($currentBat.Replace('\', '\\'))",
-        "args": []
-      }
+    # The extension is offered only for a WPILib VS Code that the release's JAR finds and the
+    # extension accepts. The JAR lists them newest first as a season, a tab and a version; its
+    # other lines are notes for the person. Any other VS Code is opt-in with --vscode system, and a
+    # JAR that cannot list editors offers nothing.
+    if ($interactive -and $null -eq $extension) {
+        $extension = $false
+        if ($vsixAsset) {
+            $ErrorActionPreference = 'Continue'
+            $listing = @(& $javaExe -jar $temporaryJar install --list-vscode 2>$null)
+            $listStatus = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($listStatus -eq 0) {
+                $offered = @($listing | Where-Object { $_ -match '^[0-9]{4}\t\S+$' })
+                $listing | Where-Object { $_ -and $_ -notmatch '^[0-9]{4}\t' } | ForEach-Object { Write-Host $_ }
+                $chosen = $null
+                if ($offered.Count -eq 1) {
+                    $parts = $offered[0] -split "`t"
+                    $answer = Read-Host "Install the matching extension into WPILib VS Code $($parts[0]) (version $($parts[1]))? [Y/n]"
+                    if ($answer -notmatch '^(n|no)$') { $chosen = $offered[0] }
+                } elseif ($offered.Count -gt 1) {
+                    Write-Host 'Install the matching VS Code extension into:'
+                    for ($n = 0; $n -lt $offered.Count; $n++) {
+                        $parts = $offered[$n] -split "`t"
+                        Write-Host "  $($n + 1)) WPILib VS Code $($parts[0]) (version $($parts[1]))"
+                    }
+                    Write-Host '  n) none'
+                    while ($true) {
+                        $answer = Read-Host 'Choice [1]'
+                        if ([string]::IsNullOrWhiteSpace($answer)) { $answer = '1' }
+                        if ($answer -match '^(n|no)$') { break }
+                        $number = 0
+                        if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $offered.Count) {
+                            $chosen = $offered[$number - 1]
+                            break
+                        }
+                        Write-Host "Choose a number from 1 to $($offered.Count), or n for none."
+                    }
+                }
+                if ($chosen) {
+                    $extension = $true
+                    $advanced = $true
+                    $vscode = ($chosen -split "`t")[0]
+                }
+            }
+        }
     }
-  }
-"@ -ForegroundColor White
-Write-Host ""
+
+    if ($extension) {
+        $temporaryVsix = Join-Path $scratch 'extension.vsix'
+        Invoke-WebRequest -Uri $vsixAsset.browser_download_url -OutFile $temporaryVsix -UseBasicParsing
+        $installArgs += @('--with-extension', '--vsix', $temporaryVsix)
+        if ($vscode) { $installArgs += @('--vscode', $vscode) }
+    }
+    # Capture stderr separately: JVM banners and code's output must not hide the exit status.
+    $ErrorActionPreference = 'Continue'
+    & $javaExe -jar $temporaryJar install --install-dir $installDir @installArgs 2>$errorFile
+    $installStatus = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    $installError = Get-Content -Raw -LiteralPath $errorFile
+    if ($installError) { [Console]::Error.Write($installError) }
+    if ($installStatus -eq 0) {
+        Write-Host "Install path: release $version install command."
+    } else {
+        if ($installError -notmatch 'Unknown option') { throw "Installation failed (exit $installStatus)." }
+        if ($env:WPILOG_INSTALL_FALLBACK -eq '1') { throw "Release installer fallback already attempted (exit $installStatus)." }
+        if ($advanced) { throw "Release $version predates the install command and cannot honor these options. Choose a newer --tag." }
+        $installerUrl = "https://raw.githubusercontent.com/$repo/v$version/install.ps1"
+        Write-Host "Install path: release $version predates the install command; using $installerUrl."
+        $temporaryInstaller = Join-Path $scratch 'installer.ps1'
+        $previousFallback = $env:WPILOG_INSTALL_FALLBACK
+        try {
+            Invoke-WebRequest -Uri $installerUrl -OutFile $temporaryInstaller -UseBasicParsing
+            $env:WPILOG_INSTALL_FALLBACK = '1'
+            $global:LASTEXITCODE = 0
+            & ([scriptblock]::Create((Get-Content -Raw -LiteralPath $temporaryInstaller)))
+            if ($LASTEXITCODE -ne 0) { throw "Release installer failed (exit $LASTEXITCODE)." }
+        } finally {
+            $env:WPILOG_INSTALL_FALLBACK = $previousFallback
+        }
+    }
+} finally {
+    Remove-Item -LiteralPath $scratch -Recurse -Force
+}

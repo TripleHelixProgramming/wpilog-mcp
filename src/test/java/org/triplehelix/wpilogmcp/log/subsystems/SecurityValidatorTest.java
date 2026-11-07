@@ -10,8 +10,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * Comprehensive tests for SecurityValidator to prevent path traversal attacks.
@@ -27,6 +30,56 @@ class SecurityValidatorTest {
     validator = new SecurityValidator();
   }
 
+  @Test void persistentGrantsReplaceOnlyTheirOwnerAndRevocationNeverOpensEverything() throws IOException {
+    var first = Files.createDirectory(tempDir.resolve("first")).toRealPath();
+    var second = Files.createDirectory(tempDir.resolve("second")).toRealPath();
+    validator.replacePersistentDirectories("one", java.util.Set.of(first));
+    validator.replacePersistentDirectories("two", java.util.Set.of(second));
+    assertEquals(java.util.Set.of(first.toRealPath(), second.toRealPath()), validator.getAllowedDirectories());
+    assertEquals(validator.getAllowedDirectories(), validator.getConfiguredDirectories());
+    validator.replacePersistentDirectories("one", java.util.Set.of());
+    assertThrows(IOException.class, () -> validator.validate(first.resolve("a.wpilog")));
+    assertDoesNotThrow(() -> validator.validate(second.resolve("a.wpilog")));
+    validator.replacePersistentDirectories("two", java.util.Set.of());
+    assertThrows(IOException.class, () -> validator.validate(first.resolve("a.wpilog")));
+    assertThrows(IOException.class, () -> validator.validateOrAllowCached(first.resolve("a.wpilog"), ignored -> true));
+  }
+
+  @Test void anOlderImportCompletionCannotRestoreRevokedRoots() throws IOException {
+    var path = Files.createDirectory(tempDir.resolve("source")).toRealPath();
+    validator.replacePersistentDirectories("policy", 1, java.util.Set.of(path));
+    validator.replacePersistentDirectories("policy", 3, java.util.Set.of());
+    validator.replacePersistentDirectories("policy", 2, java.util.Set.of(path));
+    assertThrows(IOException.class, () -> validator.validate(path));
+  }
+
+  @Test void publishingAnEnrolledCanonicalRootAgainMustNotFollowItsReplacementLink() throws IOException {
+    var root = Files.createDirectory(tempDir.resolve("enrolled")).toRealPath();
+    var outside = Files.createDirectory(tempDir.resolve("outside")).toRealPath();
+    validator.replacePersistentDirectories("policy", 1, java.util.Set.of(root));
+    Files.delete(root);
+    try { Files.createSymbolicLink(root, outside); }
+    catch (UnsupportedOperationException | IOException e) { Assumptions.abort("Symlinks unavailable: " + e.getMessage()); }
+    validator.replacePersistentDirectories("policy", 2, java.util.Set.of(root));
+    assertThrows(IOException.class, () -> validator.validate(outside.resolve("log.wpilog")),
+        "A completed import cannot grant a retargeted directory without another enrollment");
+    assertThrows(IOException.class, () -> validator.validate(root.resolve("log.wpilog")));
+  }
+
+  @Test void aNewConfiguredDirectoryResolvesItsExistingParentBeforeItIsCreated() throws IOException {
+    var parent = Files.createDirectory(tempDir.resolve("real")); var link = tempDir.resolve("alias");
+    try { Files.createSymbolicLink(link, parent); }
+    catch (UnsupportedOperationException | IOException e) { Assumptions.abort("Symlinks unavailable: " + e.getMessage()); }
+    var store = link.resolve("new-store"); validator.addAllowedDirectory(store);
+    assertDoesNotThrow(() -> validator.validate(store));
+    Files.createDirectories(store);
+    assertDoesNotThrow(() -> validator.validate(store.resolve("capture.wpilog")));
+    assertEquals(java.util.Set.of(store.toRealPath()), validator.getConfiguredDirectories());
+    assertThrows(IOException.class, () -> validator.validate(parent.resolve("another-store")));
+    Files.delete(link); var outside = Files.createDirectory(tempDir.resolve("outside")); Files.createSymbolicLink(link, outside);
+    assertThrows(IOException.class, () -> validator.validate(link.resolve("new-store/capture.wpilog")));
+  }
+
   @Test
   void testNoRestrictionsWhenNoDirectoriesConfigured() throws IOException {
     // When no allowed directories are configured, all paths should be allowed
@@ -40,6 +93,27 @@ class SecurityValidatorTest {
 
     Path allowedPath = tempDir.resolve("test.wpilog");
     assertDoesNotThrow(() -> validator.validate(allowedPath));
+  }
+
+  @ParameterizedTest
+  @CsvSource({"false, false", "false, true", "true, false", "true, true"})
+  void danglingSymlinkCannotPassContainment(boolean ancestor, boolean cached) throws IOException {
+    var allowed = Files.createDirectory(tempDir.resolve("allowed"));
+    validator.addAllowedDirectory(allowed);
+    var outside = tempDir.resolve("outside-missing");
+    var link = allowed.resolve("link");
+    try {
+      Files.createSymbolicLink(link, outside);
+    } catch (UnsupportedOperationException | IOException e) {
+      Assumptions.abort("Symlinks unavailable: " + e.getMessage());
+    }
+    var requested = ancestor ? link.resolve("new.log") : link;
+    var error = assertThrows(IOException.class, () -> {
+      if (cached) validator.validateOrAllowCached(requested, path -> true);
+      else validator.validate(requested);
+    });
+    assertTrue(error.getMessage().contains(link.toString()), error.getMessage());
+    assertFalse(Files.exists(outside));
   }
 
   @Test

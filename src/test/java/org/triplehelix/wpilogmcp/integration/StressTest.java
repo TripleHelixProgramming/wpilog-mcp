@@ -65,6 +65,10 @@ class StressTest {
   private static List<Tool> tools;
   private static List<String> availableLogPaths;
   private static List<String> loadedEntryNames;
+  /** Each store or mirror scope's WPILOG members by session id, from step 1, for compare_sessions. */
+  private static final Map<String, Map<String, List<String>>> storeSessions = new LinkedHashMap<>();
+  /** Plain-folder scopes from step 1, where compare_sessions must refuse. */
+  private static final List<String> folderScopes = new ArrayList<>();
   private static String testCacheFolder;
   private static String revLogLogPath;
   private static boolean revLogLogSearched;
@@ -160,35 +164,48 @@ class StressTest {
   void listAvailableLogs() throws Exception {
     var tool = findTool("list_available_logs");
     availableLogPaths = new ArrayList<>();
-    int logCount = -1;
-    // Every log, page by page: a page holds at most 500
+    // The opt-in harness explicitly requests all configured sources. Production discovery
+    // asks the user; it must never make this traversal on the user's behalf.
+    var scopes = new ArrayList<com.google.gson.JsonObject>();
     for (int offset = 0; ; ) {
-      var listArgs = new JsonObject();
-      listArgs.addProperty("limit", 500);
-      listArgs.addProperty("offset", offset);
-      var result = executeTool(tool, listArgs);
-      assertTrue(result.has("success") && result.get("success").getAsBoolean(),
-          "list_available_logs failed: " + result);
-      if (logCount < 0) {
-        logCount = result.get("log_count").getAsInt();
-        System.out.println("Found " + logCount + " log files");
-        assertEquals(logDirectories.size(), result.getAsJsonArray("log_directories").size(),
-            "every configured directory is named: " + result.get("log_directories"));
-        if (result.has("skipped")) {
-          System.out.println("Directories not read: " + result.get("skipped"));
-        }
-      }
-      var logsArray = result.getAsJsonArray("logs");
-      for (var logEntry : logsArray) {
-        var logObj = logEntry.getAsJsonObject();
-        availableLogPaths.add(logObj.get("path").getAsString());
-        System.out.println("  - " + logObj.get("friendly_name").getAsString() +
-            " (" + formatBytes(logObj.get("size_bytes").getAsLong()) + ")");
-      }
-      offset += logsArray.size();
-      if (logsArray.isEmpty() || !result.get("has_more").getAsBoolean()) break;
+      var request = new JsonObject(); request.addProperty("offset", offset);
+      var page = executeTool(findTool("list_source_scopes"), request);
+      assertEquals("ok", page.get("status").getAsString(), page.toString());
+      page.getAsJsonArray("source_scopes").forEach(row -> scopes.add(row.getAsJsonObject()));
+      if (!page.get("has_more").getAsBoolean()) break;
+      offset = page.get("next_offset").getAsInt();
     }
-    assertEquals(logCount, availableLogPaths.size(), "the pages together list every log");
+    var seenPaths = new java.util.LinkedHashSet<String>();
+    for (var scope : scopes) {
+      if (!scope.get("available").getAsBoolean()) { System.out.println("Unavailable source: " + scope); continue; }
+      String scopeId = scope.get("scope_id").getAsString();
+      boolean folder = "directory".equals(scope.get("kind").getAsString());
+      if (folder) folderScopes.add(scopeId);
+      int count = -1, returned = 0;
+      for (int offset = 0; ; ) {
+        var listArgs = new JsonObject(); listArgs.addProperty("limit", 500); listArgs.addProperty("offset", offset);
+        listArgs.add("scope_id", scope.get("scope_id"));
+        var result = executeTool(tool, listArgs);
+        assertTrue(result.get("success").getAsBoolean(), result.toString());
+        if (count < 0) count = result.get("log_count").getAsInt();
+        var rows = result.getAsJsonArray("logs"); returned += rows.size();
+        rows.forEach(row -> {
+          var log = row.getAsJsonObject();
+          String path = log.get("path").getAsString();
+          seenPaths.add(path);
+          if (!folder && log.has("session") && path.endsWith(".wpilog")) {
+            storeSessions.computeIfAbsent(scopeId, k -> new LinkedHashMap<>())
+                .computeIfAbsent(log.getAsJsonObject("session").get("id").getAsString(), k -> new ArrayList<>())
+                .add(Path.of(path).getFileName().toString());
+          }
+        });
+        offset += rows.size(); if (!result.get("has_more").getAsBoolean()) break;
+        assertFalse(rows.isEmpty(), "A shortened page must make progress");
+      }
+      assertEquals(count, returned, "Source traversal must return its true total");
+    }
+    availableLogPaths.addAll(seenPaths);
+    System.out.println("Found " + availableLogPaths.size() + " distinct log paths across explicit source selections");
 
     assumeTrue(!availableLogPaths.isEmpty(), "No log files found in directory");
   }
@@ -278,6 +295,36 @@ class StressTest {
         int returned = result.has("samples") ? result.getAsJsonArray("samples").size() : 0;
         System.out.println("  read_entry (limit 10): " + returned + " samples");
       });
+      var resolutionArgs = new JsonObject();
+      resolutionArgs.addProperty("path", logPath);
+      resolutionArgs.addProperty("name", loadedEntryNames.get(0));
+      resolutionArgs.addProperty("max_points", 20);
+      testTool("read_entry", resolutionArgs, result -> {
+        int returned = result.has("samples") ? result.getAsJsonArray("samples").size() : 0;
+        System.out.println("  read_entry (max_points 20): " + returned + " samples/buckets, bucketed="
+            + (result.has("bucketed") ? result.get("bucketed") : "n/a"));
+      });
+      var numeric = LogManager.getInstance().getOrLoad(logPath).entries().values().stream()
+          .filter(entry -> List.of("double", "float", "int64").contains(entry.type()))
+          .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).sorted().findFirst();
+      if (numeric.isPresent()) {
+        // Explicit units exercise the override; this does not infer the entry's physical unit.
+        for (String unit : List.of("degrees", "radians")) {
+          for (boolean reduced : List.of(false, true)) {
+            var angleArgs = new JsonObject();
+            angleArgs.addProperty("path", logPath);
+            angleArgs.addProperty("name", numeric.get());
+            angleArgs.addProperty("angle", unit);
+            if (reduced) angleArgs.addProperty("max_points", 20);
+            else angleArgs.addProperty("limit", 10);
+            testTool("read_entry", angleArgs, result -> {
+              assertTrue(result.has("samples"), "angle presentation must return samples");
+              System.out.println("  read_entry (angle " + unit + ", reduced " + reduced + "): "
+                  + result.getAsJsonArray("samples").size() + " samples/buckets");
+            });
+          }
+        }
+      }
     }
 
     testTool("list_loaded_logs", new JsonObject(), result -> {
@@ -296,6 +343,18 @@ class StressTest {
       String status = result.has("status") ? result.get("status").getAsString() : "unknown";
       System.out.println("  health_check: " + status);
     });
+
+    var chartLog = LogManager.getInstance().getOrLoad(logPath);
+    var chartNames = chartLog.entries().values().stream().filter(e -> java.util.Set.of("double", "float", "int64").contains(e.type()))
+        .map(e -> e.name()).sorted().limit(2).toList();
+    var chartPose = chartLog.entries().values().stream().filter(e -> java.util.Set.of("struct:Pose2d", "struct:Pose3d").contains(e.type()))
+        .map(e -> e.name()).sorted().findFirst().orElse("/Missing/Pose");
+    for (String kind : List.of("time_series", "histogram", "scatter", "field")) {
+      var chart = new JsonObject(); chart.addProperty("path", logPath); chart.addProperty("kind", kind);
+      if (kind.equals("scatter")) { var names = new com.google.gson.JsonArray(); chartNames.forEach(names::add); chart.add("entries", names); }
+      else chart.addProperty("name", kind.equals("field") ? chartPose : chartNames.stream().findFirst().orElse("/Missing/Numeric"));
+      testTool("render_chart", chart, result -> System.out.println("  render_chart " + kind + ": " + result.get("status")));
+    }
 
     // Discovery tools
     testTool("get_server_guide", new JsonObject(), result -> {
@@ -357,6 +416,9 @@ class StressTest {
       int matches = result.has("matches") ? result.getAsJsonArray("matches").size() : 0;
       System.out.println("  search_strings: " + matches + " matches");
     });
+
+    testTool("search_system_logs", searchStrArgs, result ->
+        System.out.println("  search_system_logs: " + result.get("status").getAsString()));
 
     var numericForCondition = findNumericEntries(1);
     if (!numericForCondition.isEmpty()) {
@@ -835,6 +897,59 @@ class StressTest {
         });
       }
     }
+
+    // compare_sessions: each store's or mirror's finished sessions, a small and a large selection,
+    // with and without pooling; a session with several WPILOG members anchors on its first.
+    for (var store : storeSessions.entrySet()) {
+      var ids = new ArrayList<>(store.getValue().keySet());
+      for (int size : new java.util.TreeSet<>(List.of(Math.min(8, ids.size()), Math.min(64, ids.size())))) {
+        var selection = new com.google.gson.JsonArray();
+        for (var id : ids.subList(0, size)) {
+          var item = new JsonObject();
+          item.addProperty("session_id", id);
+          var members = store.getValue().get(id);
+          if (members.size() > 1) item.addProperty("anchor_path", members.get(0));
+          selection.add(item);
+        }
+        for (boolean pool : List.of(false, true)) {
+          var args = new JsonObject();
+          args.addProperty("scope_id", store.getKey());
+          args.add("sessions", selection);
+          var metrics = new com.google.gson.JsonArray();
+          metrics.add(sessionMetric("battery", "battery_voltage", "mean"));
+          metrics.add(sessionMetric("loop", "loop_time_full", "p95"));
+          args.add("metrics", metrics);
+          args.addProperty("scope", "enabled");
+          args.addProperty("pool_samples", pool);
+          testTool("compare_sessions", args, result -> System.out.println("  compare_sessions: "
+              + result.get("analyzed_session_count") + " of " + result.get("requested_session_count")
+              + " sessions of " + store.getKey()));
+        }
+      }
+    }
+    // A plain folder names no sessions, so it is refused with its remedy.
+    for (var folder : folderScopes) {
+      var args = new JsonObject();
+      args.addProperty("scope_id", folder);
+      var selection = new com.google.gson.JsonArray();
+      var item = new JsonObject();
+      item.addProperty("session_id", "not-a-session");
+      selection.add(item);
+      args.add("sessions", selection);
+      var metrics = new com.google.gson.JsonArray();
+      metrics.add(sessionMetric("battery", "battery_voltage", "mean"));
+      args.add("metrics", metrics);
+      var result = executeTool(findTool("compare_sessions"), args);
+      assertEquals("NOT_A_STORE", result.has("code") ? result.get("code").getAsString() : null, result.toString());
+    }
+  }
+
+  private static JsonObject sessionMetric(String id, String role, String statistic) {
+    var metric = new JsonObject();
+    metric.addProperty("id", id);
+    metric.addProperty("role", role);
+    metric.addProperty("statistic", statistic);
+    return metric;
   }
 
   // ==================== 8. RevLog Tools ====================
@@ -947,6 +1062,124 @@ class StressTest {
     }
     assertEquals(fresh.keySet(), cached.keySet());
     System.out.println("  every answer is the same");
+  }
+
+  @Test
+  @Order(9)
+  @DisplayName("9. Scan index: a persisted scan gives the fresh scan's answers")
+  void scanIndexCacheMatchesFreshScan() throws Exception {
+    assumeTrue(availableLogPaths != null && !availableLogPaths.isEmpty());
+    var manager = LogManager.getInstance();
+    assumeTrue(manager.getDiskCache().isEnabled(), "The scan-index cache is disabled");
+    int persistedComparisons = 0;
+    for (String logPath : availableLogPaths) {
+      var comparison = compareScanIndexWithFreshScan(manager, logPath, tools, false);
+      if (comparison.indexHit()) persistedComparisons++;
+      System.out.println("  scan-index answers agree: " + Path.of(logPath).getFileName()
+          + " (" + comparison.answers().size() + " answers; "
+          + (comparison.indexHit() ? "persisted index hit" : "not indexed; fresh scan fallback") + ")");
+    }
+    assumeTrue(persistedComparisons > 0,
+        "Every log's answers were compared, but no eligible persisted index was exercised");
+  }
+
+  /**
+   * Normal synthetic tests invoke this exact stress comparison, including its measured disk hit.
+   * A second tool call alone proves only an in-memory hit; unloading between phases is essential.
+   */
+  static Map<String, JsonObject> compareScanIndexWithFreshScan(LogManager manager,
+      String logPath, List<Tool> selectedTools) throws Exception {
+    return compareScanIndexWithFreshScan(manager, logPath, selectedTools, true).answers();
+  }
+
+  record ScanIndexComparison(Map<String, JsonObject> answers, boolean indexHit) {}
+
+  /** Oversized or ineligible logs still need answer parity, but cannot prove a persisted hit. */
+  private static ScanIndexComparison compareScanIndexWithFreshScan(LogManager manager,
+      String logPath, List<Tool> selectedTools, boolean requireHit) throws Exception {
+    var cache = manager.getDiskCache();
+    boolean enabled = cache.isEnabled();
+    try {
+      manager.unloadAllLogs();
+      cache.setEnabled(false);
+      var fresh = scanIndexAnswers(manager, logPath, selectedTools);
+      manager.unloadAllLogs();
+      cache.setEnabled(true);
+      var first = scanIndexAnswers(manager, logPath, selectedTools);
+      manager.unloadAllLogs();
+      long before = cache.scanStats().hits();
+      var persisted = scanIndexAnswers(manager, logPath, selectedTools);
+      boolean indexHit = cache.scanStats().hits() > before;
+      if (requireHit) assertTrue(indexHit,
+          "The reopened comparison must exercise a persisted scan-index hit: " + logPath);
+      assertEquals(fresh.keySet(), first.keySet());
+      assertEquals(fresh.keySet(), persisted.keySet());
+      for (var answer : fresh.entrySet()) {
+        for (var other : List.of(Map.entry("first indexed open", first), Map.entry("persisted index", persisted))) {
+          String difference = firstDifference(answer.getValue(), other.getValue().get(answer.getKey()), answer.getKey());
+          assertNull(difference, other.getKey() + " differs from a fresh scan at " + difference);
+        }
+      }
+      return new ScanIndexComparison(persisted, indexHit);
+    } finally {
+      manager.unloadAllLogs();
+      cache.setEnabled(enabled);
+    }
+  }
+
+  private static Map<String, JsonObject> scanIndexAnswers(LogManager manager,
+      String logPath, List<Tool> selectedTools) throws Exception {
+    var answers = new LinkedHashMap<String, JsonObject>();
+    List<String> numeric;
+    try (var use = manager.acquire(logPath)) {
+      var log = use.log();
+      var metadata = new JsonObject();
+      metadata.addProperty("min_timestamp_sec", log.minTimestamp());
+      metadata.addProperty("max_timestamp_sec", log.maxTimestamp());
+      metadata.addProperty("truncated", log.truncated());
+      metadata.addProperty("damaged", log.damaged());
+      metadata.addProperty("truncation_message", log.truncationMessage());
+      var declarations = new com.google.gson.JsonArray();
+      for (var entry : log.entries().values()) {
+        var row = new JsonObject();
+        row.addProperty("id", entry.id());
+        row.addProperty("name", entry.name());
+        row.addProperty("type", entry.type());
+        row.addProperty("metadata", entry.metadata());
+        row.addProperty("sample_count", log.sampleCount(entry.name()));
+        declarations.add(row);
+      }
+      metadata.add("entries", declarations);
+      answers.put("scan_metadata", metadata);
+      numeric = log.entries().values().stream()
+          .filter(entry -> java.util.Set.of("double", "float", "int64").contains(entry.type()))
+          .map(entry -> entry.name()).sorted().limit(3).toList();
+      var json = new com.google.gson.GsonBuilder().serializeSpecialFloatingPointValues().create();
+      for (String name : numeric) {
+        var exact = new JsonObject();
+        var samples = new com.google.gson.JsonArray();
+        for (var value : log.values().get(name).stream().limit(1000).toList()) {
+          var row = new JsonObject();
+          row.addProperty("timestamp_us", Long.toString(value.timestampUs()));
+          row.add("value", json.toJsonTree(value.value()));
+          samples.add(row);
+        }
+        exact.add("samples", samples);
+        answers.put("exact_coordinates " + name, exact);
+      }
+    }
+    for (String name : numeric) {
+      for (String toolName : List.of("read_entry", "get_statistics")) {
+        var tool = selectedTools.stream().filter(value -> value.name().equals(toolName))
+            .findFirst().orElseThrow(() -> new AssertionError("Missing comparison tool " + toolName));
+        var args = new JsonObject();
+        args.addProperty("path", logPath);
+        args.addProperty("name", name);
+        if (toolName.equals("read_entry")) args.addProperty("limit", 1000);
+        answers.put(toolName + " " + name, tool.execute(args).getAsJsonObject());
+      }
+    }
+    return answers;
   }
 
   // ==================== 10. In-Memory Cache Eviction ====================
@@ -1123,6 +1356,7 @@ class StressTest {
             + " struct types"));
     var logsArgs = new JsonObject();
     logsArgs.addProperty("limit", 5);
+    logsArgs.addProperty("scope_id", LogDirectory.getInstance().sourceScopes().forPath(Path.of(logPath), null).id());
     testTool("list_available_logs", logsArgs, result ->
         System.out.println("  list_available_logs: " + result.get("log_count").getAsInt()
             + " logs, has_more=" + result.get("has_more").getAsBoolean()));

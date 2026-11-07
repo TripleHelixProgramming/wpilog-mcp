@@ -1,0 +1,26 @@
+# Synthetic Linux environment, not an NI image or any file taken from a robot.
+FROM public.ecr.aws/docker/library/eclipse-temurin:17-jdk-jammy AS runtime
+# Exercise both module conclusions: management is present; JFR intentionally is not.
+RUN jlink --add-modules java.base,java.desktop,java.logging,java.management,java.management.rmi,java.naming,java.net.http,jdk.management,jdk.management.agent \
+    --strip-debug --no-header-files --no-man-pages --output /runtime
+
+FROM public.ecr.aws/ubuntu/ubuntu:22.04
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server coreutils busybox-static procps util-linux libstdc++6 zlib1g libfreetype6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /bin/busybox /usr/local/bin/tail \
+    && rm -f /etc/ssh/ssh_host_* \
+    && useradd --create-home --shell /bin/bash lvuser && passwd -d lvuser \
+    && mkdir -p /run/sshd /home/lvuser/logs /var/local/natinst/log /media/usb/logs \
+    && ln -s /media/usb /u && ln -s /media/usb /U \
+    && chown -R lvuser:lvuser /home/lvuser /var/local/natinst/log /media/usb \
+    && ! command -v journalctl
+COPY --from=runtime /runtime /opt/java
+COPY harness/robot/build/libs/shop-robot.jar /home/lvuser/frcUserProgram.jar
+# The scripted robot uses no camera/OpenCV pipeline; avoid shipping those large native assets.
+COPY harness/robot/build/jni/release/libntcore*.so harness/robot/build/jni/release/libwpi*.so /opt/wpilib/
+RUN LD_LIBRARY_PATH=/opt/wpilib ldd /opt/wpilib/*.so > /tmp/native-dependencies && cat /tmp/native-dependencies && ! grep -q "not found" /tmp/native-dependencies
+COPY harness/rio/sshd_config /etc/ssh/sshd_config
+COPY --chmod=755 harness/rio/entrypoint harness/rio/robotCommand /usr/local/bin/
+RUN cp /usr/local/bin/robotCommand /home/lvuser/robotCommand
+ENV JAVA_HOME=/opt/java PATH=/opt/java/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8
+ENTRYPOINT ["/usr/local/bin/entrypoint"]

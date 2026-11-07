@@ -4,20 +4,42 @@
  */
 package org.triplehelix.wpilogmcp;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.function.IntConsumer;
+import java.util.function.LongConsumer;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.triplehelix.wpilogmcp.config.ConfigException;
 import org.triplehelix.wpilogmcp.config.ConfigLoader;
 import org.triplehelix.wpilogmcp.config.DaemonManager;
+import org.triplehelix.wpilogmcp.config.InstallCommand;
 import org.triplehelix.wpilogmcp.config.ServerConfig;
+import org.triplehelix.wpilogmcp.game.GameKnowledgeBase;
 import org.triplehelix.wpilogmcp.log.LogDirectory;
 import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.mcp.HttpTransport;
 import org.triplehelix.wpilogmcp.mcp.McpServer;
+import org.triplehelix.wpilogmcp.mcp.StdioBridge;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
+import org.triplehelix.wpilogmcp.store.ImportCommand;
+import org.triplehelix.wpilogmcp.store.SyncCommand;
 import org.triplehelix.wpilogmcp.tba.TbaConfig;
+import org.triplehelix.wpilogmcp.tools.DiscoveryTools;
 import org.triplehelix.wpilogmcp.tools.ExportTools;
 import org.triplehelix.wpilogmcp.tools.WpilogTools;
 
@@ -29,8 +51,19 @@ import org.triplehelix.wpilogmcp.tools.WpilogTools;
  *   <li><b>Legacy CLI:</b> {@code java -jar wpilog-mcp.jar [options]}</li>
  *   <li><b>Named config:</b> {@code java -jar wpilog-mcp.jar start <name> [--config <path>]}</li>
  * </ul>
+ *
+ * <p>Two more verbs serve a named {@code http} server started in the background: {@code stop
+ * <name>} ends it, and {@code connect <name>} (or {@code connect --url <url>}) relays a stdio
+ * client to it, starting it first when it is not running, so that every client on a machine
+ * shares one server (see {@link StdioBridge}).
  */
 public class Main {
+  static Thread startCacheCleanup(Runnable cleanup) {
+    var thread = new Thread(cleanup, "cache-cleanup");
+    thread.setDaemon(true);
+    thread.start();
+    return thread;
+  }
   private static final String VERSION = Version.VERSION;
   /** SimpleLogger's level property, read once, when the first logger in the JVM is created. */
   static final String LOG_LEVEL_PROPERTY = "org.slf4j.simpleLogger.defaultLogLevel";
@@ -48,7 +81,20 @@ public class Main {
     static final Logger LOGGER = LoggerFactory.getLogger(Main.class);
   }
 
+  private static boolean managed;
+  private static boolean publicRun;
+
   public static void main(String[] args) {
+    // Configuration loading can log before transport selection. Keep short-lived CLI errors
+    // direct, but install before any logger in a process that may become a server.
+    boolean shortCommand = args.length > 0
+        && (List.of("service-unit", "robot-facts", "import", "sync", "install").contains(args[0])
+            || args.length >= 2 && List.of("stop", "connect").contains(args[0]));
+    if (!shortCommand) {
+      org.triplehelix.wpilogmcp.logging.BufferedLogOutput.install();
+    }
+    publicRun = args.length > 0 && args[0].equals("run");
+    managed = Arrays.asList(args).contains("--managed");
     // Decide the log level before any logger exists (see logger()). A configuration file's
     // debug setting is applied where the file is loaded, still before the first log line.
     if (debugRequested(args, System.getenv("WPILOG_DEBUG"))) {
@@ -57,15 +103,58 @@ public class Main {
       System.setProperty(LOG_LEVEL_PROPERTY, "info");
     }
 
-    // Check for "--internal-daemon" flag (used by DaemonManager for HTTP daemon re-exec)
+    // Public foreground ownership and the daemon manager share startup, not PID/token ownership.
+    if (args.length > 0 && "run".equals(args[0])) {
+      handleForeground(args);
+      return;
+    }
+    if (args.length > 0 && "service-unit".equals(args[0])) {
+      System.exit(org.triplehelix.wpilogmcp.config.ServiceUnit.run(args, System.out, System.err));
+      return;
+    }
+    if (args.length > 0 && "robot-facts".equals(args[0])) {
+      System.exit(org.triplehelix.wpilogmcp.capture.pull.RobotFactsCommand.run(args, System.out, System.err));
+      return;
+    }
     if (args.length >= 2 && "--internal-daemon".equals(args[0])) {
-      handleInternalDaemon(args);
+      handleForeground(args);
       return;
     }
 
     // Check for "start" subcommand
     if (args.length >= 2 && "start".equals(args[0])) {
       handleStartCommand(args);
+      return;
+    }
+    if (args.length >= 2 && "stop".equals(args[0])) {
+      try {
+        var options = foregroundOptions(args);
+        int status;
+        if (options.config() == null) status = runStop(args[1]);
+        else {
+          var config = loadConfig(args[1], options.config());
+          status = new DaemonManager().stopDaemon(args[1], config.isHttp() ? config.effectivePort() : null) ? 0 : 1;
+        }
+        System.exit(status);
+      } catch (IllegalArgumentException | ConfigException e) {
+        logger().error("{}", e.getMessage()); System.exit(1);
+      }
+      return;
+    }
+    if (args.length >= 2 && "connect".equals(args[0])) {
+      System.exit(runConnect(args));
+      return;
+    }
+    if (args.length >= 1 && "import".equals(args[0])) {
+      System.exit(runImport(args));
+      return;
+    }
+    if (args.length >= 1 && "sync".equals(args[0])) {
+      System.exit(runSync(args));
+      return;
+    }
+    if (args.length >= 1 && "install".equals(args[0])) {
+      System.exit(runInstall(args));
       return;
     }
 
@@ -82,7 +171,7 @@ public class Main {
 
   /** Whether {@code -debug} is among the arguments or {@code WPILOG_DEBUG} is {@code true}. */
   static boolean debugRequested(String[] args, String wpilogDebug) {
-    return java.util.Arrays.asList(args).contains("-debug")
+    return Arrays.asList(args).contains("-debug")
         || "true".equalsIgnoreCase(wpilogDebug);
   }
 
@@ -102,13 +191,25 @@ public class Main {
    */
   private static ServerConfig loadConfig(String configName, Path configPath)
       throws ConfigException {
-    var loaded = new ConfigLoader().loadDetailed(configName, configPath);
+    return loadConfig(configName, configPath, false);
+  }
+
+  private static ServerConfig loadConfig(String configName, Path configPath, boolean foreground)
+      throws ConfigException {
+    return loadDetailedConfig(configName, configPath, foreground).config();
+  }
+
+  private static ConfigLoader.Loaded loadDetailedConfig(String configName, Path configPath, boolean foreground)
+      throws ConfigException {
+    var loader = new ConfigLoader();
+    var loaded = foreground ? loader.loadForegroundDetailed(configName, configPath)
+        : loader.loadDetailed(configName, configPath);
     if (Boolean.TRUE.equals(loaded.config().debug())) {
       enableDebugLogging();
     }
     loaded.warnings().forEach(warning -> logger().warn("{}", warning));
     logger().info("Loaded configuration '{}' from {}", configName, loaded.file());
-    return loaded.config();
+    return loaded;
   }
 
   private static void handleStartCommand(String[] args) {
@@ -137,7 +238,7 @@ public class Main {
         // Stdio transport: run in foreground
         logger().info("Starting wpilog-mcp server (config: {})...", configName);
         applyConfig(config);
-        initializeAndRun(false, 2363, null, null, null);
+        initializeAndRun(false, 2363, null, null, null, null, null);
       }
     } catch (ConfigException e) {
       logger().error("{}", e.getMessage());
@@ -145,32 +246,210 @@ public class Main {
     }
   }
 
-  /**
-   * Internal entry point for the daemon child process.
-   * Invoked with: {@code --internal-daemon <name> [--config <path>]}
-   */
-  private static void handleInternalDaemon(String[] args) {
-    var configName = args[1];
-    Path configPath = null;
+  /** Named foreground commands reject unknown options rather than silently ignoring mistakes. */
+  private record ForegroundOptions(Path config) {}
 
+  private static ForegroundOptions foregroundOptions(String[] args) {
+    if (args.length < 2 || args[1].startsWith("-"))
+      throw new IllegalArgumentException("Usage: wpilog-mcp " + args[0] + " <name> [--config <file>] [--managed]");
+    Path config = null;
     for (int i = 2; i < args.length; i++) {
-      if ("--config".equals(args[i]) && i + 1 < args.length) {
-        configPath = Path.of(args[++i]);
+      switch (args[i]) {
+        case "--config" -> {
+          if (++i >= args.length) throw new IllegalArgumentException("--config requires a file");
+          config = Path.of(args[i]);
+        }
+        case "--managed", "-debug" -> { }
+        default -> throw new IllegalArgumentException("Unknown " + args[0] + " option: " + args[i]);
       }
     }
+    return new ForegroundOptions(config);
+  }
 
+  /** Foreground ownership belongs to the caller or supervisor, never to the PID-file manager. */
+  private static void handleForeground(String[] args) {
     try {
-      var config = loadConfig(configName, configPath);
-      logger().info("Starting wpilog-mcp daemon (config: {})...", configName);
+      var configPath = foregroundOptions(args).config();
+      var configName = args[1];
+      var loaded = loadDetailedConfig(configName, configPath, publicRun);
+      var config = loaded.config();
+      logger().info("Starting wpilog-mcp foreground server (config: {})...", configName);
       applyConfig(config);
       var daemonBind = System.getenv("WPILOG_HTTP_BIND");
       var daemonPath = System.getenv("WPILOG_HTTP_PATH");
       var daemonOrigins = parseAllowedOrigins(System.getenv("WPILOG_HTTP_ALLOWED_ORIGINS"));
-      initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath, daemonOrigins);
-    } catch (ConfigException e) {
+      // The stop token comes from the start that spawned this daemon, in the environment
+      var stopToken = "--internal-daemon".equals(args[0]) && !managed ? System.getenv(DaemonManager.STOP_TOKEN_ENV) : null;
+      initializeAndRun(config.isHttp(), config.effectivePort(), daemonBind, daemonPath,
+          daemonOrigins, stopToken, config.idleExit().orElse(null), config.effectiveCapture(), config.effectiveMirrors(), config.metrics(), configName, loaded.file(), config.dataStoreEnabled());
+    } catch (ConfigException | IllegalArgumentException e) {
       logger().error("{}", e.getMessage());
       System.exit(1);
     }
+  }
+
+  /**
+   * {@code stop <name>}: ends the named server started in the background.
+   *
+   * @return The exit code
+   */
+  static int runStop(String configName) {
+    Integer port = null;
+    try {
+      var config = new ConfigLoader().loadDetailed(configName, null).config();
+      if (config.isHttp()) port = config.effectivePort();
+    } catch (ConfigException e) {
+      // A daemon can still be stopped by its PID record after its configuration was removed.
+    }
+    return new DaemonManager().stopDaemon(configName, port) ? 0 : 1;
+  }
+
+  static int runImport(String[] args) {
+    try {
+      var options = ImportCommand.parse(args);
+      return ImportCommand.run(options,
+          loadConfig(options.server(), options.config()), new DaemonManager(), System.out);
+    } catch (IllegalArgumentException e) {
+      logger().error("{}", e.getMessage());
+      return 2;
+    } catch (Exception e) {
+      var cause = e instanceof ExecutionException ? e.getCause() : e;
+      logger().error("Import failed: {}", cause.getMessage());
+      if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+      return 1;
+    }
+  }
+
+  static int runSync(String[] args) {
+    try {
+      var options = SyncCommand.parse(args);
+      return SyncCommand.run(options, loadConfig(options.server(), options.config()), new DaemonManager(), System.out);
+    } catch (IllegalArgumentException e) {
+      logger().error("{}", e.getMessage()); return 2;
+    } catch (Exception e) {
+      var cause = e instanceof ExecutionException ? e.getCause() : e;
+      logger().error("Sync failed: {}", cause.getMessage());
+      if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+      return 1;
+    }
+  }
+
+  /** Installation keeps stdout usable by the extension's --json reader, even on failure. */
+  static int runInstall(String[] args) {
+    try {
+      var options = InstallCommand.parse(args);
+      if (options.listVscode()) {
+        InstallCommand.listVscode(System.out);
+        return 0;
+      }
+      var summary = InstallCommand.install(options);
+      System.out.println(options.json() ? summary.json() : summary.text());
+      return 0;
+    } catch (IllegalArgumentException e) {
+      System.err.println(e.getMessage());
+      return 2;
+    } catch (IOException e) {
+      System.err.println("Install failed: " + e.getMessage());
+      return 1;
+    }
+  }
+
+  /**
+   * {@code connect <name> [--config <path>]} or {@code connect --url <url>}: relays standard
+   * input and output to an HTTP server, as {@link StdioBridge} does. With a name, the server is
+   * started first if it is not running, exactly as {@code start} would; with a URL, nothing is
+   * started.
+   *
+   * @return The exit code: 0 when the client closed its end, 1 when the server could not be
+   *     started or reached, 2 for a bad command line
+   */
+  static int runConnect(String[] args) {
+    String url = null;
+    String configName = null;
+    Path configPath = null;
+    var paths = new ArrayList<String>();
+    Integer team = null;
+    try {
+      for (int i = 1; i < args.length; i++) {
+        switch (args[i]) {
+          case "--url" -> url = args[++i];
+          case "--config" -> configPath = Path.of(args[++i]);
+          case "--logdir" -> paths.add(args[++i]);
+          case "--team" -> {
+            team = Integer.valueOf(args[++i]);
+            if (team <= 0) throw new IllegalArgumentException("team must be positive");
+          }
+          default -> {
+            if (configName != null || args[i].startsWith("-")) throw new IllegalArgumentException();
+            configName = args[i];
+          }
+        }
+      }
+      if ((url == null) == (configName == null)) throw new IllegalArgumentException();
+    } catch (IllegalArgumentException | IndexOutOfBoundsException e) {
+      logger().error("Usage: wpilog-mcp connect <name> [--config <path>] | connect --url <url> "
+          + "[--logdir <dir>]... [--team <n>]");
+      return 2;
+    }
+
+    try {
+      var loader = new ConfigLoader();
+      var workingDirectory = Path.of("").toAbsolutePath();
+      var project = loader.projectLease(workingDirectory);
+      paths.addAll(project.paths());
+      var registration = new JsonObject();
+      var resolved = new JsonArray();
+      paths.stream().map(path -> workingDirectory.resolve(path).toString()).distinct()
+          .forEach(resolved::add);
+      registration.add("paths", resolved);
+      registration.addProperty("team", team == null ? project.team() : team);
+      registration.addProperty("project_servers_ignored", project.serversIgnored());
+      URI endpoint;
+      if (url != null) {
+        endpoint = StdioBridge.endpointFor(url);
+      } else {
+        var loaded = loader.loadHomeDetailed(configName, configPath);
+        var config = loaded.config();
+        if (Boolean.TRUE.equals(config.debug())) enableDebugLogging();
+        loaded.warnings().forEach(warning -> logger().warn("{}", warning));
+        logger().info("Loaded configuration '{}' from {}", configName, loaded.file());
+        if (!config.isHttp()) {
+          logger().error("Server '{}' uses the stdio transport; connect needs an http server. "
+              + "Set transport: http in its configuration, or run it directly.", configName);
+          return 1;
+        }
+        // Passing the chosen file matters: the spawned JVM inherits this project's cwd too.
+        if (!new DaemonManager().spawnDaemon(configName, config.effectivePort(),
+            loaded.file().toAbsolutePath())) {
+          logger().error("Server '{}' could not be started", configName);
+          return 1;
+        }
+        var path = System.getenv("WPILOG_HTTP_PATH");
+        endpoint = URI.create("http://127.0.0.1:" + config.effectivePort()
+            + (path == null || path.isEmpty() ? "/mcp" : path));
+      }
+      return connectTo(endpoint, System.in, paths.isEmpty() && !project.serversIgnored()
+          ? null : registration);
+    } catch (ConfigException | IllegalArgumentException e) {
+      logger().error("{}", e.getMessage());
+      return 1;
+    }
+  }
+
+  /**
+   * Runs a bridge from {@code input} to the endpoint on this process's standard output, which is
+   * taken for the protocol: the JVM's {@code System.out} is sent to standard error first, as the
+   * stdio server does, so nothing else can print on it.
+   */
+  static int connectTo(URI endpoint, InputStream input) {
+    return connectTo(endpoint, input, null);
+  }
+
+  private static int connectTo(URI endpoint, InputStream input, JsonObject registration) {
+    var protocolOut = System.out;
+    System.setOut(System.err);
+    logger().info("Connecting standard input and output to {}", endpoint);
+    return new StdioBridge(endpoint, input, protocolOut, registration).run();
   }
 
   /**
@@ -187,8 +466,8 @@ public class Main {
     }
 
     // Log directories
-    if (config.logdirs() != null && !config.logdirs().isEmpty()) {
-      configureLogDirectories(config.logdirs());
+    if (!config.effectiveLogdirs().isEmpty()) {
+      configureLogDirectories(config.effectiveLogdirs());
     }
 
     // Team number
@@ -236,14 +515,14 @@ public class Main {
    * Sets the directories logs are listed from and may be loaded from, warning about any that does
    * not exist (yet: a drive may be mounted later).
    */
-  static void configureLogDirectories(java.util.List<String> dirs) {
+  static void configureLogDirectories(List<String> dirs) {
     var logDirectory = LogDirectory.getInstance();
     logDirectory.setLogDirectories(dirs);
     var logManager = LogManager.getInstance();
     for (var dir : logDirectory.getLogDirectories()) {
       logger().info("Configuring log directory: {}", dir);
       logManager.addAllowedDirectory(dir);
-      if (!java.nio.file.Files.isDirectory(dir)) {
+      if (!Files.isDirectory(dir)) {
         logger().warn("Log directory {} does not exist; its logs are listed once it does", dir);
       }
     }
@@ -258,7 +537,7 @@ public class Main {
     var logManager = LogManager.getInstance();
 
     // Read environment variable defaults (CLI flags override these)
-    var logDirs = new java.util.ArrayList<>(splitPathList(System.getenv("WPILOG_DIR")));
+    var logDirs = new ArrayList<>(splitPathList(System.getenv("WPILOG_DIR")));
     boolean logDirsFromCli = false;
     boolean httpMode = "true".equalsIgnoreCase(System.getenv("WPILOG_HTTP"));
     int httpPort = parseEnvInt("WPILOG_HTTP_PORT", 2363);
@@ -280,6 +559,7 @@ public class Main {
     // Parse command line arguments (override env vars)
     for (int i = 0; i < args.length; i++) {
       var arg = args[i];
+      if (arg.equals("--managed")) continue;
       if (arg.equals("-help") || arg.equals("-h")) {
         printUsage();
         System.exit(0);
@@ -440,16 +720,30 @@ public class Main {
 
     // The TBA key is -tba-key when given, else TBA_API_KEY: initializeAndRun applies it, filling
     // it from the environment only when no key was set.
-    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins);
+    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, null, null);
   }
 
   // ==================== Shared Startup ====================
 
   /**
    * Initializes subsystems and starts the server. Called by both CLI and config modes.
+   *
+   * @param stopToken The token {@code POST /stop} must carry, or null when the server cannot be
+   *     stopped over HTTP (a server not spawned by {@code start})
+   * @param idleExit How long with no session and no request before the server exits, or null
+   *     for never
    */
   private static void initializeAndRun(boolean httpMode, int httpPort,
-      String httpBind, String httpPath, java.util.Set<String> allowedOrigins) {
+      String httpBind, String httpPath, Set<String> allowedOrigins,
+      String stopToken, Duration idleExit) {
+    initializeAndRun(httpMode, httpPort, httpBind, httpPath, allowedOrigins, stopToken, idleExit, null, null, null, null, null, false);
+  }
+
+  private static void initializeAndRun(boolean httpMode, int httpPort,
+      String httpBind, String httpPath, Set<String> allowedOrigins,
+      String stopToken, Duration idleExit, org.triplehelix.wpilogmcp.config.CaptureConfig captureConfig,
+      java.util.List<org.triplehelix.wpilogmcp.config.MirrorConfig> mirrorConfigs, org.triplehelix.wpilogmcp.config.MetricsConfig metricsConfig,
+      String configurationName, Path configurationFile, boolean dataStoreEnabled) {
     var logManager = LogManager.getInstance();
     var tbaConfig = TbaConfig.getInstance();
 
@@ -461,13 +755,14 @@ public class Main {
       logger().info("TBA enrichment disabled (no API key found)");
     }
 
-    // Run disk cache cleanup in background (non-blocking)
+    // Run disk cache cleanup in background (non-blocking), and build column files as logs arrive
     if (logManager.getDiskCache().isEnabled()) {
-      new Thread(() -> logManager.getDiskCache().cleanup(), "cache-cleanup").start();
+      startCacheCleanup(() -> logManager.getDiskCache().cleanup());
+      logManager.startColumnBuilds();
     }
 
     // Verify bundled game data is accessible
-    var currentGame = org.triplehelix.wpilogmcp.game.GameKnowledgeBase.getInstance().getCurrentGame();
+    var currentGame = GameKnowledgeBase.getInstance().getCurrentGame();
     if (currentGame != null) {
       logger().info("Game data loaded: {} {}", currentGame.season(), currentGame.gameName());
     } else {
@@ -476,20 +771,79 @@ public class Main {
 
     // Create tool registry and register all tools
     var toolRegistry = new ToolRegistry();
+    toolRegistry.setManaged(managed);
+    if (configurationName != null && configurationFile != null) {
+      try {
+        toolRegistry.serverIdentity(org.triplehelix.wpilogmcp.visualization.ServerIdentity.open(
+            Path.of(System.getProperty("user.home")), configurationFile, configurationName));
+      } catch (IOException e) {
+        logger().warn("Local visualization state unavailable; using an ephemeral identity: {}", e.getMessage());
+        toolRegistry.serverIdentity(org.triplehelix.wpilogmcp.visualization.ServerIdentity.ephemeral(
+            "Durable visualization state unavailable (" + e.getClass().getSimpleName() + "); see the server log"));
+      }
+    }
     WpilogTools.registerAll(toolRegistry);
+    org.triplehelix.wpilogmcp.tools.LiveTools.registerAll(toolRegistry, null);
+    toolRegistry.setServerLocation(captureConfig == null ? ToolRegistry.LOCAL_LOCATION : ToolRegistry.PIT_LOCATION);
+    toolRegistry.setServerInstructions(org.triplehelix.wpilogmcp.tools.AnalysisGuidance.forLocation(toolRegistry.getServerLocation()));
     logger().debug("Registered all MCP tools");
 
     if (httpMode) {
-      var httpTransport = new HttpTransport(toolRegistry, httpPort, httpBind, allowedOrigins, httpPath);
-      Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      var httpTransport = new HttpTransport(toolRegistry, httpPort, httpBind, allowedOrigins, httpPath, configurationName);
+      // The live tools answer from the configured capture or a laptop's live source, whichever is current.
+      org.triplehelix.wpilogmcp.tools.LiveTools.registerFollowing(toolRegistry, httpTransport.liveCapture());
+      final org.triplehelix.wpilogmcp.capture.CaptureService capture;
+      try {
+        // Do not even read a saved policy or grant its paths until this named server opts in.
+        if (configurationName != null && dataStoreEnabled) httpTransport.configureLocalIngestion(
+            org.triplehelix.wpilogmcp.store.LocalIngestion.policyFileFor(
+                Path.of(System.getProperty("user.home")), configurationFile, configurationName));
+      } catch (IOException e) {
+        logger().error("Local ingestion setup failed: {}", e.getMessage(), e);
+        System.exit(1);
+        return;
+      }
+      try {
+        capture = captureConfig == null ? null
+            : new org.triplehelix.wpilogmcp.capture.CaptureService(captureConfig, logManager, httpBind);
+      } catch (IOException e) {
+        logger().error("capture.store: {}", e.getMessage(), e);
+        System.exit(1);
+        return;
+      }
+      if (capture != null) httpTransport.useConfiguredCapture(capture);
+      if (capture != null) httpTransport.setGatewayStatus(capture.live()::gateway);
+      httpTransport.configureMetrics(metricsConfig, capture == null ? null : capture.live(),
+          () -> new org.triplehelix.wpilogmcp.mcp.MetricsEndpoint.Components(capture == null ? 0 : capture.gatewayClients(), java.util.Map.of()));
+      // A stop request and the idle exit end the server as a signal would: the transport
+      // finishes the calls in flight, then the shutdown hook closes the logs
+      Runnable exit = () -> {
+        httpTransport.stop();
+        System.exit(0);
+      };
+      if (stopToken != null && !stopToken.isBlank()) {
+        httpTransport.setStop(stopToken, exit);
+      }
+      if (idleExit != null) {
+        httpTransport.setIdleExit(idleExit, exit);
+      }
+      org.triplehelix.wpilogmcp.logging.BufferedLogOutput.onShutdown(() -> {
         logger().info("Shutdown signal received");
         // Order matters: drain in-flight HTTP requests first, then shut down LogManager
         // so that in-flight tool calls don't encounter closed logs.
         httpTransport.stop();
+        if (capture != null) capture.close();
         logManager.shutdown();
-      }, "shutdown-hook"));
+      });
+      if (publicRun) cleanSignalExit();
       try {
         httpTransport.start();
+        httpTransport.startReplicaDiscovery();
+        if (mirrorConfigs != null) for (var mirror : mirrorConfigs) httpTransport.configureMirror(mirror);
+        if (capture != null) capture.start();
+        // The guide tells an agent with shell access where to get every sample of an entry
+        DiscoveryTools.setDataEndpoint(
+            httpTransport.dataEndpointUrl());
         Thread.currentThread().join();
       } catch (IOException e) {
         logger().error("Fatal HTTP server error: {}", e.getMessage(), e);
@@ -497,13 +851,16 @@ public class Main {
       } catch (InterruptedException e) {
         logger().info("Server interrupted, shutting down");
         httpTransport.stop();
+        if (capture != null) capture.close();
       }
     } else {
       var finalLogManager = logManager;
-      Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      logManager.stores().startWatching();
+      org.triplehelix.wpilogmcp.logging.BufferedLogOutput.onShutdown(() -> {
         logger().debug("Stdio shutdown: shutting down LogManager");
         finalLogManager.shutdown();
-      }, "stdio-shutdown-hook"));
+      });
+      if (publicRun) cleanSignalExit();
       var server = new McpServer(toolRegistry);
       try {
         server.run();
@@ -514,16 +871,50 @@ public class Main {
     }
   }
 
+  /**
+   * The JDK normally exits 128+signal even after successful shutdown hooks. Public run promises
+   * zero for a clean supervisor stop. The JDK signal dispatcher requests an ordinary exit;
+   * all registered hooks still drain HTTP, recording and logs before that exit completes.
+   * Windows process termination is not a catchable signal; EOF remains its clean stdio stop.
+   */
+  @SuppressWarnings("removal")
+  private static void cleanSignalExit() {
+    for (String name : List.of("INT", "TERM")) {
+      try {
+        sun.misc.Signal.handle(new sun.misc.Signal(name), signal -> System.exit(0));
+      } catch (IllegalArgumentException e) {
+        logger().debug("Signal {} is unavailable on this JVM", name);
+      }
+    }
+  }
+
   // ==================== Usage ====================
 
   private static void printUsage() {
     logger().info("Usage: wpilog-mcp [options]");
     logger().info("       wpilog-mcp start <config-name> [--config <path>]");
+    logger().info("       wpilog-mcp run <config-name> [--config <path>] [--managed]");
+    logger().info("       wpilog-mcp service-unit <config-name> [--config <path>]");
+    logger().info("       {}", org.triplehelix.wpilogmcp.capture.pull.RobotFactsCommand.USAGE);
+    logger().info("       wpilog-mcp stop <config-name> [--config <path>]");
+    logger().info("       wpilog-mcp connect <config-name> [--config <path>] [--logdir <dir>]... [--team <n>]");
+    logger().info("       wpilog-mcp connect --url <url> [--logdir <dir>]... [--team <n>]");
+    logger().info("       {}", ImportCommand.USAGE);
     logger().info("");
     logger().info("With no arguments, starts the \"default\" server configuration.");
     logger().info("");
     logger().info("Commands:");
     logger().info("  start <name>        Start a named server from servers.yaml");
+    logger().info("  run <name>          Run a named server in the foreground, logging to stderr");
+    logger().info("  service-unit <name> Print systemd service and health timer units; install nothing");
+    logger().info("  robot-facts        Collect bounded, read-only SSH evidence for the shop checklist");
+    logger().info("  --managed          Mark this foreground process as owned by a supervisor");
+    logger().info("  stop <name>         Stop a named http server started in the background");
+    logger().info("  connect <name>      Relay stdin/stdout to a named http server, starting it if needed");
+    logger().info("  connect --url <url> Relay stdin/stdout to an MCP server at a URL");
+    logger().info("  import <path>...   Import logs into the configured store, using its daemon when running");
+    logger().info("  sync [url]         Pull missing store files from a peer, or from all remembered peers");
+    logger().info("  install           Install this JAR: [--install-dir <dir>] [--logdir <dir>]... [--team <n>] [--force] [--refresh] [--with-extension --vsix <file> [--vscode <season|system>]] [--list-vscode] [--json]");
     logger().info("  --config <path>     Explicit config file path (default: auto-discover)");
     logger().info("");
     logger().info("Options:");
@@ -543,7 +934,7 @@ public class Main {
     logger().info("");
     logger().info("Environment variables (CLI flags override these):");
     logger().info("  WPILOG_DIR             Directories of log files, separated by '{}'",
-        java.io.File.pathSeparator);
+        File.pathSeparator);
     logger().info("  WPILOG_TEAM            Default team number for logs missing metadata");
     logger().info("  TBA_API_KEY            The Blue Alliance API key");
     logger().info("  WPILOG_DISK_CACHE_DIR     Directory for persistent disk cache");
@@ -568,29 +959,29 @@ public class Main {
    * The directories in a path list such as {@code WPILOG_DIR}, separated as in {@code PATH}: by
    * {@code :}, or {@code ;} on Windows. Entries are trimmed and blank ones dropped.
    */
-  static java.util.List<String> splitPathList(String value) {
-    return splitPathList(value, java.io.File.pathSeparator);
+  static List<String> splitPathList(String value) {
+    return splitPathList(value, File.pathSeparator);
   }
 
   /** As {@link #splitPathList(String)}, with the separator given (for testing). */
-  static java.util.List<String> splitPathList(String value, String separator) {
-    if (value == null) return java.util.List.of();
-    return java.util.Arrays.stream(value.split(java.util.regex.Pattern.quote(separator)))
+  static List<String> splitPathList(String value, String separator) {
+    if (value == null) return List.of();
+    return Arrays.stream(value.split(Pattern.quote(separator)))
         .map(String::strip)
         .filter(entry -> !entry.isEmpty())
         .toList();
   }
 
-  private static java.util.Set<String> parseAllowedOrigins(String value) {
-    if (value == null || value.isEmpty()) return java.util.Set.of();
-    var origins = new java.util.HashSet<String>();
+  private static Set<String> parseAllowedOrigins(String value) {
+    if (value == null || value.isEmpty()) return Set.of();
+    var origins = new HashSet<String>();
     for (var part : value.split(",")) {
       var trimmed = part.trim();
       if (!trimmed.isEmpty()) {
         origins.add(trimmed);
       }
     }
-    return java.util.Set.copyOf(origins);
+    return Set.copyOf(origins);
   }
 
   private static int parseEnvInt(String name, int defaultValue) {
@@ -604,7 +995,7 @@ public class Main {
     }
   }
 
-  private static void applyEnvInt(String name, java.util.function.IntConsumer setter) {
+  private static void applyEnvInt(String name, IntConsumer setter) {
     var value = System.getenv(name);
     if (value == null || value.isEmpty()) return;
     try {
@@ -618,7 +1009,7 @@ public class Main {
     }
   }
 
-  private static void applyEnvLong(String name, java.util.function.LongConsumer setter) {
+  private static void applyEnvLong(String name, LongConsumer setter) {
     var value = System.getenv(name);
     if (value == null || value.isEmpty()) return;
     try {

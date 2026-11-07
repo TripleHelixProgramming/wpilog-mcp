@@ -4,6 +4,8 @@
  */
 package org.triplehelix.wpilogmcp.tools;
 
+import org.triplehelix.wpilogmcp.read.FieldPath;
+
 import java.util.List;
 import java.util.Map;
 

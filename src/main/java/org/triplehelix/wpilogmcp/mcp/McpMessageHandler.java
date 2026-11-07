@@ -97,6 +97,23 @@ public class McpMessageHandler {
    * @return The handler result containing the response and shutdown flag
    */
   public HandlerResult handleMessage(JsonObject message, McpSession session) {
+    return handleMessage(message, session, CallerContext.Authority.UNTRUSTED);
+  }
+
+  /** Only transports supply authority; no session or null-session convention implies trust. */
+  public HandlerResult handleMessage(JsonObject message, McpSession session, CallerContext.Authority authority) {
+    return handleMessage(message, session, authority, InventoryRequests.Admission.DIRECT);
+  }
+  HandlerResult handleMessage(JsonObject message, McpSession session, CallerContext.Authority authority, InventoryRequests.Admission admission) {
+    CallerContext.set(authority);
+    SessionContext.set(session);
+    try {
+      return dispatchMessage(message, session, admission);
+    }
+    finally { CallerContext.clear(); SessionContext.clear(); }
+  }
+
+  private HandlerResult dispatchMessage(JsonObject message, McpSession session, InventoryRequests.Admission admission) {
     var id = message.get("id");
     var params = message.get("params");
     boolean isNotification = id == null || id.isJsonNull();
@@ -130,7 +147,7 @@ public class McpMessageHandler {
           yield HandlerResult.shutdown(JsonRpc.createResponse(id, new JsonObject()));
         }
         case "tools/list" -> handleToolsList(id);
-        case "tools/call" -> handleToolCall(id, params);
+        case "tools/call" -> handleToolCall(id, params, message, admission);
         case "ping" -> HandlerResult.of(JsonRpc.createResponse(id, new JsonObject()));
         case "prompts/list" -> {
           var res = new JsonObject();
@@ -139,7 +156,13 @@ public class McpMessageHandler {
         }
         case "resources/list" -> {
           var res = new JsonObject();
-          res.add("resources", new JsonArray());
+          var resources = new JsonArray(); resources.add(CurrentSessionResource.descriptor());
+          res.add("resources", resources);
+          yield HandlerResult.of(JsonRpc.createResponse(id, res));
+        }
+        case "resources/read" -> handleResourceRead(id, params);
+        case "resources/templates/list" -> {
+          var res = new JsonObject(); res.add("resourceTemplates", new JsonArray());
           yield HandlerResult.of(JsonRpc.createResponse(id, res));
         }
         case "completion/complete" -> {
@@ -171,6 +194,12 @@ public class McpMessageHandler {
       return HandlerResult.of(
           JsonRpc.createErrorResponse(
               id, JsonRpc.INTERNAL_ERROR, "Internal error: " + e.getMessage()));
+    } catch (StackOverflowError e) {
+      // Also protect raw tools, schema construction and response wrapping, outside ToolBase.
+      if (isNotification) return HandlerResult.noResponse();
+      return HandlerResult.of(JsonRpc.createErrorResponse(id, JsonRpc.INTERNAL_ERROR,
+          "Stack overflow: this request exceeded the supported nesting or recursion depth. "
+              + "Reduce nested input; the server remains available for the next request."));
     } finally {
       if (session != null) {
         SessionContext.clear();
@@ -184,6 +213,9 @@ public class McpMessageHandler {
 
     var capabilities = new JsonObject();
     capabilities.add("tools", new JsonObject());
+    capabilities.add("resources", new JsonObject());
+    var experimental = new JsonObject(); experimental.addProperty(org.triplehelix.wpilogmcp.visualization.ControlNotifications.CAPABILITY, true);
+    capabilities.add("experimental", experimental);
     result.add("capabilities", capabilities);
 
     var serverInfo = new JsonObject();
@@ -200,9 +232,36 @@ public class McpMessageHandler {
     // Create a new session if session management is enabled
     if (sessionManager != null) {
       var session = sessionManager.createSession();
+      negotiate(params, session.getId());
       return HandlerResult.withSession(JsonRpc.createResponse(id, result), session.getId());
     }
 
+    negotiate(params, "stdio");
+    return HandlerResult.of(JsonRpc.createResponse(id, result));
+  }
+
+  private void negotiate(JsonElement params, String session) {
+    try {
+      if (CallerContext.current() == CallerContext.Authority.UNTRUSTED || params == null || !params.isJsonObject()) return;
+      var caps = params.getAsJsonObject().getAsJsonObject("capabilities");
+      if (caps != null && caps.has("experimental") && new com.google.gson.JsonPrimitive(true).equals(caps.getAsJsonObject("experimental").get(org.triplehelix.wpilogmcp.visualization.ControlNotifications.CAPABILITY)))
+        toolRegistry.visualizations().notifications.negotiate(session);
+    } catch (Exception e) { logger.warn("Visualization notifications unavailable: {}", e.getMessage()); }
+  }
+
+  private HandlerResult handleResourceRead(JsonElement id, JsonElement params) {
+    if (params == null || !params.isJsonObject()) return invalidParams(id, "resources/read needs params.uri");
+    var uri = params.getAsJsonObject().get("uri");
+    if (uri == null || !uri.isJsonPrimitive() || !uri.getAsJsonPrimitive().isString()) {
+      return invalidParams(id, "resources/read uri must be a string");
+    }
+    if (!CurrentSessionResource.URI.equals(uri.getAsString())) {
+      return HandlerResult.of(JsonRpc.createErrorResponse(id, -32002, "Resource not found: " + uri.getAsString()));
+    }
+    var content = new JsonObject(); content.add("uri", uri); content.addProperty("mimeType", "application/json");
+    content.addProperty("text", gson.toJson(toolRegistry.currentSession()));
+    var contents = new JsonArray(); contents.add(content);
+    var result = new JsonObject(); result.add("contents", contents);
     return HandlerResult.of(JsonRpc.createResponse(id, result));
   }
 
@@ -212,7 +271,7 @@ public class McpMessageHandler {
     return HandlerResult.of(JsonRpc.createResponse(id, result));
   }
 
-  private HandlerResult handleToolCall(JsonElement id, JsonElement params) {
+  private HandlerResult handleToolCall(JsonElement id, JsonElement params, JsonObject message, InventoryRequests.Admission admission) {
     if (params == null || params.isJsonNull()) {
       return invalidParams(id, "Missing params");
     }
@@ -256,6 +315,14 @@ public class McpMessageHandler {
       return invalidParams(id, "arguments must be an object");
     }
 
+    // Shape validation and notification suppression belong to normal dispatch, even when
+    // transport admission refuses data work. A mixed batch's ping/close still executes.
+    var refusal = admission.refusal(message);
+    if (refusal != null) {
+      var body = org.triplehelix.wpilogmcp.tools.ResponseBuilder.error(refusal.getMessage()).addProperty("api_version", 1).build();
+      refusal.json().entrySet().forEach(entry -> body.add(entry.getKey(), entry.getValue()));
+      return HandlerResult.of(JsonRpc.createResponse(InventoryRequests.responseId(message), wrapToolResult(body, true)));
+    }
     logger.info("Executing tool '{}' with {} argument(s)", toolName, arguments.size());
     long startTime = System.currentTimeMillis();
     try {
@@ -268,7 +335,11 @@ public class McpMessageHandler {
         toolResult.getAsJsonObject().addProperty("_execution_time_ms", executionTimeMs);
       }
 
-      return HandlerResult.of(JsonRpc.createResponse(id, wrapToolResult(toolResult, false)));
+      var response = JsonRpc.createResponse(id, wrapToolResult(toolResult, false));
+      if (tool instanceof BoundedReply bounded) {
+        response = bounded(response, bounded, toolResult, id, executionTimeMs);
+      }
+      return HandlerResult.of(response);
     } catch (IllegalArgumentException e) {
       logger.warn("Tool '{}' failed with invalid parameter: {}", toolName, e.getMessage());
       return HandlerResult.of(
@@ -307,18 +378,28 @@ public class McpMessageHandler {
     }
   }
 
+  /** Both transports encode a reply with this configuration; a reply limit counts its bytes. */
+  private static final Gson REPLY_ENCODING = new GsonBuilder().serializeNulls().create();
+
+  /** The complete reply is measured as sent; one over the limit becomes the tool's refusal. */
+  JsonObject bounded(JsonObject response, BoundedReply tool, JsonElement result,
+      JsonElement id, long executionTimeMs) {
+    long bytes = REPLY_ENCODING.toJson(response).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+    int limit = tool.maxReplyBytes();
+    if (bytes <= limit) return response;
+    var refusal = tool.replyTooLarge(result, bytes, limit);
+    if (refusal.isJsonObject()) refusal.getAsJsonObject().addProperty("_execution_time_ms", executionTimeMs);
+    logger.warn("Tool reply of {} bytes exceeds its {}-byte limit; sent the tool's refusal instead", bytes, limit);
+    return JsonRpc.createResponse(id, wrapToolResult(refusal, false));
+  }
+
   private static HandlerResult invalidParams(JsonElement id, String message) {
     return HandlerResult.of(JsonRpc.createErrorResponse(id, JsonRpc.INVALID_PARAMS, message));
   }
 
   private JsonObject wrapToolResult(JsonElement toolResult, boolean isError) {
     var result = new JsonObject();
-    var content = new JsonArray();
-    var textContent = new JsonObject();
-    textContent.addProperty("type", "text");
-    textContent.addProperty("text", gson.toJson(toolResult));
-    content.add(textContent);
-    result.add("content", content);
+    result.add("content", org.triplehelix.wpilogmcp.tools.ResponseBuilder.contentBlocks(toolResult));
     if (isError) {
       result.addProperty("isError", true);
     }

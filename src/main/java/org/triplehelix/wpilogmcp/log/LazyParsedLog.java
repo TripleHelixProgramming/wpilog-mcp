@@ -6,33 +6,45 @@ package org.triplehelix.wpilogmcp.log;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import edu.wpi.first.util.datalog.DataLogAccess;
 import edu.wpi.first.util.datalog.DataLogReader;
 import edu.wpi.first.util.datalog.DataLogRecord;
 import java.io.IOException;
+import java.nio.file.Path;
+import java.time.Instant;
 import java.util.AbstractMap;
-import java.util.ArrayList;
+import java.util.AbstractSet;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import edu.wpi.first.util.datalog.DataLogAccess;
+import org.triplehelix.wpilogmcp.cache.DiskCache;
+import org.triplehelix.wpilogmcp.cache.ScanIndexSerializer;
+import org.triplehelix.wpilogmcp.columns.ColumnFile;
+import org.triplehelix.wpilogmcp.columns.ColumnFiles;
 import org.triplehelix.wpilogmcp.log.struct.EnumValue;
 import org.triplehelix.wpilogmcp.log.struct.StructDecodeException;
+import org.triplehelix.wpilogmcp.log.struct.StructMap;
 import org.triplehelix.wpilogmcp.log.struct.StructSchemas;
 import org.triplehelix.wpilogmcp.log.subsystems.EntryDecoder;
+import org.triplehelix.wpilogmcp.read.LegacyMaterializer;
+import org.triplehelix.wpilogmcp.read.RecordSeries;
+import org.triplehelix.wpilogmcp.read.SampleCursors;
 
 /**
  * Lazily-loaded wpilog data backed by a memory-mapped file and Caffeine cache.
  *
  * <p>Built from a single scan of the file. The scan records entry metadata and byte offsets
- * for each data record (4 bytes per record — compact). Values are decoded on demand via
- * random access to the memory-mapped ByteBuffer when tools access specific entries.
+ * for each data record (4 bytes per ordinary record; 8 when a wide address requires it). Values are decoded on demand via
+ * random access to the windowed byte source when tools access specific entries.
  *
  * <p>Decoded values are cached in a Caffeine weight-based LRU cache. If an entry is evicted
  * under memory pressure, re-decoding uses the stored byte offsets for direct access — no
@@ -55,10 +67,12 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   private final boolean damaged;
   private final String truncationMessage;
 
-  // Per-entry byte offsets into the memory-mapped file (compact: 4 bytes per record)
-  private final Map<String, int[]> recordOffsets;
+  // Long addresses, retaining int-backed storage for ordinary files.
+  private final Map<String, RecordOffsets> recordOffsets;
 
-  private final DataLogReader reader;
+  private final LogReader reader;
+  private final LogScan scan;
+  LogScan scan() { return scan; }
   private final StructSchemas structSchemas;
   private final Map<String, DecodeProblem> decodeProblems = new ConcurrentHashMap<>();
   /** Entries decoded at least once, whose decode problems (if any) are therefore known. */
@@ -66,6 +80,279 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   private final Cache<String, List<TimestampedValue>> valueCache;
   private final LazyValuesMap valuesView;
   private volatile boolean closed = false;
+  private ScopedLogReader ownedReader;
+  private int holders;
+  private boolean unmapping;
+  private volatile boolean unmapped;
+  /** The server's column files, once its manager builds them; null for a log read alone. */
+  private volatile ColumnFiles columnFiles;
+  /** This log's column file once opened; it closes with the mapping, since its readers hold the log. */
+  private volatile ColumnFile columnFile;
+  /** Set once the file proved damaged, or the mapping closed: this log reads its records then. */
+  private volatile boolean columnFileRefused;
+  private final Object columnLock = new Object();
+
+  /**
+   * The manager owns this mapping until eviction and the last in-flight use have both ended.
+   * Construction failures close it too: a failed scan must not keep a Windows file immovable.
+   */
+  /** Moves the decoded-value budget as the logs loaded beside this one come and go. */
+  void setValueBudget(long bytes) { valueCache.policy().eviction().ifPresent(eviction -> eviction.setMaximum(bytes)); }
+  /** The decoded-value budget in bytes. */
+  long valueBudget() { return valueCache.policy().eviction().map(eviction -> eviction.getMaximum()).orElseThrow(); }
+
+  static LazyParsedLog open(Path path, long maxCacheWeightBytes) throws IOException {
+    return open(path, maxCacheWeightBytes, null);
+  }
+
+  static LazyParsedLog open(Path path, long maxCacheWeightBytes, LogScan previous) throws IOException {
+    var reader = new ScopedLogReader(path);
+    try {
+      var log = new LazyParsedLog(path.toString(), reader.reader(), maxCacheWeightBytes, previous);
+      log.ownedReader = reader;
+      return log;
+    } catch (Throwable e) {
+      try {
+        reader.close();
+      } catch (IOException close) {
+        e.addSuppressed(close);
+      }
+      throw e;
+    }
+  }
+
+  enum OpenPhase { BEFORE_CHECKSUM, BEFORE_HASH, AFTER_SCAN, BEFORE_INDEX_PUBLICATION, AFTER_INDEX_ENCODING }
+  @FunctionalInterface interface OpenObserver { void at(OpenPhase phase, Path path) throws IOException; }
+  @FunctionalInterface interface IndexEligibility { boolean allowed() throws IOException; }
+
+  /** How far a held index's recorded attributes vouch for the file now. */
+  enum IndexTrust {
+    /** Nothing changed and the file system vouches: the index is reused without reading the file. */
+    ATTRIBUTES,
+    /** Only the modification time moved, or the file system cannot vouch: the CRC32C decides. */
+    CHECKSUM,
+    /** The file's identity changed: only the full SHA-256 proof can reuse the index. */
+    PROOF
+  }
+
+  /**
+   * Optional index work stays with this request's reader, outside the manager's admission claim.
+   * A resumed growing prefix remains an in-memory checkpoint and is never written to disk.
+   *
+   * <p>A held index is reused by how far its recorded attributes still vouch for the file, as
+   * the maintainer decided on 2026-10-21. Unchanged attributes that the file system vouches for
+   * are trusted without reading the file, so a file rewritten in place with every attribute
+   * restored keeps its old index. A moved modification time, or attributes the file system cannot
+   * vouch for, are checked by the content's CRC32C. Anything else, and any failed check, takes the
+   * SHA-256 proof, the store manifest's check and a new scan. A reuse that found new attributes
+   * records them, so the next open trusts them.
+   */
+  static LazyParsedLog open(Path path, long budget, LogScan previous, DiskCache indexes,
+      FileSnapshot boundary, String expectedManifestSha256, IndexEligibility eligible,
+      OpenObserver observer) throws IOException {
+    var owned = new ScopedLogReader(path);
+    try {
+      var reader = owned.reader();
+      ScanIndexSerializer.Source source = null;
+      LogScan restored = null;
+      if (previous == null && indexes.isEnabled()
+          && indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
+        String identity = indexIdentity(path, boundary, expectedManifestSha256);
+        var held = indexes.findScanIndex(identity, boundary.size());
+        if (held != null) {
+          var trust = trust(held.recorded(), boundary);
+          boolean vouched = trust == IndexTrust.ATTRIBUTES || trust == IndexTrust.CHECKSUM
+              && checksum(reader, path, expectedManifestSha256, observer) == held.recorded().crc32c();
+          if (vouched && indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
+            source = held.source();
+            restored = held.scan();
+          }
+        }
+        if (restored == null) {
+          String hash = contentProof(reader, path, expectedManifestSha256, observer);
+          if (expectedManifestSha256 != null && !expectedManifestSha256.equals(hash)) {
+            throw new LogFileException("SOURCE_UNAVAILABLE: recorded bytes do not match their manifested hash");
+          }
+          if (indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
+            source = new ScanIndexSerializer.Source(identity, boundary.size(), hash);
+            if (held != null && held.source().equals(source)) restored = held.scan();
+          }
+        }
+        if (source != null) indexes.recordScanLookup(restored != null);
+        if (held != null && restored != null && vouches(boundary)) {
+          var current = recorded(held.recorded().crc32c(), boundary);
+          if (!current.equals(held.recorded())) {
+            // The content is the one the index was proved for; it now has these attributes.
+            indexes.saveScanIndex(source, current, restored,
+                () -> indexEligible(eligible, path, boundary, reader, expectedManifestSha256));
+          }
+        }
+      }
+      var log = new LazyParsedLog(path.toString(), reader, budget, previous, restored);
+      if (restored != null) log.contentSha256 = source.sha256();
+      if (restored == null) observer.at(OpenPhase.AFTER_SCAN, path);
+      if (source != null && restored == null
+          && indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
+        // Proof after scanning prevents old offsets being attached to a later content hash.
+        var after = guardedIndexSourceOperation(expectedManifestSha256, reader::contentProof);
+        if (expectedManifestSha256 != null && !expectedManifestSha256.equals(after.sha256())) {
+          throw new LogFileException("SOURCE_UNAVAILABLE: recorded file changed during index construction");
+        }
+        if (source.sha256().equals(after.sha256())) {
+          log.contentSha256 = source.sha256();
+          observer.at(OpenPhase.BEFORE_INDEX_PUBLICATION, path);
+          if (indexEligible(eligible, path, boundary, reader, expectedManifestSha256)) {
+            indexes.saveScanIndex(source, recorded(after.crc32c(), boundary), log.scan, () -> {
+              observer.at(OpenPhase.AFTER_INDEX_ENCODING, path);
+              return indexEligible(eligible, path, boundary, reader, expectedManifestSha256);
+            });
+          }
+        }
+      }
+      log.ownedReader = owned;
+      return log;
+    } catch (Throwable failure) {
+      try { owned.close(); } catch (IOException close) { failure.addSuppressed(close); }
+      throw failure;
+    }
+  }
+
+  /**
+   * How far recorded attributes vouch for the file now; the size is already part of the index's
+   * key. A creation time equal to the modification time counts as unreported, because Java before
+   * version 22 reports the modification time there on Linux, so it would move with the time.
+   */
+  static IndexTrust trust(ScanIndexSerializer.Recorded recorded, FileSnapshot now) {
+    String key = now.fileKey() == null ? null : now.fileKey().toString();
+    var created = reportedCreation(now.created() == null ? null : now.created().toInstant(),
+        now.modified().toInstant());
+    var recordedCreated = reportedCreation(recorded.created(), recorded.modified());
+    if (!Objects.equals(recorded.fileKey(), key)
+        || created != null && recordedCreated != null && !created.equals(recordedCreated)) {
+      return IndexTrust.PROOF;
+    }
+    return recorded.modified().equals(now.modified().toInstant()) && vouches(now)
+        ? IndexTrust.ATTRIBUTES : IndexTrust.CHECKSUM;
+  }
+
+  /** The file system vouches when it names the file and keeps its time finer than a second. */
+  static boolean vouches(FileSnapshot now) {
+    return now.fileKey() != null && now.modified().toInstant().getNano() != 0;
+  }
+
+  static ScanIndexSerializer.Recorded recorded(long crc32c, FileSnapshot file) {
+    return new ScanIndexSerializer.Recorded(crc32c, file.modified().toInstant(),
+        file.fileKey() == null ? null : file.fileKey().toString(),
+        file.created() == null ? null : file.created().toInstant());
+  }
+
+  private static Instant reportedCreation(Instant created, Instant modified) {
+    return created == null || created.equals(modified) ? null : created;
+  }
+
+  /**
+   * A store member is keyed by its manifested hash. Any other file is keyed by its path, size and
+   * identity, but neither of its times, so a file whose time alone moved still finds its index
+   * and is checked by checksum rather than scanned again. Creation time decides trust instead: it
+   * counts as unreported while it equals the modification time, so in a key it would change the
+   * moment a touch separated the two.
+   */
+  static String indexIdentity(Path path, FileSnapshot file, String expectedManifestSha256) {
+    if (expectedManifestSha256 != null) return "sha256:" + expectedManifestSha256;
+    String text = path.toAbsolutePath().normalize() + "\n" + file.size() + "\n" + file.fileKey();
+    try {
+      return "file:" + java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+          .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    } catch (java.security.NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
+  }
+
+  private static long checksum(LogReader reader, Path path, String expectedManifestSha256,
+      OpenObserver observer) throws IOException {
+    return guardedIndexSourceOperation(expectedManifestSha256, () -> {
+      observer.at(OpenPhase.BEFORE_CHECKSUM, path);
+      return reader.contentCrc32c();
+    });
+  }
+
+  private static String contentProof(LogReader reader, Path path, String expectedManifestSha256,
+      OpenObserver observer) throws IOException {
+    return guardedIndexSourceOperation(expectedManifestSha256, () -> {
+      observer.at(OpenPhase.BEFORE_HASH, path);
+      return reader.contentSha256();
+    });
+  }
+
+  private static boolean indexEligible(IndexEligibility eligible, Path path, FileSnapshot boundary,
+      LogReader reader, String expectedManifestSha256) throws IOException {
+    return guardedIndexSourceOperation(expectedManifestSha256,
+        () -> eligible.allowed() && stable(path, boundary, reader));
+  }
+
+  @FunctionalInterface private interface IndexSourceOperation<T> { T read() throws IOException; }
+
+  /** A remembered admission cannot replace a failed new source check or full-content proof.
+   * Optional cache I/O handles its own misses; legacy constructor errors retain their fallback. */
+  private static <T> T guardedIndexSourceOperation(String expectedManifestSha256,
+      IndexSourceOperation<T> operation) throws IOException {
+    try {
+      return operation.read();
+    } catch (IOException | RuntimeException failure) {
+      if (expectedManifestSha256 == null) throw failure;
+      var refusal = new LogFileException("SOURCE_UNAVAILABLE: current content proof could not be completed: "
+          + failure.getMessage());
+      refusal.initCause(failure);
+      throw refusal;
+    }
+  }
+
+  private static boolean stable(Path path, FileSnapshot boundary, LogReader reader) throws IOException {
+    return boundary != null && reader.size() == boundary.size() && boundary.sameAs(FileSnapshot.of(path));
+  }
+
+  /** Retaining and retiring are one decision, so an evicted mapping cannot acquire a new user. */
+  synchronized boolean retain() {
+    if (closed && ownedReader != null) return false;
+    holders++;
+    return true;
+  }
+
+  void releaseUse() {
+    boolean release;
+    synchronized (this) {
+      if (--holders < 0) throw new IllegalStateException("Log use released twice");
+      release = claimUnmap();
+    }
+    if (release) unmap();
+  }
+
+  private boolean claimUnmap() {
+    if (!closed || holders != 0 || ownedReader == null || unmapping) return false;
+    unmapping = true;
+    return true;
+  }
+
+  private void unmap() {
+    unmapped = true;
+    ColumnFile file;
+    synchronized (columnLock) {
+      file = columnFile;
+      columnFile = null;
+      columnFileRefused = true;
+    }
+    if (file != null) {
+      try {
+        file.close();
+      } catch (IOException e) {
+        logger.warn("Could not release the column file of {}: {}", path, e.getMessage());
+      }
+    }
+    try {
+      ownedReader.close();
+    } catch (IOException e) {
+      // Its file-access claim stays held on failure, so an import reports it instead of moving.
+      logger.warn("Could not release log mapping for {}: {}", path, e.getMessage());
+    }
+  }
 
   /**
    * Creates a LazyParsedLog by scanning the file once.
@@ -81,8 +368,42 @@ public class LazyParsedLog implements LogData, AutoCloseable {
    */
   public LazyParsedLog(String path, DataLogReader reader, long maxCacheWeightBytes)
       throws IOException {
+    this(path, LogReader.of(reader), maxCacheWeightBytes);
+  }
+
+  public LazyParsedLog(String path, LogReader reader, long maxCacheWeightBytes) throws IOException {
+    this(path, reader, maxCacheWeightBytes, null);
+  }
+
+  /** The content's SHA-256 when its scan index proved it; null for a log read without one. */
+  private volatile String contentSha256;
+  /** The UTC mapping, once read: the file does not change under this log. */
+  private volatile org.triplehelix.wpilogmcp.read.UtcTimeMapping utcMapping;
+
+  @Override public org.triplehelix.wpilogmcp.read.UtcTimeMapping utcMapping() {
+    var mapping = utcMapping;
+    if (mapping == null) utcMapping = mapping = org.triplehelix.wpilogmcp.read.UtcTimeMapping.from(this);
+    return mapping;
+  }
+
+  /**
+   * The SHA-256 of the content this log was read from, when the scan index proved it: an index
+   * reused under its trust rules, or a scan whose content was the same before and after it. A
+   * growing file, a log read with the disk cache off, and one that changed while it was scanned
+   * have none, so nothing derived from their content is kept.
+   */
+  public java.util.Optional<String> contentSha256() {
+    return java.util.Optional.ofNullable(contentSha256);
+  }
+
+  private LazyParsedLog(String path, LogReader reader, long maxCacheWeightBytes, LogScan previous) throws IOException {
+    this(path, reader, maxCacheWeightBytes, previous, null);
+  }
+
+  private LazyParsedLog(String path, LogReader reader, long maxCacheWeightBytes, LogScan previous,
+      LogScan restored) throws IOException {
     if (!reader.isValid()) {
-      throw LogFileException.invalid(java.nio.file.Path.of(path));
+      throw LogFileException.invalid(Path.of(path));
     }
 
     this.path = path;
@@ -91,9 +412,10 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     // One pass over the records (shared with LogParser): entries in declaration order, each
     // data record's byte offset for random-access decoding later, and where the file stops being
     // a valid log (a damaged tail is not read; see LogScan)
-    logger.debug("Scanning log: {}", path);
+    if (restored == null) logger.debug("Scanning log: {}", path);
     long startTime = System.nanoTime();
-    var scan = LogScan.of(reader, java.nio.file.Path.of(path));
+    this.scan = restored != null ? restored : previous == null ? LogScan.of(reader, Path.of(path))
+        : LogScan.resume(previous, reader, Path.of(path));
     var entriesByName = scan.entries();
     var offsetLists = scan.offsets();
     int totalDataRecords = scan.dataRecords();
@@ -105,35 +427,35 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     this.damaged = scan.damaged();
     this.truncationMessage = scan.truncationMessage();
 
-    // Compact offset lists to int[] arrays
+    // Compact the arrays, retaining four-byte storage for ordinary files
     this.recordOffsets = new HashMap<>();
     for (var entry : offsetLists.entrySet()) {
-      recordOffsets.put(entry.getKey(), entry.getValue().toArray());
+      recordOffsets.put(entry.getKey(), entry.getValue().compact());
     }
 
     // Spot-check: validate a few random offsets to ensure entry IDs match.
     // Pick up to 3 records (first, middle, last) from a non-empty entry.
     for (var offsetEntry : recordOffsets.entrySet()) {
-      int[] offsets = offsetEntry.getValue();
-      if (offsets.length == 0) continue;
+      var offsets = offsetEntry.getValue();
+      if (offsets.size() == 0) continue;
       var expectedInfo = entriesByName.get(offsetEntry.getKey());
       if (expectedInfo == null) continue;
 
-      int[] sampleIndices = offsets.length == 1
+      int[] sampleIndices = offsets.size() == 1
           ? new int[]{0}
-          : offsets.length == 2
-              ? new int[]{0, offsets.length - 1}
-              : new int[]{0, offsets.length / 2, offsets.length - 1};
+          : offsets.size() == 2
+              ? new int[]{0, offsets.size() - 1}
+              : new int[]{0, offsets.size() / 2, offsets.size() - 1};
       for (int idx : sampleIndices) {
         try {
-          var record = DataLogAccess.getRecord(reader, offsets[idx]);
+          var record = DataLogAccess.getRecord(reader, offsets.get(idx));
           if (record.getEntry() != expectedInfo.id()) {
             logger.warn("Offset validation mismatch for '{}': expected entry ID {} but found {} at offset {}",
-                offsetEntry.getKey(), expectedInfo.id(), record.getEntry(), offsets[idx]);
+                offsetEntry.getKey(), expectedInfo.id(), record.getEntry(), offsets.get(idx));
           }
         } catch (Exception e) {
           logger.warn("Offset validation failed for '{}' at offset {}: {}",
-              offsetEntry.getKey(), offsets[idx], e.getMessage());
+              offsetEntry.getKey(), offsets.get(idx), e.getMessage());
         }
       }
       break; // Only spot-check one entry to keep startup fast
@@ -141,10 +463,10 @@ public class LazyParsedLog implements LogData, AutoCloseable {
 
     // Struct schemas: the first record of each /.schema/struct: entry
     this.structSchemas = StructSchemas.fromLog(entries, name -> {
-      int[] offsets = recordOffsets.get(name);
-      if (offsets == null || offsets.length == 0) return null;
+      var offsets = recordOffsets.get(name);
+      if (offsets == null || offsets.size() == 0) return null;
       try {
-        return DataLogAccess.getRecord(reader, offsets[0]).getString();
+        return DataLogAccess.getRecord(reader, offsets.get(0)).getString();
       } catch (RuntimeException e) {
         logger.warn("Unreadable struct schema entry '{}': {}", name, e.getMessage());
         return null;
@@ -152,9 +474,10 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     });
 
     long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
-    long offsetMemoryKb = (long) totalDataRecords * 4 / 1024;
-    logger.info("Scanned {}: {} entries, {} records, {} KB offsets in {}ms",
-        java.nio.file.Path.of(path).getFileName(), entries.size(),
+    long offsetMemoryKb = recordOffsets.values().stream().mapToLong(RecordOffsets::storageBytes).sum() / 1024;
+    logger.info(restored == null ? "Scanned {}: {} entries, {} records, {} KB offsets in {}ms"
+        : "Restored scan index for {}: {} entries, {} records, {} KB offsets in {}ms",
+        Path.of(path).getFileName(), entries.size(),
         totalDataRecords, offsetMemoryKb, elapsedMs);
 
     // Configure Caffeine cache
@@ -171,19 +494,46 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     this.valuesView = new LazyValuesMap();
   }
 
-  @Override public String path() { return path; }
-  @Override public Map<String, EntryInfo> entries() { return entries; }
-  @Override public double minTimestamp() { return minTimestamp; }
-  @Override public double maxTimestamp() { return maxTimestamp; }
-  @Override public boolean truncated() { return truncated; }
-  @Override public boolean damaged() { return damaged; }
+  @Override
+  public String path() {
+    return path;
+  }
+
+  @Override
+  public Map<String, EntryInfo> entries() {
+    return entries;
+  }
+
+  @Override
+  public double minTimestamp() {
+    return minTimestamp;
+  }
+
+  @Override
+  public double maxTimestamp() {
+    return maxTimestamp;
+  }
+
+  @Override
+  public boolean truncated() {
+    return truncated;
+  }
+
+  @Override
+  public boolean damaged() {
+    return damaged;
+  }
 
   @Override
   public int sampleCount(String entryName) {
-    int[] offsets = recordOffsets.get(entryName);
-    return offsets != null ? offsets.length : 0;
+    var offsets = recordOffsets.get(entryName);
+    return offsets != null ? offsets.size() : 0;
   }
-  @Override public String truncationMessage() { return truncationMessage; }
+
+  @Override
+  public String truncationMessage() {
+    return truncationMessage;
+  }
 
   @Override
   public Map<String, List<TimestampedValue>> values() {
@@ -199,8 +549,106 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   public Optional<DecodeProblem> decodeProblem(String entryName) {
     if (!entries.containsKey(entryName)) return Optional.empty();
     // Known once decoded (even if the values were evicted since): never decode twice to ask
-    if (!decodedOnce.contains(entryName)) valuesView.get(entryName);
+    if (!decodedOnce.contains(entryName)) {
+      // A column file records the entry's problem as the same decode found it.
+      var file = columnFile();
+      var held = file == null ? null : file.entry(entryName).orElse(null);
+      if (held != null) return held.decodeProblem();
+      valuesView.get(entryName);
+    }
     return Optional.ofNullable(decodeProblems.get(entryName));
+  }
+
+  /** Lets this log read numbers from the column file of its content, once one is built. */
+  public void attachColumnFiles(ColumnFiles files) {
+    columnFiles = files;
+  }
+
+  /** Where the column file this log holds open is, when it holds one. */
+  public Optional<Path> openColumnFile() {
+    var files = columnFiles;
+    var hash = contentSha256;
+    return columnFile == null || files == null || hash == null ? Optional.empty() : files.path(hash);
+  }
+
+  @Override
+  public Optional<NumericColumn> numericColumn(String entryName, org.triplehelix.wpilogmcp.read.FieldPath path) {
+    var file = columnFile();
+    if (file == null) return Optional.empty();
+    var selection = file.select(entryName, path);
+    if (selection.isEmpty()) {
+      if (file.damage().isPresent()) refuse(file);
+      return Optional.empty();
+    }
+    var held = selection.get();
+    var typed = path.isRoot() && held.kind().filter(kind -> kind != org.triplehelix.wpilogmcp.columns.ColumnFileFormat.Kind.ENUM).isPresent()
+        ? held.values(held.all()) : null;
+    return Optional.of(new NumericColumn(held.samples(held.all()), held.entry().decoded(), held.recordsWithoutValue(), typed));
+  }
+
+  /**
+   * The records of a numeric leaf from the column file, as {@link #records(String, boolean)}
+   * gives them with recorded values and the leaf picked out; empty when the file does not hold
+   * them exactly, and the caller reads the log. A uint64 field is not served from it: native
+   * reads keep such a field unsigned, as a BigInteger, while its column holds the tools' Long.
+   */
+  public Optional<ColumnFile.HeldRecords> heldRecords(String entryName, org.triplehelix.wpilogmcp.read.FieldPath path) {
+    var file = columnFile();
+    if (file == null) return Optional.empty();
+    var held = file.records(entryName, path).orElse(null);
+    if (held == null) {
+      if (file.damage().isPresent()) refuse(file);
+      return Optional.empty();
+    }
+    // The two decodes differ only in a uint64 field's type, which one record shows.
+    Object leaf;
+    try {
+      leaf = path.resolveOne(records(entryName, true).decode(0));
+    } catch (RuntimeException unreadable) {
+      return Optional.empty();
+    }
+    return leaf != null && leaf.getClass() == held.decode(0).getClass() ? Optional.of(held) : Optional.empty();
+  }
+
+  /**
+   * The column file of this log's content, opened on first use, outside any lock; null when none
+   * is built yet, when it proved damaged, or once the mapping has closed.
+   */
+  private ColumnFile columnFile() {
+    if (columnFileRefused) return null;
+    var open = columnFile;
+    if (open != null) return open;
+    var files = columnFiles;
+    var hash = contentSha256;
+    if (files == null || hash == null || unmapped) return null;
+    var opened = files.open(hash, this.path).orElse(null);
+    if (opened == null) return null;
+    boolean kept;
+    synchronized (columnLock) {
+      kept = columnFile == null && !columnFileRefused && !unmapped;
+      if (kept) columnFile = opened;
+    }
+    if (kept) return opened;
+    try {
+      opened.close();
+    } catch (IOException e) {
+      logger.debug("Could not release a column file opened twice for {}: {}", this.path, e.getMessage());
+    }
+    return columnFileRefused ? null : columnFile;
+  }
+
+  /**
+   * A damaged file is read no more by this log, and is removed and built again. It stays open
+   * until the mapping closes, since another reader of this log may still hold its samples.
+   */
+  private void refuse(ColumnFile file) {
+    synchronized (columnLock) {
+      if (columnFile != file || columnFileRefused) return;
+      columnFileRefused = true;
+    }
+    var files = columnFiles;
+    var hash = contentSha256;
+    if (files != null && hash != null) files.damaged(hash, this.path);
   }
 
   /** The number of entries whose decoded values are cached (for tests). */
@@ -210,68 +658,106 @@ public class LazyParsedLog implements LogData, AutoCloseable {
   }
 
   /**
-   * Releases the cached values. A closed log still reads correctly: a tool call that obtained it
-   * before it was evicted (heap pressure, idle expiry, replacement) decodes what it asks for
-   * again, without caching, instead of silently getting empty values. The memory-mapped file is
-   * released by the garbage collector once nothing references this log.
+   * Eviction stops caching immediately but leaves the mapping alive for its current holders.
+   * The last holder releases it deterministically. Readers supplied by a caller belong to that
+   * caller instead, so closing this view only drops its decoded values.
    */
   @Override
   public void close() {
-    closed = true;
+    boolean release;
+    synchronized (this) {
+      closed = true;
+      release = claimUnmap();
+    }
     valueCache.invalidateAll();
+    if (release) unmap();
     logger.debug("Closed LazyParsedLog: {}", path);
   }
 
+  /** The offset index remains int-backed until an address requires long storage. */
+  public long indexBytes() {
+    return recordOffsets.values().stream().mapToLong(RecordOffsets::storageBytes).sum();
+  }
+
   /**
-   * Decodes all records for a specific entry using random access via byte offsets.
-   * No file re-scan — reads only the records for the requested entry.
+   * Exposes this scan without rebuilding its index or schema table. Compatibility tools retain
+   * their unknown-type previews; source readers request exact recorded bytes instead.
+   * The caller must hold this log's use while reading the returned series.
    */
-  private List<TimestampedValue> decodeEntry(String entryName) {
+  public RecordSeries records(String entryName, boolean sourceValues) {
+    if (unmapped) throw new IllegalStateException("Log mapping has been released: " + path);
     var info = entries.get(entryName);
-    if (info == null) return null;
+    if (info == null) throw new IllegalArgumentException("Entry not found: " + entryName);
+    var offsets = recordOffsets.get(entryName);
+    return new RecordSeries() {
+      private DataLogRecord record;
+      @Override public int size() { return offsets == null ? 0 : offsets.size(); }
+      @Override public long timestampUs(int index) {
+        record = null;
+        return reader.recordTimestampUs(offsets.get(index));
+      }
+      @Override public long offset(int index) { return offsets.get(index); }
+      @Override public long payloadBytes(int index) {
+        record = null;
+        return reader.recordPayloadSize(offsets.get(index));
+      }
+      @Override public boolean monotonic() { return offsets == null || offsets.monotonic(); }
+      @Override public Object decode(int index) {
+        record = null;
+        record = DataLogAccess.getRecord(reader, offsets.get(index));
+        return sourceValues ? EntryDecoder.decodeRecordedValue(record, info.type(), structSchemas)
+            : EntryDecoder.decodeValue(record, info.type(), structSchemas);
+      }
+      @Override public void readRange(int start, int end, String entry, SampleCursors.Sink sink) {
+        var type = info.type();
+        for (int index = start; index < end; index++) {
+          long offset = offsets.get(index);
+          DataLogRecord current = null;
+          Object value;
+          long time;
+          try {
+            current = DataLogAccess.getRecord(reader, offset);
+            time = current.getTimestamp();
+            value = sourceValues ? EntryDecoder.decodeRecordedValue(current, type, structSchemas)
+                : EntryDecoder.decodeValue(current, type, structSchemas);
+          } catch (RuntimeException failure) {
+            record = current;
+            reportFailure(index, offset, entry, failure, sink);
+            continue;
+          }
+          sink.sample(time, offset, index, value);
+        }
+      }
+      @Override public String problemMessage(int index, Exception failure) {
+        if (!sourceValues && failure instanceof StructDecodeException) return failure.getMessage();
+        if (!sourceValues)
+          logger.trace("Malformed record at offset {} for {}: {}", offsets.get(index), entryName,
+              failure.getMessage());
+        return EntryDecoder.malformedMessage(record, info.type(), failure);
+      }
+    };
+  }
 
-    int[] offsets = recordOffsets.get(entryName);
-    if (offsets == null || offsets.length == 0) {
-      decodedOnce.add(entryName);
-      return List.of();
-    }
-
-    var type = info.type();
-    var values = new ArrayList<TimestampedValue>(offsets.length);
+  /** Decode only this entry through the same selection engine as source reads. */
+  private List<TimestampedValue> decodeEntry(String entryName) {
+    if (unmapped) throw new IllegalStateException("Log mapping has been released: " + path);
+    if (!entries.containsKey(entryName)) return null;
 
     long startTime = System.nanoTime();
-    int failed = 0;
-    String firstFailure = null;
-
-    for (int offset : offsets) {
-      DataLogRecord record = null;
-      try {
-        record = DataLogAccess.getRecord(reader, offset);
-        double timestamp = record.getTimestamp() / 1_000_000.0;
-        var value = EntryDecoder.decodeValue(record, type, structSchemas);
-        values.add(new TimestampedValue(timestamp, value));
-      } catch (StructDecodeException e) {
-        failed++;
-        if (firstFailure == null) firstFailure = e.getMessage();
-      } catch (Exception e) {
-        failed++;
-        if (firstFailure == null) firstFailure = EntryDecoder.malformedMessage(record, type, e);
-        logger.trace("Malformed record at offset {} for {}: {}", offset, entryName, e.getMessage());
-      }
-    }
-    if (failed > 0) {
-      decodeProblems.put(entryName, new DecodeProblem(firstFailure, failed, offsets.length));
-      logger.debug("{}: {} of {} records not decoded: {}", entryName, failed, offsets.length,
-          firstFailure);
+    var decoded = LegacyMaterializer.read(entryName, records(entryName, false));
+    if (decoded.problem() != null) {
+      var problem = decoded.problem();
+      decodeProblems.put(entryName, problem);
+      logger.debug("{}: {} of {} records not decoded: {}", entryName, problem.failedRecords(),
+          problem.totalRecords(), problem.message());
     }
     decodedOnce.add(entryName);
-
     long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
     if (elapsedMs > 10) {
-      logger.debug("Decoded {}: {} values in {}ms (random access)", entryName, values.size(), elapsedMs);
+      logger.debug("Decoded {}: {} values in {}ms (random access)", entryName,
+          decoded.values().size(), elapsedMs);
     }
-
-    return Collections.unmodifiableList(values);
+    return decoded.values();
   }
 
   /**
@@ -283,14 +769,15 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     long sum = 0;
     int[] indices = sampleIndices(values.size());
     for (int idx : indices) sum += estimateValueBytes(values.get(idx).value(), 0);
-    long perValue = 32 + sum / indices.length;
+    // Carrier includes both the seconds view and retained exact microsecond coordinate.
+    long perValue = 48 + sum / indices.length;
     long total = (long) values.size() * perValue + 200;
     return (int) Math.min(total, Integer.MAX_VALUE);
   }
 
   /**
    * Approximate heap size of one decoded value, following nested maps and lists. Slightly
-   * generous: decoded structs are {@link org.triplehelix.wpilogmcp.log.struct.StructMap}s
+   * generous: decoded structs are {@link StructMap}s
    * (a shared key array and one values array) and immutable lists; enum labels are shared.
    */
   static long estimateValueBytes(Object value, int depth) {
@@ -309,7 +796,7 @@ public class LazyParsedLog implements LogData, AutoCloseable {
       return size;
     }
     if (depth > 8) return 64;
-    if (value instanceof org.triplehelix.wpilogmcp.log.struct.StructMap m) {
+    if (value instanceof StructMap m) {
       long size = 48 + 8L * m.size(); // the map and its values array
       for (var v : m.values()) size += estimateValueBytes(v, depth + 1);
       return size;
@@ -369,11 +856,11 @@ public class LazyParsedLog implements LogData, AutoCloseable {
      */
     @Override
     public Set<Entry<String, List<TimestampedValue>>> entrySet() {
-      return new java.util.AbstractSet<>() {
+      return new AbstractSet<>() {
         @Override
-        public java.util.Iterator<Entry<String, List<TimestampedValue>>> iterator() {
+        public Iterator<Entry<String, List<TimestampedValue>>> iterator() {
           var names = entries.keySet().iterator();
-          return new java.util.Iterator<>() {
+          return new Iterator<>() {
             @Override
             public boolean hasNext() {
               return names.hasNext();
@@ -420,12 +907,12 @@ public class LazyParsedLog implements LogData, AutoCloseable {
     @Override
     public boolean equals(Object o) {
       return o instanceof Map.Entry<?, ?> e && name.equals(e.getKey())
-          && java.util.Objects.equals(getValue(), e.getValue());
+          && Objects.equals(getValue(), e.getValue());
     }
 
     @Override
     public int hashCode() {
-      return name.hashCode() ^ java.util.Objects.hashCode(getValue());
+      return name.hashCode() ^ Objects.hashCode(getValue());
     }
   }
 }

@@ -364,4 +364,44 @@ class DataQualityTest {
       assertEquals(0, q.gapCount());
     }
   }
+  /**
+   * Samples score as the values they stand for, a repeated value told by its bits as the value's
+   * own equals tells it: repeats make an irregular series events, distinct values make it
+   * change-only, and NaNs and integers past 2^53, which doubles cannot all tell apart, agree too.
+   */
+  @Test void samplesScoreAsTheValuesTheyStandFor() {
+    var random = new java.util.Random(11);
+    var repeated = new java.util.ArrayList<TimestampedValue>();
+    var distinct = new java.util.ArrayList<TimestampedValue>();
+    var integers = new java.util.ArrayList<TimestampedValue>();
+    var nans = new java.util.ArrayList<TimestampedValue>();
+    double t = 0;
+    for (int i = 0; i < 400; i++) {
+      t += 0.02 * (1 + random.nextInt(3));
+      repeated.add(new TimestampedValue(t, (double) (i / 3)));
+      distinct.add(new TimestampedValue(t, (double) i));
+      integers.add(new TimestampedValue(t, (1L << 53) + i / 2));
+      nans.add(new TimestampedValue(t, i % 4 < 2 ? Double.NaN : (double) i));
+    }
+    for (var values : List.of(repeated, distinct, integers, nans)) {
+      assertEquals(DataQuality.fromSegments(List.of(values), false).toJson(),
+          DataQuality.fromSamples(List.of(org.triplehelix.wpilogmcp.read.NumericSamples.of(values)), false).toJson());
+    }
+    assertEquals(DataQuality.Sampling.EVENT,
+        DataQuality.fromSamples(List.of(org.triplehelix.wpilogmcp.read.NumericSamples.of(repeated)), false).sampling());
+    assertEquals(DataQuality.Sampling.CHANGE_ONLY,
+        DataQuality.fromSamples(List.of(org.triplehelix.wpilogmcp.read.NumericSamples.of(distinct)), false).sampling());
+  }
+
+  @Test void sampledMetadataKeepsAdaptivePeriodsPeriodicAndMalformedMetadataDoesNotClaimIt() {
+    assertTrue(DataQuality.sampled("{\"sampled\":true,\"period_sec\":2}"));
+    for (String text : List.of("", "{}", "[]", "{sampled:false}", "{sampled:'true'}")) assertFalse(DataQuality.sampled(text));
+    var values = new java.util.ArrayList<org.triplehelix.wpilogmcp.log.TimestampedValue>();
+    double time = 0;
+    for (int n = 0; n < 6; n++) { values.add(new org.triplehelix.wpilogmcp.log.TimestampedValue(time, (double) n)); time += 1 << n; }
+    assertEquals(DataQuality.Sampling.CHANGE_ONLY, DataQuality.fromValues(values).sampling());
+    var measured = DataQuality.fromSegments(List.of(values), true);
+    assertEquals(DataQuality.Sampling.PERIODIC, measured.sampling());
+    assertTrue(measured.reasons().stream().anyMatch(reason -> reason.contains("irregular timing")));
+  }
 }

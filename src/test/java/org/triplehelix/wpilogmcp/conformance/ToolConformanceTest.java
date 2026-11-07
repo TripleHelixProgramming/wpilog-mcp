@@ -4,6 +4,7 @@
  */
 package org.triplehelix.wpilogmcp.conformance;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -67,15 +68,86 @@ class ToolConformanceTest {
   static java.util.List<Path> savedLogDirs;
   static ExecutorService executor;
 
+  static Path createSystemFixture(Path systemRoot) throws Exception {
+    FixtureLogs.freshDirectory(systemRoot);
+    var logManager = LogManager.getInstance();
+    var systemCapture = org.triplehelix.wpilogmcp.fixtures.SystemSessionFixture.create(systemRoot, "synthetic", true, 42);
+    var systemStore = logManager.stores().store(systemRoot);
+    var systemPull = systemStore.systemPulls(org.triplehelix.wpilogmcp.capture.pull.FakeRobot.device(
+        org.triplehelix.wpilogmcp.fixtures.SystemSessionFixture.SERIAL, "SHA256:fixture"),
+        org.triplehelix.wpilogmcp.fixtures.SystemSessionFixture.WALL);
+    if (!systemPull.beginPass()) throw new IOException("Missing system fixture session");
+    systemPull.kernel(List.of("[105.0] warning fixture", "[110.0] error fixture", "unknown clock"), 120);
+    systemPull.journal(List.of("1772893358.25 host service: warning fixture"), "fixture-cursor", "fixture-boot");
+    var systemRemote = new org.triplehelix.wpilogmcp.capture.pull.FakeRobot();
+    systemRemote.files.put("/home/lvuser/hs_err_pid42.log", "synthetic crash report\n".getBytes(StandardCharsets.UTF_8));
+    systemRemote.files.put("/var/local/natinst/log/program.log", "synthetic program line\n".getBytes(StandardCharsets.UTF_8));
+    systemPull.sources(java.util.Map.of("/home/lvuser/hs_err_pid42.log", "jvm_crash", "/var/local/natinst/log/program.log", "program"));
+    var systemClock = new java.util.concurrent.atomic.AtomicLong();
+    var systemTransfer = new org.triplehelix.wpilogmcp.sync.FileTransfer(systemRemote, systemPull, systemPull.manifest(), 1_000_000, systemClock::get, () -> true);
+    for (int i = 0; i < 20; i++) {
+      var result = systemTransfer.step(); systemClock.addAndGet(Math.max(1, result.waitUs()));
+      if (result.status() == org.triplehelix.wpilogmcp.sync.FileTransfer.Status.IDLE) break;
+      if (result.status() == org.triplehelix.wpilogmcp.sync.FileTransfer.Status.REFUSED) throw new IOException(result.detail());
+    }
+    return systemCapture;
+  }
+
   @BeforeAll
-  static void setUp() throws IOException {
+  static void setUp() throws Exception {
     var dir = FixtureLogs.defaultDirectory();
     fixtures = FixtureLogs.generateAll(dir);
+    // Listing-only identity examples exercise its evidence fields without changing any tool's
+    // telemetry fixture or teaching the server a robot identity from a fingerprint.
+    for (boolean identified : List.of(true, false)) {
+      try (var writer = new org.triplehelix.wpilogmcp.fixtures.WpilogWriter(
+          dir.resolve("identity-" + identified + ".wpilog"), "synthetic listing identity")) {
+        int team = writer.start("/SystemStats/TeamNumber", "int64", "", 0);
+        writer.append(team, 1_000_000, org.triplehelix.wpilogmcp.fixtures.WpilogWriter.encodeInt64(9998));
+        if (identified) {
+          int serial = writer.start("/SystemStats/SerialNumber", "string", "", 0);
+          writer.append(serial, 1_000_000, "SYNTHETIC-LISTING".getBytes(StandardCharsets.UTF_8));
+        }
+      }
+    }
     var logManager = LogManager.getInstance();
     logManager.unloadAllLogs();
     logManager.addAllowedDirectory(dir);
-    exportDir = dir.resolveSibling("test-fixtures-export").toAbsolutePath();
-    Files.createDirectories(exportDir);
+    var systemCapture = createSystemFixture(dir.resolve("system-store"));
+    fixtures = java.util.stream.Stream.concat(fixtures.stream(), java.util.stream.Stream.of(
+        new Fixture("system-session", systemCapture, "Synthetic pulled text and paired clocks", List.of("search_system_logs")))).toList();
+    var identityStore = logManager.stores().store(FixtureLogs.freshDirectory(dir.resolve("listing-store")));
+    var identityImport = identityStore.importPaths(new org.triplehelix.wpilogmcp.store.LogStore.Request(
+        List.of(dir.resolve("identity-true.wpilog"), dir.resolve("identity-false.wpilog")), false, null), ignored -> {})
+        .get(30, TimeUnit.SECONDS);
+    if (identityImport.files().stream().anyMatch(f -> f.status().equals("refused"))) throw new IOException(identityImport.toString());
+    // A verified but uncorrelated pull makes the listing's refusal explanation observable too.
+    var remote = new org.triplehelix.wpilogmcp.capture.pull.FakeRobot();
+    remote.device = org.triplehelix.wpilogmcp.capture.pull.FakeRobot.device("SYNTHETIC-LISTING", "SHA256:fixture");
+    remote.files.put("/home/lvuser/logs/pulled.wpilog", Files.readAllBytes(dir.resolve("identity-true.wpilog")));
+    var local = identityStore.pulls(remote.device, java.time.Clock.systemUTC());
+    var transferClock = new java.util.concurrent.atomic.AtomicLong();
+    var transfer = new org.triplehelix.wpilogmcp.sync.FileTransfer(remote, local, local.manifest(), 1_000_000,
+        transferClock::get, () -> true);
+    for (int step = 0; step < 16; step++) {
+      var result = transfer.step(); transferClock.addAndGet(Math.max(1, result.waitUs()));
+      if (result.status() == org.triplehelix.wpilogmcp.sync.FileTransfer.Status.VERIFIED) break;
+      if (result.status() == org.triplehelix.wpilogmcp.sync.FileTransfer.Status.REFUSED) throw new IOException(result.detail());
+    }
+    if (transfer.manifest().files().stream().noneMatch(org.triplehelix.wpilogmcp.sync.PullManifest.Entry::verified)) throw new IOException("Listing fixture did not verify");
+    // A real mirror makes its freshness fields observable to the same description checks.
+    var mirrorRoot = FixtureLogs.freshDirectory(dir.resolve("listing-mirror"));
+    var originHttp = new org.triplehelix.wpilogmcp.mcp.HttpTransport(new ToolRegistry(), 0);
+    originHttp.setStoreDirectories(java.util.Set.of(identityStore.root())); originHttp.start();
+    try {
+      var mirror = logManager.stores().store(mirrorRoot);
+      var config = new org.triplehelix.wpilogmcp.config.MirrorConfig("http://127.0.0.1:" + originHttp.getPort(),
+          mirror.root(), 365_000, 20_000_000_000L, List.of(), List.of(), 30, 0);
+      var copied = org.triplehelix.wpilogmcp.store.LegacyMirrorFixture.sync(mirror, config, ignored -> {}).get(30, TimeUnit.SECONDS);
+      if (!copied.state().equals("synchronized")) throw new IOException(copied.toString());
+    } finally { originHttp.stop(); }
+    exportDir = dir.resolve("export").toAbsolutePath();
+    FixtureLogs.freshDirectory(exportDir);
     savedExportDir = ExportTools.getExportDirectory();
     ExportTools.setExportDirectory(exportDir.toString());
     // list_available_logs lists the fixture directory
@@ -125,61 +197,95 @@ class ToolConformanceTest {
   void conformance() throws Exception {
     var logManager = LogManager.getInstance();
     var calls = new ArrayList<Call>();
+    int withColumnFiles = 0;
 
-    for (var tool : tools) {
-      if (!ToolArguments.takesPath(tool)) {
-        for (var variant : ToolArguments.variants(tool, null, null, fixtures, exportDir)) {
-          calls.add(evaluate(tool, "-", variant, false));
-        }
-        continue;
-      }
-      for (var fixture : fixtures) {
-        var path = fixture.path().toString();
-        var log = logManager.getOrLoad(path);
-        // Revlog tools answer from the synchronized revlogs: let the background sync finish so
-        // every call sees the same state
-        logManager.waitForRevLogSync(path, 30_000);
-        // Harness self-check: the log the tools will see must decode (an empty decode would
-        // make every check below pass vacuously)
-        for (var name : log.entries().keySet()) {
-          if (log.sampleCount(name) > 0) {
-            assertFalse(log.values().get(name).isEmpty(),
-                "harness bug: " + fixture.id() + " entry " + name + " decodes to no values");
-            break;
-          }
-        }
-        var variants = ToolArguments.variants(tool, fixture, log, fixtures, exportDir);
-        for (var variant : variants) {
-          var call = evaluate(tool, fixture.id(), variant, log.truncated());
-          calls.add(call);
-          if (call.result() == null) continue;
-          // Revlog tools depend on the load-time sync, which the reordered view below is not
-          if (RealLogConformanceTest.REVLOG_TOOLS.contains(tool.name())) continue;
-          // Determinism: the same call with the entries iterating in other orders. Each view
-          // wraps its own LazyParsedLog because the cache closes whatever log it replaces; the
-          // path is unloaded afterwards so the next call reloads a fresh log.
-          for (long order : PermutedLogData.ORDERS) {
-            var inner = new LazyParsedLog(path, new DataLogReader(path), 256L * 1024 * 1024);
-            logManager.testPutLog(path, new PermutedLogData(inner, order));
-            try {
-              assertInstanceOf(PermutedLogData.class, logManager.getOrLoad(path));
-              var permuted = run(tool, variant.args());
-              var a = ConformanceChecks.normalize(call.result());
-              var b = ConformanceChecks.normalize(permuted);
-              if (a == null || !a.equals(b)) {
-                calls.add(new Call(tool.name(), fixture.id(), variant.label(), permuted,
-                    List.of(Check.NONDETERMINISTIC)));
-                break;
-              }
-            } finally {
-              logManager.unloadLog(path);
-              inner.close();
-            }
-          }
-        }
+    for (var tool : tools) if (!ToolArguments.takesPath(tool)) {
+      for (var variant : ToolArguments.variants(tool, null, null, fixtures, exportDir)) {
+        calls.add(evaluate(tool, "-", variant, false));
       }
     }
+    // Explicitly visit each synthetic serving scope so store, mirror and plain-directory
+    // claims are all exercised without making multi-source discovery choose for a caller.
+    var listingTool = tools.stream().filter(tool -> tool.name().equals("list_available_logs")).findFirst().orElseThrow();
+    for (var scope : LogDirectory.getInstance().sourceScopes().snapshot()) {
+      var request = new com.google.gson.JsonObject(); request.addProperty("scope_id", scope.id());
+      calls.add(evaluate(listingTool, "-", new ToolArguments.Variant("scope-" + scope.id(), request), false));
+    }
+    // An import destination is not a read default. Check both refusal and an explicit
+    // selection through the same real policy that used to select the preferred-store view.
+    try (var ingestion = org.triplehelix.wpilogmcp.store.LocalIngestionFixture.create(
+        FixtureLogs.defaultDirectory().resolve("source-ingestion"), logManager)) {
+      var listing = tools.stream().filter(tool -> tool.name().equals("list_available_logs")).findFirst().orElseThrow();
+      var call = evaluate(listing, "source-ingestion", new ToolArguments.Variant(
+          "unqualified-store", new com.google.gson.JsonObject()), false);
+      calls.add(call);
+      assertEquals("SOURCE_SELECTION_REQUIRED", call.result().getAsJsonObject().get("code").getAsString());
+      var selected = new com.google.gson.JsonObject(); selected.addProperty("scope_id", ingestion.service().preferredStoreId());
+      var explicit = evaluate(listing, "source-ingestion", new ToolArguments.Variant("selected-store", selected), false);
+      calls.add(explicit);
+      assertEquals(ingestion.service().preferredStoreId(), explicit.result().getAsJsonObject()
+          .getAsJsonObject("source_scope").get("scope_id").getAsString());
+      assertFalse(explicit.result().getAsJsonObject().has("source_sync"));
+    }
+    for (var fixture : fixtures) {
+      String path = fixture.path().toString();
+      var log = logManager.getOrLoad(path);
+      logManager.waitForRevLogSync(path, 30_000);
+      for (var name : log.entries().keySet()) if (log.sampleCount(name) > 0) {
+        assertFalse(log.values().get(name).isEmpty(), "harness decode: " + fixture.id() + " / " + name);
+        break;
+      }
+      record Baseline(Tool tool, ToolArguments.Variant variant, Call call) {}
+      var baseline = new ArrayList<Baseline>();
+      for (var tool : tools) if (ToolArguments.takesPath(tool)) {
+        for (var variant : ToolArguments.variants(tool, fixture, log, fixtures, exportDir)) {
+          var call = evaluate(tool, fixture.id(), variant, log.truncated()); calls.add(call);
+          if (call.result() != null && !RealLogConformanceTest.REVLOG_TOOLS.contains(tool.name())) {
+            baseline.add(new Baseline(tool, variant, call));
+          }
+        }
+      }
+      // One disk scan per fixture. Freeze the decoded values before the manager retires its
+      // mapping; every order is a view of that same data, including schemas and decode failures.
+      var frozen = FrozenLogData.copy(log);
+      try {
+        for (long order : PermutedLogData.ORDERS) {
+          logManager.testPutLog(path, new PermutedLogData(frozen, order));
+          assertInstanceOf(PermutedLogData.class, logManager.getOrLoad(path));
+          for (var expected : baseline) {
+            var permuted = run(expected.tool(), expected.variant().args());
+            var a = ConformanceChecks.normalize(expected.call().result());
+            var b = ConformanceChecks.normalize(permuted);
+            if (a == null || !a.equals(b)) calls.add(new Call(expected.tool().name(), fixture.id(),
+                expected.variant().label(), permuted, List.of(Check.NONDETERMINISTIC)));
+          }
+        }
+      } finally { logManager.unloadLog(path); }
+      // The same answers when the tools read the log's numbers from its column file.
+      logManager.testReadColumnFiles(true);
+      try {
+        org.triplehelix.wpilogmcp.log.ColumnFixtures.build(logManager, fixture.path());
+        withColumnFiles++;
+        for (var expected : baseline) {
+          var fromColumns = run(expected.tool(), expected.variant().args());
+          var a = ConformanceChecks.normalize(expected.call().result());
+          var b = ConformanceChecks.normalize(fromColumns);
+          if (a == null || !a.equals(b)) calls.add(new Call(expected.tool().name(), fixture.id(),
+              expected.variant().label(), fromColumns, List.of(Check.COLUMN_FILE)));
+        }
+      } catch (IllegalStateException unproven) {
+        // A log whose content its scan index does not prove has no column file to read.
+      } finally {
+        logManager.testReadColumnFiles(false);
+        logManager.unloadLog(path);
+      }
+    }
+    assertTrue(withColumnFiles * 5 >= fixtures.size() * 4,
+        "fixtures read from column files: " + withColumnFiles + " of " + fixtures.size());
 
+    calls.addAll(VisualizationConformance.exercise(FixtureLogs.defaultDirectory().resolve("visualization-state"), fixtures.get(0).path()));
+    calls.addAll(CompareSessionsConformance.exercise(FixtureLogs.defaultDirectory().resolve("compare-sessions"),
+        tools.stream().filter(tool -> tool.name().equals("compare_sessions")).findFirst().orElseThrow()));
     writeReport(calls);
     var results = calls.stream()
         .map(c -> java.util.Map.entry(c.tool(), c.result() == null

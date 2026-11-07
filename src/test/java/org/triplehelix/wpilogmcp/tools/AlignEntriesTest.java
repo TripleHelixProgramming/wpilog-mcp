@@ -154,6 +154,22 @@ class AlignEntriesTest extends FixtureToolTestBase {
     }
 
     @Test
+    @DisplayName("one difference has a mean and no standard deviation")
+    void oneDifferenceHasNoDeviation() throws Exception {
+      putLogInCache(new MockLogBuilder().setPath("/test/align.wpilog")
+          .addNumericEntry("/A", new double[] {1}, new double[] {5})
+          .addNumericEntry("/B", new double[] {1}, new double[] {3})
+          .build());
+      var args = new JsonObject();
+      args.add("names", names("/A", "/B"));
+      args.addProperty("difference", true);
+      var stats = run("align_entries", args).getAsJsonObject("difference_statistics");
+      assertEquals(1, stats.get("count").getAsInt());
+      assertEquals(2.0, stats.get("mean").getAsDouble());
+      assertTrue(stats.get("std_dev").isJsonNull(), "one value has no sample standard deviation");
+    }
+
+    @Test
     @DisplayName("an angle interpolates along the shortest arc across +-pi")
     void angleInterpolation() throws Exception {
       var rotations = new ArrayList<Map<String, Object>>();
@@ -172,6 +188,31 @@ class AlignEntriesTest extends FixtureToolTestBase {
       args.addProperty("interpolation", "linear");
       var row = run("align_entries", args).getAsJsonArray("rows").get(0).getAsJsonArray();
       assertEquals(Math.PI, row.get(1).getAsDouble(), 1e-3);
+    }
+
+    @Test
+    @DisplayName("previous and nearest give an angle's samples as logged, not unwrapped")
+    void anglesHeldAsLogged() throws Exception {
+      var rotations = new ArrayList<Map<String, Object>>();
+      for (double v : new double[] {3.1, -3.1, -3.0}) {
+        var m = new LinkedHashMap<String, Object>();
+        m.put("value", v);
+        rotations.add(m);
+      }
+      putLogInCache(new MockLogBuilder().setPath("/test/align.wpilog")
+          .addStructEntry("/Gyro", "struct:Rotation2d", new double[] {0, 1, 2}, rotations)
+          .addNumericEntry("/Times", new double[] {1.2, 1.9}, new double[] {0, 0})
+          .build());
+      for (var mode : List.of("previous", "nearest")) {
+        var args = new JsonObject();
+        args.add("names", names("/Gyro.value"));
+        args.addProperty("at", "/Times");
+        args.addProperty("interpolation", mode);
+        var rows = run("align_entries", args).getAsJsonArray("rows");
+        var values = new ArrayList<Double>();
+        rows.forEach(r -> values.add(r.getAsJsonArray().get(1).getAsDouble()));
+        assertEquals(mode.equals("previous") ? List.of(-3.1, -3.1) : List.of(-3.1, -3.0), values, mode);
+      }
     }
 
     /** y(t) = x(t - 0.1): the second signal follows the first by 100 ms. */

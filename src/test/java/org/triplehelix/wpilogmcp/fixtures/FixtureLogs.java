@@ -58,7 +58,28 @@ public final class FixtureLogs {
 
   /** Default directory for generated fixtures (under Gradle's build directory). */
   public static Path defaultDirectory() {
-    return Path.of("build", "test-fixtures").toAbsolutePath();
+    return WorkerDirectory.PATH;
+  }
+
+  private static final class WorkerDirectory {
+    // Worker numbers restart with a new Gradle daemon; last run's stores are not fixtures.
+    static final Path PATH = freshDirectory(Path.of("build", "test-fixtures",
+        "worker-" + System.getProperty("org.gradle.test.worker", "direct")).toAbsolutePath());
+  }
+
+  /** A fixture root is owned by its creator. Clear it before recreating manifests and files. */
+  public static Path freshDirectory(Path root) {
+    try {
+      var manager = org.triplehelix.wpilogmcp.log.LogManager.getInstance();
+      // Other fixtures may already restrict the singleton; this creator owns only this root.
+      manager.addAllowedDirectory(root);
+      manager.release(root);
+      if (Files.exists(root)) try (var paths = Files.walk(root)) {
+        for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(path);
+      }
+      Files.createDirectories(root);
+      return root;
+    } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
   }
 
   /** Directories this JVM has generated into, and what it generated there. */
@@ -109,8 +130,29 @@ public final class FixtureLogs {
     all.add(noDriverStation(dir));
     all.add(dualDriverStation(dir));
     all.add(revlogPair(dir));
+    all.add(jvmContext(dir));
     all.add(empty(dir));
     return List.copyOf(all);
+  }
+
+  /** Sampled JVM context has independently known cumulative counters and units. */
+  static Fixture jvmContext(Path dir) throws IOException {
+    var path = dir.resolve("2026-jvm_context.wpilog");
+    try (var w = new FixtureWriter(path, "{\"source\":\"jmx\",\"clock\":\"measured\",\"sampled\":true,\"period_sec\":1}")) {
+      for (int t = 1; t <= 10; t++) {
+        w.i64("/Daemon/JVM/heap/used_bytes", t, 1024L * t)
+            .i64("/Daemon/JVM/heap/committed_bytes", t, 16384)
+            .i64("/Daemon/JVM/gc/synthetic/count", t, t / 3)
+            .dbl("/Daemon/JVM/gc/synthetic/time_sec", t, .002 * (t / 3))
+            .i64("/Daemon/JVM/threads/live", t, 4)
+            .i64("/Daemon/JVM/classes/total", t, 100 + t)
+            .dbl("/Daemon/JVM/process/cpu_sec", t, .01 * t)
+            .dbl("/Daemon/JVM/uptime_sec", t, t + 2.)
+            .dbl("/Daemon/JVM/clock/offset_sec", t, -2.)
+            .dbl("/Daemon/JVM/clock/round_trip_bound_sec", t, .003);
+      }
+    }
+    return new Fixture("jvm_context", path, "JMX sampled counters, memory and uptime pairing", List.of());
   }
 
   // ==================== Shared pieces ====================
@@ -604,6 +646,12 @@ public final class FixtureLogs {
     double end = 60.0;
     var segments = List.of(new Segment(5.0, 55.0, false));
     try (var w = new FixtureWriter(path, AKIT_METADATA)) {
+      w.raw("/Daemon/PhotonVision/Camera0/Settings", "json", start,
+          org.triplehelix.wpilogmcp.fixtures.WpilogWriter.encodeString("""
+              {"camera":"Camera0","software_version":"v2026.3.4","device_type":"synthetic",
+               "calibrations":[{"resolution":{"width":640,"height":480},"mean_reprojection_errors_px":[0.25,0.5]}],
+               "pipeline":{"type":"AprilTag","mode_3d":true,"multi_tag":true}}
+              """));
       akitDriverStation(w, start, end, segments, false, "");
       // Pose3d's schema (and its nested ones) come from WPILib; the custom structs are hand-written
       w.structArr("/RealOutputs/Vision/Summary/RobotPosesAccepted", POSE3D, start)

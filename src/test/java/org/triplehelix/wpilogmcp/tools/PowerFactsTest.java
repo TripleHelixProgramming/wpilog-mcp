@@ -16,6 +16,23 @@ import org.triplehelix.wpilogmcp.log.TimestampedValue;
 @DisplayName("PowerFacts voltage and risk")
 class PowerFactsTest {
 
+  @Test void fallbackUsesTheOutputDisableThresholdAndPreservesRecordedOrExplicitSettings() {
+    // WPILib's roboRIO Brownout / Settable Brownout reference: 6.8 V is the earlier
+    // 6 V rail drop; output disable is 6.3 V on RIO 1, configurable/default 6.75 on RIO 2.
+    var unknown = new MockLogBuilder().addNumericEntry("/BatteryVoltage", new double[]{0, 1, 2}, new double[]{12, 6.5, 12}).build();
+    var fallback = PowerFacts.threshold(unknown, null);
+    assertEquals(6.3, fallback.volts());
+    assertTrue(fallback.basis().contains("6.3 V")); assertTrue(fallback.basis().contains("6.75 V"));
+    assertTrue(fallback.basis().contains("does not record which"));
+    var facts = PowerFacts.voltage(unknown.values().get("/BatteryVoltage"), all(2), fallback.volts()).orElseThrow();
+    assertEquals(0, facts.crossings().size()); assertEquals("MODERATE", PowerFacts.risk(facts, fallback, null, List.of()).level());
+    for (double recorded : new double[]{6.3, 6.75}) {
+      var log = new MockLogBuilder().addNumericEntry("/SystemStats/BrownoutVoltage", new double[]{0}, new double[]{recorded}).build();
+      var threshold = PowerFacts.threshold(log, null); assertEquals(recorded, threshold.volts()); assertEquals("logged", threshold.basis());
+      var explicit = PowerFacts.threshold(log, 7.1); assertEquals(7.1, explicit.volts()); assertEquals("argument", explicit.basis());
+    }
+  }
+
   static List<TimestampedValue> series(double... voltsAtWholeSeconds) {
     var out = new ArrayList<TimestampedValue>();
     for (int i = 0; i < voltsAtWholeSeconds.length; i++) {
@@ -24,7 +41,7 @@ class PowerFactsTest {
     return out;
   }
 
-  static final PowerFacts.Threshold THRESHOLD = new PowerFacts.Threshold(6.8, "default", null);
+  static final PowerFacts.Threshold THRESHOLD = new PowerFacts.Threshold(6.8, "argument", null);
 
   static TimeScope all(double end) {
     var log = new MockLogBuilder().addNumericEntry("/x", new double[]{0, end}, new double[]{0, 0})

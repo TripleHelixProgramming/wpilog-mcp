@@ -12,7 +12,6 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.triplehelix.wpilogmcp.log.LogManager;
 import org.triplehelix.wpilogmcp.log.TimestampedValue;
 import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 
@@ -484,9 +483,8 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
           .setPath("/test/log2.wpilog")
           .addNumericEntry("/Test", new double[]{0}, new double[]{2})
           .build();
-      var manager = LogManager.getInstance();
-      manager.testPutLog(log1.path(), log1);
-      manager.testPutLog(log2.path(), log2);
+      putLogInCache(log1);
+      putLogInCache(log2);
 
       var tool = findTool("compare_matches");
       // No name parameter provided
@@ -502,6 +500,52 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
     }
 
     @Test
+    @DisplayName("compare_matches reports no standard deviation for one value, and sqrt(2) for 11 and 13")
+    void compareMatchesOneValueHasNoDeviation() throws Exception {
+      var one = new MockLogBuilder().setPath("/test/cmp_one.wpilog")
+          .addNumericEntry("/V", new double[]{0}, new double[]{12.0}).build();
+      var two = new MockLogBuilder().setPath("/test/cmp_two.wpilog")
+          .addNumericEntry("/V", new double[]{0, 1}, new double[]{11.0, 13.0}).build();
+      putLogInCache(one);
+      putLogInCache(two);
+      var args = new JsonObject();
+      args.addProperty("path", one.path());
+      args.addProperty("compare_path", two.path());
+      args.addProperty("name", "/V");
+      var comparisons = findTool("compare_matches").execute(args).getAsJsonObject().getAsJsonArray("comparisons");
+      var single = comparisons.get(0).getAsJsonObject().getAsJsonObject("statistics");
+      assertEquals(12.0, single.get("mean").getAsDouble());
+      assertTrue(single.get("std_dev").isJsonNull(), "one value has no sample standard deviation");
+      var pair = comparisons.get(1).getAsJsonObject().getAsJsonObject("statistics");
+      assertEquals(12.0, pair.get("mean").getAsDouble());
+      assertEquals(Math.sqrt(2), pair.get("std_dev").getAsDouble());
+    }
+
+    @Test
+    @DisplayName("compare_matches reports when each log's extremes occurred, past a NaN")
+    void compareMatchesReportsWhenExtremesOccurred() throws Exception {
+      var one = new MockLogBuilder().setPath("/test/cmp_when_one.wpilog")
+          .addNumericEntry("/V", new double[]{0, 5, 10, 20, 30, 40}, new double[]{5, Double.NaN, 9, 1, 7, 3}).build();
+      var two = new MockLogBuilder().setPath("/test/cmp_when_two.wpilog")
+          .addNumericEntry("/V", new double[]{0, 5, 15}, new double[]{2, 0, 8}).build();
+      putLogInCache(one);
+      putLogInCache(two);
+      var args = new JsonObject();
+      args.addProperty("path", one.path());
+      args.addProperty("compare_path", two.path());
+      args.addProperty("name", "/V");
+      var comparisons = findTool("compare_matches").execute(args).getAsJsonObject().getAsJsonArray("comparisons");
+      var first = comparisons.get(0).getAsJsonObject().getAsJsonObject("statistics");
+      assertEquals(1.0, first.get("min").getAsDouble());
+      assertEquals(20.0, first.get("min_at_sec").getAsDouble());
+      assertEquals(9.0, first.get("max").getAsDouble());
+      assertEquals(10.0, first.get("max_at_sec").getAsDouble());
+      var second = comparisons.get(1).getAsJsonObject().getAsJsonObject("statistics");
+      assertEquals(5.0, second.get("min_at_sec").getAsDouble());
+      assertEquals(15.0, second.get("max_at_sec").getAsDouble());
+    }
+
+    @Test
     @DisplayName("compare_matches reports per-log presence, sample counts, and warnings")
     void compareMatchesPerLogFields() throws Exception {
       var log1 = new MockLogBuilder()
@@ -513,9 +557,8 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
           .setPath("/test/cmp_q13.wpilog")
           .addNumericEntry("/Other", new double[]{0}, new double[]{1})
           .build();
-      var manager = LogManager.getInstance();
-      manager.testPutLog(log1.path(), log1);
-      manager.testPutLog(log2.path(), log2);
+      putLogInCache(log1);
+      putLogInCache(log2);
 
       var tool = findTool("compare_matches");
       var args = new JsonObject();
@@ -559,9 +602,8 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
           .setPath("/test/cmp_arr2.wpilog")
           .addNumericEntry("/PowerDistribution/ChannelCurrent", new double[]{0, 1}, new double[]{3.0, 4.0})
           .build();
-      var manager = LogManager.getInstance();
-      manager.testPutLog(log1.path(), log1);
-      manager.testPutLog(log2.path(), log2);
+      putLogInCache(log1);
+      putLogInCache(log2);
 
       var args = new JsonObject();
       args.addProperty("path", log1.path());
@@ -698,7 +740,7 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       assertTrue(resultObj.get("success").getAsBoolean());
       assertEquals("/SystemStats/BatteryVoltage",
           resultObj.getAsJsonObject("voltage_analysis").get("entry").getAsString());
-      assertEquals(6.8, resultObj.getAsJsonObject("voltage_analysis").get("brownout_threshold").getAsDouble(), 1e-9);
+      assertEquals(6.3, resultObj.getAsJsonObject("voltage_analysis").get("brownout_threshold").getAsDouble(), 1e-9);
       assertEquals(4, resultObj.get("current_entries_analyzed").getAsInt());
 
       var channels = resultObj.getAsJsonArray("channel_analysis");
@@ -1024,7 +1066,7 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
       assertEquals("partial", resultObj.get("status").getAsString());
       assertTrue(resultObj.getAsJsonArray("skipped").toString().contains("channel_analysis"));
       var v = resultObj.getAsJsonObject("voltage_analysis");
-      assertEquals(6.8, v.get("brownout_threshold").getAsDouble());
+      assertEquals(6.3, v.get("brownout_threshold").getAsDouble());
       assertTrue(v.get("brownout_threshold_basis").getAsString().startsWith("default"));
     }
 
@@ -1678,7 +1720,6 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
     @Test
     @DisplayName("compares same entry across two loaded logs")
     void comparesSameEntryAcrossTwoLogs() throws Exception {
-      var manager = LogManager.getInstance();
 
       // Load two logs with the same entry but different values
       var log1 = new MockLogBuilder()
@@ -1695,8 +1736,8 @@ class RobotAnalysisToolsLogicTest extends ToolTestBase {
               new double[]{11.5, 11.0, 10.5, 11.2, 10.8})
           .build();
 
-      manager.testPutLog(log1.path(), log1);
-      manager.testPutLog(log2.path(), log2);
+      putLogInCache(log1);
+      putLogInCache(log2);
 
       var tool = findTool("compare_matches");
       var args = new JsonObject();

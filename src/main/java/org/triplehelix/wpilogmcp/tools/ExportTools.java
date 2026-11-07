@@ -7,9 +7,8 @@ package org.triplehelix.wpilogmcp.tools;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import java.io.FileWriter;
 import java.io.IOException;
-import java.io.PrintWriter;
+import java.io.BufferedWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -82,11 +81,12 @@ public final class ExportTools {
 
     @Override
     public String description() {
-      return "Export an entry to CSV for external analysis (Python, Excel, MATLAB), or return the "
+      return "Export an entry to UTF-8 CSV for external analysis (Python, Excel, MATLAB), or return the "
           + "rows inline. Every value is flattened into columns: a struct becomes one column per "
           + "numeric or text field (nested fields as dot paths, e.g. translation.x, arrays as "
           + "field[i]), a struct array or primitive array becomes one row per element with an "
-          + "index column. Files are written inside the server's export directory "
+          + "index column. A complete file replaces the destination only after writing succeeds; "
+          + "a failed write removes its temporary file. Files are written inside the server's export directory "
           + "(export_directory in every file result): pass a bare or relative output_path, which is "
           + "resolved inside it, or omit it for a generated name; an absolute path must lie inside "
           + "it. The result gives the absolute path written. With inline=true no file is written "
@@ -193,20 +193,36 @@ public final class ExportTools {
       }
 
       int rowCount = 0;
-      try (var writer = new PrintWriter(new FileWriter(outputFilePath.toFile()))) {
-        writer.println(String.join(",", columns));
-        for (var row : rows) {
-          var sb = new StringBuilder();
-          sb.append(row.timestamp());
-          if (indexed) sb.append(',').append(row.index());
-          for (var c : columnSet) {
-            var v = row.fields().get(c);
-            sb.append(',');
-            if (v != null) sb.append(csvEscape(String.valueOf(v)));
+      try {
+        // The validated parent owns the temporary file, so both moves stay on its filesystem.
+        var temporary = Files.createTempFile(outputFilePath.getParent(), ".wpilog-export-", ".tmp");
+        try {
+          try (var writer = new BufferedWriter(openWriter(temporary))) {
+            writer.write(String.join(",", columns));
+            writer.newLine();
+            for (var row : rows) {
+              var sb = new StringBuilder();
+              sb.append(row.timestamp());
+              if (indexed) sb.append(',').append(row.index());
+              for (var c : columnSet) {
+                var v = row.fields().get(c);
+                sb.append(',');
+                if (v != null) sb.append(csvEscape(String.valueOf(v)));
+              }
+              writer.write(sb.toString());
+              writer.newLine();
+              rowCount++;
+            }
           }
-          writer.println(sb);
-          rowCount++;
-        }
+          try {
+            Files.move(temporary, outputFilePath, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+          } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+            Files.move(temporary, outputFilePath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+          }
+        } finally { Files.deleteIfExists(temporary); }
+      } catch (IOException e) {
+        return errorResult("Could not write CSV export: " + e.getMessage());
       }
 
       var result = new JsonObject();
@@ -221,6 +237,10 @@ public final class ExportTools {
     }
 
     record Row(double timestamp, int index, Map<String, Object> fields) {}
+
+    java.io.Writer openWriter(Path path) throws IOException {
+      return Files.newBufferedWriter(path);
+    }
 
     /** The elements of an array value (struct array or primitive array), or null for a scalar. */
     static List<?> elementsOf(Object value) {
@@ -295,6 +315,11 @@ public final class ExportTools {
       // Only create subdirectories that stay inside the export directory
       if (!Files.exists(parent)) {
         if (!parent.normalize().startsWith(realExportDir)) throw new IllegalArgumentException(notAllowed);
+        var ancestor = parent;
+        while (!Files.exists(ancestor, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+          ancestor = ancestor.getParent();
+        }
+        if (!ancestor.toRealPath().startsWith(realExportDir)) throw new IllegalArgumentException(notAllowed);
         Files.createDirectories(parent);
       }
       var resolved = Files.exists(candidate) ? candidate.toRealPath()
@@ -339,7 +364,11 @@ public final class ExportTools {
           + "timeline (enabled segments, enabled time, FMS matches, as in get_match_phases); "
           + "battery voltage over enabled time when the log records it (min with time, max, "
           + "average, threshold crossings; entry chosen as power_analysis does, or "
-          + "voltage_entry) with brownout_risk and its basis as power_analysis gives them, "
+          + "voltage_entry) with crossing_details (first ten, limits states the total): start_time, "
+          + "end_time, duration, min_voltage and open_at_scope_end (open_at_log_end remains a "
+          + "same-value compatibility alias) when held to a scope window end "
+          + "(the log end for whole-log scope, not the last voltage sample), with brownout_risk "
+          + "and its basis as power_analysis gives them, "
           + "brownouts from the roboRIO flag when logged, and the brownout threshold with its "
           + "basis; the three largest current peaks in the same scope (power_analysis channel_analysis, each channel of an array separately); error and "
           + "warning counts from console and message text (each text sample classified once by "
@@ -537,7 +566,7 @@ public final class ExportTools {
       }
 
       voltageEntry.ifPresent(name -> {
-        var quality = DataQuality.fromSegments(scope.split(log.values().get(name)));
+        var quality = DataQuality.fromSegments(log, name, scope.split(log.values().get(name)));
         report.add("data_quality", quality.toJson());
         var directives = AnalysisDirectives.fromQuality(quality)
             .addSingleMatchCaveat()

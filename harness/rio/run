@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Compatibility entry point: capabilities and skip messages live in one runner.
+exec "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/run" "$@"

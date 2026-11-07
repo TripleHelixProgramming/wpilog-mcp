@@ -41,6 +41,27 @@ class McpServerLogicTest {
     executor.shutdownNow();
   }
 
+  @Test void stdioInventoryKeepsRawSizeAndSuppressesOversizedNotifications() throws Exception {
+    String request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"visualization_source_entries_list\",\"arguments\":{}}}";
+    String notification = request.replace("\"id\":1,", "");
+    String input = " ".repeat(70000) + request + "\n" + " ".repeat(70000) + notification + "\n{\"id\":3,\"method\":\"ping\"}\n";
+    System.setIn(new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8))); System.setOut(new PrintStream(outputStream));
+    var registry = new ToolRegistry(); registry.serverIdentity(org.triplehelix.wpilogmcp.visualization.ServerIdentity.ephemeral());
+    var executed = new java.util.concurrent.atomic.AtomicInteger();
+    registry.registerTool(new ToolRegistry.Tool() {
+      public String name() { return "visualization_source_entries_list"; }
+      public String description() { return "Synthetic inventory operation"; }
+      public JsonObject inputSchema() { return new JsonObject(); }
+      public com.google.gson.JsonElement execute(JsonObject arguments) { executed.incrementAndGet(); return new JsonObject(); }
+    });
+    new McpServer(registry).run();
+    var replies = outputStream.toString(StandardCharsets.UTF_8).lines().map(line -> com.google.gson.JsonParser.parseString(line).getAsJsonObject()).toList();
+    assertEquals(2, replies.size()); assertEquals(1, replies.get(0).get("id").getAsInt()); assertEquals(3, replies.get(1).get("id").getAsInt());
+    var refusal = com.google.gson.JsonParser.parseString(replies.get(0).getAsJsonObject("result").getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString()).getAsJsonObject();
+    assertEquals(new com.google.gson.JsonPrimitive("RESOURCE_LIMIT"), refusal.get("code")); assertFalse(refusal.get("retryable").getAsBoolean());
+    assertEquals(0, executed.get());
+  }
+
   @Test
   @DisplayName("server handles initialize request")
   void handlesInitialize() throws Exception {
@@ -221,11 +242,6 @@ class McpServerLogicTest {
       @Override public String description() { return "A slow tool"; }
       @Override public JsonObject inputSchema() { return new JsonObject(); }
       @Override public com.google.gson.JsonElement execute(JsonObject args) {
-        try {
-          Thread.sleep(50); // Simulate slow operation
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-        }
         var result = new JsonObject();
         result.addProperty("success", true);
         return result;
@@ -337,4 +353,20 @@ class McpServerLogicTest {
         "Server initialize response should contain version " +
         org.triplehelix.wpilogmcp.Version.VERSION + ". Output: " + output);
   }
+  @Test void directStdioSerializesNegotiatedRevisionNotificationsBesideResponses() throws Exception {
+    var input = new java.io.PipedOutputStream(); System.setIn(new java.io.PipedInputStream(input)); System.setOut(new PrintStream(outputStream));
+    var registry = new ToolRegistry(); var server = new McpServer(registry); var task = executor.submit(() -> { server.run(); return null; });
+    try {
+      input.write(("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"experimental\":{\"wpilog/visualizationNotifications\":true}}}}\n").getBytes(StandardCharsets.UTF_8)); input.flush();
+      var control = registry.visualizations().notifications; long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+      while (!control.negotiated("stdio") && System.nanoTime() < deadline) Thread.sleep(10);
+      assertTrue(control.negotiated("stdio")); control.watch("stdio", "fixture");
+      var view = new JsonObject(); view.addProperty("view_id", "fixture"); view.addProperty("revision", 2); view.add("attached_client_id", com.google.gson.JsonNull.INSTANCE); control.changed(view);
+      while (!outputStream.toString(StandardCharsets.UTF_8).contains("view_revision_changed") && System.nanoTime() < deadline) Thread.sleep(10);
+      assertTrue(outputStream.toString(StandardCharsets.UTF_8).contains("view_revision_changed"));
+    } finally { input.close(); task.get(3, TimeUnit.SECONDS); }
+    var messages = outputStream.toString(StandardCharsets.UTF_8).lines().map(com.google.gson.JsonParser::parseString).map(com.google.gson.JsonElement::getAsJsonObject).toList();
+    assertEquals(2, messages.size()); assertEquals(1, messages.stream().filter(m -> m.has("id")).count());
+  }
+
 }

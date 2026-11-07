@@ -244,10 +244,35 @@ class SynchronizedLogsTest {
         .addRevLog(revlog1, syncResult1)  // No explicit name
         .build();
 
-    // Should infer "rio" from filename or use default
     assertEquals(1, syncLogs.revlogCount());
     SyncedRevLog synced = syncLogs.revlogs().get(0);
-    assertNotNull(synced.canBusName());
+    assertEquals("rio", synced.canBusName());
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {
+      "/logs/parent_with_underscores/REV_20260110_150005.revlog",
+      "C:\\logs\\parent_with_underscores\\REV_20260110_150005.revlog",
+      "C:\\logs\\moved\\REV_20260110_150005.revlog",
+      "\\\\server\\share\\parent_with_underscores\\REV_20260110_150005.revlog"})
+  void aBusWithoutANameDoesNotBecomeItsDirectoryAfterACopy(String path) {
+    // These are strings in ParsedRevLog (and its disk cache), not filesystem paths to open.
+    // Exercise both separators on every host so Windows inference cannot hide behind CI alone.
+    var log = new ParsedRevLog(path, revlog1.filenameTimestamp(), revlog1.devices(), revlog1.signals(), 0, 2, 100);
+    var synced = new SynchronizedLogs.Builder().wpilog(wpilog).addRevLog(log, syncResult1).addRevLog(log, syncResult1).build();
+    assertEquals(List.of("rio", "can1"), synced.revlogs().stream().map(SyncedRevLog::canBusName).toList());
+    assertNotNull(synced.getSyncResult("rio")); assertNotNull(synced.getSyncResult("can1"));
+  }
+
+  @Test void aNamedBusUsesItsFilenameAndALocaleIndependentSpelling() {
+    var before = java.util.Locale.getDefault();
+    try {
+      java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr-TR"));
+      var log = new ParsedRevLog("C:\\parent_with_underscores\\CANIVORE_20260110_150005.revlog",
+          revlog1.filenameTimestamp(), revlog1.devices(), revlog1.signals(), 0, 2, 100);
+      var synced = new SynchronizedLogs.Builder().wpilog(wpilog).addRevLog(log, syncResult1).build();
+      assertEquals("canivore", synced.revlogs().get(0).canBusName());
+    } finally { java.util.Locale.setDefault(before); }
   }
 
   @Test

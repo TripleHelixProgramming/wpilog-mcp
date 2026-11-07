@@ -9,6 +9,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -38,6 +39,7 @@ public final class RobotAnalysisTools {
     registry.registerTool(new PowerAnalysisTool());
     registry.registerTool(new CanHealthTool());
     registry.registerTool(new CompareMatchesTool());
+    registry.registerTool(new CompareSessionsTool());
     registry.registerTool(new GetCodeMetadataTool());
     registry.registerTool(new MoiRegressionTool());
   }
@@ -157,7 +159,7 @@ public final class RobotAnalysisTools {
         var only = enabled.get(0);
         var phase = MatchTimeline.phase(only.start(), only.end());
         phase.addProperty("description", only.mode() == MatchTimeline.Mode.UNKNOWN
-            ? "Enabled (mode unknown)" : "Enabled (" + only.mode().name().toLowerCase() + ")");
+            ? "Enabled (mode unknown)" : "Enabled (" + only.mode().name().toLowerCase(Locale.ROOT) + ")");
         phases.add("enabled", phase);
       }
       builder.addData("phases", phases);
@@ -625,8 +627,13 @@ public final class RobotAnalysisTools {
           + "time when the log records it, so idle and boot time do not dilute averages). "
           + "Reports battery voltage statistics (min with its time, max, avg, samples below the "
           + "brownout threshold, threshold crossings with 0.2 V hysteresis and the seconds spent "
-          + "below; the threshold comes from the log's BrownoutVoltage entry when logged, else "
-          + "6.8V for roboRIO 1, with the basis stated), brownout_risk with its basis (HIGH only "
+          + "below; crossing_details lists the first ten intervals with start_time, end_time, "
+          + "duration and min_voltage, with limits reporting the total. A still-open interval "
+          + "ends at each scope window boundary and says open_at_scope_end (open_at_log_end "
+          + "is a same-value compatibility alias), even when that "
+          + "boundary is before the log end; whole-log scope uses the log end, not the last "
+          + "voltage sample. The threshold comes from the log's BrownoutVoltage entry when logged, else "
+          + "6.3V for roboRIO 1, with the basis stated), brownout_risk with its basis (HIGH only "
           + "from the roboRIO's logged brownout flag, or from crossings when no flag is logged; "
           + "MODERATE for crossings the logged flag did not confirm, or a minimum within 1 V; "
           + "LOW otherwise), the roboRIO's own brownouts in scope when its "
@@ -656,7 +663,7 @@ public final class RobotAnalysisTools {
           .addNumberProperty("start_time", "Start timestamp (s)", false, null)
           .addNumberProperty("end_time", "End timestamp (s)", false, null)
           .addProperty("voltage_entry", "string", "Battery voltage entry to use (default: BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery; other voltage entries are never guessed: when the log has only those, they are listed to confirm and pass here)", false)
-          .addNumberProperty("brownout_threshold", "Voltage threshold (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V)", false, null)
+          .addNumberProperty("brownout_threshold", "Voltage threshold (default: the log's BrownoutVoltage entry when logged, else 6.3V for roboRIO 1; roboRIO 2 defaults to configurable 6.75V)", false, null)
           .addIntegerProperty("channel_limit", "Maximum number of current entries/channels to return, sorted by peak current (default: 30, minimum: 1)", false, 30)
           .build();
     }
@@ -739,7 +746,7 @@ public final class RobotAnalysisTools {
         if (voltageEntry.isEmpty() && battery.needsConfirmation()) {
           hint += " " + SignalResolver.unresolvedReason(battery, "voltage_entry");
         }
-        return ResponseBuilder.noMatch(nothingInScope(log, scope, voltageEntry, channelResult))
+        return ResponseBuilder.noMatch(nothingInScope(log, scope, voltageEntry.orElse(null), channelResult))
             .addData("scope", scope.toJson())
             .addInput("voltage", voltageEntry.orElse(null))
             .addInput("brownout_flag", flag.orElse(null))
@@ -817,7 +824,7 @@ public final class RobotAnalysisTools {
      */
     static boolean isCurrentEntryName(String entryName) {
       var original = entryName.replace(" ", "");
-      var lower = original.toLowerCase();
+      var lower = original.toLowerCase(Locale.ROOT);
       if (lower.contains("voltage")) return false;
       if (lower.contains("powerdistribution") && lower.matches(".*/chan\\d+$")) return true;
       if (original.matches(".*(?:^|[^A-Za-z]|[a-z])(?:Amps|Amperes)$")
@@ -875,9 +882,9 @@ public final class RobotAnalysisTools {
 
     /**
      * The no_match reason of a scope with nothing to measure: it holds no time, or no finite
-     * voltage or current sample falls in it.
+     * voltage or current sample falls in it. The voltage entry is null when none was resolved.
      */
-    static String nothingInScope(LogData log, TimeScope scope, Optional<String> voltageEntry,
+    static String nothingInScope(LogData log, TimeScope scope, String voltageEntry,
         Channels currents) {
       if (scope.isEmpty()) {
         var start = scope.requestedStart();
@@ -891,7 +898,7 @@ public final class RobotAnalysisTools {
             + "), so there is nothing to measure in it.";
       }
       var measured = new ArrayList<String>();
-      voltageEntry.ifPresent(measured::add);
+      if (voltageEntry != null) measured.add(voltageEntry);
       if (!currents.entries().isEmpty()) measured.add(currents.describeEntries());
       return "No finite samples of " + String.join(" or of ", measured) + " fall inside the "
           + scope.describe() + ".";
@@ -1107,7 +1114,7 @@ public final class RobotAnalysisTools {
             row.addProperty(key + "_max_while_enabled", max);
             if (max > maxEnabledErrorCounter) {
               maxEnabledErrorCounter = max;
-              maxEnabledErrorWhere = bus.name() + " " + key.toUpperCase() + " reached "
+              maxEnabledErrorWhere = bus.name() + " " + key.toUpperCase(Locale.ROOT) + " reached "
                   + (long) max + " at " + String.format("%.2f", e.get("max_time_sec")
                       .getAsDouble()) + " s";
             }
@@ -1183,11 +1190,12 @@ public final class RobotAnalysisTools {
     @Override
     public String description() {
       return "Compare one numeric signal across two logs: per log, sample_count, min and max "
-          + "(with min_at_sec and max_at_sec), mean, std_dev, median, p5, p25, p75, p95, and "
+          + "(with min_at_sec and max_at_sec), mean, std_dev (null for one value), median, p5, "
+          + "p25, p75, p95, and "
           + "data_quality; and the differences "
           + "(second minus first) of mean, median, and p95. scope ('enabled', 'teleop', "
           + "'segment:<i>', ...) is resolved in each log's own timeline, so the same phase is "
-          + "compared; start_time/end_time apply to each log's own clock. The name may carry a "
+          + "compared; start_time/end_time apply to each log's own clock; last_seconds resolves from each log's end or current capture time, reported in inputs.windows. The name may carry a "
           + "field path (/RealOutputs/Drive/Pose.translation.x, ChannelCurrent[3]). A maximum or "
           + "minimum in the first 5 s of a log is flagged as a likely boot transient: compare "
           + "scope 'enabled' instead. Samples within a log are autocorrelated, so no "
@@ -1204,6 +1212,7 @@ public final class RobotAnalysisTools {
               true)
           .addProperty("field", "string", NumericSignal.FIELD_PARAM, false)
           .addProperty("angle", "string", NumericSignal.ANGLE_PARAM, false)
+          .addNumberProperty("last_seconds", TimeScope.LAST_SECONDS_DESCRIPTION + " Resolved separately for each log; inputs.windows names each log.", false, null)
           .addProperty("scope", "string", TimeScope.SCOPE_DESCRIPTION
               + " Resolved in each log's own timeline.", false)
           .addNumberProperty("start_time", "Start timestamp (s), on each log's clock", false, null)
@@ -1223,150 +1232,166 @@ public final class RobotAnalysisTools {
         throw new IllegalArgumentException("path and compare_path must be different log files");
       }
 
-      var logs = new java.util.LinkedHashMap<String, LogData>();
-      logs.put(path1, new AccessTrackingLogData(logManager.getOrLoad(path1)));
-      logs.put(path2, new AccessTrackingLogData(logManager.getOrLoad(path2)));
+      try (var first = logAccess.acquire(path1);
+           var second = logAccess.acquire(path2)) {
+        var logs = new java.util.LinkedHashMap<String, LogData>();
+        logs.put(path1, new AccessTrackingLogData(first.log()));
+        logs.put(path2, new AccessTrackingLogData(second.log()));
 
-      var comparisons = new JsonArray();
-      var warnings = new ArrayList<String>();
-      var found = new ArrayList<JsonObject>();
-      DataQuality worst = null;
-      for (var entry : logs.entrySet()) {
-        var logPath = entry.getKey();
-        var log = entry.getValue();
-        var filename = Path.of(logPath).getFileName().toString();
-        var stats = new JsonObject();
-        stats.addProperty("log_path", logPath);
-        stats.addProperty("log_filename", filename);
-        if (log.truncated() && log.truncationMessage() != null) {
-          // This log was not read to its end; a warning only when more than a cut-off final
-          // record was lost (see ToolUtils.noteTruncation)
-          stats.addProperty("log_truncation", log.truncationMessage());
-          if (log.damaged()) warnings.add(filename + ": " + log.truncationMessage());
-        }
-        NumericSignal signal;
-        try {
-          signal = StatisticsTools.signal(log, arguments, "name", "field", null);
-        } catch (IllegalArgumentException e) {
-          // present but not a number here (e.g. an array without an index), or not logged
-          boolean exists = log.entries().containsKey(name)
-              || NumericSignal.longestEntryPrefix(log, name) != null;
-          stats.addProperty("entry_found", exists);
-          stats.addProperty("reason", e.getMessage());
-          warnings.add(filename + ": " + e.getMessage());
-          comparisons.add(stats);
-          continue;
-        }
-        stats.addProperty("entry_found", true);
-        stats.addProperty("signal", signal.label());
-        TimeScope scope;
-        try {
-          scope = TimeScope.fromArguments(log, null, arguments);
-        } catch (IllegalArgumentException e) {
-          // this log cannot be scoped (e.g. no DriverStation data): report it, compare the rest
-          stats.addProperty("reason", e.getMessage());
-          warnings.add(filename + ": " + e.getMessage());
-          comparisons.add(stats);
-          continue;
-        }
-        if (!scope.isAll()) stats.add("scope", scope.toJson());
-        var windows = StatisticsTools.finiteWindows(signal, scope,
-            signal.isAngle() && !signal.multiValued());
-        var values = StatisticsTools.flatten(windows);
-        stats.addProperty("sample_count", values.size());
-        if (values.isEmpty()) {
-          warnings.add(filename + ": no finite values of " + signal.label()
-              + StatisticsTools.scopeText(scope) + ".");
-          comparisons.add(stats);
-          continue;
-        }
-        var data = values.stream().mapToDouble(tv -> ((Number) tv.value()).doubleValue())
-            .toArray();
-        var sorted = data.clone();
-        java.util.Arrays.sort(sorted);
-        int maxIndex = 0;
-        int minIndex = 0;
-        for (int i = 1; i < data.length; i++) {
-          if (data[i] > data[maxIndex]) maxIndex = i;
-          if (data[i] < data[minIndex]) minIndex = i;
-        }
-        double mean = java.util.Arrays.stream(data).average().orElse(0);
-        double ss = java.util.Arrays.stream(data).map(v -> (v - mean) * (v - mean)).sum();
-        var sObj = new JsonObject();
-        sObj.addProperty("min", sorted[0]);
-        sObj.addProperty("min_at_sec", values.get(minIndex).timestamp());
-        sObj.addProperty("max", sorted[sorted.length - 1]);
-        sObj.addProperty("max_at_sec", values.get(maxIndex).timestamp());
-        sObj.addProperty("mean", mean);
-        sObj.addProperty("std_dev", data.length > 1 ? Math.sqrt(ss / (data.length - 1)) : 0.0);
-        sObj.addProperty("median", percentile(sorted, 0.5));
-        sObj.addProperty("p5", percentile(sorted, 0.05));
-        sObj.addProperty("p25", percentile(sorted, 0.25));
-        sObj.addProperty("p75", percentile(sorted, 0.75));
-        sObj.addProperty("p95", percentile(sorted, 0.95));
-        if (signal.isAngle()) sObj.addProperty("angle_unit", signal.angle().wire());
-        stats.add("statistics", sObj);
-        for (var extreme : List.of("max", "min")) {
-          double at = sObj.get(extreme + "_at_sec").getAsDouble();
-          if (at - log.minTimestamp() < BOOT_SECONDS) {
-            stats.addProperty(extreme + "_likely_boot_transient", true);
-            warnings.add(filename + ": the " + extreme + " of " + signal.label() + " is at "
-                + String.format("%.2f", at) + " s, within " + (int) BOOT_SECONDS + " s of the "
-                + "start of the log (likely a boot transient); compare scope 'enabled' instead.");
+        var relativeWindows = new JsonObject();
+        var comparisons = new JsonArray();
+        var warnings = new ArrayList<String>();
+        var found = new ArrayList<JsonObject>();
+        DataQuality worst = null;
+        for (var entry : logs.entrySet()) {
+          var logPath = entry.getKey();
+          var log = entry.getValue();
+          var args = TimeScope.relativeArguments(log, arguments);
+          if (arguments.has("last_seconds") && !arguments.get("last_seconds").isJsonNull()) {
+            Double start = getOptDouble(args, "start_time"), end = getOptDouble(args, "end_time");
+            var window = new JsonObject(); window.addProperty("start", start); window.addProperty("end", end);
+            relativeWindows.add(logPath, window);
           }
+          var filename = Path.of(logPath).getFileName().toString();
+          var stats = new JsonObject();
+          stats.addProperty("log_path", logPath);
+          stats.addProperty("log_filename", filename);
+          if (log.truncated() && log.truncationMessage() != null) {
+            // This log was not read to its end; a warning only when more than a cut-off final
+            // record was lost (see ToolUtils.noteTruncation)
+            stats.addProperty("log_truncation", log.truncationMessage());
+            if (log.damaged()) warnings.add(filename + ": " + log.truncationMessage());
+          }
+          NumericSignal signal;
+          try {
+            signal = StatisticsTools.signal(log, arguments, "name", "field", null);
+          } catch (IllegalArgumentException e) {
+            // present but not a number here (e.g. an array without an index), or not logged
+            boolean exists = log.entries().containsKey(name)
+                || NumericSignal.longestEntryPrefix(log, name) != null;
+            stats.addProperty("entry_found", exists);
+            stats.addProperty("reason", e.getMessage());
+            warnings.add(filename + ": " + e.getMessage());
+            comparisons.add(stats);
+            continue;
+          }
+          stats.addProperty("entry_found", true);
+          stats.addProperty("signal", signal.label());
+          TimeScope scope;
+          try {
+            scope = TimeScope.fromArguments(log, null, args);
+          } catch (IllegalArgumentException e) {
+            // this log cannot be scoped (e.g. no DriverStation data): report it, compare the rest
+            stats.addProperty("reason", e.getMessage());
+            warnings.add(filename + ": " + e.getMessage());
+            comparisons.add(stats);
+            continue;
+          }
+          if (!scope.isAll()) stats.add("scope", scope.toJson());
+          var segments = scope.split(signal.samples());
+          var windows = SampleWindows.finiteWindows(signal, segments,
+              signal.isAngle() && !signal.multiValued());
+          var values = SampleWindows.concat(windows);
+          stats.addProperty("sample_count", values.size());
+          if (values.size() == 0) {
+            warnings.add(filename + ": no finite values of " + signal.label()
+                + StatisticsTools.scopeText(scope) + ".");
+            comparisons.add(stats);
+            continue;
+          }
+          var data = SampleWindows.numbers(windows);
+          var sorted = data.clone();
+          java.util.Arrays.sort(sorted);
+          int maxIndex = 0;
+          int minIndex = 0;
+          for (int i = 1; i < data.length; i++) {
+            if (data[i] > data[maxIndex]) maxIndex = i;
+            if (data[i] < data[minIndex]) minIndex = i;
+          }
+          var summary = SummaryStatistics.of(data);
+          var sObj = new JsonObject();
+          sObj.addProperty("min", summary.min());
+          sObj.addProperty("min_at_sec", values.seconds(minIndex));
+          sObj.addProperty("max", summary.max());
+          sObj.addProperty("max_at_sec", values.seconds(maxIndex));
+          sObj.addProperty("mean", summary.mean());
+          sObj.addProperty("std_dev", summary.stdDev());
+          sObj.addProperty("median", SummaryStatistics.median(sorted));
+          sObj.addProperty("p5", percentile(sorted, 0.05));
+          sObj.addProperty("p25", percentile(sorted, 0.25));
+          sObj.addProperty("p75", percentile(sorted, 0.75));
+          sObj.addProperty("p95", percentile(sorted, 0.95));
+          if (signal.isAngle()) sObj.addProperty("angle_unit", signal.angle().wire());
+          stats.add("statistics", sObj);
+          for (var extreme : List.of("max", "min")) {
+            double at = sObj.get(extreme + "_at_sec").getAsDouble();
+            if (at - log.minTimestamp() < BOOT_SECONDS) {
+              stats.addProperty(extreme + "_likely_boot_transient", true);
+              warnings.add(filename + ": the " + extreme + " of " + signal.label() + " is at "
+                  + String.format("%.2f", at) + " s, within " + (int) BOOT_SECONDS + " s of the "
+                  + "start of the log (likely a boot transient); compare scope 'enabled' instead.");
+            }
+          }
+          var quality = DataQuality.fromSamples(log, signal.entry(), segments);
+          stats.add("data_quality", quality.toJson());
+          if (worst == null || quality.qualityScore() < worst.qualityScore()) worst = quality;
+          found.add(sObj);
+          comparisons.add(stats);
         }
-        var quality = DataQuality.fromSegments(scope.split(signal.values()));
-        stats.add("data_quality", quality.toJson());
-        if (worst == null || quality.qualityScore() < worst.qualityScore()) worst = quality;
-        found.add(sObj);
-        comparisons.add(stats);
-      }
 
-      var result = new JsonObject();
-      result.addProperty("success", !found.isEmpty());
-      if (found.isEmpty()) {
-        result.addProperty("status", "no_match");
-        result.addProperty("reason", "Neither log has finite values of " + name + ".");
-      } else if (found.size() < logs.size()) {
-        result.addProperty("status", "partial");
-        var skipped = new JsonArray();
-        var item = new JsonObject();
-        item.addProperty("section", "differences");
-        item.addProperty("reason", "Only one log has values to compare.");
-        skipped.add(item);
-        result.add("skipped", skipped);
-      }
-      result.addProperty("entry", name);
-      var inputs = new JsonObject();
-      var inputLogs = new JsonArray();
-      logs.keySet().forEach(inputLogs::add);
-      inputs.add("logs", inputLogs);
-      inputs.addProperty("entry", name);
-      result.add("inputs", inputs);
-      result.addProperty("logs_compared", logs.size());
-      result.add("comparisons", comparisons);
-      if (found.size() == 2) {
-        var differences = new JsonObject();
-        for (var key : List.of("mean", "median", "p95")) {
-          differences.addProperty(key, found.get(1).get(key).getAsDouble()
-              - found.get(0).get(key).getAsDouble());
+        var result = new JsonObject();
+        result.addProperty("success", !found.isEmpty());
+        if (found.isEmpty()) {
+          result.addProperty("status", "no_match");
+          result.addProperty("reason", "Neither log has finite values of " + name + ".");
+        } else if (found.size() < logs.size()) {
+          result.addProperty("status", "partial");
+          var skipped = new JsonArray();
+          var item = new JsonObject();
+          item.addProperty("section", "differences");
+          item.addProperty("reason", "Only one log has values to compare.");
+          skipped.add(item);
+          result.add("skipped", skipped);
         }
-        differences.addProperty("note", "Second log minus first. Two logs are two samples: a "
-            + "difference may reflect battery, field, opponents, or code changes "
-            + "(get_code_metadata), not only the robot.");
-        result.add("differences", differences);
+        result.addProperty("entry", name);
+        var inputs = new JsonObject();
+        var inputLogs = new JsonArray();
+        logs.keySet().forEach(inputLogs::add);
+        inputs.add("logs", inputLogs);
+        if (!relativeWindows.isEmpty()) { inputs.add("windows", relativeWindows); inputs.add("last_seconds", arguments.get("last_seconds")); }
+        inputs.addProperty("entry", name);
+        var sessionRanges = new JsonObject();
+        logs.forEach((logPath, log) -> {
+          var one = new JsonObject(); ((AccessTrackingLogData) log).recordSessionRange(one);
+          if (one.has("session_time_range")) sessionRanges.add(logPath, one.get("session_time_range"));
+        });
+        if (!sessionRanges.isEmpty()) inputs.add("session_time_ranges", sessionRanges);
+        result.add("inputs", inputs);
+        result.addProperty("logs_compared", logs.size());
+        result.add("comparisons", comparisons);
+        if (found.size() == 2) {
+          var differences = new JsonObject();
+          for (var key : List.of("mean", "median", "p95")) {
+            differences.addProperty(key, found.get(1).get(key).getAsDouble()
+                - found.get(0).get(key).getAsDouble());
+          }
+          differences.addProperty("note", "Second log minus first. Two logs are two samples: a "
+              + "difference may reflect battery, field, opponents, or code changes "
+              + "(get_code_metadata), not only the robot.");
+          result.add("differences", differences);
+        }
+        if (!warnings.isEmpty()) {
+          result.add("warnings", GSON.toJsonTree(warnings));
+        }
+        if (worst != null) {
+          var directives = AnalysisDirectives.fromQuality(worst)
+              .addGuidance("Cross-match comparisons require consistent logging configurations for "
+                  + "valid comparison");
+          result.add("server_analysis_directives", directives.toJson());
+        }
+        for (var log : logs.values()) ((AccessTrackingLogData) log).annotate(result);
+        return result;
       }
-      if (!warnings.isEmpty()) {
-        result.add("warnings", GSON.toJsonTree(warnings));
-      }
-      if (worst != null) {
-        var directives = AnalysisDirectives.fromQuality(worst)
-            .addGuidance("Cross-match comparisons require consistent logging configurations for "
-                + "valid comparison");
-        result.add("server_analysis_directives", directives.toJson());
-      }
-      for (var log : logs.values()) ((AccessTrackingLogData) log).annotate(result);
-      return result;
     }
   }
 
@@ -1707,7 +1732,7 @@ public final class RobotAnalysisTools {
       var leaf = entryName.substring(entryName.lastIndexOf('/') + 1);
       for (var key : KEYS) {
         if (!leaf.equalsIgnoreCase(key)) continue;
-        if (key.equals("Version") && !entryName.toLowerCase().contains("metadata")) return null;
+        if (key.equals("Version") && !entryName.toLowerCase(Locale.ROOT).contains("metadata")) return null;
         return key;
       }
       return null;

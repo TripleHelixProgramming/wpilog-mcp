@@ -7,8 +7,11 @@ package org.triplehelix.wpilogmcp.cache;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
@@ -28,6 +31,83 @@ import org.triplehelix.wpilogmcp.sync.SyncResult;
 class SyncCacheSerializerTest {
   @TempDir Path tempDir;
   private final SyncCacheSerializer serializer = new SyncCacheSerializer();
+
+  @Test void oversizedCacheIsRefusedBeforeOpeningItsContents() throws IOException {
+    Path file = currentVersionSparseFile(SyncCacheSerializer.MAX_CACHE_FILE_BYTES + 1L);
+    var rejectingOpener = new SyncCacheSerializer() {
+      @Override InputStream openInput(Path path) {
+        throw new AssertionError("Oversized cache contents must not be opened");
+      }
+    };
+    assertNull(rejectingOpener.read(file));
+  }
+
+  @Test void oversizedFormatProbeIsRefusedBeforeOpeningItsContents() throws IOException {
+    Path file = currentVersionSparseFile(SyncCacheSerializer.MAX_CACHE_FILE_BYTES + 1L);
+    var rejectingOpener = new SyncCacheSerializer() {
+      @Override InputStream openInput(Path path) {
+        throw new AssertionError("Oversized format probe must not open cache contents");
+      }
+    };
+    assertEquals(-1, rejectingOpener.readFormatVersion(file));
+  }
+
+  @Test void exactSizeLimitStillAllowsTheFormatProbe() throws IOException {
+    Path file = currentVersionSparseFile(SyncCacheSerializer.MAX_CACHE_FILE_BYTES);
+    assertEquals(SyncCacheSerializer.CURRENT_FORMAT_VERSION, serializer.readFormatVersion(file));
+  }
+
+  @Test void aFileGrowingAfterTheSizeCheckCannotExtendTheReadWithoutBound() throws IOException {
+    Path file = currentVersionSparseFile(1);
+    var closed = new java.util.concurrent.atomic.AtomicBoolean();
+    var growing = new SyncCacheSerializer() {
+      @Override InputStream openInput(Path path) {
+        return new InputStream() {
+          private int read;
+          public int read() {
+            if (++read > 2) throw new AssertionError("Read beyond the measured size and one sentinel byte");
+            return 0;
+          }
+          public void close() { closed.set(true); }
+        };
+      }
+    };
+    assertNull(growing.read(file));
+    assertTrue(closed.get(), "A rejected growing cache must still close its stream");
+  }
+
+  private Path currentVersionSparseFile(long size) throws IOException {
+    Path file = tempDir.resolve("size-bound-sync.msgpack");
+    try (var channel = Files.newByteChannel(file, StandardOpenOption.CREATE_NEW,
+        StandardOpenOption.WRITE, StandardOpenOption.SPARSE)) {
+      channel.write(ByteBuffer.wrap(new byte[]{(byte) SyncCacheSerializer.CURRENT_FORMAT_VERSION}));
+      channel.position(size - 1);
+      channel.write(ByteBuffer.wrap(new byte[]{0}));
+    }
+    assertEquals(size, Files.size(file));
+    return file;
+  }
+
+  @Test void validCrcDoesNotAuthorizeUnboundedApplicationCounts() throws Exception {
+    for (boolean pairs : List.of(false, true)) {
+      var p = org.msgpack.core.MessagePack.newDefaultBufferPacker();
+      p.packInt(SyncCacheSerializer.CURRENT_FORMAT_VERSION).packString("a").packString("b").packLong(0);
+      p.packNil().packNil().packDouble(0).packDouble(1).packLong(1).packInt(0);
+      if (!pairs) {
+        p.packInt(1).packString("signal").packString("s").packString("d").packNil().packInt(Integer.MAX_VALUE);
+      } else {
+        p.packInt(0).packLong(0).packDouble(1).packString("HIGH").packString("CROSS_CORRELATION")
+            .packNil().packDouble(0).packDouble(0).packInt(Integer.MAX_VALUE);
+      }
+      byte[] data = p.toByteArray(); p.close();
+      var crc = new java.util.zip.CRC32(); crc.update(data);
+      var bytes = java.nio.ByteBuffer.allocate(data.length + 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+          .put(data).putInt((int) crc.getValue()).array();
+      var file = tempDir.resolve("huge-count.msgpack"); Files.write(file, bytes);
+      try { assertNull(serializer.read(file), "A tiny cache must be rejected before allocation"); }
+      catch (OutOfMemoryError failure) { fail("Untrusted cache count reached allocation: " + failure.getMessage()); }
+    }
+  }
 
   private ParsedRevLog createTestRevLog() {
     return new ParsedRevLog("/logs/REV_20260321_103045.revlog", "20260321_103045",
@@ -96,6 +176,14 @@ class SyncCacheSerializerTest {
     @Test @DisplayName("corrupt file returns null") void corrupt() throws IOException {
       Path file = tempDir.resolve("corrupt.msgpack");
       Files.writeString(file, "not msgpack");
+      assertNull(serializer.read(file));
+    }
+
+    @Test @DisplayName("a cached combination is refused") void combination() throws IOException {
+      // The cache holds correlations only: a combination is derived from a store's records when read
+      var claimed = new SyncResult(12345678L, 0.92, ConfidenceLevel.HIGH, List.of(), SyncMethod.COMBINED, "crafted", 0, 0);
+      Path file = tempDir.resolve("combined.msgpack");
+      serializer.write(new CachedSyncEntry(createTestRevLog(), claimed, "a", "b", 0L), file);
       assertNull(serializer.read(file));
     }
 

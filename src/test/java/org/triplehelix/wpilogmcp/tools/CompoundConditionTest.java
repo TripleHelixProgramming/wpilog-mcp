@@ -21,6 +21,17 @@ class CompoundConditionTest extends FixtureToolTestBase {
          "threshold": 0.05}
       ]}""";
 
+  @Test void aFalseHeldValueInARecentWindowIsExplainedInsteadOfAnEmptySuccess() {
+    var result = call("find_condition", "struct_custom", "name", "/DriverStation/MatchType",
+        "operator", "gt", "threshold", 0, "last_seconds", 2);
+    assertEquals("no_match", result.get("status").getAsString());
+    assertEquals(0, result.get("samples_evaluated").getAsInt());
+    assertEquals(0, result.get("interval_count").getAsInt());
+    assertEquals(0, result.get("total_true_sec").getAsDouble());
+    assertTrue(result.get("reason").getAsString().contains("requested time window"));
+    assertEquals(28, result.getAsJsonObject("inputs").getAsJsonObject("window").get("start").getAsDouble());
+  }
+
   @Test
   @DisplayName("disabled AND stationary: only before the match, when the held speed is zero")
   void disabledAndStationary() {

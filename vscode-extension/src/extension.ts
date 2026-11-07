@@ -1,61 +1,51 @@
+import { claudeHttpArgs, claudeHttpCommandText } from "./claudeRegistration";
+import { connectionDefinitions } from "./connections";
+import { PIT_SECRET_PREFIX, basicCredential, pitHeaders, pitRegistration, pitSecretKey } from "./pitCredential";
 import { execFile } from "child_process";
-import * as crypto from "crypto";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { findJava } from "./javaFinder";
-import { findLogDirectories, logDirectoriesFor } from "./logFinder";
-import {
-  LogSettings,
-  addLogDirectories,
-  overlaySettings,
-  projectConfigName,
-} from "./logDirectories";
+import { wellKnownLogDirectory } from "./logFinder";
+import { LogSettings, combineLogDirectories } from "./logDirectories";
 import { findJar } from "./jarManager";
-import {
-  GitStatus,
-  addToGitignore,
-  buildServerConfig,
-  buildServerEntry,
-  CLAUDE_CODE_EXTENSION_ID,
-  claudeCodeRestartNotice,
-  gitAction,
-  hasServerEntry,
-  otherWpilogServer,
-  scrubTbaKey,
-  shouldWriteEntry,
-} from "./mcpJson";
-import { removeTbaKeyFromConfigs, writeConfigFile, writeEntry } from "./projectConfigs";
-import {
-  TBA_KEY_QUIET_MS,
-  TBA_KEY_SETTING,
-  planTbaKeyMove,
-  settingsThatRestartTheServer,
-} from "./tbaKey";
+import { ServerManager, StandaloneDaemonSpec } from "./serverManager";
+import { STANDALONE_SERVER, findStandaloneInstall, LauncherCommand } from "./standaloneServer";
+import { InstallSummary, installAction, installArgs, launcherVersion, parseInstallSummary } from "./standaloneInstall";
+import { directoryRegistration, LEASE_SETTINGS, SessionRegistration } from "./directoryLease";
+import { claudeArgs, claudeCommandText, findClaude, registerWithClaude, ClaudeReply, ClaudeRegistrationAttempt, claudeRegistrationFeedback } from "./claudeRegistration";
+import { GitStatus, PROJECT_FILE, ignoreProjectFile, projectFileOffer, projectFileText } from "./projectFile";
+import { legacyCleanupAction, retireLegacyEntry } from "./legacyMigration";
+import { MirrorStatus, liveRequest, mirrorConfigurations, mirrorChoices, mirrorStatusText, peerUrl, pitEndpoint, sessionPicks } from "./explorer/pitServer";
+import { SESSION_END_MS } from "./sessionEnd";
+import { uploadLog } from "./explorer/upload";
+import { resultSummary, resultDetails, progressText } from "./explorer/importJobs";
+import { StoreClient, rememberedPeers, syncSummary } from "./explorer/storeClient";
+import { Explorer, LogsProvider } from "./explorer";
+import { TBA_KEY_QUIET_MS, TBA_KEY_SETTING, planTbaKeyMove } from "./tbaKey";
 
 const PROVIDER_ID = "wpilog-analyzer.mcpServer";
-
-/**
- * Where the TBA API key is kept: VS Code's secret storage (the OS keychain), never a settings
- * file. Claude Code's server, outside VS Code, reads a copy from its configuration file, which
- * only this user can read (see writeProjectConfig).
- */
+const STANDALONE_INSTALLED_VERSION = "wpilog-mcp.standaloneInstalledVersion";
+/** A secret reaches the shared daemon only through this window's in-memory session lease. */
 const TBA_SECRET = "wpilog-mcp.tbaApiKey";
-
 const TBA_ACCOUNT_URL = "https://www.thebluealliance.com/account";
+const CLAUDE_REGISTERED = "wpilog-mcp.claudeUserRegistration";
+const LEGACY_RETIRED = "wpilog-mcp.retiredOwnedDaemon";
 
-export function activate(context: vscode.ExtensionContext) {
+/** A read-only extension API; never export context, credentials or mutable service owners. */
+export interface ExtensionApi {
+  ready: Promise<void>;
+  logs: Pick<LogsProvider, "getChildren">;
+  smokeData?: (names: string[], start: number, end: number, append?: boolean) => Promise<number>;
+}
+
+export function activate(context: vscode.ExtensionContext): ExtensionApi {
   const outputChannel = vscode.window.createOutputChannel("WPILog Analyzer");
   const didChangeEmitter = new vscode.EventEmitter<void>();
 
-  /**
-   * Resolves the MCP server command and args from VS Code settings. The TBA API key is passed
-   * only in the environment (TBA_API_KEY): a command-line argument is visible to other users of
-   * the machine in the process list.
-   */
-  async function resolveServerConfig(): Promise<
-    { command: string; args: string[]; env: Record<string, string> } | undefined
-  > {
+  /** Installation uses the bundled JAR itself; updates must not bootstrap the extension or refresh the install. */
+  async function resolveRuntime(): Promise<{ javaPath: string; jarPath: string; maxHeap: string } | undefined> {
     const config = vscode.workspace.getConfiguration("wpilog-mcp");
     const maxHeap = config.get<string>("maxHeap") || "4g";
 
@@ -87,201 +77,638 @@ export function activate(context: vscode.ExtensionContext) {
       return undefined;
     }
 
-    outputChannel.appendLine(`Java: ${javaPath}`);
-    outputChannel.appendLine(`JAR: ${jarPath}`);
-
-    const logDirs = await findLogDirectories();
-    outputChannel.appendLine(
-      `Log directories: ${logDirs.length > 0 ? logDirs.join(", ") : "(none)"}`
-    );
-
-    const teamNumber = config.get<number>("teamNumber") || 0;
-    const tbaKey = (await context.secrets.get(TBA_SECRET)) || "";
-
-    // The server reads WPILOG_DIR, WPILOG_TEAM, and TBA_API_KEY from its environment and also
-    // accepts -logdir and -team; the key goes only in the environment.
-    const args = [`-Xmx${maxHeap}`, "-jar", jarPath];
-    const env: Record<string, string> = {};
-
-    addLogDirectories(args, env, logDirs);
-    if (teamNumber > 0) {
-      args.push("-team", String(teamNumber));
-      env["WPILOG_TEAM"] = String(teamNumber);
-    }
-    if (tbaKey) {
-      env["TBA_API_KEY"] = tbaKey;
-    }
-    args.push("-diskcachedir", extensionCacheDir(context));
-
-    return { command: javaPath, args, env };
+    return { javaPath, jarPath, maxHeap };
   }
 
-  // ---- VS Code MCP provider ----
+  // A window shares one install/offer between activation, the MCP provider, and the explorer.
+  // The JAR's cross-process lock also protects different windows installing at the same time.
+  let installation: Promise<InstallSummary | undefined> | undefined;
+  let updateCheck: Promise<void> | undefined;
+  let migration: Promise<void> | undefined;
+  let offerDismissed = false;
+  const migrationNotes = new Set<string>();
+
+  /** Retire project entries first; a failed stop keeps its settings for a later activation. */
+  function migrateLegacy(): Promise<void> {
+    if (!migration) migration = (async () => {
+      await retireOpenProjects();
+      const completed = context.globalState.get<boolean>(LEGACY_RETIRED) === true;
+      const pidFile = path.join(os.homedir(), ".wpilog-mcp", "run", "vscode-default.pid");
+      const recorded = fs.existsSync(pidFile);
+      let action = legacyCleanupAction(completed, recorded);
+      if (action === "stop") {
+        const runtime = await resolveRuntime();
+        if (!runtime) return;
+        const stopped = await new Promise<boolean>(resolve => execFile(runtime.javaPath,
+          [`-Xmx${runtime.maxHeap}`, "-jar", runtime.jarPath, "stop", "vscode-default"],
+          { timeout: 120_000, windowsHide: true }, (error, stdout, stderr) => {
+            if (stdout.trim()) outputChannel.appendLine(stdout.trim());
+            if (stderr.trim()) outputChannel.appendLine(stderr.trim());
+            resolve(!error);
+          }));
+        action = legacyCleanupAction(completed, recorded, stopped);
+      }
+      if (action === "retry") {
+        outputChannel.appendLine("Could not stop the old vscode-default daemon; kept its settings and will retry next activation.");
+      } else if (action === "remove") {
+        for (const directory of ["servers", "projects"]) {
+          await fs.promises.rm(path.join(context.globalStorageUri.fsPath, directory), { recursive: true, force: true });
+        }
+        await context.globalState.update("wpilog-mcp.claudeCodeProjects", undefined);
+        await context.globalState.update(LEGACY_RETIRED, true);
+        outputChannel.appendLine("Retired the extension's private server settings; the standalone http server is now shared.");
+      }
+    })().catch(error => outputChannel.appendLine(`Legacy migration did not complete: ${String(error)}`));
+    return migration;
+  }
+
+  async function retireOpenProjects() {
+    for (const folder of localFolders()) {
+      const file = path.join(folder.uri.fsPath, ".mcp.json");
+      try {
+        const stat = await fs.promises.lstat(file);
+        if (stat.isSymbolicLink()) {
+          if (!migrationNotes.has(file)) outputChannel.appendLine(`Left symbolic link alone: ${file}`);
+          migrationNotes.add(file);
+          continue;
+        }
+        const text = await fs.promises.readFile(file, "utf8");
+        const git = await gitStatusOf(folder.uri.fsPath, ".mcp.json");
+        const edit = retireLegacyEntry(text, git, context.globalStorageUri.fsPath, folder.uri.fsPath,
+          path, canonicalMigrationPath);
+        if (edit.changed) {
+          // Preserve an edit or git add made while the initial read and git query were pending.
+          const currentGit = await gitStatusOf(folder.uri.fsPath, ".mcp.json");
+          if ((currentGit !== "untracked" && currentGit !== "ignored") ||
+            (await fs.promises.lstat(file)).isSymbolicLink() || await fs.promises.readFile(file, "utf8") !== text) {
+            outputChannel.appendLine(`Left ${file} alone: it changed during migration.`);
+            continue;
+          }
+          await fs.promises.writeFile(file, edit.text!);
+        }
+        if (edit.note && !migrationNotes.has(file)) outputChannel.appendLine(`${file}: ${edit.note}`);
+        migrationNotes.add(file);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") outputChannel.appendLine(`Could not migrate ${file}: ${String(error)}`);
+      }
+    }
+  }
+
+  function installStandalone(seed: boolean, updating: boolean): Promise<InstallSummary | undefined> {
+    if (!installation) {
+      installation = performStandaloneInstall(seed, updating).finally(() => { installation = undefined; });
+    }
+    return installation;
+  }
+
+  async function performStandaloneInstall(seed: boolean, updating: boolean): Promise<InstallSummary | undefined> {
+    try {
+      const runtime = await resolveRuntime();
+      if (!runtime) return undefined;
+      const user = userSettings();
+      const args = installArgs(seed ? {
+        logDirs: combineLogDirectories(user.logDirectory, user.additionalLogDirectories,
+          []),
+        teamNumber: user.teamNumber,
+      } : undefined);
+      const summary = await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: updating ? "WPILog Analyzer: updating the standalone server" : "WPILog Analyzer: installing the standalone server",
+      }, async () => {
+        const json = await new Promise<string>((resolve, reject) => {
+          execFile(runtime.javaPath, [`-Xmx${runtime.maxHeap}`, "-jar", runtime.jarPath, ...args],
+            { timeout: 120_000, windowsHide: true, maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
+              if (stderr.trim()) outputChannel.appendLine(stderr.trim());
+              if (error) reject(new Error(stderr.trim() || error.message));
+              else resolve(stdout);
+            });
+        });
+        return parseInstallSummary(json);
+      });
+      outputChannel.appendLine(`Standalone install: installed ${summary.installed_version} in ${summary.install_dir}.`);
+      outputChannel.appendLine(`Standalone launcher: ${summary.launcher_version_before ?? "missing"} -> ${summary.launcher_version_after}` +
+        (summary.repointed ? "." : " (kept the current launcher)."));
+      outputChannel.appendLine(`${summary.config_created ? "Created" : "Kept"} configuration: ${summary.config_path}`);
+      if (summary.path_hint) outputChannel.appendLine(`Add to PATH: ${summary.path_hint}`);
+      await context.globalState.update(STANDALONE_INSTALLED_VERSION, summary.installed_version);
+      if (updating) {
+        if (summary.repointed) {
+          void vscode.window.showInformationMessage(
+            `WPILog Analyzer: standalone server updated from ${summary.launcher_version_before ?? "unknown"} to ${summary.launcher_version_after}. ` +
+            "The next start replaces the running server.");
+        }
+      } else {
+        void vscode.window.showInformationMessage(
+          `WPILog Analyzer: installed standalone server ${summary.installed_version}.` +
+          (summary.repointed ? "" : ` Kept current launcher ${summary.launcher_version_after}.`) +
+          (summary.path_hint ? ` Add ${summary.path_hint} to PATH.` : " Its launcher is already on PATH."));
+      }
+      return summary;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      outputChannel.appendLine(`ERROR: standalone install failed: ${reason}`);
+      void vscode.window.showErrorMessage(`WPILog Analyzer: standalone install failed: ${reason}`);
+      return undefined;
+    }
+  }
+
+  async function standaloneInstallAction(spec: StandaloneDaemonSpec) {
+    const text = await fs.promises.readFile(spec.launcher, "utf8").catch(() => "");
+    return installAction({
+      launcherVersion: launcherVersion(text),
+      extensionVersion: context.extension.packageJSON.version,
+      missing: spec.missing !== undefined,
+    });
+  }
+
+  /** Check once per activation; every window uses the standalone install. */
+  function updateStandaloneAtActivation(): Promise<void> {
+    if (!updateCheck) {
+      updateCheck = (async () => {
+        const spec = standaloneSpec();
+        const action = await standaloneInstallAction(spec);
+        if (action === "update") {
+          await installStandalone(false, true);
+        } else if (action === "none" && spec.missing === undefined) {
+          const text = await fs.promises.readFile(spec.launcher, "utf8").catch(() => "");
+          outputChannel.appendLine(`Standalone launcher ${launcherVersion(text) ?? "unknown"}: kept; no automatic install requested for extension ${context.extension.packageJSON.version}.`);
+        }
+      })();
+    }
+    return updateCheck;
+  }
+
+  /** A declined offer lasts for this activation; an explicit command can still install later. */
+  async function prepareStandalone(): Promise<StandaloneDaemonSpec | undefined> {
+    await migrateLegacy();
+    await updateStandaloneAtActivation();
+    if (installation) await installation;
+    const spec = standaloneSpec();
+    if (spec.missing === undefined) return spec;
+    if (offerDismissed || await standaloneInstallAction(spec) !== "offer") return undefined;
+    offerDismissed = true;
+    outputChannel.appendLine(`Standalone install missing: ${spec.missing}.`);
+    const choice = await vscode.window.showInformationMessage(
+      `WPILog Analyzer: no standalone install was found. Install one from this extension's server, version ${context.extension.packageJSON.version}?`,
+      "Install", "Not now", "Open Settings");
+    if (choice === "Open Settings") {
+      void vscode.commands.executeCommand("workbench.action.openSettings", "wpilog-mcp");
+    }
+    if (choice !== "Install" || !await installStandalone(true, false)) return undefined;
+    return standaloneSpec();
+  }
+
+  const serverManager = new ServerManager(context, outputChannel, () => {
+    didChangeEmitter.fire();
+    explorer.serversChanged();
+  }, prepareStandalone);
+
+  const projects = () => localFolders().map(folder => ({ folderPath: folder.uri.fsPath, own: projectSettings(folder) }));
+  const pitUrl = () => vscode.workspace.getConfiguration("wpilog-mcp").get<string>("pitServerUrl");
+  const proxyHeaders = pitHeaders(() => connectionDefinitions(vscode.workspace.getConfiguration("wpilog-mcp").get("connections"), pitUrl())
+    .filter(connection => connection.kind === "remote").map(connection => connection.url!), context.secrets);
+  const mirrorSettings = () => {
+    const config = vscode.workspace.getConfiguration("wpilog-mcp");
+    return { enabled: config.get<boolean>("mirror.enabled"), folder: config.get<string>("mirror.folder"),
+      days: config.get<number>("mirror.days"), maxSizeGb: config.get<number>("mirror.maxSizeGb"),
+      robots: config.get<string[]>("mirror.robots"), events: config.get<string[]>("mirror.events"), intervalSec: config.get<number>("mirror.intervalSec") };
+  };
+  const mirrorConfiguration = () => mirrorConfigurations(pitUrl(), mirrorSettings(),
+    vscode.workspace.getConfiguration("wpilog-mcp").get("mirrors"), context.globalStorageUri.fsPath);
+  const liveSettings = () => {
+    const config = vscode.workspace.getConfiguration("wpilog-mcp");
+    return { enabled: config.get<boolean>("live.enabled"), folder: config.get<string>("live.folder"), gatewayPort: config.get<number>("live.gatewayPort") };
+  };
+  /** Live data reaches this laptop as NetworkTables from the pit's gateway, recorded locally, so views read local files only. */
+  const liveConfiguration = () => liveRequest(pitUrl(), liveSettings(), context.globalStorageUri.fsPath);
+  async function registration(): Promise<SessionRegistration> {
+    const user = userSettings();
+    const additional = Array.isArray(user.additionalLogDirectories) ? user.additionalLogDirectories : [];
+    if (!user.logDirectory?.trim() && !additional.some(dir => typeof dir === "string" && dir.trim())) {
+      user.logDirectory = wellKnownLogDirectory();
+    }
+    const directories = directoryRegistration(user, projects());
+    for (const mirror of mirrorConfiguration())
+      if (!directories.paths.some(p => p.path === mirror.folder)) directories.paths.push({ path: mirror.folder, team: null });
+    const live = liveRequest(pitUrl(), liveSettings(), context.globalStorageUri.fsPath);
+    if (live && !directories.paths.some(p => p.path === live.store)) directories.paths.push({ path: live.store, team: null });
+    return { directories, key: await context.secrets.get(TBA_SECRET) || null, pitCredential: await pitRegistration(pitUrl(), context.secrets) };
+  }
+  const explorer = new Explorer(context, outputChannel, serverManager, standaloneSpec,
+    () => directoryRegistration(userSettings(), projects()).paths.map(dir => dir.path), registration, pitUrl, proxyHeaders,
+    () => { const user = userSettings(); const roots = combineLogDirectories(user.logDirectory, user.additionalLogDirectories);
+      const fallback = wellKnownLogDirectory(); return roots.length ? roots : fallback ? [fallback] : []; });
+  context.subscriptions.push(serverManager, explorer, outputChannel, didChangeEmitter);
+  endWindowSessions = () => explorer.endSessions(SESSION_END_MS);
+
+  /** Registration finishes before an agent receives its URL; a third session can then read the lease. */
+  let localConnected = false;
+  async function connectWindow(): Promise<string | undefined> {
+    try {
+      const client = await explorer.clientFor(standaloneSpec());
+      await client.refreshRegistration();
+      localConnected = true;
+      return client.endpoint;
+    } catch (error) {
+      outputChannel.appendLine(`Could not register this window's directories: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+  let refreshing = Promise.resolve();
+  function refreshLease() {
+    refreshing = refreshing.then(async () => {
+      await explorer.connections.refreshLocalRegistrations();
+      if (localConnected && await connectWindow()) explorer.serversChanged();
+    }).catch(error => outputChannel.appendLine(`Could not refresh this window's lease: ${String(error)}`));
+    return refreshing;
+  }
 
   const provider: vscode.McpServerDefinitionProvider = {
     onDidChangeMcpServerDefinitions: didChangeEmitter.event,
-
-    provideMcpServerDefinitions: async () => {
-      const resolved = await resolveServerConfig();
-      if (!resolved) {
-        return [];
-      }
-
-      outputChannel.appendLine(
-        `Starting: ${resolved.command} ${resolved.args.join(" ")}`
-      );
-      const envKeys = Object.keys(resolved.env);
-      if (envKeys.length > 0) {
-        outputChannel.appendLine(
-          `Env: ${envKeys.map(k => k === "TBA_API_KEY" ? "TBA_API_KEY=(set)" : `${k}=${resolved.env[k]}`).join(", ")}`
-        );
-      }
-
-      return [
-        new vscode.McpStdioServerDefinition(
-          "WPILog Analyzer",
-          resolved.command,
-          resolved.args,
-          resolved.env,
-          context.extension.packageJSON.version,
-        ),
-      ];
-    },
-
-    resolveMcpServerDefinition: async (server) => {
-      return server;
+    provideMcpServerDefinitions: () => explorer.connections.definitions.map(connection => new vscode.McpHttpServerDefinition(
+      `WPILog: ${connection.label} [${connection.id}]`, vscode.Uri.parse(connection.url ?? "http://127.0.0.1:0/mcp"), {}, context.extension.packageJSON.version)),
+    resolveMcpServerDefinition: async server => {
+      const connection = explorer.connections.definitions.find(item => server.label === `WPILog: ${item.label} [${item.id}]`);
+      if (!connection) throw new Error("This connection changed; refresh the MCP server list");
+      const client = await explorer.connections.context(connection.id).client();
+      if (connection.kind === "local") localConnected = true;
+      return new vscode.McpHttpServerDefinition(server.label, vscode.Uri.parse(client.endpoint), await proxyHeaders(client.endpoint), context.extension.packageJSON.version);
     },
   };
-
   context.subscriptions.push(
-    vscode.lm.registerMcpServerDefinitionProvider(PROVIDER_ID, provider)
+    vscode.lm.registerMcpServerDefinitionProvider(PROVIDER_ID, provider),
+    vscode.commands.registerCommand("wpilog-mcp.showServerLog", () => serverManager.showLog(standaloneSpec())),
+    vscode.commands.registerCommand("wpilog-mcp.installStandaloneServer", async () => {
+      if (await installStandalone(true, false)) {
+        await connectWindow();
+        scheduleProjectOffers();
+      }
+    }),
+    vscode.commands.registerCommand("wpilog-mcp.restartServer", async () => {
+      if (await serverManager.restart(standaloneSpec())) {
+        await connectWindow();
+        didChangeEmitter.fire();
+        explorer.serversChanged();
+      }
+    })
   );
-
-  // ---- The TBA API key ----
 
   context.subscriptions.push(
     vscode.commands.registerCommand("wpilog-mcp.setTbaApiKey", async () => {
-      const key = await vscode.window.showInputBox({
-        title: "The Blue Alliance API Key",
-        prompt: `Paste your read API key from ${TBA_ACCOUNT_URL}. It is kept in VS Code's secret storage.`,
-        password: true,
-        ignoreFocusOut: true,
-      });
-      if (key === undefined) {
-        return; // cancelled
-      }
-      if (key.trim() === "") {
-        vscode.window.showWarningMessage(
-          "WPILog Analyzer: No key entered; the TBA API key was not changed."
-        );
+      const key = await vscode.window.showInputBox({ title: "The Blue Alliance API Key",
+        prompt: `Paste your read key from ${TBA_ACCOUNT_URL}. It stays in VS Code's secret storage.`,
+        password: true, ignoreFocusOut: true });
+      if (key === undefined) return;
+      if (!key.trim()) {
+        void vscode.window.showWarningMessage("WPILog Analyzer: No key entered; the TBA API key was not changed.");
         return;
       }
       await context.secrets.store(TBA_SECRET, key.trim());
-      vscode.window.showInformationMessage(
-        "WPILog Analyzer: TBA API key saved. The server restarts to use it."
-      );
+      void vscode.window.showInformationMessage("WPILog Analyzer: TBA API key saved. It is registered with this window's session.");
     }),
     vscode.commands.registerCommand("wpilog-mcp.clearTbaApiKey", async () => {
       await context.secrets.delete(TBA_SECRET);
-      // Out of Claude Code's configuration files too, even with Claude Code turned off: the
-      // remembered projects' are rewritten, and any other file there is cleaned as well
-      await refreshKnownProjects(context, new Set());
-      const cleaned = await removeTbaKeyFromConfigs(projectsDir(context), new Set());
-      for (const file of [...cleaned.scrubbed, ...cleaned.removed]) {
-        outputChannel.appendLine(`Removed the TBA API key from ${file}`);
-      }
-      vscode.window.showInformationMessage(
-        "WPILog Analyzer: TBA API key removed. The server restarts without it."
-      );
+      await refreshLease();
+      void vscode.window.showInformationMessage("WPILog Analyzer: this window's TBA key registration was removed.");
     }),
-    // A stored or removed key restarts the server, and rewrites Claude Code's configuration file
-    context.secrets.onDidChange((e) => {
-      if (e.key === TBA_SECRET) {
-        didChangeEmitter.fire();
-        scheduleMcpJsonUpdate();
-      }
+    context.secrets.onDidChange(event => {
+      if (event.key === TBA_SECRET) void refreshLease();
     })
   );
 
-  // ---- Claude Code's .mcp.json ----
+  // One queue keeps registration and file offers from appearing over one another.
+  let projectOffers = Promise.resolve();
+  let registrationOffered = false;
+  function runClaude(command: LauncherCommand): Promise<ClaudeReply> {
+    return new Promise(resolve => execFile(command.command, command.args,
+      { timeout: 30_000, windowsHide: true, windowsVerbatimArguments: command.windowsVerbatimArguments }, (error, stdout, stderr) => {
+        // The pure registration policy decides which add diagnostics to show; never log get.
+        resolve({ ok: !error, stdout, stderr });
+      }));
+  }
+  async function finishClaudeRegistration(result: ClaudeRegistrationAttempt, name: string, key: string, value: string, command: string) {
+    let feedback = claudeRegistrationFeedback(result, name, command);
+    if (feedback.remember) {
+      try { await context.globalState.update(key, value); }
+      catch { feedback = claudeRegistrationFeedback({ ...result, result: "failed" }, name, command); }
+    }
+    if (feedback.output) outputChannel.appendLine(feedback.output);
+    if (feedback.information) void vscode.window.showInformationMessage(feedback.information);
+    if (feedback.warning && await vscode.window.showWarningMessage(feedback.warning, "Copy Command") === "Copy Command")
+      await vscode.env.clipboard.writeText(feedback.copyCommand!);
+  }
+  async function registerClaude(requested: boolean) {
+    if (!requested && (registrationOffered || !vscode.workspace.getConfiguration("wpilog-mcp").get<boolean>("enableForClaudeCode"))) return;
+    const spec = await prepareStandalone();
+    if (!spec) return;
+    if (!requested && context.globalState.get<string>(CLAUDE_REGISTERED) === spec.launcher) return;
+    registrationOffered = true;
+    const cli = findClaude(process.env.PATH ?? "", process.platform, file => {
+      try { fs.accessSync(file, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK); return fs.statSync(file).isFile(); }
+      catch { return false; }
+    });
+    const text = claudeCommandText(spec.launcher, process.platform);
+    if (!cli) {
+      outputChannel.appendLine(`Register with Claude Code: ${text}`);
+      const choice = await vscode.window.showInformationMessage(`WPILog Analyzer: run ${text}`, "Copy Command", "Not now");
+      if (choice === "Copy Command") await vscode.env.clipboard.writeText(text);
+      return;
+    }
+    const result = await registerWithClaude(cli, claudeArgs(spec.launcher, process.platform), process.platform, runClaude);
+    await finishClaudeRegistration(result, "wpilog-analyzer", CLAUDE_REGISTERED, spec.launcher, text);
+  }
+  function scheduleProjectOffers(requested = false) {
+    projectOffers = projectOffers.then(async () => {
+      if (!requested && !localConnected) return;
+      await migrateLegacy();
+      await retireOpenProjects();
+      await registerClaude(requested);
+      if (!vscode.workspace.getConfiguration("wpilog-mcp").get<boolean>("enableForClaudeCode") && !requested) return;
+      for (const folder of localFolders()) await offerProjectFile(context, outputChannel, folder);
+    }).catch(error => outputChannel.appendLine(`Claude Code setup failed: ${String(error)}`));
+    return projectOffers;
+  }
+  context.subscriptions.push(vscode.commands.registerCommand("wpilog-mcp.registerWithClaudeCode", () => scheduleProjectOffers(true)));
 
-  // One update at a time, so overlapping triggers neither race on the files nor repeat a notice
-  let mcpJsonUpdate: Promise<void> = Promise.resolve();
-  function scheduleMcpJsonUpdate(requested?: vscode.WorkspaceFolder) {
-    mcpJsonUpdate = mcpJsonUpdate
-      .then(() => updateMcpJsonFiles(context, outputChannel, requested))
-      .catch((e) => outputChannel.appendLine(`Failed to update .mcp.json: ${e}`));
-    return mcpJsonUpdate;
+  // The server owns disk policy and transfers; this window supplies settings and user choices.
+  const mirrorBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
+  mirrorBar.command = "wpilog-mcp.mirrorActions";
+  let mirrorState: MirrorStatus = { state: "disabled" }, mirrorPolling = false;
+  let lastConfigured: string[] = [];
+  explorer.mirrorStatus = () => mirrorState;
+  let mirrorTimer: ReturnType<typeof setInterval> | undefined;
+  async function storeClient(): Promise<StoreClient> {
+    const endpoint = await connectWindow();
+    if (!endpoint) throw new Error("The local server could not be started; see WPILog Analyzer output.");
+    return new StoreClient(endpoint);
+  }
+  function showMirror(status: MirrorStatus) {
+    mirrorState = status;
+    mirrorBar.text = mirrorStatusText(status);
+    mirrorBar.tooltip = mirrorChoices(status).flatMap(item => [item.config?.folder,
+      item.last_sync ? `Last synchronized: ${item.last_sync}` : undefined,
+      item.result?.reason, ...(item.result?.refusals ?? []), ...(item.result?.retained ?? [])]).filter(Boolean).join("\n");
+    if (pitUrl()?.trim() || status.state !== "disabled") mirrorBar.show(); else mirrorBar.hide();
+  }
+  async function pollMirror() {
+    if (mirrorPolling) return;
+    mirrorPolling = true;
+    try {
+      const client = await storeClient(), status = await client.status();
+      const changed = JSON.stringify(mirrorChoices(mirrorState).map(s => s.last_sync)) !== JSON.stringify(mirrorChoices(status).map(s => s.last_sync));
+      showMirror(status); if (changed) explorer.serversChanged();
+    } catch (error) {
+      showMirror({ ...mirrorState, state: "offline", result: { reason: error instanceof Error ? error.message : String(error) } });
+    } finally { mirrorPolling = false; }
+  }
+  async function configureMirror() {
+    const configs = mirrorConfiguration();
+    if (!configs.length && !lastConfigured.length) return;
+    const client = await storeClient();
+    // Only an explicit settings removal stops a service this window configured. Disposing the
+    // window releases its UI resources; the server's grants and synchronization remain alive.
+    const current = mirrorChoices(await client.status());
+    for (const folder of lastConfigured.filter(folder => !configs.some(config => config.folder === folder))) {
+      const selected = current.find(item => item.config?.folder === folder);
+      if (selected) {
+        if (current.length > 1 && !selected.mirror_id) throw new Error("Mirror is initializing; retry after its identity is available.");
+        await client.disable(selected.mirror_id);
+      }
+    }
+    for (const config of configs) await client.configure(config);
+    lastConfigured = configs.map(config => config.folder);
+    showMirror(await client.status());
+    clearInterval(mirrorTimer);
+    if (configs.length || mirrorState.state !== "disabled") mirrorTimer = setInterval(() => void pollMirror(), 5000);
+  }
+  async function chooseMirror(client: StoreClient): Promise<MirrorStatus | undefined> {
+    const choices = mirrorChoices(await client.status());
+    if (!choices.length) throw new Error("Configure a mirror first.");
+    if (choices.length === 1) return choices[0];
+    const selected = (await vscode.window.showQuickPick(choices.map(status => ({ label: status.config?.folder ?? "Initializing mirror",
+      description: `${status.state} · ${status.config?.origin ?? status.origin?.url ?? ""}`, status })),
+    { title: "Choose the mirror for this action", placeHolder: "No mirror is the default" }))?.status;
+    if (selected && !selected.mirror_id) throw new Error("Mirror is initializing; retry after its identity is available.");
+    return selected;
+  }
+  let liveConfigured: string | undefined;
+  /** Sets or stops the server's live source; a gateway that cannot be reached yet is the source's state, not an error. */
+  async function configureLive() {
+    try {
+      const config = liveConfiguration();
+      if (!config && !liveConfigured) return;
+      const client = await storeClient();
+      if (config) {
+        const status = await client.configureLive(config); liveConfigured = JSON.stringify(config);
+        outputChannel.appendLine(`Live source: ${status.state}, recording ${config.robot.host}:${config.robot.port} into ${config.store}`);
+      } else if (liveConfigured) { await client.disableLive(); liveConfigured = undefined; outputChannel.appendLine("Live source stopped"); }
+    } catch (error) { outputChannel.appendLine(`Could not set the live source: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+  // Both routes hold the server's configuration guard, including stopping the old capture.
+  // Serialize the whole operation, across activation and settings events, not just its lease.
+  let configuring = Promise.resolve();
+  function configureServices(live: boolean, mirror: boolean): Promise<void> {
+    configuring = configuring.then(async () => {
+      await refreshLease();
+      if (live) await configureLive();
+      if (mirror) await command(configureMirror)();
+    }).catch(error => outputChannel.appendLine(`Could not configure local services: ${String(error)}`));
+    return configuring;
+  }
+  function command(action: () => Promise<unknown>) {
+    return async () => { try { await action(); } catch (error) {
+      const text = error instanceof Error ? error.message : String(error); outputChannel.appendLine(text); void vscode.window.showErrorMessage(text);
+    } };
+  }
+  async function pinSession(pinned: boolean) {
+    const client = await storeClient(); const status = await chooseMirror(client); if (!status) return;
+    if (!status.origin) throw new Error("Configure a mirror and synchronize it before pinning sessions.");
+    if (status.replicas?.format_version === 2 && status.mirror_id) {
+      const ids = pinned ? await client.mirrorSessions(status.mirror_id) : status.origin.pinned_sessions;
+      const choices = ids.map(id => ({ label: id, id }));
+      if (pinned) choices.push({ label: "Enter a session ID…", id: "" });
+      const choice = await vscode.window.showQuickPick(choices, { title: pinned ? "Include session for acquisition" : "Remove explicit session inclusion" });
+      if (!choice) return;
+      const id = choice.id || await vscode.window.showInputBox({ title: "Session ID from the selected master's catalog", validateInput: value => value.trim() && value.length <= 1024 ? undefined : "Enter a session ID (up to 1024 characters)" });
+      if (!id) return;
+      await client.pin(id, pinned, status.mirror_id); await pollMirror(); return;
+    }
+    explorer.logs.refresh();
+    const candidate = explorer.pitSpec();
+    const pit = candidate && pitUrl() && peerUrl(pitUrl()!) === status.origin.url ? candidate : undefined;
+    const listing = pit ? await explorer.logs.listing(pit) : undefined;
+    const local = listing && listing.status !== "error" ? undefined : await explorer.logs.listing(explorer.spec());
+    const available = local ? { ...local, logs: local.logs?.filter(log => log.session?.origin === status.origin!.url) } : listing!;
+    const choices = sessionPicks(available, status.origin.pinned_sessions, !pinned);
+    const choice = await vscode.window.showQuickPick(choices, { title: pinned ? "Pin session" : "Unpin session", placeHolder: "Pins include a session for acquisition; the storage cap still applies" });
+    if (!choice) return;
+    await client.pin(choice.id, pinned, status.mirror_id);
+    void vscode.window.showInformationMessage(`${pinned ? "Pin" : "Unpin"} queued for ${choice.label}. It takes effect after the current store job.`);
+    await pollMirror();
+  }
+  async function syncFromLaptop() {
+    const client = await storeClient(), inventory = await client.targets();
+    for (const failed of inventory.unreadable) outputChannel.appendLine(`${failed.path}: ${failed.reason}`);
+    if (!inventory.stores.length) throw new Error("No writable store is configured. Use Organize Logs to create a store first.");
+    const target = inventory.stores.length === 1 ? inventory.stores[0] : (await vscode.window.showQuickPick(
+      inventory.stores.map(store => ({ label: path.basename(store.path), description: store.path, store })), { title: "Sync into which store?" }))?.store;
+    if (!target) return;
+    const remembered = rememberedPeers(target);
+    const choice = remembered.length ? await vscode.window.showQuickPick([...remembered.map(url => ({ label: url, url })),
+      { label: "Another laptop…", url: "" }], { title: "Sync from Laptop", placeHolder: "The other server must be bound to the network" }) : { url: "" };
+    if (!choice) return;
+    const typed = choice.url || await vscode.window.showInputBox({ title: "Sync from Laptop", prompt: "Other laptop's host:port, or HTTP URL",
+      validateInput: value => { try { peerUrl(value); return undefined; } catch (error) { return String(error); } } });
+    if (!typed) return;
+    const url = peerUrl(typed);
+    const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Sync from Laptop", cancellable: false }, progress =>
+      client.sync(target.path, url, job => progress.report({ message: job.progress ? `${job.progress.phase}: ${job.progress.path ?? ""}` : job.state })));
+    outputChannel.appendLine(JSON.stringify(result, null, 2));
+    void vscode.window.showInformationMessage(syncSummary(result)); explorer.serversChanged();
+  }
+  async function uploadToPitServer() {
+    const endpoint = pitEndpoint(pitUrl()); if (!endpoint) throw new Error("Set wpilog-mcp.pitServerUrl first.");
+    const inventory = await new StoreClient(endpoint, undefined, proxyHeaders).uploadTargets();
+    for (const failed of inventory.unreadable) outputChannel.appendLine(`${failed.path}: ${failed.reason}`);
+    if (!inventory.stores.length) throw new Error("The pit server has no configured writable store.");
+    const target = inventory.stores.length === 1 ? inventory.stores[0] : (await vscode.window.showQuickPick(
+      inventory.stores.map(store => ({ label: store.id, store })), { title: "Upload into which pit store?" }))?.store;
+    if (!target) return;
+    const files = await vscode.window.showOpenDialog({ title: "Upload Logs to Pit Server", canSelectMany: true, canSelectFolders: false,
+      filters: { "Robot logs": ["wpilog", "revlog"], "All files": ["*"] } });
+    if (!files?.length) return;
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Upload Logs to Pit Server", cancellable: false }, async progress => {
+      for (const file of files) {
+        progress.report({ message: path.basename(file.fsPath) });
+        const result = await uploadLog(endpoint, file.fsPath, target.id, job => progress.report({ message: progressText(job) }), undefined, proxyHeaders);
+        for (const line of resultDetails(result)) outputChannel.appendLine(line);
+        void vscode.window.showInformationMessage(`${path.basename(file.fsPath)}: ${resultSummary(result)}`);
+      }
+    });
+    explorer.serversChanged();
+  }
+  async function registerPitClaude(requested: boolean) {
+    const choices = explorer.connections.definitions.filter(item => item.kind === "remote");
+    if (!choices.length) { if (requested) throw new Error("Configure a remote connection first"); return; }
+    if (!requested) return; // Configuration alone never installs software or registers an agent.
+    const chosen = choices.length === 1 ? choices[0] : (await vscode.window.showQuickPick(choices.map(connection => ({ label: connection.label, connection })),
+      { title: "Choose the connection to register with Claude Code" }))?.connection;
+    if (!chosen) return;
+    const url = chosen.url!, name = chosen.id === "pit" ? "wpilog-pit" : `wpilog-${chosen.id}`;
+    await explorer.connections.context(chosen.id).client();
+    const cli = findClaude(process.env.PATH ?? "", process.platform, file => {
+      try { fs.accessSync(file, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK); return fs.statSync(file).isFile(); } catch { return false; }
+    });
+    const credential = await pitRegistration(url, context.secrets);
+    if (credential.authorization) throw new Error("Configure proxy authentication in Claude Code for this direct HTTP connection. SecretStorage credentials are not copied into CLI arguments or a local bridge.");
+    const text = claudeHttpCommandText(name, url, process.platform);
+    if (!cli) {
+      outputChannel.appendLine(text);
+      if (await vscode.window.showInformationMessage("Claude Code CLI was not found. Copy its user registration command?", "Copy Command") === "Copy Command") await vscode.env.clipboard.writeText(text);
+      return;
+    }
+    const result = await registerWithClaude(cli, claudeHttpArgs(name, url), process.platform, runClaude);
+    await finishClaudeRegistration(result, name, `wpilog-mcp.claudeConnection.${chosen.id}`, url, text);
   }
 
-  // For a folder that is not a robot project (robot projects get the entry by themselves)
-  context.subscriptions.push(
-    vscode.commands.registerCommand("wpilog-mcp.addToClaudeCode", async () => {
-      const folders = (vscode.workspace.workspaceFolders ?? []).filter(
-        (f) => f.uri.scheme === "file"
-      );
-      if (folders.length === 0) {
-        vscode.window.showWarningMessage(
-          "WPILog Analyzer: Open a folder first; Claude Code finds the server in that folder's .mcp.json."
-        );
-        return;
-      }
-      const folder =
-        folders.length === 1
-          ? folders[0]
-          : await vscode.window.showWorkspaceFolderPick({
-              placeHolder: "Folder in which Claude Code should find WPILog Analyzer",
-            });
-      if (folder) {
-        await scheduleMcpJsonUpdate(folder);
-      }
-    })
+  async function changePitCredential(clear: boolean) {
+    const url = pitEndpoint(pitUrl()); if (!url) throw new Error("Set wpilog-mcp.pitServerUrl first.");
+    if (clear) await context.secrets.delete(pitSecretKey(url));
+    else {
+      const user = await vscode.window.showInputBox({ title: `Proxy username for ${new URL(url).host}`, ignoreFocusOut: true });
+      if (user === undefined) return;
+      const password = await vscode.window.showInputBox({ title: "Pit proxy password", password: true, ignoreFocusOut: true });
+      if (password === undefined) return;
+      await context.secrets.store(pitSecretKey(url), basicCredential(user, password));
+    }
+    await refreshLease(); didChangeEmitter.fire(); explorer.serversChanged();
+    void vscode.window.showInformationMessage(clear ? "Pit proxy credential cleared. Re-register Claude Code to use the direct pit URL."
+      : "Pit proxy credential saved in SecretStorage for direct Explorer and VS Code agent requests. Configure Claude Code authentication independently.");
+  }
+  context.subscriptions.push(context.secrets.onDidChange(event => {
+    if (event.key.startsWith(PIT_SECRET_PREFIX)) { void refreshLease(); didChangeEmitter.fire(); explorer.serversChanged(); }
+  }));
+  const mirrorActions = [
+    { label: "Show Mirror Status", id: "status" }, { label: "Show Peer Discovery", id: "peers" },
+    { label: "Migrate Mirror for Replica Synchronization", id: "migrate" },
+    { label: "Sync Now", id: "syncNow" }, { label: "Pin Session", id: "pinSession" },
+    { label: "Unpin Session", id: "unpinSession" }, { label: "Open Mirror Folder", id: "openMirrorFolder" },
+    { label: "Sync from Laptop", id: "syncFromLaptop" },
+  ];
+  context.subscriptions.push(mirrorBar, { dispose: () => clearInterval(mirrorTimer) },
+    vscode.commands.registerCommand("wpilog-mcp.mirrorActions", command(async () => {
+      const action = await vscode.window.showQuickPick(mirrorActions, { title: mirrorStatusText(mirrorState).replace(/\$\([^)]+\) /g, "") });
+      if (action?.id === "status" || action?.id === "peers") {
+        const client = await storeClient();
+        const value = action.id === "peers" ? await client.peers() : await chooseMirror(client);
+        if (value) { outputChannel.appendLine(JSON.stringify(value, null, 2)); outputChannel.show(true); }
+      } else if (action?.id === "migrate") {
+        const client = await storeClient(), selected = await chooseMirror(client); if (!selected) return;
+        if (!selected.mirror_id) throw new Error("Mirror is initializing; retry when its identity is available.");
+        if (selected.replicas?.format_version === 2) { void vscode.window.showInformationMessage("This mirror already uses replica synchronization."); return; }
+        const confirmed = await vscode.window.showWarningMessage(`Migrate ${selected.config?.folder}? Existing files are preserved. Old mirror copies remain unconfirmed until their master identity can be established.`, { modal: true }, "Migrate");
+        if (confirmed === "Migrate") { await client.migrate(selected.mirror_id); await pollMirror(); }
+      } else if (action) await vscode.commands.executeCommand(`wpilog-mcp.${action.id}`);
+    })),
+    vscode.commands.registerCommand("wpilog-mcp.pinSession", command(() => pinSession(true))),
+    vscode.commands.registerCommand("wpilog-mcp.unpinSession", command(() => pinSession(false))),
+    vscode.commands.registerCommand("wpilog-mcp.syncNow", command(async () => {
+      const client = await storeClient(), selected = await chooseMirror(client); if (!selected) return;
+      await client.syncNow(selected.mirror_id); await pollMirror();
+    })),
+    vscode.commands.registerCommand("wpilog-mcp.openMirrorFolder", command(async () => {
+      const selected = await chooseMirror(await storeClient()); if (!selected) return;
+      const folder = selected.config?.folder;
+      if (!folder) throw new Error("Configure a mirror first.");
+      await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(folder));
+    })),
+    vscode.commands.registerCommand("wpilog-mcp.syncFromLaptop", command(syncFromLaptop)),
+    vscode.commands.registerCommand("wpilog-mcp.uploadToPitServer", command(uploadToPitServer)),
+    vscode.commands.registerCommand("wpilog-mcp.setPitProxyCredential", command(() => changePitCredential(false))),
+    vscode.commands.registerCommand("wpilog-mcp.clearPitProxyCredential", command(() => changePitCredential(true))),
+    vscode.commands.registerCommand("wpilog-mcp.registerPitWithClaudeCode", command(() => registerPitClaude(true)))
   );
 
-  // A key entered in the TBA API key field is moved into secret storage, one move at a time. While
-  // the field is being edited, the move waits until it has been quiet for a moment (TBA_KEY_QUIET_MS)
-  let tbaKeyMove: Promise<void> = Promise.resolve();
+  let tbaKeyMove = Promise.resolve();
   let tbaKeyTimer: ReturnType<typeof setTimeout> | undefined;
-  function moveTbaKeyNow(): Promise<void> {
-    tbaKeyMove = tbaKeyMove
-      .then(() => moveTbaKeyToSecretStorage(context, outputChannel))
-      .catch((e) => outputChannel.appendLine(`Failed to move the TBA API key into secret storage: ${e}`));
+  function moveTbaKeyNow() {
+    tbaKeyMove = tbaKeyMove.then(() => moveTbaKeyToSecretStorage(context, outputChannel))
+      .catch(() => outputChannel.appendLine("Could not move the TBA key to secret storage; its setting was kept."));
     return tbaKeyMove;
   }
-  function scheduleTbaKeyMove() {
-    clearTimeout(tbaKeyTimer);
-    tbaKeyTimer = setTimeout(() => void moveTbaKeyNow(), TBA_KEY_QUIET_MS);
-  }
-  context.subscriptions.push({ dispose: () => clearTimeout(tbaKeyTimer) });
-
-  // Re-register when settings change, and update .mcp.json. The TBA API key field is not among
-  // these settings: a key entered there restarts the server once it is stored (secrets.onDidChange)
-  const serverSettings = settingsThatRestartTheServer(context.extension.packageJSON);
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration(TBA_KEY_SETTING)) {
-        scheduleTbaKeyMove();
+  context.subscriptions.push({ dispose: () => clearTimeout(tbaKeyTimer) },
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration(TBA_KEY_SETTING)) {
+        clearTimeout(tbaKeyTimer);
+        tbaKeyTimer = setTimeout(() => void moveTbaKeyNow(), TBA_KEY_QUIET_MS);
       }
-      if (serverSettings.some((key) => e.affectsConfiguration(key))) {
-        outputChannel.appendLine("Settings changed, restarting MCP server...");
-        didChangeEmitter.fire();
-        scheduleMcpJsonUpdate();
+      if (LEASE_SETTINGS.some(key => event.affectsConfiguration(key))) {
+        void refreshLease();
+        void scheduleProjectOffers();
       }
+      const liveChanged = event.affectsConfiguration("wpilog-mcp.pitServerUrl") || event.affectsConfiguration("wpilog-mcp.live");
+      const mirrorChanged = event.affectsConfiguration("wpilog-mcp.pitServerUrl") || event.affectsConfiguration("wpilog-mcp.mirror") || event.affectsConfiguration("wpilog-mcp.mirrors");
+      if (liveChanged || mirrorChanged) void configureServices(liveChanged, mirrorChanged);
+      if (mirrorChanged || event.affectsConfiguration("wpilog-mcp.connections")) {
+        didChangeEmitter.fire(); explorer.serversChanged();
+        if (event.affectsConfiguration("wpilog-mcp.pitServerUrl")) void command(() => registerPitClaude(false))();
+      }
+      if (event.affectsConfiguration("wpilog-mcp.enableForClaudeCode")) void scheduleProjectOffers();
     }),
-    vscode.workspace.onDidChangeWorkspaceFolders(() => scheduleMcpJsonUpdate())
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      void refreshLease();
+      void scheduleProjectOffers();
+    })
   );
 
-  void (async () => {
+  const ready = (async () => {
     await moveTbaKeyNow();
-    await removeTbaKeyFromMcpJson(outputChannel);
-    // Add or update Claude Code's entry in .mcp.json (robot projects, by default)
-    scheduleMcpJsonUpdate();
+    // Opening Logs or enumerating agent servers is network-free. Local services are opt-in.
+    await configureServices(true, true);
   })();
-
-  context.subscriptions.push(outputChannel);
-  context.subscriptions.push(didChangeEmitter);
-
   outputChannel.appendLine("WPILog Analyzer extension activated.");
+  return { ready, logs: { getChildren: explorer.logs.getChildren.bind(explorer.logs) },
+    ...(context.extensionMode === vscode.ExtensionMode.Test ? { smokeData: explorer.editor.inspectData.bind(explorer.editor) } : {}) };
 }
 
 /**
@@ -339,136 +766,18 @@ async function moveTbaKeyToSecretStorage(
   }
 }
 
-/** Each local workspace folder's .mcp.json (Claude Code reads the one in the folder it runs in). */
-function mcpJsonFiles(): { folder: vscode.WorkspaceFolder; uri: vscode.Uri }[] {
-  return (vscode.workspace.workspaceFolders ?? [])
-    .filter((folder) => folder.uri.scheme === "file")
-    .map((folder) => ({ folder, uri: vscode.Uri.joinPath(folder.uri, ".mcp.json") }));
-}
-
-/** The file's text, or undefined when it does not exist. */
-async function readText(uri: vscode.Uri): Promise<string | undefined> {
-  try {
-    return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-async function exists(uri: vscode.Uri): Promise<boolean> {
-  try {
-    await vscode.workspace.fs.stat(uri);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Removes a TBA API key that earlier versions wrote into this server's .mcp.json entry in
- * plaintext, whatever the enableForClaudeCode setting: a file in the workspace root is easily
- * committed.
- */
-async function removeTbaKeyFromMcpJson(outputChannel: vscode.OutputChannel) {
-  for (const { uri } of mcpJsonFiles()) {
-    const edit = scrubTbaKey(await readText(uri));
-    if (!edit.ok || !edit.changed) {
-      continue;
-    }
+/** The standalone install's server, as the install is laid out now (looked for at each call). */
+function standaloneSpec(): StandaloneDaemonSpec {
+  const isFile = (file: string) => {
     try {
-      await vscode.workspace.fs.writeFile(uri, Buffer.from(edit.text));
-    } catch (e) {
-      outputChannel.appendLine(`Failed to remove the TBA API key from ${uri.fsPath}: ${e}`);
-      continue;
+      return fs.statSync(file).isFile();
+    } catch {
+      return false;
     }
-    outputChannel.appendLine(`Removed the TBA API key from ${uri.fsPath}.`);
-    const choice = await vscode.window.showWarningMessage(
-      "WPILog Analyzer: An earlier version wrote your TBA API key into .mcp.json in plaintext; " +
-        "it has been removed. If that file was ever committed or shared, revoke the key and set " +
-        "a new one (WPILog Analyzer: Set The Blue Alliance API Key).",
-      "Open TBA Account"
-    );
-    if (choice === "Open TBA Account") {
-      vscode.env.openExternal(vscode.Uri.parse(TBA_ACCOUNT_URL));
-    }
-  }
+  };
+  const maxHeap = vscode.workspace.getConfiguration("wpilog-mcp").get<string>("maxHeap");
+  return { kind: "standalone", name: STANDALONE_SERVER, maxHeap, ...findStandaloneInstall(os.homedir(), process.platform, isFile) };
 }
-
-/** A command's exit code, or undefined when it could not be run (git not installed, a timeout). */
-function exitCode(command: string, args: string[], cwd: string): Promise<number | undefined> {
-  return new Promise((resolve) => {
-    execFile(command, args, { cwd, timeout: 5000, windowsHide: true }, (error) => {
-      if (!error) {
-        resolve(0);
-        return;
-      }
-      const code = (error as { code?: unknown }).code;
-      resolve(typeof code === "number" ? code : undefined);
-    });
-  });
-}
-
-/** Whether git tracks, ignores, or would pick up the folder's .mcp.json. */
-async function gitStatusOf(folder: string): Promise<GitStatus> {
-  const tracked = await exitCode("git", ["ls-files", "--error-unmatch", "--", ".mcp.json"], folder);
-  if (tracked === 0) return "tracked";
-  if (tracked !== 1) return "none"; // not a repository, or no git
-  const ignored = await exitCode("git", ["check-ignore", "-q", "--", ".mcp.json"], folder);
-  return ignored === 0 ? "ignored" : ignored === 1 ? "untracked" : "none";
-}
-
-async function sameContent(a: string, b: string): Promise<boolean> {
-  try {
-    const [sa, sb] = await Promise.all([fs.promises.stat(a), fs.promises.stat(b)]);
-    if (sa.size !== sb.size) return false;
-    const hash = async (file: string) =>
-      crypto.createHash("sha256").update(await fs.promises.readFile(file)).digest("hex");
-    return (await hash(a)) === (await hash(b));
-  } catch {
-    return false;
-  }
-}
-
-/**
- * A copy of the bundled server JAR at a path that does not change when the extension updates
- * (the extension's global storage), for Claude Code's entry: the bundled JAR's path names the
- * extension's version, and VS Code deletes that folder after an update. Refreshed whenever it
- * differs from the bundled JAR, by rename, so a server still running the old copy keeps it. When
- * it cannot be refreshed (a running server holds it on Windows), the previous copy is used and
- * the refresh is retried at the next start.
- */
-async function stableJar(
-  context: vscode.ExtensionContext,
-  bundled: string,
-  outputChannel: vscode.OutputChannel
-): Promise<string> {
-  const target = path.join(context.globalStorageUri.fsPath, "server", "wpilog-mcp-all.jar");
-  try {
-    if (await sameContent(bundled, target)) {
-      return target;
-    }
-    await fs.promises.mkdir(path.dirname(target), { recursive: true });
-    const temp = `${target}.${process.pid}.${Date.now()}.tmp`;
-    await fs.promises.copyFile(bundled, temp);
-    try {
-      await fs.promises.rename(temp, target);
-    } finally {
-      await fs.promises.rm(temp, { force: true });
-    }
-    outputChannel.appendLine(`Copied the server JAR for Claude Code to ${target}`);
-    return target;
-  } catch (e) {
-    outputChannel.appendLine(`Could not refresh ${target}: ${e}`);
-    return fs.existsSync(target) ? target : bundled;
-  }
-}
-
-/**
- * The projects that have Claude Code's entry, each with its own settings as last seen, so that a
- * change to the user's settings rewrites their configuration files too, open or not.
- */
-const PROJECTS_KEY = "wpilog-mcp.claudeCodeProjects";
-type KnownProjects = Record<string, LogSettings>;
 
 /** The user's values: User settings, else the defaults. */
 function userSettings(): LogSettings {
@@ -498,329 +807,79 @@ function projectSettings(folder: vscode.WorkspaceFolder): LogSettings {
   };
 }
 
-/** Where the projects' configuration files are, in the extension's storage. */
-function projectsDir(context: vscode.ExtensionContext): string {
-  return path.join(context.globalStorageUri.fsPath, "projects");
+function localFolders(): vscode.WorkspaceFolder[] {
+  return (vscode.workspace.workspaceFolders ?? []).filter(folder => folder.uri.scheme === "file");
 }
 
-/** A project's configuration file, in the extension's storage. */
-function projectConfigPath(context: vscode.ExtensionContext, folderPath: string): string {
-  return path.join(projectsDir(context), projectConfigName(folderPath));
-}
-
-/**
- * The disk cache of every server the extension starts (Copilot's and Claude Code's), in its own
- * storage: never the standalone install's cache, so the two never delete each other's files when
- * their cache formats differ, and uninstalling the extension removes it.
- */
-function extensionCacheDir(context: vscode.ExtensionContext): string {
-  return path.join(context.globalStorageUri.fsPath, "cache");
-}
-
-/**
- * Writes one project's configuration file, which its .mcp.json entry starts the server with, as
- * the standalone install's servers.yaml does for it: the log directories (relative ones inside
- * the project), the team number, the TBA key, and the extension's own disk cache. The server
- * Claude Code starts runs outside VS Code and cannot read its settings or secret storage; this
- * file, which only this user can read, is where it finds them, so the user sets nothing. Written
- * only when its contents change.
- */
-async function writeProjectConfig(
-  context: vscode.ExtensionContext,
-  folderPath: string,
-  settings: LogSettings
-): Promise<string> {
-  const text = buildServerConfig({
-    logDirs: logDirectoriesFor(settings, folderPath),
-    teamNumber: settings.teamNumber || 0,
-    tbaKey: await context.secrets.get(TBA_SECRET),
-    cacheDir: extensionCacheDir(context),
-  });
-  const file = projectConfigPath(context, folderPath);
-  await writeConfigFile(file, text);
-  return file;
-}
-
-/** Remembers a project that has the entry, with its own settings as they are now. */
-async function rememberProject(
-  context: vscode.ExtensionContext,
-  folderPath: string,
-  own: LogSettings
-) {
-  const known = context.globalState.get<KnownProjects>(PROJECTS_KEY) ?? {};
-  known[folderPath] = own;
-  await context.globalState.update(PROJECTS_KEY, known);
-}
-
-/**
- * Rewrites the configuration file of every known project except `skip` (those just written),
- * from the user's settings and the project's own as last seen; a project's own settings changed
- * while it was closed are picked up when it is next opened. A project whose .mcp.json no longer
- * has the entry is forgotten and its file removed.
- */
-async function refreshKnownProjects(context: vscode.ExtensionContext, skip: Set<string>) {
-  const known = context.globalState.get<KnownProjects>(PROJECTS_KEY) ?? {};
-  const user = userSettings();
-  let forgotten = false;
-  for (const [folderPath, own] of Object.entries(known)) {
-    if (skip.has(folderPath)) continue;
-    const text = await fs.promises
-      .readFile(path.join(folderPath, ".mcp.json"), "utf8")
-      .catch(() => undefined);
-    if (!hasServerEntry(text)) {
-      delete known[folderPath];
-      forgotten = true;
-      await fs.promises.rm(projectConfigPath(context, folderPath), { force: true });
-      continue;
-    }
-    await writeProjectConfig(context, folderPath, overlaySettings(user, own));
-  }
-  if (forgotten) {
-    await context.globalState.update(PROJECTS_KEY, known);
-  }
-  // A configuration file of no remembered project never holds the key: nothing refreshes it
-  // when the key changes or is cleared
-  const remembered = new Set(
-    [...Object.keys(known), ...skip].map((folderPath) => projectConfigPath(context, folderPath))
-  );
-  await removeTbaKeyFromConfigs(projectsDir(context), remembered);
-}
-
-/** Shows a message once per workspace (remembered under `key`); returns the button chosen. */
-async function showOnce(
-  context: vscode.ExtensionContext,
-  key: string,
-  show: () => Thenable<string | undefined>
-): Promise<string | undefined> {
-  if (context.workspaceState.get<boolean>(key)) {
-    return undefined;
-  }
-  await context.workspaceState.update(key, true);
-  return show();
-}
-
-/** A global switch the notice's Don't Show Again button sets. */
-const RESTART_NOTICE_OFF = "wpilog-mcp.claudeCodeRestartNoticeOff";
-
-/**
- * Tells the user that Claude Code must restart to find the entry just added to the folder's
- * .mcp.json, and offers to reload the window when the Claude Code extension is installed (which
- * restarts its sessions). A notice the extension shows by itself can be turned off for good, for
- * those who use only Copilot or other VS Code agents.
- */
-async function showRestartNotice(
-  context: vscode.ExtensionContext,
-  folder: vscode.WorkspaceFolder,
-  canTurnOff: boolean
-): Promise<string | undefined> {
-  if (canTurnOff && context.globalState.get<boolean>(RESTART_NOTICE_OFF)) {
-    return undefined;
-  }
-  const notice = claudeCodeRestartNotice(
-    folder.name,
-    vscode.extensions.getExtension(CLAUDE_CODE_EXTENSION_ID) !== undefined
-  );
-  const buttons = [
-    ...(notice.offerReload ? ["Reload Window"] : []),
-    ...(canTurnOff ? ["Don't Show Again"] : []),
-  ];
-  const choice = await vscode.window.showInformationMessage(notice.message, ...buttons);
-  if (choice === "Reload Window") {
-    await vscode.commands.executeCommand("workbench.action.reloadWindow");
-  } else if (choice === "Don't Show Again") {
-    await context.globalState.update(RESTART_NOTICE_OFF, true);
-  }
-  return choice;
-}
-
-/** Offers, once, to add .mcp.json to the folder's .gitignore. */
-async function offerToIgnore(
-  context: vscode.ExtensionContext,
-  folder: vscode.WorkspaceFolder,
-  outputChannel: vscode.OutputChannel
-) {
-  const add = "Add .mcp.json to .gitignore";
-  const choice = await showOnce(context, `wpilog-mcp.gitignoreOffered:${folder.uri}`, () =>
-    vscode.window.showInformationMessage(
-      `WPILog Analyzer added its server to ${folder.name}/.mcp.json so Claude Code can use it. ` +
-        "The entry holds paths for this computer only, so it would be no use to teammates if " +
-        "committed, and git does not ignore .mcp.json in this repository.",
-      add,
-      "Not now"
-    )
-  );
-  if (choice !== add) {
+/** An existing project file belongs to the user; create-new prevents overwriting a concurrent edit. */
+async function offerProjectFile(context: vscode.ExtensionContext, output: vscode.OutputChannel, folder: vscode.WorkspaceFolder) {
+  const file = path.join(folder.uri.fsPath, PROJECT_FILE);
+  const own = projectSettings(folder);
+  const existing = await fs.promises.readFile(file, "utf8").catch(() => undefined);
+  const key = `wpilog-mcp.projectFileOffered:${folder.uri.fsPath}`;
+  if (!projectFileOffer(own, existing, context.globalState.get<boolean>(key) === true)) return;
+  await context.globalState.update(key, true);
+  const git = await gitStatusOf(folder.uri.fsPath, PROJECT_FILE);
+  if (!projectFileOffer(own, existing, false, git)) {
+    output.appendLine(`Left tracked project configuration alone: ${file}`);
     return;
   }
-  const gitignore = vscode.Uri.joinPath(folder.uri, ".gitignore");
+  const choice = await vscode.window.showInformationMessage(
+    `WPILog Analyzer: write ${PROJECT_FILE} in ${folder.name} so Claude Code in a terminal can lease this project's log directories and team?`,
+    "Write File", ...(git === "untracked" ? ["Write File and Ignore"] : []), "Not now");
+  if (choice !== "Write File" && choice !== "Write File and Ignore") return;
   try {
-    const text = addToGitignore(await readText(gitignore));
-    await vscode.workspace.fs.writeFile(gitignore, Buffer.from(text));
-    outputChannel.appendLine(`Added .mcp.json to ${gitignore.fsPath}`);
-  } catch (e) {
-    outputChannel.appendLine(`Failed to update ${gitignore.fsPath}: ${e}`);
-  }
-}
-
-/**
- * Adds or updates the `wpilog-analyzer` entry in each workspace folder's .mcp.json, which only
- * Claude Code reads (it does not use the McpServerDefinitionProvider API): with
- * `wpilog-mcp.enableForClaudeCode` on, in WPILib robot projects and wherever an entry already
- * exists, and in `requested`, the folder the user named with the Add to Claude Code command
- * (whose outcome is then reported directly). Then rewrites the configuration files of the other
- * projects that have the entry, so a change to the user's settings reaches them too.
- */
-async function updateMcpJsonFiles(
-  context: vscode.ExtensionContext,
-  outputChannel: vscode.OutputChannel,
-  requested?: vscode.WorkspaceFolder
-) {
-  const config = vscode.workspace.getConfiguration("wpilog-mcp");
-  const enabled = config.get<boolean>("enableForClaudeCode", true);
-  if (!enabled && !requested) {
-    return;
-  }
-
-  const isRequested = (folder: vscode.WorkspaceFolder) =>
-    requested !== undefined && folder.uri.toString() === requested.uri.toString();
-  const targets: McpJsonTarget[] = [];
-  for (const { folder, uri } of mcpJsonFiles()) {
-    const text = await readText(uri);
-    const robotProject = await exists(
-      vscode.Uri.joinPath(folder.uri, ".wpilib", "wpilib_preferences.json")
-    );
-    if (shouldWriteEntry(enabled, robotProject, hasServerEntry(text), isRequested(folder))) {
-      targets.push({ folder, uri, text, asked: isRequested(folder) });
+    await fs.promises.writeFile(file, projectFileText(own), { flag: "wx" });
+    output.appendLine(`Wrote ${file}. The bridge reads it from its working directory.`);
+    if (choice === "Write File and Ignore") {
+      const ignore = path.join(folder.uri.fsPath, ".gitignore");
+      const text = await fs.promises.readFile(ignore, "utf8").catch(() => "");
+      await fs.promises.writeFile(ignore, ignoreProjectFile(text));
     }
-  }
-  const written = await writeEntries(context, outputChannel, targets);
-  if (enabled) {
-    await refreshKnownProjects(context, written);
+  } catch (error) {
+    output.appendLine(`Could not write ${file}: ${String(error)}`);
   }
 }
 
-interface McpJsonTarget {
-  folder: vscode.WorkspaceFolder;
-  uri: vscode.Uri;
-  text: string | undefined;
-  /** The user named this folder (the Add command): report the outcome now. */
-  asked: boolean;
+function exitCode(command: string, args: string[], cwd: string): Promise<number | undefined> {
+  return new Promise(resolve => execFile(command, args, { cwd, timeout: 5000, windowsHide: true }, error => {
+    if (!error) resolve(0);
+    else {
+      const code = (error as { code?: unknown }).code;
+      resolve(typeof code === "number" ? code : undefined);
+    }
+  }));
 }
 
-/**
- * Writes each target folder's configuration file and its .mcp.json entry, which only starts the
- * server (from a JAR path that survives extension updates) with that file. Every other entry in
- * .mcp.json is kept. The entry holds this computer's paths, so a .mcp.json that git tracks (the
- * repository shares it) is left alone, and one git would pick up comes with an offer to ignore
- * it. Returns the folders written.
- */
-async function writeEntries(
-  context: vscode.ExtensionContext,
-  outputChannel: vscode.OutputChannel,
-  targets: McpJsonTarget[]
-): Promise<Set<string>> {
-  const written = new Set<string>();
-  if (targets.length === 0) return written;
-  const javaPath = await findJava();
-  if (!javaPath) return written;
-  const bundled = findJar(context.extensionPath);
-  if (!bundled) return written;
-  const jar = await stableJar(context, bundled, outputChannel);
-  const maxHeap = vscode.workspace.getConfiguration("wpilog-mcp").get<string>("maxHeap") || "4g";
-  const user = userSettings();
+async function gitStatusOf(folder: string, file: string): Promise<GitStatus> {
+  const tracked = await exitCode("git", ["ls-files", "--error-unmatch", "--", file], folder);
+  if (tracked === 0) return "tracked";
+  if (tracked !== 1) return "none";
+  return await exitCode("git", ["check-ignore", "-q", "--", file], folder) === 0 ? "ignored" : "untracked";
+}
 
-  for (const { folder, uri, text, asked } of targets) {
-    // A folder the user asked for hears the outcome now; any other, once at most
-    const other = otherWpilogServer(text);
-    if (other) {
-      outputChannel.appendLine(
-        `Left ${uri.fsPath} alone: its "${other}" entry already runs wpilog-mcp for Claude Code.`
-      );
-      if (asked) {
-        vscode.window.showInformationMessage(
-          `WPILog Analyzer: ${folder.name}/.mcp.json already runs wpilog-mcp as "${other}", so ` +
-            "Claude Code already finds it there; no second entry was added."
-        );
-      }
+/** Missing old config files still have a location; an existing symlink's target decides ownership. */
+function canonicalMigrationPath(file: string): string {
+  const suffix: string[] = [];
+  let ancestor = path.resolve(file);
+  for (;;) {
+    try {
+      fs.lstatSync(ancestor);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || path.dirname(ancestor) === ancestor) throw error;
+      suffix.unshift(path.basename(ancestor));
+      ancestor = path.dirname(ancestor);
       continue;
     }
-    const action = gitAction(await gitStatusOf(folder.uri.fsPath));
-    if (action === "skipShared") {
-      outputChannel.appendLine(`Left ${uri.fsPath} alone: git tracks it (the repository shares it).`);
-      const message =
-        `WPILog Analyzer did not add its server to ${folder.name}/.mcp.json for Claude Code: ` +
-        "git tracks that file, and the entry holds paths for this computer only, so adding it " +
-        "would change the shared file for everyone (and each teammate's extension would change " +
-        "it again). To use WPILog Analyzer from Claude Code here, stop tracking the file " +
-        "(git rm --cached .mcp.json), add .mcp.json to .gitignore, and reload the window.";
-      if (asked) {
-        vscode.window.showWarningMessage(message);
-      } else {
-        void showOnce(context, `wpilog-mcp.sharedMcpJsonNoticed:${folder.uri}`, () =>
-          vscode.window.showWarningMessage(message)
-        );
-      }
-      continue;
-    }
-
-    // This project's settings: the user's, with the project's own on top. Its configuration
-    // file holds the TBA key, so it is written only once .mcp.json can take the entry, and
-    // does not outlive an entry that could not be written.
-    const own = projectSettings(folder);
-    const configPath = projectConfigPath(context, folder.uri.fsPath);
-    const outcome = await writeEntry(
-      text,
-      buildServerEntry(javaPath, jar, maxHeap, configPath),
-      {
-        writeConfig: async () => {
-          await writeProjectConfig(context, folder.uri.fsPath, overlaySettings(user, own));
-        },
-        removeConfig: () => fs.promises.rm(configPath, { force: true }),
-        writeMcpJson: async (updated) => {
-          await vscode.workspace.fs.writeFile(uri, Buffer.from(updated));
-        },
-      }
-    );
-    if (!outcome.ok) {
-      if (outcome.refused) {
-        outputChannel.appendLine(`Did not update ${uri.fsPath}: ${outcome.error}`);
-        vscode.window.showWarningMessage(
-          `WPILog Analyzer: ${outcome.error}, so it was not updated for Claude Code. Fix the file, or turn off wpilog-mcp.enableForClaudeCode.`
-        );
-      } else {
-        outputChannel.appendLine(`Failed to write ${uri.fsPath}: ${outcome.error}`);
-        if (asked) {
-          vscode.window.showErrorMessage(
-            `WPILog Analyzer: could not write ${uri.fsPath}: ${outcome.error}`
-          );
-        }
-      }
-      if (outcome.entryExists) {
-        // Its earlier entry still starts the server with the configuration file just written
-        await rememberProject(context, folder.uri.fsPath, own);
-        written.add(folder.uri.fsPath);
-      }
-      continue;
-    }
-    if (outcome.changed) {
-      outputChannel.appendLine(`Updated the wpilog-analyzer entry in ${uri.fsPath}`);
-    }
-    await rememberProject(context, folder.uri.fsPath, own);
-    written.add(folder.uri.fsPath);
-    // A Claude Code session that is already running does not see a new entry. The folder the user
-    // asked for always hears how to restart; a folder the entry was added to by itself, once
-    if (asked) {
-      void showRestartNotice(context, folder, false);
-    } else if (!hasServerEntry(text)) {
-      void showOnce(context, `wpilog-mcp.claudeCodeRestartNoticed:${folder.uri}`, () =>
-        showRestartNotice(context, folder, true)
-      );
-    }
-    if (action === "writeAndOfferIgnore") {
-      void offerToIgnore(context, folder, outputChannel);
-    }
+    return path.join(fs.realpathSync(ancestor), ...suffix);
   }
-  return written;
 }
 
-export function deactivate() {}
+/** Set by activate: ends the window's server sessions as it closes or reloads. */
+let endWindowSessions: (() => Promise<boolean>) | undefined;
+
+/** The editor waits for this before shutting the extension down, so the sessions' endings are not
+ * cut off: a lost one left the window's views attached on the server for an hour. */
+export async function deactivate(): Promise<void> {
+  await endWindowSessions?.();
+}

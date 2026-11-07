@@ -60,6 +60,24 @@ class PoseToolsTest extends ToolTestBase {
     return findTool(tool).execute(args).getAsJsonObject();
   }
 
+  @Test void aLoneChassisStreamStatesThatItMayBeASetpoint() throws Exception {
+    var t = times(3);
+    var log = new MockLogBuilder().setPath(PATH)
+        .addStructEntry("/Pose", "struct:Pose2d", t,
+            List.of(pose(0, 0, 0), pose(0.02, 0, 0), pose(0.04, 0, 0)))
+        .addStructEntry("/Unlabelled", "struct:ChassisSpeeds", t,
+            List.of(speeds(1, 0, 0), speeds(1, 0, 0), speeds(1, 0, 0))).build();
+    putLogInCache(log);
+    var result = run("pose_corrections", "pose_entry", "/Pose");
+    var odometry = result.getAsJsonObject("odometry");
+    assertNotNull(odometry, result.toString());
+    assertEquals("/Unlabelled", odometry.get("entry").getAsString());
+    assertTrue(odometry.get("basis").getAsString().contains("may be a setpoint"),
+        "The type alone does not prove measured speed: " + odometry);
+    assertEquals(SignalResolver.resolve(log, SignalResolver.Role.CHASSIS_SPEEDS_MEASURED).basis(),
+        odometry.get("basis").getAsString());
+  }
+
   @Nested
   @DisplayName("pose_corrections")
   class Corrections {
@@ -300,6 +318,21 @@ class PoseToolsTest extends ToolTestBase {
           .addStructEntry("/RealOutputs/Drive/Pose", "struct:Pose2d", t, actual)
           .addStructEntry("/PathPlanner/targetPose", "struct:Pose2d", t, setpoint)
           .build());
+    }
+
+    @Test
+    @DisplayName("one matched pose has errors and no standard deviation")
+    void onePoseHasNoDeviation() throws Exception {
+      putLogInCache(new MockLogBuilder().setPath(PATH)
+          .addStructEntry("/RealOutputs/Drive/Pose", "struct:Pose2d", new double[] {1.0}, List.of(pose(0.25, 0, 0)))
+          .addStructEntry("/PathPlanner/targetPose", "struct:Pose2d", new double[] {1.0}, List.of(pose(0, 0, 0)))
+          .build());
+      // A role is chosen by convention only from two samples or more, so the pose is named
+      var r = run("compare_poses", "pose_entry", "/RealOutputs/Drive/Pose", "reference_entry",
+          "/PathPlanner/targetPose", "frame", "reference", "interpolation", "previous");
+      assertEquals(1, r.get("count").getAsInt(), r.toString());
+      assertEquals(0.25, r.getAsJsonObject("along_m").get("mean").getAsDouble(), 1e-12);
+      assertTrue(r.getAsJsonObject("along_m").get("std_dev").isJsonNull(), "one value has no sample standard deviation");
     }
 
     @Test

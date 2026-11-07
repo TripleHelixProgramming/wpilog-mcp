@@ -8,6 +8,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.triplehelix.wpilogmcp.log.LogData;
+import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.mcp.SessionContext;
 
 import static org.triplehelix.wpilogmcp.tools.ToolUtils.getRequiredString;
 
@@ -22,7 +24,8 @@ import static org.triplehelix.wpilogmcp.tools.ToolUtils.getRequiredString;
  * <ul>
  *   <li>Injects a required {@code path} parameter into the tool schema</li>
  *   <li>Extracts the path from arguments and auto-loads the log via
- *       {@link org.triplehelix.wpilogmcp.log.LogManager#getOrLoad(String)}</li>
+ *       {@link org.triplehelix.wpilogmcp.read.server.ManagedLogAccess#acquire(String)}, retaining its mapping
+ *       until the result and its input annotations are complete</li>
  *   <li>Passes the loaded log to {@link #executeWithLog(LogData, JsonObject)}</li>
  * </ul>
  *
@@ -110,6 +113,15 @@ public abstract class LogRequiringTool extends ToolBase {
     pathProp.addProperty("description",
         "Path to the log file (from list_available_logs)");
     properties.add("path", pathProp);
+    var scopeProp = new JsonObject(); scopeProp.addProperty("type", "string");
+    scopeProp.addProperty("description", "Optional serving scope from list_source_scopes; required for ambiguous relative paths. Absolute listed paths explicitly select their file.");
+    properties.add("scope_id", scopeProp);
+    if (TimeScope.acceptsRelative(properties)) {
+      var recent = new JsonObject(); recent.addProperty("type", "number");
+      recent.addProperty("exclusiveMinimum", 0);
+      recent.addProperty("description", TimeScope.LAST_SECONDS_DESCRIPTION);
+      properties.add("last_seconds", recent);
+    }
 
     // Add to required array
     var required = schema.has("required")
@@ -130,36 +142,69 @@ public abstract class LogRequiringTool extends ToolBase {
   @Override
   protected final JsonElement executeInternal(JsonObject arguments) throws Exception {
     var path = getRequiredString(arguments, "path");
-    var loaded = logManager.getOrLoad(path);
-    // The file as the log was read from it, taken now so that an eviction during the call does
-    // not lose it; the call's result is trusted only if the file is still that file afterwards
-    var before = logManager.snapshotOf(path, loaded);
-    var log = new AccessTrackingLogData(loaded);
-    JsonElement result;
-    try {
-      result = executeWithLog(log, arguments);
-    } catch (InternalError e) {
-      // A read of the memory-mapped file faulted: the file was truncated or rewritten in place
-      // under the mapping. The attributes may or may not show it, so the fault itself counts
-      return changedDuringCall(logManager.faultDuringCall(path, loaded, before, e.getMessage()));
-    }
-    var change = logManager.changeDuringCall(path, loaded, before);
-    if (change != null) return changedDuringCall(change);
-    if (result != null && result.isJsonObject()) {
-      var object = result.getAsJsonObject();
-      // Never compute silently from partly undecodable entries: say which ones and why
-      log.annotate(object);
-      // Nor from a log that was not read to its end
-      ToolUtils.noteTruncation(object, log);
-      // Every successful result says what it was computed from (rule R3)
-      if (!object.has("success") || object.get("success").getAsBoolean()) {
-        log.recordInputs(object);
+    var scope = ToolUtils.getOptString(arguments, "scope_id", null);
+    try (var use = logAccess.acquire(path, scope)) {
+      if (scope != null) path = use.log().path();
+      var loaded = use.log();
+      // The file as the log was read from it, taken now so that an eviction during the call does
+      // not lose it; the call's result is trusted only if the file is still that file afterwards
+      var before = use.snapshot();
+      var log = new AccessTrackingLogData(loaded);
+      boolean relative = arguments.has("last_seconds") && !arguments.get("last_seconds").isJsonNull();
+      if (relative && !TimeScope.acceptsRelative(toolSchema().getAsJsonObject("properties"))) {
+        throw new IllegalArgumentException(name() + " does not accept last_seconds");
       }
-      // A session that used this log before its file changed is told once that it was reloaded
-      var reload = logManager.reloadNoticeFor(sessionKey(), path);
-      if (reload != null) noteReload(object, reload);
+      var resolved = relative ? TimeScope.relativeArguments(log, arguments) : arguments;
+      JsonElement result;
+      try {
+        result = executeWithLog(log, resolved);
+      } catch (InternalError e) {
+        // A read of the memory-mapped file faulted: the file was truncated or rewritten in place
+        // under the mapping. The attributes may or may not show it, so the fault itself counts
+        return changedDuringCall(logManager.faultDuringCall(path, loaded, before, e.getMessage()));
+      }
+      var change = logManager.changeDuringCall(path, loaded, before);
+      if (change != null) return changedDuringCall(change);
+      use.recheckScope();
+      if (result != null && result.isJsonObject()) {
+        var object = result.getAsJsonObject();
+        // Never compute silently from partly undecodable entries: say which ones and why
+        log.annotate(object);
+        // Nor from a log that was not read to its end
+        ToolUtils.noteTruncation(object, log);
+        // Every successful result says what it was computed from (rule R3)
+        if (!object.has("success") || object.get("success").getAsBoolean()) {
+          log.recordInputs(object);
+        }
+        if (object.has("inputs") && object.get("inputs").isJsonObject()) {
+          var inputs = object.getAsJsonObject("inputs");
+          if (scope != null) inputs.addProperty("scope_id", scope);
+          if (use.replica() != null) {
+            var replica = use.replica();
+            inputs.add("replica", org.triplehelix.wpilogmcp.store.StoreJson.JSON.toJsonTree(replica));
+            if (replica.authorityState().equals("authoritative_mismatch")) {
+              var warnings = object.has("warnings") ? object.getAsJsonArray("warnings") : new JsonArray();
+              var master = replica.confirmation().record();
+              warnings.add("This result uses a held replica that differs from the configured master's immutable version: held SHA-256 "
+                  + replica.contentSha256() + " (" + replica.sizeBytes() + " bytes), master SHA-256 " + master.sha256()
+                  + " (" + master.sizeBytes() + " bytes). Treat it as disproved replica content; select the master or wait for replacement.");
+              object.add("warnings", warnings);
+            }
+          }
+          if (before != null) inputs.addProperty("file_size_bytes", before.size());
+          log.recordSessionRange(inputs);
+          if (relative) {
+            var window = new JsonObject();
+            window.add("start", resolved.get("start_time")); window.add("end", resolved.get("end_time"));
+            inputs.add("window", window); inputs.add("last_seconds", arguments.get("last_seconds"));
+          }
+        }
+        // A session that used this log before its file changed is told once that it was reloaded
+        var reload = logManager.reloadNoticeFor(sessionKey(), path);
+        if (reload != null) noteReload(object, reload);
+      }
+      return result;
     }
-    return result;
   }
 
   /**
@@ -178,7 +223,7 @@ public abstract class LogRequiringTool extends ToolBase {
    * session for the life of the process.
    */
   private static String sessionKey() {
-    var session = org.triplehelix.wpilogmcp.mcp.SessionContext.current();
+    var session = SessionContext.current();
     return session == null ? "stdio" : session.getId();
   }
 
@@ -187,7 +232,7 @@ public abstract class LogRequiringTool extends ToolBase {
    * {@code _metadata.log_reloaded} with when and what changed, and a warning, since results the
    * session holds from earlier calls came from the file as it was.
    */
-  static void noteReload(JsonObject result, org.triplehelix.wpilogmcp.log.LogManager.Reload reload) {
+  static void noteReload(JsonObject result, LogManager.Reload reload) {
     var metadata = result.has("_metadata") && result.get("_metadata").isJsonObject()
         ? result.getAsJsonObject("_metadata") : new JsonObject();
     var note = new JsonObject();

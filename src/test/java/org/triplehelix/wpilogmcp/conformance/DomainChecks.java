@@ -266,6 +266,7 @@ final class DomainChecks {
     out.numeric = s.kept ? count : s.numeric;
     if (s.kept) {
       out.times = Arrays.copyOf(s.times, count);
+      out.micros = Arrays.copyOf(s.micros, count);
       out.values = Arrays.copyOf(s.values, count);
       out.n = count;
       for (int i = 0; i < count; i++) if (Double.isFinite(out.values[i])) out.finite++;

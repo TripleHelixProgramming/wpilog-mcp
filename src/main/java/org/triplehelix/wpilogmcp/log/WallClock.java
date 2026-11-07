@@ -33,8 +33,18 @@ public final class WallClock {
 
   private static final Set<String> TYPES = Set.of("int64", "double", "float");
 
+  /**
+   * Where a capture records the wall clock of the server recording it, in epoch microseconds,
+   * at the robot's time of each NetworkTables time synchronization. It is not the log's wall
+   * clock: it places in UTC only a capture whose robot publishes no clock of its own.
+   */
+  public static final String PIT_CLOCK_ENTRY = "/Daemon/Clock/EpochTimeMicros";
+
   /** A plausible wall-clock reading: the log time it was logged at, and its epoch microseconds. */
   public record Reading(double logTime, long epochMicros) {}
+
+  /** A logged coordinate must survive the seconds view, which can merge adjacent microseconds. */
+  public record ExactReading(long logMicros, long epochMicros) {}
 
   /**
    * The zone offset in which to read the times in REV log filenames recorded with a wpilog, and
@@ -115,6 +125,124 @@ public final class WallClock {
       if (plausible(reading.epochMicros())) valid.add(reading);
     }
     return valid;
+  }
+
+  /**
+   * The same retained readings as {@link #validReadings}, with their original log coordinates.
+   * The jump decision deliberately keeps the legacy seconds arithmetic: presenting exact UTC
+   * must not silently change which clock was selected, or change REV's existing alignment.
+   */
+  public static List<ExactReading> validExactReadings(LogData log) {
+    var clock = entry(log);
+    if (clock.isEmpty()) return List.of();
+    var values = log.values().get(clock.get());
+    if (values == null) return List.of();
+    var valid = new ValidReadings();
+    values.forEach(valid::add);
+    var kept = valid.prefix(valid.values());
+    var out = new ArrayList<ExactReading>(kept.count());
+    for (int i = 0; i < kept.count(); i++) out.add(new ExactReading(kept.logMicros()[i], kept.epochMicros()[i]));
+    return List.copyOf(out);
+  }
+
+  /**
+   * The readings a clock's first {@code count} retained values hold, in the order they were
+   * logged. The arrays are shared and longer than {@code count}; nothing below {@code count}
+   * ever changes.
+   */
+  public record Prefix(long[] logMicros, long[] epochMicros, int count) {}
+
+  /**
+   * The readings {@link #validExactReadings} keeps, taken one value at a time in log order, so a
+   * reader of a recording extends them as the clock's entry grows instead of reading it again. A
+   * jump starts new arrays, so a prefix taken before it keeps the readings it saw. One thread
+   * adds at a time; a prefix may be read by any.
+   */
+  public static final class ValidReadings {
+    private long[] logMicros = new long[16];
+    private long[] epochMicros = new long[16];
+    /** The value each retained reading came from, which places a prefix of the values. */
+    private int[] origins = new int[16];
+    private int count;
+    private int values;
+    /** The value that began the current run: the first, or the one whose jump cleared the run. */
+    private int runStart;
+    private double previousLogTime;
+
+    /** The next value of the clock's entry. */
+    public void add(TimestampedValue value) {
+      if (value.value() instanceof Number number) add(value.timestampUs(), value.timestamp(), number.longValue());
+      else values++;
+    }
+
+    /**
+     * The next value of the clock's entry when it is a number: its log time, in microseconds and
+     * in the seconds a decoded value carries, and the number as {@code Number.longValue} gives
+     * it. A recording's clock is read this way from its column, with no object for each value.
+     */
+    public void add(long logUs, double logSeconds, long epoch) {
+      int index = values++;
+      if (count > 0) {
+        double wallStep = (epoch - epochMicros[count - 1]) / 1e6;
+        double fpgaStep = logSeconds - previousLogTime;
+        if (Math.abs(wallStep - fpgaStep) > JUMP_SEC) {
+          logMicros = new long[16];
+          epochMicros = new long[16];
+          origins = new int[16];
+          count = 0;
+          runStart = index;
+        }
+      }
+      if (plausible(epoch)) {
+        if (count == logMicros.length) {
+          logMicros = java.util.Arrays.copyOf(logMicros, 2 * count);
+          epochMicros = java.util.Arrays.copyOf(epochMicros, 2 * count);
+          origins = java.util.Arrays.copyOf(origins, 2 * count);
+        }
+        logMicros[count] = logUs;
+        epochMicros[count] = epoch;
+        origins[count] = index;
+        count++;
+        previousLogTime = logSeconds;
+      }
+    }
+
+    /**
+     * Room for {@code more} readings beyond those kept, so a long extension grows the arrays once
+     * instead of doubling them through it. A prefix taken earlier keeps the arrays it saw.
+     */
+    public void reserve(int more) {
+      int needed = Math.addExact(count, more);
+      if (needed <= logMicros.length) return;
+      logMicros = java.util.Arrays.copyOf(logMicros, needed);
+      epochMicros = java.util.Arrays.copyOf(epochMicros, needed);
+      origins = java.util.Arrays.copyOf(origins, needed);
+    }
+
+    /** How many values have been added. */
+    public int values() {
+      return values;
+    }
+
+    /**
+     * The readings the first {@code values} values keep, or empty when a jump after them began
+     * the current run and their own run is gone.
+     */
+    public Optional<Prefix> prefixOf(int values) {
+      if (values > this.values) throw new IllegalArgumentException("Only " + this.values + " values were added");
+      if (values <= runStart && runStart > 0) return Optional.empty();
+      int low = 0, high = count;
+      while (low < high) {
+        int middle = (low + high) >>> 1;
+        if (origins[middle] < values) low = middle + 1; else high = middle;
+      }
+      return Optional.of(new Prefix(logMicros, epochMicros, low));
+    }
+
+    /** The readings every value added so far keeps. */
+    public Prefix prefix(int values) {
+      return prefixOf(values).orElseThrow(() -> new IllegalArgumentException("A jump after value " + values + " began a new run"));
+    }
   }
 
   /** Every numeric reading of the wall-clock entry, in log order (1970 included). */
@@ -232,9 +360,11 @@ public final class WallClock {
   }
 
   private static int rank(String name) {
-    var leaf = name.substring(name.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT);
-    if (leaf.equals("systemtime") && !name.contains("/")) return 0;
-    if (leaf.equals("epochtimemicros")) return 1;
+    // Capture uses DataLogManager's NT: recording prefix even for replayed systemTime.
+    if (name.startsWith("NT:")) name = name.substring(3);
+    if (name.equals("systemTime")) return 0;
+    if (name.equals("/SystemStats/EpochTimeMicros")
+        || name.equals("/AdvantageKit/SystemStats/EpochTimeMicros")) return 1;
     return -1;
   }
 }

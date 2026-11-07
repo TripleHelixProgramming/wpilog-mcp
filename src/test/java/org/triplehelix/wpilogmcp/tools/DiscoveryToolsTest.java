@@ -22,6 +22,25 @@ class DiscoveryToolsTest extends ToolTestBase {
     DiscoveryTools.registerAll(registry);
   }
 
+  @Test void theGuideDistinguishesTheLocalCopyFromThePitServer() throws Exception {
+    var roles = new ToolRegistry(); DiscoveryTools.registerAll(roles);
+    var guide = roles.getTool("get_server_guide");
+    assertEquals(ToolRegistry.LOCAL_LOCATION, guide.execute(new JsonObject()).getAsJsonObject().get("server_location").getAsString());
+    roles.setServerLocation(ToolRegistry.PIT_LOCATION);
+    assertEquals(ToolRegistry.PIT_LOCATION, guide.execute(new JsonObject()).getAsJsonObject().get("server_location").getAsString());
+  }
+
+  @Test void presentTenseWordsSurfaceAllThreeLiveTools() throws Exception {
+    var registry = new ToolRegistry(); WpilogTools.registerAll(registry); LiveTools.registerAll(registry, null);
+    for (String word : java.util.List.of("now", "currently", "right now", "recent")) {
+      var args = new JsonObject(); args.addProperty("task", word);
+      var result = registry.getTool("suggest_tools").execute(args).getAsJsonObject();
+      var found = result.getAsJsonArray("suggestions").asList().stream()
+          .map(e -> e.getAsJsonObject().get("tool").getAsString()).collect(java.util.stream.Collectors.toSet());
+      assertTrue(found.containsAll(java.util.List.of("list_sessions", "get_latest_values", "wait_for_change")), word + ": " + found);
+    }
+  }
+
   @Nested
   @DisplayName("get_server_guide Tool")
   class GetServerGuideTests {

@@ -8,6 +8,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
@@ -24,8 +25,9 @@ import org.triplehelix.wpilogmcp.log.LogData;
  *       LRU entries are evicted one at a time, with a collection after each, until it recovers
  * </ul>
  *
- * <p>When a log is evicted, its {@link org.triplehelix.wpilogmcp.log.LazyParsedLog} is closed
- * to release memory-mapped file resources, and an optional eviction callback is invoked.
+   * <p>When a log is evicted, its {@link org.triplehelix.wpilogmcp.log.LazyParsedLog} is retired:
+   * cached values are dropped, but its mapping stays alive until its final acquired use closes.
+   * An eviction callback cleans up the manager's other records for that instance.
  *
  * <p>No configuration is needed — the cache automatically adapts to available heap. Users
  * control total capacity via {@code WPILOG_MAX_HEAP} (JVM heap size).
@@ -75,6 +77,8 @@ public class LogCache {
 
   private final Cache<String, LogData> cache;
   private final Heap heap;
+  private final java.util.concurrent.ConcurrentHashMap<String, LogData> pinned =
+      new java.util.concurrent.ConcurrentHashMap<>();
 
   /**
    * Held while unloading for heap pressure or to make room, so that checks made at the same
@@ -106,8 +110,17 @@ public class LogCache {
 
   /** A cache that judges heap pressure by {@code heap} (for testing). */
   LogCache(long idleMs, Heap heap) {
+    this(idleMs, heap, com.github.benmanes.caffeine.cache.Ticker.systemTicker());
+  }
+
+  LogCache(long idleMs, com.github.benmanes.caffeine.cache.Ticker ticker) {
+    this(idleMs, JVM_HEAP, ticker);
+  }
+
+  private LogCache(long idleMs, Heap heap, com.github.benmanes.caffeine.cache.Ticker ticker) {
     this.heap = heap;
     this.cache = Caffeine.newBuilder()
+        .ticker(ticker)
         .expireAfterAccess(idleMs, TimeUnit.MILLISECONDS)
         .removalListener(this::onRemoval)
         .executor(Runnable::run) // Run removal listener synchronously (same thread)
@@ -147,6 +160,14 @@ public class LogCache {
   /** Puts a log into the cache. */
   public void put(String path, LogData log) {
     cache.put(path, log);
+  }
+
+  /** Test-owned logs have no file to reload. Keep them until their admission scope unloads them. */
+  public void putPinned(String path, LogData log) {
+    synchronized (evictionLock) {
+      cache.put(path, log);
+      pinned.put(path, log);
+    }
   }
 
   /** Removes a log from the cache. Returns the removed log, or null. */
@@ -267,10 +288,11 @@ public class LogCache {
   private void onRemoval(String path, LogData log, RemovalCause cause) {
     if (path == null || log == null) return;
 
+    pinned.remove(path, log);
     closeIfLazy(log);
 
     if (cause != RemovalCause.REPLACED) {
-      logger.info("Evicted log '{}' ({})", path, cause.name().toLowerCase());
+      logger.info("Evicted log '{}' ({})", path, cause.name().toLowerCase(Locale.ROOT));
       var callback = this.evictionCallback;
       if (callback != null) {
         try {
@@ -296,21 +318,25 @@ public class LogCache {
     var policy = cache.policy().expireAfterAccess();
     if (policy.isEmpty()) return false;
 
-    // Caffeine's ageOf() gives the time since last access — find the oldest
-    var oldest = policy.get().oldest(1);
-    if (oldest.isEmpty()) return false;
-
-    String pathToEvict = oldest.keySet().iterator().next();
-    cache.invalidate(pathToEvict);
-    logger.info("Force-evicted log '{}' due to {}", pathToEvict, reason);
-    return true;
+    synchronized (evictionLock) {
+      // The first unpinned entry is among at most pins + 1 oldest candidates. Avoid copying
+      // the whole cache in the ordinary (no pins) case, and remove only the chosen instance.
+      for (var entry : policy.get().oldest(pinned.size() + 1).entrySet()) {
+        if (pinned.get(entry.getKey()) == entry.getValue()) continue;
+        if (cache.asMap().remove(entry.getKey(), entry.getValue())) {
+          logger.info("Force-evicted log '{}' due to {}", entry.getKey(), reason);
+          return true;
+        }
+      }
+      return false;
+    }
   }
 
-  /** Closes a LazyParsedLog to release memory-mapped file resources. */
+  /** Retires an owned lazy or live index; in-flight uses keep their mappings until release. */
   private void closeIfLazy(LogData log) {
-    if (log instanceof org.triplehelix.wpilogmcp.log.LazyParsedLog lazyLog) {
+    if (log instanceof AutoCloseable owned) {
       try {
-        lazyLog.close();
+        owned.close();
       } catch (Exception e) {
         logger.debug("Error closing lazy log: {}", e.getMessage());
       }

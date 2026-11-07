@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,7 +61,7 @@ public class TbaEnrichment {
       return false;
     }
 
-    var lower = matchType.toLowerCase();
+    var lower = matchType.toLowerCase(Locale.ROOT);
     if (lower.contains("simulation") || lower.contains("sim")) {
       return false;
     }
@@ -118,7 +119,7 @@ public class TbaEnrichment {
 
   private String normalizeEventCode(String eventCode) {
     if (eventCode == null) return null;
-    return eventCode.replaceAll("^\\d{4}", "").toLowerCase();
+    return eventCode.replaceAll("^\\d{4}", "").toLowerCase(Locale.ROOT);
   }
 
   /**

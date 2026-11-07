@@ -129,7 +129,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var log = new MockLogBuilder()
           .setPath("/test/ds_voltage.wpilog")
           .addNumericEntry("/SystemStats/BatteryVoltage",
-              new double[]{0, 1, 2, 3}, new double[]{12.0, 6.5, 6.9, 12.0})
+              new double[]{0, 1, 2, 3}, new double[]{12.0, 6.1, 6.4, 12.0})
           .build();
       putLogInCache(log);
 
@@ -139,6 +139,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var resultObj = tool.execute(args).getAsJsonObject();
 
       var events = resultObj.getAsJsonArray("events");
+      assertEquals(6.3, resultObj.get("brownout_threshold").getAsDouble());
       assertEquals(2, events.size());
       var start = events.get(0).getAsJsonObject();
       assertEquals("BROWNOUT_START", start.get("type").getAsString());
@@ -146,7 +147,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       assertEquals(1.0, start.get("timestamp").getAsDouble(), 1e-9);
       var end = events.get(1).getAsJsonObject();
       assertEquals("BROWNOUT_END", end.get("type").getAsString());
-      assertEquals(3.0, end.get("timestamp").getAsDouble(), 1e-9); // 6.9 V is inside hysteresis
+      assertEquals(3.0, end.get("timestamp").getAsDouble(), 1e-9); // 6.4 V is inside the 6.3 + 0.2 V hysteresis
       assertFalse(resultObj.get("rio_brownout_flag_logged").getAsBoolean());
       assertFalse(resultObj.has("rio_brownout_flag_entry"));
     }
@@ -407,7 +408,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var log = new MockLogBuilder()
           .setPath("/test/ds_nt_voltage.wpilog")
           .addNumericEntry("NT:/SmartDashboard/PowerDistribution[1]/Voltage",
-              new double[]{0, 1, 2}, new double[]{12.1, 6.5, 12.0})
+              new double[]{0, 1, 2}, new double[]{12.1, 6.1, 12.0})
           .build();
       putLogInCache(log);
 
@@ -417,6 +418,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
 
       assertEquals("NT:/SmartDashboard/PowerDistribution[1]/Voltage",
           resultObj.get("brownout_voltage_entry").getAsString());
+      assertEquals(6.3, resultObj.get("brownout_threshold").getAsDouble());
       assertEquals(2, resultObj.getAsJsonObject("summary").get("power").getAsInt());
       // The only warning is that this log has no DriverStation state (so no enable events)
       var warnings = resultObj.getAsJsonArray("warnings");
@@ -1766,7 +1768,7 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
     @Test
     @DisplayName("brownout hysteresis in battery health: oscillating voltage = single event")
     void batteryHealthHysteresis() throws Exception {
-      // Voltage oscillates around 6.8V threshold — should count as one brownout, not many
+      // An explicit 6.8V analysis threshold: one crossing, despite oscillation.
       var tvs = new ArrayList<TimestampedValue>();
       for (int i = 0; i < 200; i++) {
         double t = i * 0.02;
@@ -1789,14 +1791,14 @@ class FrcDomainToolsLogicTest extends ToolTestBase {
       var tool = findTool("predict_battery_health");
       var args = new JsonObject();
       args.addProperty("path", log.path());
+      args.addProperty("brownout_threshold", 6.8);
       var result = tool.execute(args);
       var resultObj = result.getAsJsonObject();
 
       assertTrue(resultObj.get("success").getAsBoolean());
       // Hysteresis should prevent multiple brownout events from oscillation
       int brownoutEvents = resultObj.get("brownout_events").getAsInt();
-      assertTrue(brownoutEvents <= 2,
-          "Hysteresis should collapse oscillating voltage into few events, got: " + brownoutEvents);
+      assertEquals(1, brownoutEvents, "Hysteresis keeps the crossing open until recovery");
     }
 
     @Test

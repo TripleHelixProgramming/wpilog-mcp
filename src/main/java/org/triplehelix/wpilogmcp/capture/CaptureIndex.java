@@ -1,0 +1,101 @@
+/*
+ * Copyright (c) 2026 Christopher Larrieu and Triple Helix Robotics
+ * SPDX-License-Identifier: MIT
+ */
+package org.triplehelix.wpilogmcp.capture;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Path;
+import java.time.Instant;
+import org.triplehelix.wpilogmcp.log.EntryInfo;
+import org.triplehelix.wpilogmcp.log.LiveLog;
+import org.triplehelix.wpilogmcp.log.LogManager;
+import org.triplehelix.wpilogmcp.nt4.ValueFrame;
+import org.triplehelix.wpilogmcp.store.CaptureStore;
+
+/** Connects completed writes to tools before publishing their store manifest. No scan is involved. */
+public final class CaptureIndex implements CaptureWriter.Observer {
+  private final CaptureWriter.Observer placement;
+  private final LogManager manager;
+  private final long hotWindowUs;
+  private final java.util.function.Supplier<Double> robotNowUs;
+  private LiveLog live;
+  public record PublicationTiming(String writerIdentity, long revision, String recordingStartedAt, double receiveToPublicationMs) {}
+  private final java.util.function.Consumer<PublicationTiming> timing;
+  public CaptureIndex(CaptureWriter.Observer placement, LogManager manager, long hotWindowUs) {
+    this(placement, manager, hotWindowUs, () -> null);
+  }
+  public CaptureIndex(CaptureWriter.Observer placement, LogManager manager, long hotWindowUs,
+      java.util.function.Supplier<Double> robotNowUs) {
+    this(placement, manager, hotWindowUs, robotNowUs, ignored -> {});
+  }
+  public CaptureIndex(CaptureWriter.Observer placement, LogManager manager, long hotWindowUs,
+      java.util.function.Supplier<Double> robotNowUs, java.util.function.Consumer<PublicationTiming> timing) {
+    this.timing = timing;
+    this.robotNowUs = robotNowUs;
+    this.placement = placement; this.manager = manager; this.hotWindowUs = hotWindowUs;
+    if (placement instanceof CaptureStore store) store.onMove((from, to) -> {
+      try { if (live != null && Path.of(live.path()).equals(from)) manager.relocateCapture(live, from, to); } catch (IOException e) { throw new UncheckedIOException(e); }
+    });
+  }
+  @Override public Path create(String address, Instant start) throws IOException { return placement.create(address, start); }
+  @Override public Path create(String address, Instant start, CaptureWriter.Session previous) throws IOException {
+    return placement.create(address, start, previous);
+  }
+  @Override public Path create(String address, Instant start, CaptureWriter.Session previous,
+      org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) throws IOException {
+    return placement.create(address, start, previous, identity);
+  }
+  @Override public java.util.concurrent.CompletableFuture<Path> createAsync(String address, Instant start,
+      CaptureWriter.Session previous, org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity) {
+    return placement.createAsync(address, start, previous, identity);
+  }
+  @Override public java.util.concurrent.CompletableFuture<Path> createAsync(String address, Instant start,
+      CaptureWriter.Session previous, org.triplehelix.wpilogmcp.capture.context.DeviceIdentity identity, long timeoutUs) {
+    return placement.createAsync(address, start, previous, identity, timeoutUs);
+  }
+  @Override public java.util.concurrent.CompletableFuture<Void> abandoned(Path path, Instant endedAt, String reason) {
+    return placement.abandoned(path, endedAt, reason);
+  }
+  @Override public void identity(CaptureWriter.Session session) throws IOException { placement.identity(session); }
+  @Override public void opened(CaptureWriter.Session session) throws IOException {
+    // Each file has its own index: a closed file, and so its index, is never written again.
+    if (live != null) live.discard();
+    live = new LiveLog(session.path(), hotWindowUs, robotNowUs, session.writerIdentity(), manager.openColumnPlacement());
+    manager.beginCapture(live);
+    placement.opened(session);
+  }
+  @Override public void entry(CaptureWriter.Session session, EntryInfo entry) throws IOException {
+    live.announce(entry); placement.entry(session, entry);
+  }
+  @Override public void metadata(CaptureWriter.Session session, EntryInfo entry) throws IOException {
+    live.metadata(entry); placement.metadata(session, entry);
+  }
+  @Override public void value(CaptureWriter.Session session, EntryInfo entry, ValueFrame frame, WpilogOutput.Written written)
+      throws IOException {
+    live.append(entry, frame, written); placement.value(session, entry, frame, written);
+  }
+  @Override public void publication(CaptureWriter.Session session, long receivedUs, long publishedUs) {
+    if (publishedUs >= receivedUs) {
+      var prefix = live.publication();
+      timing.accept(new PublicationTiming(prefix.writerId(), prefix.revision(), session.startedAt().toString(), (publishedUs - receivedUs) / 1000.0));
+    }
+    placement.publication(session, receivedUs, publishedUs);
+  }
+  @Override public void flushed(CaptureWriter.Session session) throws IOException {
+    live.expire(session.sizeBytes()); placement.flushed(session);
+  }
+  @Override public void timeSync(CaptureWriter.Session session, long serverTimeUs) throws IOException {
+    live.advance(serverTimeUs); placement.timeSync(session, serverTimeUs);
+  }
+  @Override public void fileClosed(CaptureWriter.Session session) throws IOException {
+    // A file that stopped at a failed write may lack records the index holds: reads go to the file.
+    if (session.writeFailed()) manager.dropCapture(live); else manager.finishCapture(live);
+    placement.fileClosed(session);
+  }
+  @Override public void providers(CaptureWriter.Session session) throws IOException { placement.providers(session); }
+  @Override public void closed(CaptureWriter.Session session) throws IOException { placement.closed(session); }
+  @Override public void cost(String topic, TopicCost.Snapshot cost) { placement.cost(topic, cost); }
+  public LiveLog live() { return live; }
+}

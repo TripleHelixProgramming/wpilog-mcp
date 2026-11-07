@@ -11,7 +11,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Stream;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -50,14 +49,9 @@ class RealLogDifferentialTest {
     var property = System.getProperty("conformance.logdir");
     Assumptions.assumeTrue(property != null && !property.isBlank(),
         "conformance.logdir not set; run with -PconformanceLogDir=/path/to/logs");
-    var logDir = Path.of(property).toAbsolutePath().normalize();
+    var logDir = Path.of(property).toRealPath();
     Assumptions.assumeTrue(Files.isDirectory(logDir), "not a directory: " + logDir);
-    int maxLogs = Integer.getInteger("conformance.maxlogs", Integer.MAX_VALUE);
-    List<Path> logs;
-    try (Stream<Path> walk = Files.walk(logDir, RealLogConformanceTest.SCAN_DEPTH)) {
-      logs = walk.filter(p -> p.toString().toLowerCase().endsWith(".wpilog")).sorted()
-          .limit(maxLogs).toList();
-    }
+    var logs = ConformanceSample.configured(logDir, "differential").paths();
     Assumptions.assumeTrue(!logs.isEmpty(), "no .wpilog under " + logDir);
 
     var logManager = LogManager.getInstance();

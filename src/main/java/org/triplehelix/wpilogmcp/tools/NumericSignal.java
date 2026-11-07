@@ -4,6 +4,10 @@
  */
 package org.triplehelix.wpilogmcp.tools;
 
+import org.triplehelix.wpilogmcp.read.FieldPath;
+import org.triplehelix.wpilogmcp.read.AngleUnwrapper;
+import org.triplehelix.wpilogmcp.read.NumericSamples;
+
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.List;
@@ -79,19 +83,34 @@ final class NumericSignal {
   private final FieldPath path;
   private final String type;
   private final AngleUnit angle;
+  private final NumericSamples samples;
   private final List<TimestampedValue> values;
   private final int recordCount;
   private final int recordsWithoutValue;
 
   private NumericSignal(String entry, FieldPath path, String type, AngleUnit angle,
-      List<TimestampedValue> values, int recordCount, int recordsWithoutValue) {
+      NumericSamples samples, List<TimestampedValue> values, int recordCount, int recordsWithoutValue) {
     this.entry = entry;
     this.path = path;
     this.type = type;
     this.angle = angle;
+    this.samples = samples;
     this.values = values;
     this.recordCount = recordCount;
     this.recordsWithoutValue = recordsWithoutValue;
+  }
+
+  /**
+   * A column's samples as a signal's values are: Doubles, compared as doubles, whatever kind the
+   * column keeps, since the projection below converts every leaf to a Double.
+   */
+  private static NumericSamples asDoubles(NumericSamples samples) {
+    return new NumericSamples() {
+      @Override public int size() { return samples.size(); }
+      @Override public long timeUs(int index) { return samples.timeUs(index); }
+      @Override public double seconds(int index) { return samples.seconds(index); }
+      @Override public double number(int index) { return samples.number(index); }
+    };
   }
 
   /** The entry the values come from. */
@@ -120,7 +139,7 @@ final class NumericSignal {
 
   /** This signal with its values declared an angle in {@code unit}. */
   NumericSignal asAngle(AngleUnit unit) {
-    return new NumericSignal(entry, path, type, unit, values, recordCount, recordsWithoutValue);
+    return new NumericSignal(entry, path, type, unit, samples, values, recordCount, recordsWithoutValue);
   }
 
   /**
@@ -159,6 +178,15 @@ final class NumericSignal {
    */
   List<TimestampedValue> values() {
     return values;
+  }
+
+  /**
+   * The same values as samples by position, read from the log's column file when it holds the
+   * entry and otherwise from the decoded values: what the numeric steps read, so that a column
+   * file's samples are never made into objects. They belong to the current call, on one thread.
+   */
+  NumericSamples samples() {
+    return samples;
   }
 
   /** Records of the entry. */
@@ -201,37 +229,36 @@ final class NumericSignal {
     return o;
   }
 
+  /** The samples a seconds window keeps, found by position, as filtering the values keeps them. */
+  NumericSamples inWindow(org.triplehelix.wpilogmcp.read.SecondsWindow window) {
+    return NumericSamples.range(samples, window.from(samples), window.to(samples));
+  }
+
   /**
-   * Values of this signal (e.g. a window of {@link #values()}) made continuous when it is an
+   * Samples of this signal (e.g. a window of {@link #samples()}) made continuous when it is an
    * angle: each step is taken as the shortest turn, so crossing +-180 degrees does not jump by a
    * full turn; the first value is kept as logged. Other signals are returned unchanged. NaN
    * values stay NaN and do not break continuity.
    */
-  List<TimestampedValue> unwrap(List<TimestampedValue> values) {
-    if (!isAngle() || values.isEmpty()) return values;
-    var out = new ArrayList<TimestampedValue>(values.size());
-    double previous = Double.NaN;
-    double turns = 0; // whole turns added so far: values stay exact between wraps
-    for (var tv : values) {
-      double v = (Double) tv.value();
-      if (!Double.isFinite(v)) {
-        out.add(tv);
-        continue;
-      }
-      if (!Double.isNaN(previous)) turns -= Math.rint((v - previous) / angle.period);
-      out.add(turns == 0 ? tv : new TimestampedValue(tv.timestamp(), v + turns * angle.period));
-      previous = v;
+  NumericSamples unwrap(NumericSamples window) {
+    if (!isAngle() || window.size() == 0) return window;
+    var numbers = new double[window.size()];
+    var unwrapper = new AngleUnwrapper(angle.period);
+    for (int i = 0; i < numbers.length; i++) {
+      double v = window.number(i);
+      double unwrapped = unwrapper.apply(v);
+      numbers[i] = !Double.isFinite(v) || unwrapped == v ? v : unwrapped;
     }
-    return out;
+    return NumericSamples.withNumbers(window, numbers);
   }
 
   /** How many steps between consecutive finite values jump by more than a half turn. */
-  int wrapCount(List<TimestampedValue> values) {
+  int wrapCount(NumericSamples values) {
     if (!isAngle()) return 0;
     int wraps = 0;
     double previous = Double.NaN;
-    for (var tv : values) {
-      double v = (Double) tv.value();
+    for (int i = 0; i < values.size(); i++) {
+      double v = values.number(i);
       if (!Double.isFinite(v)) continue;
       if (!Double.isNaN(previous) && Math.abs(v - previous) > angle.period / 2) wraps++;
       previous = v;
@@ -251,25 +278,14 @@ final class NumericSignal {
    * The standard deviation is null when R is 0 (no mean direction).
    */
   static JsonObject circularStatistics(double[] angles, AngleUnit unit) {
-    double toRadians = 2 * Math.PI / unit.period;
-    double c = 0;
-    double s = 0;
-    int n = 0;
-    for (double a : angles) {
-      if (!Double.isFinite(a)) continue;
-      c += Math.cos(a * toRadians);
-      s += Math.sin(a * toRadians);
-      n++;
-    }
+    var circular = new SummaryStatistics.Circular(unit.period);
+    for (double a : angles) circular.add(a);
     var o = new JsonObject();
-    if (n == 0) return o;
-    c /= n;
-    s /= n;
-    double r = Math.min(1.0, Math.hypot(c, s));
-    o.addProperty("resultant_length", r);
-    if (r > 1e-12) {
-      o.addProperty("circular_mean", Math.atan2(s, c) / toRadians);
-      o.addProperty("circular_std", Math.sqrt(-2 * Math.log(r)) / toRadians);
+    if (circular.count() == 0) return o;
+    o.addProperty("resultant_length", circular.resultantLength());
+    if (circular.directed()) {
+      o.addProperty("circular_mean", circular.mean());
+      o.addProperty("circular_std", circular.stdDev());
     } else {
       o.add("circular_mean", com.google.gson.JsonNull.INSTANCE);
       o.add("circular_std", com.google.gson.JsonNull.INSTANCE);
@@ -305,16 +321,17 @@ final class NumericSignal {
     }
     var type = log.entries().get(entryName).type();
     var structName = StructSchemas.structName(type);
-    boolean scalar = ToolUtils.isNumericType(type) || "boolean".equals(type);
+    validateProjectionType(log, entryName, type, structName, path);
+    var angle = structName != null
+        ? angleUnit(log.structSchemas(), structName, path) : AngleUnit.NONE;
 
-    if (path.isRoot() && !scalar) throw notANumber(log, entryName, type, structName);
-    if (!path.isRoot() && scalar) {
-      throw new IllegalArgumentException("Entry " + entryName + " is " + type
-          + ", a single number: it has no field " + path + ". Pass the entry name alone.");
-    }
-    if (!path.isRoot() && structName == null && !NUMERIC_ARRAYS.contains(type)) {
-      throw new IllegalArgumentException("Entry " + entryName + " is " + type + "; field paths "
-          + "apply to struct entries and numeric arrays (double[], float[], int64[], boolean[]).");
+    // The column file holds exactly what the projection below would give, without decoding.
+    var column = log.numericColumn(entryName, path);
+    if (column.isPresent()) {
+      var held = column.get();
+      var samples = asDoubles(held.samples());
+      return new NumericSignal(entryName, path, type, angle, samples, NumericSamples.asValues(samples),
+          held.decoded(), held.recordsWithoutValue());
     }
 
     var raw = log.values().get(entryName);
@@ -326,13 +343,13 @@ final class NumericSignal {
         int before = out.size();
         for (var leaf : path.resolveAll(tv.value())) {
           var number = FieldPath.toNumber(leaf);
-          if (number != null) out.add(new TimestampedValue(tv.timestamp(), number));
+          if (number != null) out.add(tv.withValue(number));
         }
         if (out.size() == before) without++;
       } else {
         var number = FieldPath.toNumber(path.resolveOne(tv.value()));
         if (number != null) {
-          out.add(new TimestampedValue(tv.timestamp(), number));
+          out.add(tv.withValue(number));
         } else {
           without++;
         }
@@ -341,9 +358,34 @@ final class NumericSignal {
     if (!path.isRoot() && out.isEmpty() && !raw.isEmpty()) {
       throw fieldNotNumeric(log, entryName, type, structName, path, raw);
     }
-    var angle = structName != null
-        ? angleUnit(log.structSchemas(), structName, path) : AngleUnit.NONE;
-    return new NumericSignal(entryName, path, type, angle, out, raw.size(), without);
+    return new NumericSignal(entryName, path, type, angle, NumericSamples.of(out), out, raw.size(), without);
+  }
+
+  static void validateProjectionType(LogData log, String entry, String type, String structName, FieldPath path) {
+    boolean scalar = ToolUtils.isNumericType(type) || "boolean".equals(type);
+
+    if (path.isRoot() && !scalar) throw notANumber(log, entry, type, structName);
+    if (!path.isRoot() && scalar) {
+      throw new IllegalArgumentException("Entry " + entry + " is " + type
+          + ", a single number: it has no field " + path + ". Pass the entry name alone.");
+    }
+    if (!path.isRoot() && structName == null && !NUMERIC_ARRAYS.contains(type)) {
+      throw new IllegalArgumentException("Entry " + entry + " is " + type + "; field paths "
+          + "apply to struct entries and numeric arrays (double[], float[], int64[], boolean[]).");
+    }
+
+  }
+
+  /** Compatibility needs one numeric witness, not a materialized projected history. The same
+   * decoder, field-path grammar and numeric-leaf conversion supply that proof. Empty/dynamic
+   * fields remain unresolved until a sample actually supplies the selected scalar. */
+  static void validateField(LogData log, String entry, String field) {
+    String type = log.entries().get(entry).type();
+    var path = FieldPath.parse(field);
+    if (path.isRoot() || path.hasWildcard()) throw new IllegalArgumentException("Choose a scalar field or array index");
+    validateProjectionType(log, entry, type, StructSchemas.structName(type), path);
+    if (!log.anyValue(entry, value -> FieldPath.toNumber(path.resolveOne(value)) != null))
+      throw new IllegalArgumentException("No recorded numeric value at " + entry + path + "; check the schema/index or wait for a sample");
   }
 
   /** The longest entry name that {@code name} starts with, followed by '.' or '['; or null. */

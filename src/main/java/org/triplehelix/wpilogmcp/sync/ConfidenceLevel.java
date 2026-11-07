@@ -86,6 +86,21 @@ public enum ConfidenceLevel {
   }
 
   /**
+   * The upper end of {@link #getAccuracyMs()}: the most an alignment at this level is expected to
+   * be off, which bounds a combination of alignments by the sum of theirs. NaN for FAILED.
+   *
+   * @return The bound in milliseconds
+   */
+  public double getMaxErrorMs() {
+    return switch (this) {
+      case HIGH -> 5;
+      case MEDIUM -> 50;
+      case LOW -> 5000;
+      case FAILED -> Double.NaN;
+    };
+  }
+
+  /**
    * Gets a numeric confidence value (0.0 to 1.0) for this level.
    *
    * @return The numeric value: HIGH=1.0, MEDIUM=0.67, LOW=0.33, FAILED=0.0

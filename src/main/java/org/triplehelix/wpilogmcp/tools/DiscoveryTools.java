@@ -37,8 +37,10 @@ public final class DiscoveryTools {
    * Registers all discovery tools with the MCP server.
    */
   public static void registerAll(ToolRegistry registry) {
-    registry.registerTool(new GetServerGuideTool());
-    registry.registerTool(new SuggestToolsTool());
+    java.util.function.Predicate<String> available = name -> !List.of("list_sessions", "get_latest_values", "wait_for_change").contains(name)
+        || registry.getTool(name) != null;
+    registry.registerTool(new GetServerGuideTool(registry::getServerLocation, available, () -> registry.serverIdentity().describe()));
+    registry.registerTool(new SuggestToolsTool(available));
   }
 
   // ==================== TOOL CATALOG ====================
@@ -72,7 +74,20 @@ public final class DiscoveryTools {
   private static List<ToolInfo> buildToolCatalog() {
     var tools = new ArrayList<ToolInfo>();
 
+    tools.add(new ToolInfo("list_sessions", "live", "Current and recent pit sessions, recorder costs and matched imports",
+        List.of("live", "session", "connected", "capture", "cost", "now", "currently", "right now", "recent"), List.of("List the current robot session"), false,
+        List.of("get_latest_values", "list_available_logs")));
+    tools.add(new ToolInfo("get_latest_values", "live", "Latest published NT4 values with robot timestamps and ages",
+        List.of("live", "latest", "value", "age", "now", "currently", "right now", "recent"), List.of("Read the latest battery publication"), false,
+        List.of("list_sessions", "wait_for_change")));
+    tools.add(new ToolInfo("wait_for_change", "live", "Wait for the next topic publication with a bounded timeout",
+        List.of("live", "wait", "change", "now", "currently", "right now", "recent"), List.of("Wait for the next publication of a named topic"), false,
+        List.of("get_latest_values")));
+
     // === CORE TOOLS ===
+    tools.add(new ToolInfo("list_source_scopes", "core", "Explicit source choices, including unavailable roots; no default",
+        List.of("source", "store", "mirror", "directory", "choose"), List.of("Choose which store to browse"),
+        false, List.of("list_available_logs")));
     tools.add(new ToolInfo("list_available_logs", "core",
         "List WPILOG files with TBA match data enrichment",
         List.of("logs", "files", "directory", "tba", "match", "score", "win", "loss"),
@@ -91,6 +106,12 @@ public final class DiscoveryTools {
         List.of("Check entry data type", "See sample count for an entry",
             "Find the numeric fields of a struct entry", "Check why an entry did not decode"),
         true, List.of("read_entry", "list_entries", "list_struct_types")));
+
+    tools.add(new ToolInfo("render_chart", "core",
+        "Draw a PNG and a reproducible chart specification over a recorded window",
+        List.of("chart", "plot", "draw", "picture", "visualize", "histogram", "scatter", "field"),
+        List.of("Plot a signal over time", "Draw the robot pose on the field", "Open a chart in the explorer"),
+        true, List.of("get_statistics", "read_entry")));
 
     tools.add(new ToolInfo("read_entry", "core",
         "Read raw values from an entry with pagination",
@@ -148,6 +169,12 @@ public final class DiscoveryTools {
         List.of("search", "text", "string", "error", "warning", "message"),
         List.of("Find error messages", "Search console output", "Find specific warnings"),
         true, List.of("can_health", "generate_report")));
+
+    tools.add(new ToolInfo("search_system_logs", "query",
+        "Search a session's pulled system files with written clocks mapped where measured",
+        List.of("kernel", "dmesg", "syslog", "journal", "crash", "hs_err", "system log"),
+        List.of("Find kernel errors", "Search the robot's system journal", "Find JVM crash messages"),
+        true, List.of("search_strings", "list_sessions")));
 
     // === STATISTICS TOOLS ===
     tools.add(new ToolInfo("get_statistics", "statistics",
@@ -225,6 +252,12 @@ public final class DiscoveryTools {
         List.of("compare", "match", "cross", "multiple"),
         List.of("Compare auto performance across matches", "Find patterns across matches"),
         true, List.of("get_statistics")));
+
+    tools.add(new ToolInfo("compare_sessions", "robot_analysis",
+        "One statistic per metric across up to 64 finished sessions of a store, each session counted once",
+        List.of("compare", "sessions", "season", "event", "across", "store", "mirror", "trend"),
+        List.of("Compare battery sag across an event's matches", "Compare loop time across sessions with their code versions"),
+        false, List.of("compare_matches", "list_source_scopes", "list_available_logs")));
 
     tools.add(new ToolInfo("get_code_metadata", "robot_analysis",
         "Extract Git SHA, branch, and build info",
@@ -385,11 +418,74 @@ public final class DiscoveryTools {
         List.of("What tool should I use for X?", "Help me analyze Y", "Recommend tools for Z"),
         false, List.of("get_server_guide")));
 
+    tools.add(new ToolInfo("visualization_capabilities_get", "visualization", "Supported configuration schema, type and role vocabulary, persistent identity, budgets and preview limits.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_source_inspect", "visualization", "Inspect a recorded source by an admitted path or durable source_ref. Returns identity, entry types, schemas, sample counts and clock bounds.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_source_health", "visualization", "Observe anchored recording acquisition and history without opening value prefixes; quiet signals are not disconnection.",
+        List.of("visualization", "recording", "health"), List.of("recording connection status"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_entries_list", "visualization", "Page a fixed recording inventory with exact matching totals and authenticated continuation.",
+        List.of("visualization", "recording", "inventory"), List.of("browse recording signals"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_entries_get", "visualization", "Read fresh selected declarations, counts and native schemas; stale inventory evidence requires refresh.",
+        List.of("visualization", "recording", "inventory"), List.of("browse recording signals"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_inventory_close", "visualization", "Release a session-owned inventory without returning its contents.",
+        List.of("visualization", "recording", "inventory"), List.of("browse recording signals"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_value", "visualization", "Read timestamp-latest or cursor values from a file or proven recording prefix, with exact coordinates and decode diagnostics.",
+        List.of("visualization", "recording", "cursor"), List.of("recording values"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_statistics", "visualization", "Compute exact bounded statistics across recording members with shared field, angle and quality rules.",
+        List.of("visualization", "recording", "statistics"), List.of("recording statistics"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_reduction", "visualization", "Draw bounded min/max/mean time buckets over original file or recording samples.",
+        List.of("visualization", "history", "reduction"), List.of("source reduction"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_histogram", "visualization", "Count original samples with shared bounded histogram rules, never plot reductions.",
+        List.of("visualization", "histogram", "distribution"), List.of("source charts"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_source_scatter", "visualization", "Page exact timestamp pairs from one source prefix with full match and unpaired totals.",
+        List.of("visualization", "scatter", "pairs"), List.of("source charts"), false, List.of("visualization_source_inspect")));
+    tools.add(new ToolInfo("visualization_library_list", "visualization", "Page server-library view or template summaries, including retained unreadable records.",
+        List.of("visualization", "library"), List.of("saved definitions"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_library_migrate", "visualization", "Copy one pinned legacy store definition into the server library; originals and migration aliases are retained.",
+        List.of("visualization", "library", "migration"), List.of("migrate saved definitions"), false, List.of("visualization_library_list")));
+    tools.add(new ToolInfo("visualization_saved_view_open", "visualization", "Open a pinned server-library definition as a new working view after source admission.",
+        List.of("visualization", "library", "view"), List.of("open saved view"), false, List.of("visualization_library_list")));
+    tools.add(new ToolInfo("visualization_template_list", "visualization", "Search bundled and server-library templates with API 2 paging, or legacy configured-store templates with API 1. Returns templates, unreadable records and listing_incomplete.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_get", "visualization", "Read an exact pinned template_ref; a changed revision refuses rather than silently substituting.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_check", "visualization", "Check exact entries or explicit shared-resolver roles against a source. Returns compatibility and per-requirement bindings, reasons, candidates, unit basis and warnings; missing exact names never fall back.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_create", "visualization", "Create a library (API 2) or store (API 1) template from configuration_json or a pinned working view. Returns template_ref and portable template. No source bytes or paths are stored in templates; API 2 requires durable server state.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_update", "visualization", "Explicitly update a library (API 2) or store (API 1) template at expected_revision. Returns template_ref and template; existing views keep pinned configurations. Bundled definitions are immutable.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_import", "visualization", "Validate a portable envelope_json and RFC 8785 SHA-256 before an atomic import. Default mode copy; explicit update requires expected_revision and a newer import. Durable portable receipts deduplicate retries. Same identity/revision with differing content conflicts.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_template_export", "visualization", "Return envelope_json with format, schema_version, template and content_sha256. Contains declarative configuration only, no source locators, sample buffers or credentials.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_list", "visualization", "List unexpired working views, optionally for source_ref. Returns views with revision, configuration, source_ref, checkpoint, saved/template references, attachment and expiry.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_get", "visualization", "Read one working view: revision, configuration, source_ref, checkpoint, saved/template references, attachment, expiry, has_unsaved_changes and native_dirty. Does not display it.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_bind", "visualization", "Resolve a recording view at its expected revision, with explicit unresolved requirements and server-owned follow queries. Does not open a follow or display.",
+        List.of("visualization", "view", "recording"), List.of("recording view configuration"), false, List.of("visualization_view_get")));
+    tools.add(new ToolInfo("visualization_view_create", "visualization", "Create an independent working view from source_ref and configuration_json or template_ref, or an empty layout. Returns its stable view_id and revision, configuration and persistence state. Creation does not request display or start acquisition.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_update", "visualization", "CAS edit a working view with strict configuration_json at expected_revision. Returns the updated view and notifies its attached Explorer. Conflicts retain both edits; never retry automatically against a newer revision.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_clone", "visualization", "Create another working UUID from the pinned expected_revision. Returns an independent view with the same source and configuration; selection and later edits are not shared.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_save", "visualization", "Save source-bound configuration at expected_revision into the API 2 server library (or API 1 store) and advance its checkpoint. First save requires title; API 1 also requires store_id; existing saves retain their destination. A concurrent edit remains uncheckpointed. Returns the view.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_discard", "visualization", "CAS restore the checkpoint or initial draft layout at expected_revision. Returns the view with an advanced revision; saved store definitions are unchanged.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
+    tools.add(new ToolInfo("visualization_view_delete", "visualization", "Delete an unattached working view at expected_revision, retaining a bounded retry tombstone until expiry. Saved definitions and source files remain intact; close an attached editor first. Returns the deleted view receipt.",
+        List.of("visualization", "template", "view"), List.of("recorded view configuration"), false, List.of("visualization_capabilities_get")));
     return tools;
   }
 
   private static List<CategoryInfo> buildCategories() {
     return List.of(
+        new CategoryInfo("visualization", "Reusable recorded views and templates", "Read compatibility reasons, use explicit revisions, and keep numerical analysis on the server"),
+        new CategoryInfo("live", "Live capture sessions and publications",
+            "A stale publication does not prove the robot stopped; use logged history for analysis"),
         new CategoryInfo("core",
             "Log loading and data access. Start here to discover available data.",
             "Don't manually parse log files—use list_entries and read_entry."),
@@ -438,7 +534,31 @@ public final class DiscoveryTools {
   /**
    * Provides a comprehensive overview of all server capabilities.
    */
+  /** The data endpoint's URL when the transport is HTTP, else null (see setDataEndpoint). */
+  private static volatile String dataEndpointUrl;
+
+  /**
+   * Tells the guide where the data endpoint is: {@code GET /data/entries} on the HTTP transport,
+   * which hands a script every sample of an entry in one request, as an Arrow stream or CSV.
+   * Set once at startup by the HTTP transport's owner; a stdio server has no endpoint, and the
+   * guide then says nothing of one, since the CSV export tool is the way there.
+   */
+  public static void setDataEndpoint(String url) {
+    dataEndpointUrl = url;
+  }
+
   static class GetServerGuideTool extends ToolBase {
+    private final java.util.function.Supplier<String> location;
+    GetServerGuideTool() { this(() -> ToolRegistry.LOCAL_LOCATION); }
+    private final java.util.function.Predicate<String> available;
+    GetServerGuideTool(java.util.function.Supplier<String> location) { this(location, name -> !name.equals("list_sessions") && !name.equals("get_latest_values") && !name.equals("wait_for_change")); }
+    private final java.util.function.Supplier<JsonObject> identity;
+    GetServerGuideTool(java.util.function.Supplier<String> location, java.util.function.Predicate<String> available) {
+      this(location, available, org.triplehelix.wpilogmcp.visualization.ServerIdentity.ephemeral()::describe);
+    }
+    GetServerGuideTool(java.util.function.Supplier<String> location, java.util.function.Predicate<String> available,
+        java.util.function.Supplier<JsonObject> identity) { this.location = location; this.available = available; this.identity = identity; }
+    private List<ToolInfo> catalog() { return TOOL_CATALOG.stream().filter(t -> available.test(t.name())).toList(); }
 
     @Override
     public String name() {
@@ -448,8 +568,8 @@ public final class DiscoveryTools {
     @Override
     public String description() {
       return "IMPORTANT: Call this tool first to understand what analysis capabilities are available. "
-          + "Returns a structured overview of all " + TOOL_CATALOG.size() + " tools organized by category, with usage guidance "
-          + "and anti-patterns to avoid, plus analysis_principles: how to reason about results "
+          + "Returns a structured overview of all " + catalog().size() + " tools organized by category, with usage guidance "
+          + "and anti-patterns to avoid, plus server_instance_id and working_state (durable or ephemeral local recovery identity), working_state_reason when ephemeral, server_location describing this server's local or pit role, and analysis_principles: how to reason about results "
           + "without confabulating (method, confidence calibration, traps, report format). "
           + "This server has extensive built-in analysis—don't write custom "
           + "code when a tool already exists.";
@@ -468,7 +588,7 @@ public final class DiscoveryTools {
     public JsonObject inputSchema() {
       return new SchemaBuilder()
           .addProperty("category", "string",
-              "Filter by category: core, query, statistics, robot_analysis, frc_domain, export, tba, revlog, discovery",
+              "Filter by category: core, query, statistics, robot_analysis, frc_domain, export, tba, revlog, discovery, visualization, live (capture only)",
               false)
           .addProperty("include_examples", "boolean",
               "Include example use cases for each tool (default: true)", false)
@@ -488,12 +608,14 @@ public final class DiscoveryTools {
 
       var result = new JsonObject();
       result.addProperty("success", true);
+      result.addProperty("server_location", location.get());
+      identity.get().entrySet().forEach(e -> result.add(e.getKey(), e.getValue()));
 
       // Overview section
       var overview = new JsonObject();
       overview.addProperty("server_name", "wpilog-mcp");
       overview.addProperty("version", org.triplehelix.wpilogmcp.Version.VERSION);
-      overview.addProperty("total_tools", TOOL_CATALOG.size());
+      overview.addProperty("total_tools", catalog().size());
       overview.addProperty("purpose",
           "Parse and analyze FRC robot telemetry logs (.wpilog) and REV motor controller logs (.revlog)");
       result.add("overview", overview);
@@ -502,7 +624,7 @@ public final class DiscoveryTools {
       var guidance = new JsonObject();
       guidance.addProperty("primary_rule",
           "ALWAYS check for a built-in tool before writing custom analysis code. "
-          + "This server has " + TOOL_CATALOG.size() + " specialized tools covering statistics, power analysis, "
+          + "This server has " + catalog().size() + " specialized tools covering statistics, power analysis, "
           + "swerve diagnostics, cycle detection, battery health prediction, and more.");
       guidance.addProperty("tba_tip",
           "To get match scores: call list_available_logs (includes TBA data) or get_tba_match_data. "
@@ -536,6 +658,26 @@ public final class DiscoveryTools {
           + "Idle logs are evicted after 30 minutes. Under heap pressure, least-recently-used logs are evicted automatically.");
       result.add("architecture", architecture);
 
+      // The data endpoint: every sample of an entry in one request, for a script or a notebook,
+      // when the transport is HTTP (a stdio server has none, and export_csv is the way)
+      var endpointUrl = dataEndpointUrl;
+      if (endpointUrl != null) {
+        var endpoint = new JsonObject();
+        endpoint.addProperty("url", endpointUrl);
+        endpoint.addProperty("description", "GET every sample of one or more entries over a "
+            + "window, as an Apache Arrow IPC stream (format=arrow, the default: pyarrow.ipc."
+            + "open_stream or polars.read_ipc_stream read it in one line) or as CSV (format=csv), "
+            + "for a script, a notebook, or curl, where a tool result cannot carry a hundred "
+            + "thousand samples. Reads only files inside the configured log directories.");
+        endpoint.addProperty("parameters", "path (the log), names (entries or entry+field "
+            + "paths, comma separated; one Arrow stream has one value type, so request entries "
+            + "of different types separately), start_time, end_time (seconds), max_points "
+            + "(buckets, as read_entry's), format (arrow or csv)");
+        endpoint.addProperty("example", endpointUrl + "?path=<log>&names=/SystemStats/"
+            + "BatteryVoltage&start_time=20&end_time=40&format=csv");
+        result.add("data_endpoint", endpoint);
+      }
+
       // Categories section
       var categoriesArray = new JsonArray();
       for (var category : CATEGORIES) {
@@ -543,6 +685,7 @@ public final class DiscoveryTools {
           continue;
         }
 
+        if (catalog().stream().noneMatch(t -> t.category().equals(category.name()))) continue;
         var catObj = new JsonObject();
         catObj.addProperty("name", category.name());
         catObj.addProperty("description", category.description());
@@ -550,7 +693,7 @@ public final class DiscoveryTools {
 
         // Tools in this category
         var toolsArray = new JsonArray();
-        for (var toolInfo : TOOL_CATALOG) {
+        for (var toolInfo : catalog()) {
           if (!toolInfo.category().equals(category.name())) continue;
 
           var toolObj = new JsonObject();
@@ -619,6 +762,9 @@ public final class DiscoveryTools {
    * Recommends tools based on a natural language task description.
    */
   static class SuggestToolsTool extends ToolBase {
+    private final java.util.function.Predicate<String> available;
+    SuggestToolsTool() { this(name -> !name.equals("list_sessions") && !name.equals("get_latest_values") && !name.equals("wait_for_change")); }
+    SuggestToolsTool(java.util.function.Predicate<String> available) { this.available = available; }
 
     @Override
     public String name() {
@@ -645,12 +791,13 @@ public final class DiscoveryTools {
 
     @Override
     protected JsonElement executeInternal(JsonObject arguments) throws Exception {
-      String task = getRequiredString(arguments, "task").toLowerCase();
+      String task = getRequiredString(arguments, "task").toLowerCase(Locale.ROOT);
       int maxSuggestions = getOptInt(arguments, "max_suggestions", 5);
 
       // Score each tool based on keyword matches
       var scores = new HashMap<ToolInfo, Integer>();
       for (var tool : TOOL_CATALOG) {
+        if (!available.test(tool.name())) continue;
         int score = 0;
 
         // Check keywords
@@ -662,7 +809,7 @@ public final class DiscoveryTools {
 
         // Check use cases
         for (var useCase : tool.useCases()) {
-          if (task.contains(useCase.toLowerCase()) || fuzzyMatch(task, useCase.toLowerCase())) {
+          if (task.contains(useCase.toLowerCase(Locale.ROOT)) || fuzzyMatch(task, useCase.toLowerCase(Locale.ROOT))) {
             score += 3;
           }
         }

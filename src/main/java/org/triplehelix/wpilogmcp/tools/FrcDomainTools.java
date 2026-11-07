@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -150,11 +151,22 @@ public final class FrcDomainTools {
       return new SchemaBuilder()
           .addNumberProperty("start_time", "Start timestamp in seconds", false, null)
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
-          .addNumberProperty("brownout_threshold", "Voltage threshold for BROWNOUT_START/END crossings (default: the log's BrownoutVoltage entry when logged, else 6.8V for roboRIO 1; roboRIO 2 is 6.3V)", false, null)
+          .addNumberProperty("brownout_threshold", "Voltage threshold for BROWNOUT_START/END crossings (default: the log's BrownoutVoltage entry when logged, else 6.3V for roboRIO 1; roboRIO 2 defaults to configurable 6.75V)", false, null)
           .addProperty("voltage_entry", "string", "Battery voltage entry for BROWNOUT_START/END "
               + "(default: BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery)",
               false)
           .build();
+    }
+
+    private static JsonObject brownoutEvent(String type, double timestamp, double voltage, String source) {
+      var event = new JsonObject();
+      event.addProperty("timestamp", timestamp);
+      event.addProperty("type", type);
+      event.addProperty("category", "power");
+      event.addProperty("basis", "voltage_threshold");
+      event.addProperty("voltage", voltage);
+      event.addProperty("source", source);
+      return event;
     }
 
     @Override
@@ -185,37 +197,14 @@ public final class FrcDomainTools {
       var voltageEntry = battery.chosen();
       if (voltageEntry.isPresent()) {
         var entryName = voltageEntry.get();
-        var values = log.values().get(entryName);
-        boolean inBrownout = false;
-        for (var tv : values) {
-          if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
-          if (tv.value() instanceof Number num && Double.isFinite(num.doubleValue())) {
-            double voltage = num.doubleValue();
-            // Hysteresis: enter brownout below threshold, exit only above threshold + 0.2V.
-            // Prevents noisy voltage (e.g., loose connectors) from inflating event counts.
-            double hysteresis = 0.2;
-            if (voltage < brownoutThreshold && !inBrownout) {
-              var event = new JsonObject();
-              event.addProperty("timestamp", tv.timestamp());
-              event.addProperty("type", "BROWNOUT_START");
-              event.addProperty("category", "power");
-              event.addProperty("basis", "voltage_threshold");
-              event.addProperty("voltage", voltage);
-              event.addProperty("source", entryName);
-              events.add(event);
-              inBrownout = true;
-            } else if (voltage >= brownoutThreshold + hysteresis && inBrownout) {
-              var event = new JsonObject();
-              event.addProperty("timestamp", tv.timestamp());
-              event.addProperty("type", "BROWNOUT_END");
-              event.addProperty("category", "power");
-              event.addProperty("basis", "voltage_threshold");
-              event.addProperty("voltage", voltage);
-              event.addProperty("source", entryName);
-              events.add(event);
-              inBrownout = false;
-            }
-          }
+        // The crossings power_analysis and predict_battery_health count, with the same hysteresis
+        // (noisy voltage near the threshold is one crossing), over the requested range, both ends in.
+        var range = TimeScope.resolve(log, null, null, startTime, endTime);
+        var crossings = PowerFacts.voltage(log.values().get(entryName), range, brownoutThreshold)
+            .map(PowerFacts.VoltageFacts::crossings).orElse(List.of());
+        for (var crossing : crossings) {
+          events.add(brownoutEvent("BROWNOUT_START", crossing.start(), crossing.startVolts(), entryName));
+          if (!crossing.openAtEnd()) events.add(brownoutEvent("BROWNOUT_END", crossing.end(), crossing.endVolts(), entryName));
         }
       }
 
@@ -467,6 +456,8 @@ public final class FrcDomainTools {
           + "with how often they are non-empty and poses per record. "
           + "target_acquisition: has-target entries with acquisition rate and flicker: "
           + "Limelight's <table>/tv and PhotonVision's photonvision/<camera>/hasTarget. "
+          + "camera_settings is keyed by camera name and contains recorded calibration errors and pipeline mode snapshots "
+          + "matched by exact camera name over the window, or none_captured with a reason; this is stated context, not inference. "
           + "pose_jumps: steps larger than jump_threshold in the robot pose and in a vision "
           + "pose estimate (the only scalar pose under a vision path, or those passed); a jump "
           + "within 0.5 s of the robot being enabled has "
@@ -512,7 +503,7 @@ public final class FrcDomainTools {
     static final int CANDIDATE_LIMIT = 20;
 
     static boolean underPrefix(String name, String prefix) {
-      return prefix == null || name.toLowerCase().startsWith(prefix.toLowerCase());
+      return prefix == null || name.toLowerCase(Locale.ROOT).startsWith(prefix.toLowerCase(Locale.ROOT));
     }
 
     static boolean isScalarPose(org.triplehelix.wpilogmcp.log.EntryInfo e) {
@@ -672,6 +663,15 @@ public final class FrcDomainTools {
             + "; only pose jumps were checked.");
       }
 
+      // One context per camera, even when the log carries flags, observations and poses for it.
+      // Include scalar pose estimates whether or not the requested window contains a jump.
+      var cameraSettings = new java.util.TreeMap<String, JsonObject>();
+      java.util.stream.Stream.of(targetEntries, streams, targetStreams, poseSets,
+          vision.analyzed(SignalResolver.VisionKind.POSE_ESTIMATE)).flatMap(List::stream).sorted()
+          .forEach(name -> cameraSettings.computeIfAbsent(CameraSettings.cameraOf(name),
+              ignored -> CameraSettings.forEntry(log, name, startTime, endTime, builder)));
+      builder.addData("camera_settings", GSON.toJsonTree(cameraSettings));
+
       var enables = MatchTimeline.of(log).enabledSegments().stream()
           .map(MatchTimeline.Segment::start).toList();
       var jumps = new ArrayList<JsonObject>();
@@ -744,7 +744,7 @@ public final class FrcDomainTools {
       var struct = org.triplehelix.wpilogmcp.log.struct.StructSchemas.structName(e.type());
       var info = log.structSchemas().info(struct);
       if (info.isEmpty()) return isTargetStream(log.values().get(e.name()));
-      var names = info.get().fields().stream().map(f -> f.name().toLowerCase()).toList();
+      var names = info.get().fields().stream().map(f -> f.name().toLowerCase(Locale.ROOT)).toList();
       return names.contains("yaw") && names.contains("pitch");
     }
 
@@ -779,7 +779,7 @@ public final class FrcDomainTools {
       var parent = stream.substring(0, Math.max(0, stream.lastIndexOf('/') + 1));
       return log.entries().values().stream()
           .filter(e -> e.name().startsWith(parent) && e.name().indexOf('/', parent.length()) < 0)
-          .filter(e -> e.name().substring(parent.length()).toLowerCase().contains("latency"))
+          .filter(e -> e.name().substring(parent.length()).toLowerCase(Locale.ROOT).contains("latency"))
           .filter(e -> isNumericType(e.type()))
           .sorted(Comparator.comparingInt(org.triplehelix.wpilogmcp.log.EntryInfo::id))
           .map(org.triplehelix.wpilogmcp.log.EntryInfo::name).toList();
@@ -975,7 +975,7 @@ public final class FrcDomainTools {
       var sorted = values.stream().mapToDouble(Double::doubleValue).sorted().toArray();
       var o = new JsonObject();
       o.addProperty("n", sorted.length);
-      o.addProperty("median" + unit, percentile(sorted, 0.5));
+      o.addProperty("median" + unit, SummaryStatistics.median(sorted));
       o.addProperty("p95" + unit, percentile(sorted, 0.95));
       o.addProperty("max" + unit, sorted[sorted.length - 1]);
       return o;
@@ -1499,7 +1499,7 @@ public final class FrcDomainTools {
         p.addProperty("start", period.start());
         p.addProperty("end", period.end());
         p.addProperty("duration", period.duration());
-        p.addProperty("end_reason", period.endReason().name().toLowerCase());
+        p.addProperty("end_reason", period.endReason().name().toLowerCase(Locale.ROOT));
         chooser.ifPresent(c -> {
           var value = ToolUtils.getValueAtTimeZoh(log.values().get(c), period.start());
           if (value instanceof String routine) p.addProperty("selected_routine", routine);
@@ -1970,16 +1970,16 @@ public final class FrcDomainTools {
 
       // 2. Unknown state detection
       var expectedStates = new java.util.HashSet<String>();
-      if (cycleStartState != null) expectedStates.add(caseSensitive ? cycleStartState : cycleStartState.toLowerCase());
-      if (cycleEndState != null) expectedStates.add(caseSensitive ? cycleEndState : cycleEndState.toLowerCase());
-      if (idleState != null) expectedStates.add(caseSensitive ? idleState : idleState.toLowerCase());
+      if (cycleStartState != null) expectedStates.add(caseSensitive ? cycleStartState : cycleStartState.toLowerCase(Locale.ROOT));
+      if (cycleEndState != null) expectedStates.add(caseSensitive ? cycleEndState : cycleEndState.toLowerCase(Locale.ROOT));
+      if (idleState != null) expectedStates.add(caseSensitive ? idleState : idleState.toLowerCase(Locale.ROOT));
 
       var unknownStates = new java.util.HashSet<String>();
       for (var tv : vals) {
         if (!inTimeRange(tv.timestamp(), startTime, endTime)) continue;
 
         String state = tv.value().toString();
-        String compareState = caseSensitive ? state : state.toLowerCase();
+        String compareState = caseSensitive ? state : state.toLowerCase(Locale.ROOT);
         if (!expectedStates.isEmpty() && !expectedStates.contains(compareState)) {
           unknownStates.add(state);
         }
@@ -2255,16 +2255,16 @@ public final class FrcDomainTools {
       }
       if (entry != null) {
         var leaf = entry.substring(entry.lastIndexOf('/') + 1);
-        if (leaf.endsWith("MS") || leaf.endsWith("Ms") || leaf.toLowerCase().endsWith("_ms")
-            || leaf.toLowerCase().endsWith("millis")) {
+        if (leaf.endsWith("MS") || leaf.endsWith("Ms") || leaf.toLowerCase(Locale.ROOT).endsWith("_ms")
+            || leaf.toLowerCase(Locale.ROOT).endsWith("millis")) {
           return new Unit(1.0, "ms", "name (" + leaf + ")");
         }
-        if (leaf.endsWith("US") || leaf.endsWith("Us") || leaf.toLowerCase().endsWith("_us")
-            || leaf.toLowerCase().endsWith("micros")) {
+        if (leaf.endsWith("US") || leaf.endsWith("Us") || leaf.toLowerCase(Locale.ROOT).endsWith("_us")
+            || leaf.toLowerCase(Locale.ROOT).endsWith("micros")) {
           return new Unit(0.001, "us", "name (" + leaf + ")");
         }
-        if (leaf.toLowerCase().endsWith("sec") || leaf.toLowerCase().endsWith("seconds")
-            || leaf.toLowerCase().endsWith("_s")) {
+        if (leaf.toLowerCase(Locale.ROOT).endsWith("sec") || leaf.toLowerCase(Locale.ROOT).endsWith("seconds")
+            || leaf.toLowerCase(Locale.ROOT).endsWith("_s")) {
           return new Unit(1000.0, "s", "name (" + leaf + ")");
         }
       }
@@ -2320,7 +2320,7 @@ public final class FrcDomainTools {
         for (var e : log.entries().values()) {
           if (!"string".equals(e.type())) continue;
           for (var tv : log.values().get(e.name())) {
-            if (tv.value() instanceof String text && text.toLowerCase().contains("overrun")) {
+            if (tv.value() instanceof String text && text.toLowerCase(Locale.ROOT).contains("overrun")) {
               overrunMessages++;
             }
           }
@@ -2655,8 +2655,11 @@ public final class FrcDomainTools {
           + "level (MINIMAL/LOW/MODERATE/HIGH/CRITICAL). Facts first: voltage statistics over the "
           + "scope (default: enabled time when the log records it); brownouts from the roboRIO's "
           + "logged flag (e.g. /SystemStats/BrownedOut, with start and duration) or, when no flag "
-          + "is logged, threshold crossings (basis stated); the brownout threshold from the log's "
-          + "BrownoutVoltage entry when logged, else 6.8 V (roboRIO 1, stated); dips below "
+          + "is logged, threshold crossings (basis stated); open crossings extend to each scope "
+          + "window end, marked open_at_scope_end (open_at_log_end and open_at_end remain "
+          + "same-value compatibility aliases), not merely "
+          + "the last voltage sample; the brownout threshold from the log's "
+          + "BrownoutVoltage entry when logged, else 6.3 V (roboRIO 1, stated); dips below "
           + "warning_threshold; and, when a total-current entry exists, the load line: battery "
           + "voltage regressed on total current, giving the effective source resistance (battery "
           + "internal resistance plus wiring and connectors) and open-circuit voltage. "
@@ -2678,7 +2681,7 @@ public final class FrcDomainTools {
           .addNumberProperty("end_time", "End timestamp in seconds", false, null)
           .addNumberProperty("nominal_voltage", "Expected full battery voltage (default: 12.6V)", false, 12.6)
           .addNumberProperty("brownout_threshold", "Brownout threshold in volts (default: the log's "
-              + "BrownoutVoltage entry when logged, else 6.8 V for roboRIO 1; roboRIO 2 is 6.3 V)", false, null)
+              + "BrownoutVoltage entry when logged, else 6.3 V for roboRIO 1; roboRIO 2 defaults to configurable 6.75 V)", false, null)
           .addNumberProperty("warning_threshold", "Voltage below which a dip is reported (default: 9.0V)", false, 9.0)
           .addProperty("voltage_entry", "string", "Battery voltage entry (default: "
               + "BatteryVoltage, or Voltage under PowerDistribution/PDH/PDP/Battery)", false)
@@ -2750,15 +2753,13 @@ public final class FrcDomainTools {
           null).stream().filter(b -> scope.contains(b.start())).toList()).orElse(List.of());
       // Crossings and recoveries are found within each window of the scope, never across the
       // time between two (a dip at the end of one enabled segment does not last until the next)
-      var crossings = new ArrayList<JsonObject>();
-      var dips = new ArrayList<JsonObject>();
+      var crossings = voltageEvents(log.values().get(voltageEntry.get()), scope, threshold.volts());
+      var dips = voltageEvents(log.values().get(voltageEntry.get()), scope, warningThreshold);
       var recoveryTimes = new ArrayList<Double>();
       for (var window : voltageWindows) {
         var finite = window.stream()
             .filter(tv -> tv.value() instanceof Number n && Double.isFinite(n.doubleValue()))
             .toList();
-        crossings.addAll(detectVoltageEvents(finite, threshold.volts()));
-        dips.addAll(detectVoltageEvents(finite, warningThreshold));
         recoveryTimes.addAll(voltageRecoveryTimes(finite));
       }
       int brownoutCount = flag.isPresent() ? rioBrownouts.size() : crossings.size();
@@ -2930,49 +2931,13 @@ public final class FrcDomainTools {
       return o;
     }
 
-    private java.util.List<JsonObject> detectVoltageEvents(
-        java.util.List<TimestampedValue> voltageValues,
-        double threshold) {
-      var events = new ArrayList<JsonObject>();
-      boolean inEvent = false;
-      double eventStartTime = 0;
-      double eventMinVoltage = Double.MAX_VALUE;
-
-      for (var tv : voltageValues) {
-        var voltage = toDouble(tv.value());
-        if (voltage == null) continue;
-
-        // Hysteresis: enter below threshold, exit only above threshold + 0.2V
-        double hysteresis = 0.2;
-        if (voltage < threshold && !inEvent) {
-          inEvent = true;
-          eventStartTime = tv.timestamp();
-          eventMinVoltage = voltage;
-        } else if (voltage < threshold && inEvent) {
-          eventMinVoltage = Math.min(eventMinVoltage, voltage);
-        } else if (voltage >= threshold + hysteresis && inEvent) {
-          var event = new JsonObject();
-          event.addProperty("start_time", eventStartTime);
-          event.addProperty("end_time", tv.timestamp());
-          event.addProperty("duration", tv.timestamp() - eventStartTime);
-          event.addProperty("min_voltage", eventMinVoltage);
-          events.add(event);
-          inEvent = false;
-        }
-      }
-
-      // Emit open-ended event if voltage was still below threshold at end of the data
-      if (inEvent && !voltageValues.isEmpty()) {
-        double lastTime = voltageValues.get(voltageValues.size() - 1).timestamp();
-        var event = new JsonObject();
-        event.addProperty("start_time", eventStartTime);
-        event.addProperty("end_time", lastTime);
-        event.addProperty("duration", lastTime - eventStartTime);
-        event.addProperty("min_voltage", eventMinVoltage);
-        event.addProperty("open_at_end", true);
-        events.add(event);
-      }
-      return events;
+    private List<JsonObject> voltageEvents(List<TimestampedValue> values, TimeScope scope, double threshold) {
+      return PowerFacts.voltage(values, scope, threshold).map(facts -> facts.crossings().stream().map(c -> {
+        var event = c.toJson();
+        // Retain the older battery-health field as an alias for existing callers.
+        event.addProperty("open_at_end", c.openAtEnd());
+        return event;
+      }).toList()).orElse(List.of());
     }
 
     /** How long the voltage takes to recover 90% of a drop of more than 0.5 V (up to 2 s). */

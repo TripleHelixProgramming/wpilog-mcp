@@ -32,6 +32,7 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
  *   <li>{@code get_types} - List all data types in the log
  *   <li>{@code find_condition} - Find when values cross thresholds
  *   <li>{@code search_strings} - Search string entries for patterns
+ *   <li>{@code search_system_logs} - Search the session's pulled system text with recorded clocks
  * </ul>
  *
  * <h2>Statistics Tools ({@link StatisticsTools})</h2>
@@ -54,6 +55,7 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
  *   <li>{@code power_analysis} - Analyze battery and current data
  *   <li>{@code can_health} - Check for CAN bus errors
  *   <li>{@code compare_matches} - Compare entries across multiple logs
+ *   <li>{@code compare_sessions} - Compare one statistic per session across a store's finished sessions
  *   <li>{@code get_code_metadata} - Extract Git info and build metadata
  *   <li>{@code moi_regression} - OLS regression for moment of inertia and damping from velocity/current logs
  * </ul>
@@ -129,6 +131,7 @@ public final class WpilogTools {
    */
   public static void registerAll(ToolRegistry registry) {
     CoreTools.registerAll(registry);
+    VisualizationTools.registerAll(registry);
     QueryTools.registerAll(registry);
     StatisticsTools.registerAll(registry);
     RobotAnalysisTools.registerAll(registry);

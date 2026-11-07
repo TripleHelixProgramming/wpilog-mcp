@@ -25,6 +25,25 @@ import org.junit.jupiter.api.Test;
  * Java file without the license header could reach main.
  */
 class BuildFileTest {
+  @Test void concurrentWorkersNeverReplaceEachOthersMappedFixtures() {
+    var directory = org.triplehelix.wpilogmcp.fixtures.FixtureLogs.defaultDirectory();
+    assertEquals("worker-" + System.getProperty("org.gradle.test.worker", "direct"), directory.getFileName().toString());
+    assertEquals(Path.of("build", "test-fixtures").toAbsolutePath(), directory.getParent());
+  }
+
+
+  @Test
+  void installDelegatesToThePackagedJarWithForce() throws IOException {
+    var build = Files.readString(Path.of("build.gradle"));
+    int start = build.indexOf("tasks.register('install', Exec)");
+    assertTrue(start >= 0);
+    var body = build.substring(start, build.indexOf("// Installer tests", start));
+    assertTrue(body.contains("dependsOn shadowJar"));
+    assertTrue(body.contains("'-jar', tasks.shadowJar.archiveFile.get().asFile.absolutePath"));
+    assertTrue(body.contains("'install', '--force', '--install-dir'"));
+    assertFalse(body.contains("# wpilog-mcp") || body.contains("yamlConfig"),
+        "the JAR owns the launcher and configuration templates");
+  }
 
   /** The text of a task registered as {@code tasks.register('name') { ... }}. */
   private static String task(String build, String name) {

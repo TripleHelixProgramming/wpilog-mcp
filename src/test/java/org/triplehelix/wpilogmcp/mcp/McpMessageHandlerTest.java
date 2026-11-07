@@ -23,6 +23,45 @@ class McpMessageHandlerTest {
     handler = new McpMessageHandler(registry);
   }
 
+  @Test void imageContentStaysBesideTheContractEnforcedJson() {
+    registry.registerTool(new org.triplehelix.wpilogmcp.tools.ToolBase() {
+      @Override public String name() { return "image_fixture"; }
+      @Override public String description() { return "Synthetic attachment and skipped evidence"; }
+      @Override public JsonObject inputSchema() { return new ToolRegistry.SchemaBuilder().build(); }
+      @Override protected com.google.gson.JsonElement executeInternal(JsonObject args) {
+        return org.triplehelix.wpilogmcp.tools.ResponseBuilder.success().addProperty("value", 4)
+            .addData("unknown", com.google.gson.JsonNull.INSTANCE)
+            .addImage(new byte[]{1, 2, 3}).addSkipped("fixture", "deliberately omitted").build();
+      }
+    });
+    var response = handler.handleMessage(parse("{\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"image_fixture\"}}"))
+        .response().getAsJsonObject("result");
+    var content = response.getAsJsonArray("content"); assertEquals(2, content.size());
+    var json = JsonParser.parseString(content.get(0).getAsJsonObject().get("text").getAsString()).getAsJsonObject();
+    assertEquals("partial", json.get("status").getAsString()); assertEquals(4, json.get("value").getAsInt());
+    assertTrue(json.has("skipped")); assertFalse(json.has("_content"));
+    assertTrue(json.has("unknown") && json.get("unknown").isJsonNull(), "Content wrapping must preserve an explicitly unknown fact");
+    assertEquals("image", content.get(1).getAsJsonObject().get("type").getAsString());
+    assertEquals("AQID", content.get(1).getAsJsonObject().get("data").getAsString());
+  }
+
+  @Test void resourceDiscoveryAndReadFollowTheProtocolWhilePromptsRemainEmpty() {
+    var init = handler.handleMessage(parse("{\"id\":1,\"method\":\"initialize\"}")).response().getAsJsonObject("result");
+    assertTrue(init.getAsJsonObject("capabilities").has("resources"));
+    var list = handler.handleMessage(parse("{\"id\":2,\"method\":\"resources/list\"}")).response().getAsJsonObject("result").getAsJsonArray("resources");
+    assertEquals(1, list.size()); assertEquals("pit://session/current", list.get(0).getAsJsonObject().get("uri").getAsString());
+    var read = handler.handleMessage(parse("{\"id\":3,\"method\":\"resources/read\",\"params\":{\"uri\":\"pit://session/current\"}}"))
+        .response().getAsJsonObject("result").getAsJsonArray("contents").get(0).getAsJsonObject();
+    assertEquals("not_applicable", JsonParser.parseString(read.get("text").getAsString()).getAsJsonObject().get("status").getAsString());
+    assertEquals(0, handler.handleMessage(parse("{\"id\":4,\"method\":\"prompts/list\"}")).response().getAsJsonObject("result").getAsJsonArray("prompts").size());
+    for (String params : java.util.List.of("null", "{}", "{\"uri\":4}")) {
+      assertEquals(-32602, handler.handleMessage(parse("{\"id\":5,\"method\":\"resources/read\",\"params\":" + params + "}"))
+          .response().getAsJsonObject("error").get("code").getAsInt());
+    }
+    assertEquals(-32002, handler.handleMessage(parse("{\"id\":6,\"method\":\"resources/read\",\"params\":{\"uri\":\"file:///private\"}}"))
+        .response().getAsJsonObject("error").get("code").getAsInt());
+  }
+
   @Test
   @DisplayName("initialize returns protocol version and server info")
   void initialize() {
@@ -227,15 +266,17 @@ class McpMessageHandlerTest {
     var sessionHandler = new McpMessageHandler(registry, sessionManager);
 
     // Register a tool that captures the session context
+    var inside = new java.util.concurrent.CyclicBarrier(10);
     var capturedSessionIds = java.util.Collections.synchronizedList(new java.util.ArrayList<String>());
     registry.registerTool(new ToolRegistry.Tool() {
       @Override public String name() { return "capture_session_id"; }
       @Override public String description() { return "test"; }
       @Override public JsonObject inputSchema() { return new JsonObject(); }
       @Override public com.google.gson.JsonElement execute(JsonObject args) {
+        try { inside.await(5, java.util.concurrent.TimeUnit.SECONDS); }
+        catch (Exception e) { throw new AssertionError(e); }
         var session = SessionContext.current();
         if (session != null) capturedSessionIds.add(session.getId());
-        try { Thread.sleep(5); } catch (InterruptedException ignored) {} // Simulate work
         var result = new JsonObject();
         result.addProperty("session_id", session != null ? session.getId() : "none");
         return result;

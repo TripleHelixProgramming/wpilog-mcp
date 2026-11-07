@@ -1,33 +1,121 @@
 # Development
 
-How to build, test, and change wpilog-mcp. [ARCHITECTURE.md](ARCHITECTURE.md) explains how the code is organized and why it is designed the way it is; read its [design principles](ARCHITECTURE.md#design-principles) before changing a tool.
+How to build, test, and change wpilog-mcp. [ARCHITECTURE.md](ARCHITECTURE.md) explains how the code is organized and why it is designed the way it is. Read its [design principles](ARCHITECTURE.md#design-principles) before changing a tool.
 
 ## Requirements
 
 - JDK 17 or newer; the WPILib JDK is recommended (see [STANDALONE.md](STANDALONE.md#requirements) for where WPILib puts it). `./gradlew` uses `JAVA_HOME`, or `java` on your `PATH`.
-- [Node.js](https://nodejs.org/) 20, the version CI uses, with `npm` on your `PATH`: needed only to build or test the VS Code extension.
+- [Node.js](https://nodejs.org/) 20, the version CI uses, with `npm` on your `PATH`: needed only to build or test the VS Code extension. Once its dependencies are installed, the extension development tasks need only Node; they can also use an existing Codex runtime as described below.
 
 ## Building
 
 ```bash
 ./gradlew build          # Full build with tests
-./gradlew shadowJar      # Build the self-contained JAR only
+./gradlew shadowJar      # Build the self-contained server JAR only
+./gradlew readerJar      # Build the standalone read-only Java library
 ./gradlew install        # Build and install to ~/.wpilog-mcp/
 ```
 
-The JAR is `build/libs/wpilog-mcp-{version}-all.jar`. `install` sets up the [standalone install](STANDALONE.md#install) from your build.
+The JAR is `build/libs/wpilog-mcp-{version}-all.jar`. `install` runs the fat JAR's `install --force` verb to set up the [standalone install](STANDALONE.md#install) from your build. It preserves an existing YAML or legacy JSON configuration and makes this development build current. Use `-PinstallDir=/path/to/scratch` for an isolated install.
 
 ### The VS Code extension
 
 ```bash
 ./gradlew bundleExtension    # Copy the server JAR into the extension (for local development)
+./gradlew runExtension       # Open VS Code with the local extension and keep watching TypeScript
+./gradlew openExtension      # Compile and open the development window, without a watcher
+./gradlew compileExtension   # Compile TypeScript once
+./gradlew watchExtension     # Watch TypeScript only; does not open a window (Ctrl+C to stop)
 ./gradlew buildExtension     # Build, compile, and package the .vsix
 ./gradlew installExtension   # Build, package, and install into VS Code
 ```
 
-`installExtension` installs into WPILib's VS Code for the current year when that is installed, and otherwise uses the `code` command. Close VS Code before running the task, and restart VS Code when the task is done. The `.vsix` is written to `vscode-extension/wpilog-analyzer-{version}.vsix`.
+`installExtension` delegates to the JAR’s `install --force --with-extension --vsix <file>` verb, installing the standalone layout and the matching extension. VS Code lookup lives in that verb: the newest WPILib season whose VS Code the extension accepts, found without PATH ([STANDALONE.md](STANDALONE.md#the-matching-extension) has the folders). `-Pvscode=2025` names a season, and `-Pvscode=system` a VS Code installed apart from WPILib. `-PinstallDir=/path/to/scratch` overrides the server’s install directory. Close VS Code before running the task, and restart VS Code when the task is done. The `.vsix` is written to `vscode-extension/wpilog-analyzer-{version}.vsix`.
 
 The extension's version is the project version in `build.gradle`. Every extension task runs `./gradlew syncExtensionVersion`, which writes it into `vscode-extension/package.json` and `package-lock.json`. A development version such as `0.9.0-dev` installs over the previous release, and the release that follows it installs over the development version.
+
+#### Trying UI changes without installing an extension
+
+From the repository root, run `./gradlew runExtension`. It compiles the extension, prepares its
+bundled server JAR, opens an **Extension Development Host** window, and keeps compiling when
+TypeScript files change. A compilation error prevents launch. The extension is loaded directly
+from this checkout; no VSIX packaging or extension installation is involved.
+
+The default editor is system VS Code, including the normal macOS app location even when `code`
+is not on `PATH`. The task reuses the installer's editor lookup and compatibility checks. Use
+`-Pvscode=2026` to select a WPILib season instead, or `-PextensionWorkspace=/path/to/robot/project`
+to open a particular project in the development window:
+
+```bash
+./gradlew runExtension -Pvscode=2026 -PextensionWorkspace=/path/to/robot/project
+```
+
+Open a robot project or log in the new window. After an edit, wait for compilation to finish,
+then run **Developer: Reload Window** there. JavaScript and CSS under `media/` are read directly
+from the checkout and need only the reload. Stop the watcher with **Ctrl+C**; the VS Code window
+stays open. To open the window without leaving a watcher running, use `./gradlew openExtension`.
+Stop an existing watcher before starting another Gradle command. `watchExtension` alone only compiles and watches; it does
+not open VS Code. This checkout has no F5 launch configuration.
+
+These tasks use `node` on `PATH`, then an existing Node runtime under
+`~/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/`. To choose another runtime,
+pass `-PnodeExecutable=/absolute/path/to/node`. An invalid explicit path is an error; it does
+not fall back to another runtime. No Node runtime is downloaded. A fresh checkout still needs
+`npm ci` in `vscode-extension/` to install its development dependencies once.
+
+The development host uses the normal shared standalone server through the extension's usual
+activation. For Java server changes, use `./gradlew install` and restart the shared server.
+Rebuilding the bundled JAR alone does not replace an installed server at the same version.
+
+## Verification policy
+
+Checks should cost what they prove:
+
+- Measure wall time before and after a speed change on the same machine. Record the command,
+  selection, counts, failures and timing under `build/reports/`, as text: copies of logs or of a
+  run's scratch do not belong there ([Scratch under `build/`](#scratch-under-build)).
+- Do not rerun a passing check for reassurance. A failure which does not reproduce gets one retry;
+  report both results.
+- Keep the Gradle daemon warm, build once, and use `--tests` while working. Never run
+  `./gradlew clean` inside a round.
+
+| Change or boundary | Required check |
+|---|---|
+| Each item while editing | Targeted `./gradlew test --tests '*RelevantTest'`; plant the bug and see that check fail. |
+| End of a round, after the last change | One `env -u LANG -u LC_ALL ./gradlew build`. CI supplies Windows; report without waiting for it to start. |
+| A file under `vscode-extension/` changed | `npm test` there. Run `npm ci` only when dependencies/lockfile changed or the install is absent. CI also runs Node/editor checks for changes to Main, `config/`, installers and `mcp/`, since its real-JAR tests exercise daemon ownership, installation and leases. The broker fixture also runs for reader, capture writer/index, its Java fixture and build wiring changes. |
+| Capture, pull, NT4 or harness code changed | One `harness/run` after those changes; use `-PconformanceNative=none` if none of the native-triggering surfaces below changed. |
+| NT4 client, gateway, capture writer, replayer or harness changed | Native replay with `-PconformanceNative=sample`, in that same harness run; zero shift only. |
+| Writer output, replayer output or matching changed | Stratified Java real-log sample with `-PconformanceLogDir=/path/to/logs`. A harness pacing-only change does not trigger it. |
+| Before a release tag | Full real-log directory (`-PconformanceSample=full` and `-PconformanceNative=full`), without a file limit. |
+| Coverage wanted | `./gradlew jacocoTestReport`, or add `-Pcoverage` to the build/test command. CI instruments and reports once, on Linux only. |
+
+Ordinary tests never run native replay. They use half the available processors, at least one fork
+and at most four, with 768 MiB per fork (at most 3 GiB combined heap). The real-log opt-in uses one
+larger fork. Coverage instrumentation is absent from ordinary and targeted runs.
+
+Each task has its own disk cache. Concurrent forks share its atomic cache claims, while tests that
+inspect cache contents use `@TempDir` caches. Generated corpus files live under
+`build/test-fixtures/worker-<worker>`, whose root is cleared before its first use in each JVM, and
+are written once per JVM. Worker numbers keep rising for the life of the Gradle daemon, so each test
+task also empties `build/test-fixtures` before it starts. Every separately created store/export
+fixture root is cleared before creation too: reused worker numbers must not inherit another build's
+manifests. Windows mappings in another fork cannot be overwritten.
+
+The conformance sweep loads a baseline once per fixture and uses decoded immutable views for the
+entry-order permutations, keeping raw sample counts apart from successfully decoded values.
+
+Synthetic tool tests use `MockLogAdmission` to admit their cached paths explicitly, pin their
+`testPutLog` entries against heap-pressure eviction until scope cleanup unloads them, and restore
+the prior configured roots. They must work while lease admission is active: relying on the legacy
+cached-path exception made Linux CI's class/fork order change the answers. A real HTTP transport
+with an empty directory lease pins this state in `ToolAdmissionTest`.
+
+In CI, the harness job needs only path classification and runs beside the builds, with its own
+evidence. Ordinary build jobs upload their own XML; no duplicate download or test run is needed.
+Native selection follows the affected surfaces above. The Arrow cross-check consumes the ordinary
+build's streams. An unreachable before-commit runs every job rather than failing classification or
+skipping checks.
 
 ## Testing
 
@@ -35,7 +123,7 @@ The extension's version is the project version in `build.gradle`. Every extensio
 ./gradlew test
 ```
 
-This runs every test that needs nothing outside the repository, in about a minute. Three rules apply to every change:
+This runs every test that needs nothing outside the repository. Three rules apply to every change:
 
 - A fix comes with a regression test that fails without the fix. Run the test against the old code and watch it fail before you trust it.
 - A test of a number checks the number, against an answer worked out independently of the server. That a call succeeded proves nothing about what it returned.
@@ -43,29 +131,184 @@ This runs every test that needs nothing outside the repository, in about a minut
 
 The tests run on Windows in CI too. Build an expected path with the same path API the code uses, never from a hand-written string; compare paths as the file system does; and don't assume a checked-out file has LF line endings.
 
+### The systemd service check
+
+- `MainRunTest` starts isolated foreground children and checks stderr, exit status, ownership,
+  health and live tools. It also starts, adopts and stops a real daemon inheriting `INVOCATION_ID`.
+- `InstallCommandTest` checks POSIX program modes and repair without exposing private settings.
+- `DaemonManagerTest` uses fake health endpoints to prove managed servers are never adopted, stopped
+  or replaced.
+- `ServiceUnitTest` checks the printed unit's hardening, escaping and write-free behavior,
+  the probe's three bounded attempts and the named restart handler.
+
+The independent Linux `systemd` CI job is filtered to Main, configuration, installers, service
+templates and the check itself. The job:
+
+1. Builds only the shadow JAR, creates the service account and installs the printed units.
+2. Checks launcher/JAR access as the service user, with modes in any refusal, and supplies the
+   runner's JDK through `JAVA_HOME`.
+3. Starts the service and timer, checks managed/version health and the `stop` refusal, runs the
+   probe, and stops through systemd within 90 seconds.
+4. Repeats with only `--managed` removed and requires that the same verifier reject the plant.
+
+Journals, printed units and assertion results are uploaded even on failure. `ci/check_service.py`
+refuses to install on a developer machine: it requires root and a disposable GitHub Actions runner.
+The local Python check `python3 -m unittest ci.test_changes ci.test_check_service` proves filter
+fallbacks and the verifier's refusal predicates without systemd. macOS and Windows do not run
+systemd locally; their ordinary Java tests still cover the foreground command and ownership.
+The retry exhaustion and `OnFailure=` restart still need a real Linux-host check; the
+existing CI probe step alone does not exercise them.
+
+### The metrics stack check
+
+CI's Linux job runs `ci/check_metrics.py` after building the shadow JAR. It starts the server
+and the documented Compose stack (Prometheus, and Grafana with the pinned Infinity plugin) and
+checks, in two phases:
+
+1. With no store and nothing recording: the configuration and a scrape pass `promtool`, every
+   sampled-dashboard query parses on the real Prometheus, the plugin is the pinned release, all
+   three dashboards are provisioned, and the recorded and history panels' own queries, sent
+   through Grafana, are refused by the server.
+2. On a store of two logs whose clocks the check sets, a roboRIO log and a recording of the same
+   minutes, written by the check from the format's specification: the history dashboard's robot
+   choice, its sessions table, and a panel's rows and buckets, each through Grafana, against rows
+   the check works out from the store alone.
+
+Run it on any Linux host with Docker and its compose plugin, from the repository root, with
+exactly one `build/libs/*-all.jar` and ports 2363, 3000 and 9090 free; its evidence lands in
+`build/metrics-smoke`. macOS cannot run it without Docker. `python3 -m unittest ci.test_check_metrics`
+checks its fixture writer, expected rows and answer checks without Docker.
+
 ### What `./gradlew test` covers
 
 Tests are in `src/test/java`, in the same packages as the code they test, plus a few test-only packages: `fixtures`, `conformance`, `golden`, `docs`, and `integration`.
 
-**Fixture logs.** About 20 small logs, one per logging convention (AdvantageKit match and practice logs, plain WPILib, swerve module states as an array and per module, vision templates, entries that only look like vision data, a team's own structs, a CANivore, alerts, a truncated log, and more). They are written at test time by a small WPILOG writer in pure Java, and their values are simple functions of time, so the right answer to any statistic is known exactly. None is committed.
+**Fixture logs.** Small logs, one per logging convention (AdvantageKit match and practice logs, plain WPILib, swerve module states as an array and per module, vision templates, entries that only look like vision data, a team's own structs, a CANivore, alerts, a truncated log, and more). They are written at test time by a small WPILOG writer in pure Java, and their values are simple functions of time, so the right answer to any statistic is known exactly. None is committed.
+
+**Store fixtures.** `store.LogStoreTest` writes synthetic WPILOG and REV files in temporary directories and drives the Java import queue and the real listing tool. It checks verified copies and moves, original provenance, duplicate hashes, REV correlation and ambiguity, serial promotion without merging, clock bases and overlap, unmanaged files, format refusal, queued callers, path containment, and the lifetime of readers and moved-path notices. No robot logs or external services are needed.
+
+Legacy unassigned-layout migration compares the complete file receipt before and after copying,
+normalizing only its path. Matching, its reason, the placement method, the robot fingerprint and
+provenance must all survive; a planted null matching reason proves the check.
+
+`StoreImportEndpointTest` drives the HTTP jobs and refusals on the real transport. `StoreInboxTest` checks stability, receipts, and listing states. `MainImportTest` drives child JVMs and a real daemon, including a cross-process file-lock refusal.
+
+The store checks also distinguish a new named robot with a logged serial from a later serial promotion, keep non-overlapping sessions separate, count catalog reads per batch, and observe which REV candidates reach correlation. `log.LogMappingLifetimeTest` reads fixtures through tools and the manager before moving them, holds calls and background synchronization across eviction, and checks that the final holder releases the mapping so a real rename succeeds on Windows too.
 
 **Tool tests.** Each tool's behavior and its edge cases (empty and single-sample entries, NaN and infinite values, duplicate timestamps, missing Driver Station data, and bad arguments), on the fixtures and on small logs that the tests build in memory.
 
-**Conformance sweep.** Every tool is called with arguments built from its schema, on every fixture if it reads a log. Each result must follow the [result contract](TOOLS.md#result-contract-success-status-and-related-fields): no internal error, no NaN, no silent success (a success whose content is only zeros, `false`, and empty lists counts as silent), `inputs` on every successful result that read a log, true totals for shortened lists, a note on every result computed from a log that was not read to its end, and every output the tool's description names.
+**Conformance sweep.** Every tool is called with arguments built from its schema, on every fixture if it reads a log. Each result must follow the [result contract](TOOLS.md#result-contract-success-status-and-related-fields):
 
-The output must also be deterministic: each call on a log is repeated with the log's entries reversed and twice shuffled, and must give the same result (the REV log tools are exempt, because they depend on the synchronization done when the log was loaded). Tools whose needed parameters are optional in their schema get argument variants that reach their real analysis. `src/test/resources/conformance/known-failures.txt` is a ratchet: a violation not listed there fails the build, and so does a listed one that no longer occurs. It should stay empty. The report of every call is `build/reports/conformance/report.txt`.
+- no internal error and no NaN;
+- no silent success: a success whose content is only zeros, `false`, and empty lists counts as silent;
+- `inputs` on every successful result that read a log;
+- true totals for shortened lists;
+- a note on every result computed from a log that was not read to its end;
+- every output the tool's description names.
 
-**Differential check.** The conformance sweep shows that the tools keep their contract, not that a number is right. This check reads each fixture with a second WPILOG reader, written from the format specification alone and sharing no code with the server or with WPILib's reader, and compares what the two read: the time range, every entry's type and sample count, the statistics of the most-sampled numeric entries and of entries holding NaN, and the enabled windows. It also recomputes domain answers from the raw records of the entries each tool says it used, by the rules [TOOLS.md](TOOLS.md) gives: the loop-time statistics of `analyze_loop_timing`, the roboRIO brownouts in `power_analysis` and `get_ds_timeline`, the per-bus figures of `analyze_can_bus`, the module speeds of `analyze_swerve`, and the mode of each enabled segment in `get_match_phases`. No expected value is stored, so the same checks run on any log. The server may set records aside only where the second reader sees damage itself.
+The output must also be deterministic: each call on a log is repeated with the log's entries reversed and twice shuffled, and must give the same result. Each fixture is then given a column file, built as the server builds one, and every call must give the same result again when its numbers come from the file (`COLUMN_FILE` in the report). The REV log tools are exempt, because they depend on the synchronization done when the log was loaded. Tools whose needed parameters are optional in their schema get argument variants that reach their real analysis. `compare_sessions` reads only catalogued stores, which the fixture directories are not, so the sweep also compares two sessions of a synthetic store with every signal role and pooling. `src/test/resources/conformance/known-failures.txt` is a ratchet: a violation not listed there fails the build, and so does a listed one that no longer occurs. It should stay empty. The report of every call is `build/reports/conformance/report.txt`.
 
-**Claim checks.** The documentation and the tool descriptions are checked against the code. Each tool's schema is compared with the parameters its code reads, the parameters in [TOOLS.md](TOOLS.md) with the schemas, and the tool table in the README and the catalog in `get_server_guide` with the registered tools. TOOLS.md must hold every tool, under the server's category for it. TOOL_RESPONSES.md is generated from logs a contributor may not have, so it may lack a tool that was just added; it may not misplace a tool or hold one the server does not have, and the scenarios file it is generated from must have a call for every tool. The reasoning guidance sent to agents may name only tools that exist and must fit its size limit.
+`RenderChartTest` checks requested PNG dimensions, full-window summaries against independent
+fixture arithmetic and `get_statistics`, histogram bins, step holds, resolver-only phases,
+exact scatter alignment, field geometry, pagination and unavailable imaging. `ChartDifferentialTest`
+recomputes summaries from the independent reader using the entries/windows reported in inputs.
+The shared summary statistics are checked against exact decimal arithmetic on telemetry-like
+series, values far from zero relative to their spread among them, and on combined summaries, a
+mean that needs the compensated sum's final correction, and the median of the largest doubles.
+The schema-driven conformance variants cover every kind and decode every returned PNG. Node
+checks cover the pure data-table adapter, notebook cells, URI admission and selection prompts;
+CI's editor smoke also checks actual Perspective rows before and after append. Tool-only
+conformance edits do not select the robot harness; replay/capture conformance edits still do.
 
-**Process tests.** Some behavior can only be seen from outside, so the tests start the server in a fresh JVM to check its startup configuration and logging. They also run the one-line installers against a stand-in for GitHub in a scratch home folder: the shell installer everywhere but Windows, and the PowerShell installer wherever PowerShell is installed, which includes the Windows CI job.
+**Differential check.** The conformance sweep shows that the tools keep their contract, not that a number is right. This check reads each fixture with a second WPILOG reader, written from the format specification alone and sharing no code with the server or with WPILib's reader. It compares what the two read: the time range, every entry's type and sample count, the statistics of the most-sampled numeric entries and of entries holding NaN, and the enabled windows.
 
-**Version checks.** The extension's version must equal the project version, and no comment in the source may date a change to a release later than the current one.
+It also recomputes domain answers from the raw records of the entries each tool says it used, by the rules [TOOLS.md](TOOLS.md) gives:
+
+- the loop-time statistics of `analyze_loop_timing`;
+- the roboRIO brownouts in `power_analysis` and `get_ds_timeline`;
+- the per-bus figures of `analyze_can_bus`;
+- the module speeds of `analyze_swerve`;
+- the mode of each enabled segment in `get_match_phases`.
+
+No expected value is stored, so the same checks run on any log. The server may set records aside only where the second reader sees damage itself.
+
+**Claim checks.** The documentation and the tool descriptions are checked against the code, including the experimental references under `doc/pit-server/`. Each tool's schema is compared with the parameters its code reads, the parameters in [TOOLS.md](TOOLS.md) with the schemas, and the tool table in the README and the catalog in `get_server_guide` with the registered tools. The main tool reference must hold every registered tool, under the server's category for it.
+
+`OperationsClaimTest` checks the manual's backticked tool names, CLI verbs, YAML examples,
+provider names and states, emitted metrics, and relative links to document headings. Unknown
+bare identifiers must be classified as prose or result fields so a misspelled tool cannot
+silently escape the registry check. The checks do not repeat the manual's installation walk.
+
+TOOL_RESPONSES.md is generated from logs a contributor may not have, so it may lack a tool that was just added. It may not misplace a tool or hold one the server does not have, and the scenarios file it is generated from must have a call for every tool. The reasoning guidance sent to agents may name only tools that exist and must fit its size limit.
+
+**Process and installer tests.** Fresh JVMs verify startup configuration and logging. `InstallCommandTest`, `CodeInstallerTest`, `InstallRefreshTest`, and `InstallerTest` use temporary installs, fake release downloads, and fake VS Code CLIs. They check containment and layout on both platforms’ path rules, generated launchers, version ordering, exact JAR copies, and JSON isolated from JVM stderr. They also check preserved settings, refresh guards and stopping a real daemon, release selection, prompts, one matching VSIX installation, and the legacy fallback. PowerShell checks run when PowerShell is available; native Windows execution remains CI’s job.
+
+Directory lease tests drive the real transport: session expiry/deletion/replacement, cached-read revocation, independent clients, origin/team listings, key precedence and captured logs, loopback/Origin refusals, symlinks, imports, and the actual inbox poller. A packaged bridge runs in a temporary home and project to prove home-only server configuration, project/flag leases, relative paths, URL connections, repeated initialization, and cleanup at EOF. The fake TBA service sees only synthetic keys. Mutation checks cover these boundaries; no live API or user's home is used.
+
+**Version checks.** The extension's version must equal the project version, and no comment in the source may date a change to a release later than the current one. `ChangelogTest` requires one section per release and Unreleased first, so a duplicated published heading cannot hide pending changes.
+
+**Synchronization-cache recipe.** `SyncCacheVersionGuardTest` checks the reviewed source
+digests in `src/test/resources/conformance/sync-cache-inputs.json`, the cache format version,
+and a dated compatibility explanation. It includes the REV package and explicit shared
+parsing, decoding, sample, clock and synchronization dependencies. When one changes, review
+whether existing cached answers remain valid before updating the baseline. A `format_bump`
+decision must increase `SyncCacheSerializer.CURRENT_FORMAT_VERSION` relative to the recorded
+previous version; `cache_unaffected` keeps that version and explains why answers are unchanged.
+Changing the baseline alone is not evidence of compatibility. Review new shared dependencies
+and external libraries too; the explicit source list cannot discover their semantics.
+Hashes normalize CRLF. When changing the guard, plant a behavioral REV-source change and
+invalid compatibility decisions, verify their assertions, and restore exact source bytes.
+
+**Scan-index compatibility.** `ScanIndexVersionGuardTest` checks the reviewed source
+digests in `src/test/resources/conformance/scan-index-inputs.json`, the index format and
+scan recipe versions, and a dated compatibility explanation. Its explicit inputs cover
+the serializer, cache owner, log loading, scan construction and file snapshots, offset
+ordering, mapped/scoped readers, and the WPILib access adapter. Changes that alter an
+encoded index or its interpretation require the appropriate version bump; unchanged
+answers require a recorded explanation. As with REV caches, source hashes normalize
+CRLF, and changing the baseline alone does not prove compatibility.
+
+**Column-file compatibility.** `ColumnFileVersionGuardTest` does the same for column files,
+against `src/test/resources/conformance/column-file-inputs.json` and the format and recipe
+versions in the column file format. Its inputs are the sources that decide what a file holds
+and how it is read back: the format and its packing, writer and reader, the entry and struct decode, the
+lazy log's record reads, the scan and its offsets, the mapped reader, the field path grammar,
+the record cursors, and the WPILib access adapter. A change that alters a file's bytes or
+their meaning raises the format or recipe version, and files of another version are removed
+by the startup sweep; unchanged answers require a recorded explanation.
+
+**Column files.** The format's tests compare every column of every fixture with the tools' own
+reads and refuse damaged, crafted and truncated files. With a file built, the signal resolver
+must give every held and pooled path of every fixture and of a log of edge cases the decode's
+samples to the bit, including the bits that tell repeated values apart, and the data endpoint's
+series must keep the decode's value types and decode problems. The five presentation routes
+(`read_entry`, the data endpoint's Arrow and CSV, native reductions, the preview and the chart)
+must give the oracle's answers from the file as from the log, and native reads must give the
+log's batches, samples, record facts, problems and counts in sixteen ways: time and file order,
+windows, small batches and byte budgets, first record indexes, record limits and reductions.
+They are read every way on a log of edge cases and on each fixture entry's first held path. A
+test names the reads a file must serve and those it must leave to the log, and another checks
+that a file a loaded log holds counts as in use, which the cache's trim keeps, and that it closes
+with the log's mapping. The open capture's columns are checked with the live log, in [the pit server's
+capture tests](pit-server/DEVELOPMENT.md#capture-tests); here the startup sweep must remove a
+scratch file only when an earlier process left it, and the trim must never evict one.
+
+**Runtime-native guard.** `./gradlew build` reaches `verifyRuntimeNativeLibraries` through
+`check`. The guard inspects the main application runtime classpath, including resource directories and
+JAR/ZIP members, and the completed `-all` JAR for `.so`, `.dylib`, `.jnilib` and `.dll`
+files, case-insensitively. A hit fails the build and names the artifact/member. `testNatives`
+is not on the application's runtime classpath and remains available to independent test
+oracles. This guard checks shipped native-library artifacts; it does not claim all memory
+is on the heap or prove arbitrary Java code cannot call a platform API.
+
+`DecisionIndexTest` checks each dated decision row's status and every index link's target
+file and heading, including duplicate-heading suffixes. When changing these checks, plant
+an invalid native member and a broken index anchor, respectively, verify the matching
+refusal, and restore the exact original bytes.
 
 **Build file check.** The stress test tasks, which nothing else runs, must build the test classes first and fail the build when a test fails. The CI workflow must run the license check, which neither `test` nor `shadowJar` includes.
 
-CI runs `./gradlew test shadowJar license` on Linux and Windows, and builds and tests the extension. `license` checks that every Java file carries the license header in `gradle/license-header.txt`; `./gradlew licenseFormat` adds a missing one. On a push to `main` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
+CI runs `./gradlew build license` on Linux and Windows (Linux adds `-Pcoverage`), and builds and tests the extension. `license` checks that every Java file carries the license header in `gradle/license-header.txt`; `./gradlew licenseFormat` adds a missing one. On a push to `main` or `development` it also submits the Gradle dependencies to GitHub's dependency graph: GitHub does not read `build.gradle`, and without the submission Dependabot alerts cover only the extension's npm packages, not the libraries in the server JAR.
 
 ### Tests on real logs
 
@@ -73,17 +316,37 @@ These are opt-in, because the logs are not in the repository. Each is selected b
 
 ```bash
 # The real-log suites, on a directory of logs
-./gradlew test --tests '*.conformance.*' -PconformanceLogDir=/path/to/logs [-PsimLogDir=/path/to/sim-logs] [-PconformanceMaxLogs=N] [-PconformanceTools=a,b]
+./gradlew test --tests '*.conformance.*' -PconformanceLogDir=/path/to/logs [-PsimLogDir=/path/to/sim-logs] [-PconformanceSample=full] [-PconformanceMaxLogs=N] [-PconformanceTools=a,b]
 
 # Golden values from known logs
 ./gradlew test --tests '*.golden.*' -PgoldenLog=/path/to/akit_26-09-30_00-10-26.wpilog -PgoldenMatchLog=/path/to/akit_cmptx_e4_sample.wpilog
 ```
 
-`-PconformanceMaxLogs` limits a run to the first N logs, `-PconformanceTools` to the tools named, and `-PsimLogDir` is described under the claims check below.
+`-PconformanceLogDir` enables a deterministic stratified sample by default; use
+`-PconformanceSample=full` for every file. The same selector serves the tool sweep, differential
+check, real-log claims and every Java gateway, pull, pair and live replay. Native selection is
+independently controlled by `-PconformanceNative=none|sample|full` (default `sample` for
+`shopHarness`). Reports under `build/reports/conformance-sample/` name the selected paths, their
+strata and unavailable strata.
 
-- Real-log conformance sweep: the fixture sweep's checks (all but the comparison of each description with its outputs) and argument variants, for every tool that reads a log, on every `.wpilog` under the directory (up to 6 levels deep), with the entries reversed for determinism. There is no ratchet, so any violation fails. The report, with the time of every call, is `build/reports/conformance/real-logs.txt`.
-- Real-log differential check: the second reader against the server on every log, with the domain answers above. A file neither can read is counted, and a file only one can read is a finding. The report is `build/reports/conformance/differential.txt`.
-- Claims on the live service: the server is started on its HTTP transport and called as a client would call it, and each answer is compared with a fact established independently of the tool under test. The facts are about Team 2363's sample logs, and about simulated logs whose `MANIFEST.md` was written by a separate reader; `-PsimLogDir` names the directory holding those. With other logs, or without that directory, a claim whose precondition isn't met is reported as not verifiable, never as passed. The report is `build/reports/conformance/claims.txt`.
+`-PconformanceMaxLogs=N` still restricts the input to the first N paths in sorted order, before
+sampling, in both ordinary and harness tasks. A limited run may therefore lack a stratum or a
+two-boot pair; its report says so. `-PconformanceTools` limits only the tool sweep, and
+`-PsimLogDir` is described under the claims check below. For a targeted Java replay sample:
+
+```bash
+./gradlew test --tests '*RealLogReplayTest' --tests '*RealReplayPullTest' --tests '*RealReplayPairTest' -PconformanceLogDir=/path/to/logs
+```
+
+See [Releasing](#releasing) for the full pre-tag commands and the [integration testing guide](pit-server/DEVELOPMENT.md#replaying-a-directory-of-logs)
+for the selector's strata and replay details.
+
+- Real-log conformance sweep: the fixture sweep's checks (all but the comparison of each description with its outputs) and argument variants, for every tool that reads a log, on each selected `.wpilog` recursively under the directory, with the entries reversed for determinism. There is no ratchet, so any violation fails. The report, with the time of every call, is `build/reports/conformance/real-logs.txt`.
+- Real-log differential check: the second reader against the server on each selected log, with the domain answers above. A file neither can read is counted, and a file only one can read is a finding. The report is `build/reports/conformance/differential.txt`.
+- Real-log replay: every complete record through the gateway, JDK client, writer and HTTP tools,
+  compared against the differential reader's original bytes, including type, metadata history,
+  timestamps and topic accounting. Per-file JSONL reports are under `build/reports/replay/`.
+- Claims on the live service: the server is started on its HTTP transport and called as a client would call it, and each answer is compared with a fact established independently of the tool under test. The facts are about Team 2363's sample logs, and about simulated logs whose `MANIFEST.md` was written by a separate reader; `-PsimLogDir` names the directory holding those. With other logs, without that directory, or when a named log is outside the selected sample, a claim whose precondition isn't met is reported as not verifiable, never as passed. The report is `build/reports/conformance/claims.txt`.
 - Golden checks: values from a practice log of Team 2363 (`-PgoldenLog`) and from a 2026 championship elimination match that Team 4065 published under the MIT license (`-PgoldenMatchLog`, its `akit_cmptx_e4_sample.wpilog`), computed separately with WPILib's Python log reader and NumPy. Each property switches on its own set.
 
 With `-PconformanceLogDir`, the tests run with a 4 GB heap (the launcher's default) instead of the usual test heap; `-PconformanceHeap=8g` changes it.
@@ -98,13 +361,108 @@ Use your own team's logs. Logs that another team has deliberately published can 
 ./gradlew httpStressTest   # Over the HTTP transport only
 ```
 
-The stress tests also need real logs, but they are Gradle tasks of their own rather than properties on `test`. The in-process test loads every log in the directory, runs the tools group by group on the first one, loads and evicts logs to stress the caches, and calls tools from several threads at once. It runs the REV log tools on the first log that has a REV log, and there checks the disk cache: it synchronizes the log with the cache off, then twice with it on, the second time from the cache, and the REV log tools must give the same answers each time. The HTTP test drives the HTTP transport as several clients would: sessions, concurrent calls, batches, and protocol edge cases, with its REV log calls on that same log. Both hold the results of their sequential calls to the conformance checks. A failing test fails the build. When the log directory does not exist, every test is skipped.
+The stress tests also need real logs, but they are Gradle tasks of their own rather than properties on `test`. The in-process test loads every log in the directory, runs the tools group by group on the first one, loads and evicts logs to stress the caches, and calls tools from several threads at once. It runs the REV log tools on the first log that has a REV log, and there checks the disk cache. It synchronizes the log with the cache off, then twice with it on, the second time from the cache; the REV log tools must give the same answers each time.
 
-They take their settings from a server named `stresstest`. It is looked for in the file given with `-Pconfigpath=/path/to/config.yaml`, or else in the first of these files that defines one: `.wpilog-mcp.yaml` or `.wpilog-mcp.json` in the project root, then `~/.wpilog-mcp/servers.yaml` or `servers.json` (the file the installers write defines one). With no such server, they use `~/riologs` and team 2363. A TBA key in those settings (or in `TBA_API_KEY`) is used, so the TBA tools then call the live API. The heap is `WPILOG_MAX_HEAP`, or `4g`. The disk cache is never the one in those settings, but the tests' own (below).
+The in-process suite also compares each log with scan-index caching disabled, on the
+first enabled open, and after unloading and reopening. It compares all entry declarations
+and counts, source bounds and damage facts, plus the first 1,000 exact microsecond
+coordinates and `read_entry`/`get_statistics` results for up to three numeric entries.
+The cache hit counter distinguishes a persisted index from an in-memory reuse or fresh
+scan. An oversized or ineligible log still has every selected answer compared and is
+reported as a fresh-scan fallback; the test is skipped with an explanation if no log
+exercises a persisted hit. `ScanIndexStressComparisonTest` calls the same helper in the
+ordinary suite with synthetic logs, requires real persisted hits, and checks independently
+derived values, statistics and exact coordinates. `ScanIndexCoverageTest` pins the opt-in
+call so this comparison cannot disappear silently.
+
+The HTTP test drives the HTTP transport as several clients would: sessions, concurrent calls, batches, and protocol edge cases, with its REV log calls on that same log. Both hold the results of their sequential calls to the conformance checks. A failing test fails the build. When the log directory does not exist, every test is skipped.
+
+They take their settings from a server named `stresstest`, looked for in:
+
+1. the file given with `-Pconfigpath=/path/to/config.yaml`, or else
+2. the first of these files that defines one: `.wpilog-mcp.yaml` or `.wpilog-mcp.json` in the project root, then `~/.wpilog-mcp/servers.yaml` or `servers.json` (the file the installers write defines one).
+
+With no such server, they use `~/riologs` and team 2363. A TBA key in those settings (or in `TBA_API_KEY`) is used, so the TBA tools then call the live API. The heap is `WPILOG_MAX_HEAP`, or `4g`. The disk cache is never the one in those settings, but the tests' own (below).
+
+### Architecture-hardening soak
+
+`architectureHardeningSoakTest` is an opt-in task with the `architecture-hardening-soak` tag,
+excluded from ordinary tests. It uses one test worker, a 768 MiB heap and its own
+`build/hardening-soak-disk-cache`. Run the full recording workload with:
+
+```bash
+./gradlew architectureHardeningSoakTest \
+  --tests '*ArchitectureHardeningSoakTest.captureKeepsEveryGeneratedValueDuringImportAndHttpReads' \
+  -PhardeningSoakSeconds=600 -PhardeningSoakLabel=full --console=plain
+```
+
+The pure-Java fixture and loopback NT4 stream generate 100 topics at 50 Hz for ten minutes:
+3,000,000 values, exactly 30,000 per topic. Each value is `topic_index * 1_000_000 + tick`,
+and every recorded timestamp and value is checked against that generator. Concurrent clients
+exercise real MCP and `/read/v1` HTTP routes while a 128-file import includes a controlled
+35-second inspection stall. The listener must remain below a one-second stall, observed
+store actions must stay within their one-second budget, and force durations and completion
+gaps must stay within two seconds. Admission and reads must succeed, forces must occur and
+sampled heap must stay below its configured maximum.
+
+Reports distinguish sampled heap from total process memory and exact peaks. Store timings
+retain the blocked logging callback limitation in
+[item 1](ARCHITECTURE_HARDENING_PLAN.md#implementation-disposition--2026-10-20).
+The task also has a separate 500-file import timing method; select the method above when only
+the soak is wanted.
+
+The live dashboard's gate is the task's third method, which the recorded Grafana dashboard had to
+pass before it shipped:
+
+```bash
+./gradlew architectureHardeningSoakTest \
+  --tests '*ArchitectureHardeningSoakTest.liveDashboardKeepsItsBoundsOnATwoHourRecording' --console=plain
+```
+
+The pit server's capture service records a synthetic robot over loopback NT4: the soak's 100
+topics at 50 Hz and an AdvantageKit-style wall clock. It first records two hours, streamed ten
+times faster than real time, then ten minutes in real time while twelve panels ask the real HTTP
+transport every five seconds for `capture=current` over the last five minutes by measured UTC, at
+1,000 points, as Grafana does; every answer is checked against the generator. The listener must
+wait at most a second; each refresh must finish within 250 ms, and its requests allocate under
+50 MB on the server's HTTP threads, both at two minutes and at two hours; and the heap left after
+a full collection must grow by less than 64 MB. `-PhardeningGatePrefillHours` and
+`-PhardeningGateSeconds` shorten it for a trial, which proves nothing about two hours. It takes
+about 25 minutes, writes about a gigabyte under `build/reports/architecture-hardening`, deletes
+it when it passes and keeps it when it fails, and reports to `dashboard-gate-<label>.json`. The
+report also holds the listener's longest delay while the prefill streams, and how many of its
+delays reached a second; those are reported, not bounded. The shorter 120-second run is a pre-change baseline, not the ten-minute
+acceptance gate. All recordings are synthetic; this does not replace Linux, Windows, real
+robot, NT4 replay or native editor validation.
+
+### Windowed mapping
+
+`WindowedMappingTest` exercises exact boundary endings, crossing headers and truncated tails,
+long random-access offsets in a sparse file and cold live reads beyond 2 GiB. The 4 KiB fixture
+pass compares every record's timestamp and payload with the independent reader; one fixture runs
+through the schema-driven conformance sweep and one through a real move import at that window
+size. Windows CI runs a deliberately leaked-window mutation before its ordinary build and
+requires the import check to fail. It observes the JVM's actual mapped-buffer count as well
+as the move: a Windows/JDK combination that permits renaming a mapped file must still catch
+the leak. The restored source then runs in the full build.
+
+`./gradlew largeLogTest` is opt-in, beside the stress tasks. It writes a 2.2 GB synthetic fixture,
+reads its last entry, imports it, and records enough capture data to roll a file past 2 GiB.
+Allow about 5 GB of temporary disk space; nothing comes from a robot. It is excluded from
+`test` and `shopHarness`. `IndexMemoryTest` reports the largest generated fixture's compact
+index bytes under `build/reports/round17/`; ordinary files must retain four bytes per offset.
+The report separates exact array payloads from per-entry container overhead (the latter stated
+for HotSpot with compressed references and eight-byte object alignment).
 
 ### The disk cache in tests
 
 Every test task, the stress tests included, uses its own disk cache folder, `build/test-disk-cache`, and empties it before the run. So a run starts with nothing cached, synchronizes every REV log itself, and never reads or writes your own cache. `-PtestCacheDir=/path/to/folder` uses that folder instead and keeps what is in it: a second run then starts from the results the first one saved. Pointed at a copy of a cache that an older version wrote, a run shows how this version treats that version's results. Use a copy, because the tests write to the folder.
+
+### Scratch under `build/`
+
+What a run writes under `build/` for its own use lasts until the next run of the same suite. A replay that passes deletes its run folder, and one that fails keeps it for diagnosis. Before its tests start, each task empties the folders its suites write, as it empties its disk cache: every test task empties `build/test-fixtures`; `test` with `-PconformanceLogDir` empties the real-log replay folders (`build/replay-work`, `build/replay-pull` and `build/replay-pairs`) and `build/real-log-conformance-export`; `shopHarness` empties `build/replay-native` and `build/shop-harness`. A targeted `test` without `-PconformanceLogDir` leaves a failed real-log run's folder alone while you look into it. The native editor runners keep only their latest run in each of their folders under `build/`; an output folder you name for them keeps every run. Copy what you want to keep out of these folders before the suite runs again.
+
+A claim check fails when a test, a native editor runner or the build script names a folder under `build/` that no task empties, that is not a disk cache, and that the check does not list as kept on purpose with its reason. A new suite's scratch therefore goes into one of the lists in `build.gradle`. Reports under `build/reports/` are written by name, so the suite's next run replaces them; a test that names a report after a temporary folder deletes it.
 
 ### Extension tests
 
@@ -114,18 +472,581 @@ npm ci
 npm test
 ```
 
-These cover the extension's logic that needs no running VS Code: resolving log directories and settings, writing the Claude Code entry and configuration file, removing the TBA key from those files, what happens to a key entered in the settings, and the settings' order and declarations. `npm test` compiles the extension and runs every compiled `*.test.js` through `src/test/runTests.ts`, which works with Node 20 and later on any platform; a new test file is picked up by its name.
+`npm test` compiles TypeScript and runs every `*.test.js` through `src/test/runTests.ts` on Node 20+. The suites cover:
+
+- Directory resolution and per-path teams; lease-refresh decisions; standalone layout, install arguments/summaries and version decisions; user-scope Claude commands on both platforms; project YAML offers/content; and conservative migration of recorded legacy entries. Migration keeps tracked/custom files and waits for a successful old-daemon stop before removing private settings.
+- MCP sessions and registrations against a fake transport, including reconnect, disposal, overlapping updates, refusal words, and secret redaction. The real-JAR client test proves another session can explicitly select a leased directory and observe key availability, then loses both when the holder closes. It uses a scratch home and no live TBA requests. That test skips only when the current-version JAR or Java is unavailable; CI builds the JAR first.
+- Shared-server preparation and startup against fake launches with real HTTP health and temporary PID/configuration files: one start for concurrent consumers, declined installation, failed starts, missing PID records, and ordered manual restart. Settings change leases rather than rewriting configuration or restarting the daemon.
+- The explorer's tree models (plain/store/mixed listings, directory origins, structs and arrays), organizing decisions and quick picks, MCP/data/import request handling, pagination, refusals and retry limits, content security policy, and manifest declarations/order/command links.
+- The Entries sidebar's inline-filter command, full-path filtering before branches are opened, lazy field expansion, stale asynchronous replies, keyboard navigation and Collapse All behavior.
+- The webview's Arrow reader against Java-produced streams and CSVs, including enums and decode problems; plot arithmetic on known arrays; a decode-warning chip through the real handler with a small test DOM; and console, field, and REV models. Arrow fixtures skip when the Java build has not produced them.
+
+New checks must fail on planted production faults. In particular, queue checks use latches and immediate exchanges to force ordering; a passing test that never exercised the competing update proves little.
+
+#### The real editor smoke
+
+```bash
+./gradlew bundleExtension extensionSmokeFixture
+cd vscode-extension
+npm ci
+VSCODE_VERSION=1.101.0 xvfb-run -a npm run test:smoke
+VSCODE_VERSION=stable xvfb-run -a npm run test:smoke
+```
+
+These commands run on Linux with Xvfb installed. From macOS or Windows, use the two `editor-smoke`
+CI jobs; the runner refuses to open an editor on those desktops. CI runs both versions in separate
+Linux jobs. `@vscode/test-electron` 2.5.2 is a development only dependency (MIT); that line supports
+CI's Node 20. It downloads a separate VS Code, cached in `.vscode-test`, without using the installed
+editor. `npm test` is unchanged.
+
+The smoke generates its log once with the pure-Java fixture writer, copies it and its append record
+into each run's temporary folder, seeds a standalone install in a temporary home under
+`build/extension-smoke`, and lets the extension start its server. It checks activation, the shared
+daemon's health/version, the actual Logs provider's leased fixture listing, the custom editor tab,
+Perspective's actual row count (two fixture records, then three after an appended record), and the
+real pit command's user-scope arguments. A test `claude` executable records argv without registering
+anything.
+
+The runner stops its own daemon, retains logs/results under `build/extension-smoke`, and never
+changes the user's install or account. Test code, downloaded editors and dependencies are excluded
+from the VSIX.
+
+CI then runs `test:smoke:plants`: six faults in disposable compiled output remove activation,
+startup, listing or editor opening, replace an appended table batch, or add a synthetic secret
+argument. Each must fail at its own assertion after the earlier checks passed; a timeout or
+unrelated crash is not accepted. The script restores every compiled file and runs only in Linux CI.
+
+This retires the real-editor caveat for those six surfaces. It does not inspect rendered
+plots, exercise credential dialogs, contact the Claude service, or prove agent discovery.
+The older milestones were checked without a real editor; these interactions still need the
+oldest supported and current versions by hand:
+
+1. Install from a fresh home: one offer, Not now lasting until activation, installer progress/PATH notice, and successful server startup. Verify only absolute User directories/team seed a new file and no key does.
+2. Update an older launcher with its YAML preserved; keep a newer hand install. Test the on-demand install command and a development suffix.
+3. Ask Copilot for `list_available_logs`: origins/teams are visible; opening and closing project windows adds and removes their directories. Settings/key/folder changes do not restart the daemon.
+4. Use `get_tba_match_data` with the secret-storage key and confirm no configuration, project file, command, or output contains it. Clear the key and check fallback behavior.
+5. Register Claude Code at user scope, including the copy-command fallback. Accept/decline the project YAML offer and gitignore choice; run the bridge in a terminal with VS Code closed.
+6. Open legacy projects: retire only recognized untracked/ignored entries, preserve other entries and tracked/custom files with a note, stop `vscode-default` once, and remove its private settings. Check a failed stop can retry next activation.
+7. Exercise the explorer: log/entry trees and origins, plotting and statistics, console cursor, field pose, REV alignment, decode warnings, and read refusals. For organizing, check once-per-activation offers, Never/on-demand override, folder and robot picks, import into a chosen store (including cancellation), in-place copy/move, progress/refusal output, inbox states, assignment, and refresh. The detailed milestone 6 checklist is in [EXPLORER_PLAN.md](EXPLORER_PLAN.md#11-milestones).
+
+8. Exercise Perspective filters, grouping/pivots, quick charts and CSV export. Open a notebook beside a writable log and with workspace fallback; run it with a chosen Python kernel. Open chart links (including refused paths and histogram/scatter/field panes), use Ask about this selection in each pane, and check both chat and clipboard routes. These interactive flows remain manual.
+
+Native Windows launchers/CLI integration and the interactive installer should also be checked on Windows; Node tests of Windows path/argument rules do not replace that. Installer tests use temporary homes and fake releases/CLIs, never the user's install.
+
+### Visualization Stage 1 lifecycle prototype
+
+`npm run test:visualization` in `vscode-extension` compiles and runs an isolated fixture extension
+in real VS Code; set `VSCODE_VERSION` to an explicit cached/test release (for example `1.101.0`).
+The runner uses a new profile, workspace, shared-data directory where supported, and synthetic backend under `build/visualization-stage1`;
+it does not activate the product extension, start the installed server, or access robot logs.
+On Linux, run it under Xvfb. On macOS it uses the cached editor and opens a disposable window.
+It launches normally rather than using VS Code's in-memory test workbench; its second launch
+checks actual dirty-document restoration and reconciliation of an offline edit. Set
+`WPILOG_VISUALIZATION_DIALOGS=1` for the interactive Close check, then click **Cancel** in the
+fixture's dirty-document dialog. The unattended run does not claim that check. The fixture
+serializes editor switches through a webview acknowledgement, then requires the intended editor
+to stay active for 200 ms. Lost focus retries reveal within one ten-second deadline; native
+Undo/Redo commands are never retried. Deterministic Node tests inject focus loss at and after
+acknowledgement, plus deadline exhaustion. A native cleanup regression starts with B active,
+reveals A before Revert and checks B is unchanged. Each native Undo/Redo must invoke exactly one
+callback and persist the expected configuration. It records callback and focus traces in `initial-native-events.json` (and the
+restore equivalent); it never retries a failed Undo to obtain a pass. Native lifecycle failures are gates,
+not optional passes; evidence must distinguish them from pure controller tests.
+
+Focused server tests are `*Visualization*Test` and `*CallerContextTest`; the ordinary Node suite
+includes visualization controller and recovery-journal tests. The Java contract resource owns
+configuration validation. The fixture backend is a synthetic lifecycle test double, not a second
+production persistence service. Native Save As stays unavailable with a Save view… hint until
+its picker, destination alias, and replacement-tab gates are established. Stage 1 remains an isolated lifecycle regression; Stage 2a registers the optional product preview described below.
+
+### Visualization ordinal-follow proof
+
+The first Stage 3 gate proves the engine independently of HTTP and editor integration. Run
+`./gradlew cleanTest test --tests '*OrdinalFollowTest' --tests '*SampleCursorsTest' --tests '*SessionReadTest' --tests '*LiveReadEngineTest' --tests '*ManagedLogAccessTest' --tests '*VisualizationSseLifecycleTest'`.
+`OrdinalFollowTest` compares real writer-owned prefixes against `IndependentLog`, the separate
+WPILOG-format reader. It checks physical offsets, ordinals, timestamps, values and malformed
+records across bootstrap, equal/backward timestamps, concurrent appends and retries. Other
+cases cover metadata/schema-only publications, late entries, caller-proven rollover members,
+finalization, identity/history refusals, byte budgets and close during an admitted batch while
+another reader and writer continue. Native cold-decode and SSE shutdown regressions have
+failing-first evidence; the new continuation contract is checked with planted regressions.
+The first-gate review refinements also have failing-first checks: native payload and wire
+expansion gaps, a frontier sent once per prefix, metadata-only pages, full-envelope admission,
+64 entry/member batches in one page, byte-boundary deferral and globally bounded work.
+`SampleCursorsTest` pins the explicit size policy and its default refusal; `SessionReadTest`
+checks that the policy survives the real HTTP/session adapter. Plants cover these boundaries.
+The server integration adds `FollowEndpointTest`, `FollowLeaseTest`, `SessionAliasesTest`, and
+catalog/sync/mirror/recovery cases. Run `./gradlew test --tests '*Follow*Test' --tests '*SessionAliasesTest' --tests '*StoreReadCatalog*Test' --tests '*StoreSyncTest' --tests '*MirrorSyncTest' --tests '*CaptureRecoveryTest'`.
+The real HTTP test drives a writer-owned capture through bootstrap/retry, backward appends,
+metadata-only publication, finalization and live writer replacement. Its malformed-body regression
+checks create, next and snapshot routes for a short 400 `INVALID_REQUEST`, including invalid UTF-8,
+duplicate fields and truncated JSON, while preserving exact retained-page retries. Lease tests bound saturation,
+idle expiry, cancellation and retained bytes; an acknowledged frontier releases its native prefix
+before waiting. Store tests prove alias preservation, anchored membership, mirror copying and the
+safe outcome after older writers drop aliases. A syntax-tree guard checks every session copy.
+`StoreReadCatalogRefreshTest` mutates real files at the inventory/validation boundary: open growth,
+strict cache invalidation, manifest churn, bounded two-scan retry, payload shrink/rewrite/replacement,
+closed-file growth and member disappearance. `FollowEndpointTest` polls during 4 ms and 20 ms
+appends and checks every synthetic timestamp, ordinal and value. `FollowLeaseTest` and
+`ReadEndpointTest` check typed transient/permanent 409 responses and same-cursor resumption;
+`followClient.test.ts` drives the real HTTP adapter and broker through create/next refusals, and
+`liveBroker.test.ts` checks uninterrupted peers. Plants restore the old scan/refusal behavior and
+weaken each boundary; evidence is under `/private/tmp/wpilog-visualization-stage3-catalog-retry/`.
+The pre-broker contract tests cover multi-page final drains, exact terminal retries and repeated
+410 acknowledgements, terminal data release/expiry, typed structural/transient 413 refusals,
+and resumption after a budget refusal that already acknowledged the prior page. Fairness cases
+cover quiet members, distinct projections, malformed records, tiny pages and byte deferral;
+the independent reader still checks exact values and physical ordinals. A 64 KiB page fixture
+puts 5,000 numeric records beside ten 40,000-byte raw records: the first deferred selection
+opens the second page, other selections fill remaining space, and each deferred lookahead is
+read only once per page. A second large selection and a capped numeric query check that the
+first deferral keeps priority; all values, timestamps, ordinals and exact retries are checked
+through the completed prefix.
+Writer-incarnation
+tests drive real capture open/close/resume/rollover, cold replacement followed by finalization,
+legacy finalization refusal, recovery, peer copying and mirroring. A provenance-copy syntax-tree
+guard covers both telemetry and system-text copy constructors. These checks also require
+`*CaptureStoreTest`; capture changes run the available shop harness with native replay selection.
+These suites do not establish authenticated remote visualization, an editor live workflow,
+native Linux/Windows execution or the declared performance workloads.
+
+### Visualization follow broker checkpoint
+
+Source-admission tests drive real writer-owned prefixes through inspection, including
+empty/finalized clocks, late entries, backward timestamps, rollover conflicts, aliases,
+writer/hash/grant refusals, known-hash recovery and the aggregate metadata cap. The HTTP/MCP
+result opens a 1 MiB native follow and preserves exact ordinals. Shipped-overview checks prove
+that recording inspection does not offer unfinished live controls. These establish source
+admission, not the live-panel, display-budget or performance gates. Hash-memory regressions
+count actual SHA-256 reads across two synthetic finalized rollover members, repeated inspection,
+recorded-file admission and index eviction. They check path/size/time/identity/manifest changes,
+failed or unstable verification, quota eviction, idle expiry, concurrent cold/warm calls,
+nonblocking close and no late cache resurrection. Grant revocation still refuses cached proofs.
+Paged inventory tests enumerate generated 5,000-, 10,000- and 20,000-topic two-member
+recordings against independently generated names and counts. They exercise HTTP/MCP parity,
+cursor replay and tampering, session sharing/revocation, fresh details, schema dependencies,
+large metadata/unavailable rows, memory and response reservations, and expiry.
+Saturation checks block HTTP and MCP readers together, keep health/ping/close available, and
+check denied Origins, raw UTF-8 request boundaries (including whitespace and overwritten
+fields), normal/pressured session admission, mixed-batch ping/close/invalid-request behavior,
+notification suppression, and the aggregate batch reply cap. Real-socket floods fill both the
+data and refusal pools and exceed their I/O deadlines while clients stay connected; health
+must recover and request accounting must unwind. Direct stdio uses the raw line byte count too.
+Real writer fixtures interleave appends, declarations, renames, finalization and rollover with a fixed
+traversal. Blocked-admission tests retain reservations until cancellation unwinds and prove
+health, ping and close stay available under mixed HTTP/MCP pressure. These are server service
+checks. The separate native overview gate below drives paged discovery; the season-sized
+catalog and declaration-burst performance measurements remain separate work. Generated reference scenarios include the new tools; the published response
+reference is regenerated at release, not as a claim of new private-log replay evidence.
+The [checkpoint record](VISUALIZATION_PLAN.md#stage-3-recording-source-inspection-checkpoint-2026-10-15)
+links the local validation evidence.
+
+The queried-frontier regressions run 5,000- and 10,000-topic recordings with two members,
+32 selected signals and 1 MiB pages. They check exact values/ordinals, legacy full metadata,
+explicit negotiation and refusal, transitive schema dependencies, late selections, and full
+history proof for unselected entries. Client checks include retirement after failed negotiation,
+strict page scope, and request-byte admission before a subscription changes its peers. A
+real-server broker workflow covers a 10,000-topic two-member recording through growth and
+finalization; this is a bounded correctness workload, not the sustained performance gate.
+
+Run `./gradlew followBrokerTest` after installing the extension dependencies. It compiles the
+extension and test classes, then runs `liveBrokerReal.test.ts` against a child JVM containing the
+real `CaptureWriter`, index and `HttpTransport`. `-PnodeExecutable=/path/to/node` uses the same
+lookup as `compileExtension`. The task supplies the JDK and test classpath; ordinary `npm test`
+explicitly skips the integration cases when that classpath is absent. CI runs the task on both
+Linux and Windows when extension/broker dependencies change. No editor, robot or user store is used.
+
+The driver checks exact tagged values, signed zero, physical ordinals and duplicate/backward
+timestamps; appends during a blocked bootstrap, byte-identical lost-response replay, metadata-only
+publication, an oversized raw-record gap, server restart and a final hash/drain. It also follows
+4,096 records of 19-element double arrays at the default 4 MiB page size, independently checking
+all 77,824 floating-point bit patterns. That full server page exceeds the unreleased broker's old
+262,144-node ceiling. The protocol regression admits the same-sized synthetic page and checks
+the byte-derived traversal bound, negotiated-budget propagation and the separate depth limit.
+A second real-server case uses the approved 1 MiB panel page size. It checks that later joins,
+refresh, subscription release/reveal and wider windows preserve peers' leases, resets and exact
+ordinal deltas; joining during server replacement and after finalization still drains the same
+recording and retires each lease exactly once. This tests acquisition, not editor visibility.
+Pure Node checks cover same-turn union/refcounts, sealing before callbacks/awaits, overflow
+splitting, immutable query supersets through expiry, refresh admission before detachment,
+monotonic reset numbers, cancelled borrowed pages and retirement reservations. They exercise
+32 matching jobs at 1 MiB within 64 MiB, and refresh at the 256-consumer cap, alongside deadlines,
+generation rejection, terminal/expiry states and exact retry cursors. HTTP tests cover cancellation (including credential lookup),
+response limits, proxy authentication/refusals and origin confinement. Client-cap regressions
+check the 64 KiB UTF-8 boundary, repeated windows and synchronous admission without changing
+an existing peer. This checkpoint does not
+exercise a live editor or establish the combined decoded display budget or performance gate.
+
+Recording compatibility checks use generated two-member sources and a real capture writer.
+They cover complete-entry resolution beyond a 20,000-name overview, per-member absence and
+conflicts, exact-name/role/unit rules, native schema/projection evidence, late declarations,
+aliases, writer proof and finalization. HTTP and MCP must return equal compatibility facts.
+Native evidence is checked against the existing resolver for every role and against explicit
+values for backward/equal timestamps; limits, malformed evidence, cancellation, concurrent
+admission, grant revocation and changed finalized boundaries must refuse and release ownership.
+Recording-view metadata tests cover independent drafts, pinned templates, unresolved intent,
+idempotent creation, save/reopen and restart, clone admission, source revocation, aliases and
+finalization without retaining mappings or interfering with acquisition. Create/clone/open
+share the compatibility slots. Real HTTP/MCP pressure tests require a numeric one-second retry
+delay; permanent refusals omit it. The shipped renderer is driven directly to keep recording
+Resume/Open disabled while recorded-file actions work. These checks do not claim live panel
+integration or a sustained-performance gate.
+
+Revision-bound admission tests block source work while updating the metadata queue, check stale
+revisions before and after admission, and prove bootstrap borrows the same prefix. Generated
+5,000- and 10,000-topic two-member recordings check all selected values and timestamps at
+1 MiB. Projections, deduplication, partial/missing bindings, absent clocks, exact rolling/fixed
+windows, shared-slot retries, retained-page revocation, changed declarations and finalization
+and unchecked-failure cleanup are covered. The new operation participates in the schema/corpus sweep and isolated HTTP/MCP
+conformance workflow. The real-log sweep discovers it through the common registry; it does not
+create views in a production store. The opt-in HTTP stress workflow also repeats 32 binding
+reads on a generated 10,000-topic recording and releases all ownership afterward. These are functional checks, not the 32-lease declaration
+burst or season-sized store benchmark.
+
+### Visualization window buffers
+
+The Node budget suites exercise one window owner across recorded/live consumers, reservation
+before I/O, server reduction sizing, per-response caps including cached replies, bounded queued
+handoffs, stale/cancelled replies, renderer acknowledgements, hidden expiry and disposal. Shipped
+renderer tests keep hidden tables/plots alive before clearing and require their contents to be
+removed before release is acknowledged. Server endpoint and budget tests cover default/range,
+strict session registration, HTTP/MCP parity, capacity, session expiry and restart.
+
+After building the server and extension fixture, run the recorded runner with
+`WPILOG_PANEL_FIXTURE=true VSCODE_VERSION=<version>` for the recording-panel workflow. Set
+`WPILOG_DECODED_MIB=16` to write the real setting into its isolated editor profile; leaving it
+unset exercises the 64 MiB default. It opens a recorded plot beside a two-member, 20,000-topic
+recording, checks the shared owner and server-reported allowance, continues live updates, and
+requires zero accounted bytes after close. Run both the oldest supported and current editor,
+and the ordinary recorded workflow below. This is functional budget evidence, not the planned
+sustained heap/resource benchmark.
+
+### Recording analysis checkpoint
+
+`./gradlew test --tests '*RecordingAnalysisTest' --tests '*VisualizationEndpointTest' --tests '*FollowEndpointTest.recordingAnalysisReadsFreshFixedPrefixesDuringAppendAndAfterFinalization'`
+checks fresh cross-member timestamp selection, original-ordinal ties, exact integer tags,
+duplicate/backward samples, inclusive windows, struct angle statistics, non-finite filtering,
+diagnostics, every resource ceiling, cancellation, concurrent admission and final grant/boundary
+checks. Expected numeric answers are computed from small generated records. The HTTP/MCP
+cases check adapter parity, no-match/partial results and real capture finalization. Empty and
+all-non-finite numeric windows retain their no-match evidence and recover when new samples arrive. Conformance
+calls both source-analysis tools through their registered schemas, with independent numeric
+assertions. Server evidence and deliberate regression plants are under
+`/private/tmp/wpilog-visualization-stage3-recording-analysis/`.
+
+The extension analysis tests cover server-bound selectors, relative/absolute windows,
+coalescing, a bounded fair window queue, cursor supersession, pause/hide/close cancellation,
+late uncancellable replies, identity refusals, retry classification and acknowledged byte
+ownership. Host/renderer tests drive statistics and cursor controls, independent prefix labels,
+per-kind tokens and clearing without replacing plot/raw data. The native panel fixture adds a
+backward-timestamp append, exact latest/cursor checks and independent count/mean/sample-deviation
+expectations across two members, then fixed-to-finalized/full transitions. It also leaves a
+statistics window quiet, then verifies automatic recovery with one new sample and no edit or Retry. Evidence lives in
+`/private/tmp/wpilog-visualization-stage3-panel-analysis/`; sustained performance remains open.
+
+The field-selection continuation uses that same native runner. It adds custom nested schemas,
+a numeric array, empty arrays and a conflicting schema across two members without changing the
+20,000-name inventory size. Real inline controls must persist `.translation.x` and `[1]`,
+refuse malformed/wildcard/missing and conflicting selections without a new revision, and route
+the same numeric requirement to plot, latest, statistics and raw panels. Independent values
+2, 8 and 14 give count 3, mean 8 and sample deviation 6. Node checks cover reply identity,
+pre-I/O budget reservation, cancellation before queued gestures, stale revisions and detail
+proofs, and matching inline status. Evidence is in
+`/private/tmp/wpilog-visualization-stage3-field-selection/validation.md`.
+
+
+### Source chart analysis checkpoint
+
+`./gradlew test --tests '*SourceChartsTest' --tests '*VisualizationEndpointTest.chart*' --tests '*RenderChart*'`
+checks the shared histogram/pair arithmetic over generated file and two-member recording data.
+Expected bins, matched pairs and page totals are independently enumerated, including duplicates,
+backward records, explicit fields whose combined names collide with real entries, angles,
+non-finite samples, malformed payloads, empty pages and unrepresentable numeric boundaries.
+Native-writer coverage checks a fixed admission during appends and requested live-window limits.
+Resource, cancellation, concurrent-slot, grant and file-boundary tests require no retained reads
+after failure. HTTP/MCP tests check identical operation results, refusal codes and no-match
+status; conformance exercises both new registered tools, and the HTTP stress task includes
+bounded histogram/scatter calls. Evidence and deliberate regressions are under
+`/private/tmp/wpilog-visualization-stage3-chart-analysis/validation.md`.
+The subsequent chart-panel continuation uses the same isolated recording-panel runner. Its
+native controls check two-member numeric fields with values [2,8,14] and [6,12,18]: histogram
+bins [2,8):1 and [8,14]:2, with exact pairs retaining both samples at time 1. A separately
+written 600-point WPILOG uses x=i, y=2i and t=i/1000 to check file charts and replacement paging.
+The fixture drives Swap X and Y, presentation reuse, pause during a backward append, hide/reveal and shared window bounds. It also observes real scatter point drawing and histogram axes covering every bin edge from a zero count baseline.
+Node checks cover response identity/shape, stale pages, rate coalescing, queue fairness,
+pre-I/O accounting, renderer acknowledgement and exact plotting coordinates. Failing-first runs,
+plants and native results are kept under
+`/private/tmp/wpilog-visualization-stage3-chart-panels/validation.md`. Remote routing and sustained
+resource/performance gates remain separate.
+The historical-navigation continuation also uses that runner. Keyboard pan/zoom must recover
+old samples no longer present in a 45-second rolling buffer; a real bundled-plot mouse drag must
+persist and re-read its interval. A late historical append keeps the inspected axis fixed,
+Resume following restores the window, and file gestures check exact x=i samples. Node checks
+cover finite clock bounds, microsecond rounding, linking, generation guards, retained UI window
+state and refusal recovery. Evidence and plants are under
+`/private/tmp/wpilog-visualization-stage3-history/validation.md`. At that checkpoint, recording-history reduction
+was deferred; the native checks make no completeness claim beyond the displayed point cap.
+
+### Visualization recorded preview
+
+Run `./gradlew shadowJar extensionSmokeFixture`, then `npm run test:recorded-visualization`
+in `vscode-extension`, with an explicit `VSCODE_VERSION=1.101.0` or current stable version.
+The runner starts the built JAR as a foreground child with generated logs, a private home and
+configuration, then launches an isolated normal editor profile. It never uses the installed
+service or robot logs. It exercises the actual overview/working providers, bundled GridStack
+and uPlot under CSP, Arrow and typed cursor replies, panel controls via Enter, A/A/B isolation,
+and transport counts proving title/resize edits issue no new Arrow or cursor request,
+Entries routing, server-library save and a second Java/editor launch for draft/saved
+recovery. Stage 2b also drives searchable templates, exact compatibility, template update and
+export/import, independently checked statistics/raw rows, MCP revision delivery/conflict,
+request-counted hidden/reveal behavior and overview Resume/Open new view. Results, renderer
+diagnostics and screenshots stay under `build/visualization-stage2b`, or the directory selected
+by `WPILOG_RECORDED_OUTPUT`. The narrow DevTools connection belongs only to this disposable
+editor. Supplied dialogs enter the library title and select the export file; the native fixture
+checks library references and that saving creates no recording store. Cancellation is
+also covered in the Node fixture. Template digest checks use RFC 8785 vectors and an independent
+SHA-256 over the expected canonical string. The canonicalization dependency's upstream license
+and copyright notice ship under `META-INF/licenses/JCS-LICENSE.txt`. Native lifecycle regression remains
+`npm run test:visualization`. Run both on the oldest supported/current editor; Linux requires
+Xvfb, and actual Linux/Windows native results must not be inferred from Mac or mocked tests.
+
+Focused Java tests include `TemplateDefinitionTest`, `TemplateMetadataTest`,
+`VisualizationBindingsTest`, `ControlNotificationsTest`, `RecordedSourcesTest`,
+`VisualizationEndpointTest`, `VisualizationServiceTest`, `VisualizationTombstoneTest`,
+`VisualizationMetadataTest`, `VisualizationLibraryTest`, `VisualizationLibraryWorkspaceTest`,
+`LibraryTransportCapacityTest` and `CallerContextTest`. Library checks cover independent disk and
+response bounds, receipts, migration, source revocation and interrupted working checkpoints.
+The extension's real-server MCP fixture selects the exact version in its package manifest and
+asserts the running server version. Older JARs left in `build/libs` cannot satisfy this check.
+Its multiple-directory case expects source-selection guidance and explicitly selects the test
+directory; it never relies on a combined listing.
+Node tests cover optional registration,
+layout purity, Entries generations, lease/save ordering, aborts and response bounds. The focused
+review checks also cover per-record saved-file failures, direct open beyond a listing budget,
+locator reclamation, and host/renderer buffer retention across presentation revisions. Plants
+must catch owner/revision bypass, session cleanup/race failures, stale replies and budget
+removal. Template CAS/import receipts, role/type/unit refusal, JCS vectors, raw ordinal pages,
+notification audience/replay/overflow and every named MCP success path have focused checks.
+Deleted-view tests cross the live cap, exercise independent retry count/byte pressure, expiry,
+legacy recovery and locator release. Removed-template cases drive get/apply/export/update
+through real HTTP and MCP, plus deletion while an update waits on the store queue. Use
+`cleanTest` before a counted rerun; an up-to-date build executes no test cases.
+The frozen reader-equivalence corpus explicitly records these machine-local visualization
+operations as exclusions; `VisualizationConformance` supplies their isolated successful
+state transitions instead of comparing machine-specific IDs across frozen builds.
+Plant their corresponding failures before trusting a changed check.
+
+For bounded recording discovery, run `./gradlew extensionSmokeFixture` and then
+`VSCODE_VERSION=1.101.0 npm run test:inventory-overview` in `vscode-extension` (repeat with the
+current tested editor). The runner creates an active synthetic recording plus a finalized
+rollover with 20,000 distinct names, exceeding the old full-inventory limit. It drives the real
+HTTP owner and native controls through delayed catalog identification across hide/reveal,
+single-owner cleanup, paging, exact filtering, exclusive unavailable mode, fresh details, MCP parity,
+late replies, real capacity refusal/retry, hidden/revealed views and close. It waits through
+the actual five-minute absolute expiry and verifies automatic refresh with the same selected
+name and filter. Allow about six minutes per editor. Each run has private process state and
+writes its requests, assertions, screenshot and results under `build/visualization-stage3-overview/`.
+It does not install an extension or server. Native runs on other operating systems are separate
+evidence; ordinary Node tests exercise cancellation, memory admission, session ownership,
+response limits and renderer acknowledgements without a workbench. The lifecycle tests cover
+both catalog-reply orders, duplicate ready, close during summary delivery and cancelled failure;
+controller-to-renderer tests keep idle-expired rows disabled after failed replacement admission.
+
+### The data endpoint's streams
+
+`DataEndpointTest` drives `GET /data/entries` on the real transport over the fixture corpus and reads every Arrow stream back with `ArrowSpecReader`, a reader in the test sources written from the Arrow IPC specification that shares no code with the server's writer. Every stream and the CSV of the same request are left under `build/arrow-samples/`. CI's `arrow-crosscheck` job reads those with pyarrow, the reference implementation, and compares them to the CSV (`ci/check_arrow.py`), so a misreading the writer and the test reader could share does not pass. Run it by hand with `pip install pyarrow && python ci/check_arrow.py build/arrow-samples` after the Java test. Python is not needed for `./gradlew test`.
+
+The same check reads `native/native_unsigned.arrow`, written by `NativeUnsignedReadTest`,
+when the native sample directory is present. It compares the unsigned Arrow schema and exact
+integer boundary values with independent Python integers, including values above 2^53 and
+the signed 64-bit boundary. Native samples stay separate from the legacy CSV comparison,
+whose unsigned struct conversion is unchanged. Run the checker with `TZ=UTC` on a workstation:
+its legacy timestamp comparison uses Python's local interpretation of timezone-free datetimes,
+and the Linux CI runner already uses UTC.
+
+UTC windows are checked against rows worked out by hand from two clock readings: each end on a
+sample's instant, a microsecond inside it, open ends, fractions of a microsecond and offsets,
+buckets that keep the window's own edges, the samples before the first reading counted, and each
+refusal. A differential then asks every fixture with a clock for random UTC windows, ends on,
+inside and beside a sample's instant, and requires exactly the rows a whole read places inside by
+its own `timestamp_utc`. `capture=current` is checked against two recordings written by capture
+writers, with the capture's status moved from one to the next and then closed. A recording's
+mapping must equal a fresh read of every sampled prefix, for views held while later ones extend
+it, through a clock set, a clock stepped an hour and an ambiguous clock; and a ten-second UTC
+window on a two-hour recording, counted, decodes at most 40 of its 1,400 column blocks. A struct
+field's window, counted the same way with every record cold, decodes none of the entry's records
+from the WPILOG and at most 100 of the 4,218 blocks its entry and leaves hold. The CSV rows that
+Grafana reads are pinned character for character against text worked out by hand, with empty
+cells for a bucket of no finite sample and for a time before the clock's first reading, and the
+long arithmetic that maps each row's UTC is checked against the exact path on random clocks, ties
+on half a microsecond and products past a long included.
+
+### Shared reader checks
+
+`LocalLogAccessTest`, `LocalReadBoundaryTest`, `LocalReadConcurrencyTest` and `HeaderIndexTest`
+exercise selective decoding, explicit window ends, large integer timestamps and values, original
+ordinals, encoded-byte/workspace limits, close races and deterministic mapping release. The header
+checks use a counting byte source to reject whole-payload reads during indexing and window lookup.
+`LocalReadDifferentialTest` reads every generated fixture through 4 KiB mappings, checking raw
+record positions, timestamps, primitive values and struct fields against the independent reader
+and WPILib's dynamic struct decoder. Legacy enrichment and decode diagnostics are compared
+separately. No real logs, Python, native robot runtime or HTTP service are needed for these checks.
+
+`SampleCursorsTest` and `GuardedSampleCursorTest` pin shared traversal, whole-entry legacy
+materialization, exact diagnostic wording, large double-timestamp ties and cancellation during
+an active batch. The work checks require one backend admission for a complete entry, one framing
+pass per record and payload-only buffer views. Performance comparisons measure indexing and decoding
+separately, using mixed scalar/array/string entries, structs, incremental reloads and hot/cold live
+prefixes; a faster scan must not hide a slower read. Keep the original and candidate JARs frozen,
+alternate their run order, record allocation as well as time, and check values independently.
+`ManagedLogAccessTest` checks shared cache identity, path admission, shutdown
+and eviction lifetimes, live publication prefixes, and a source guard against direct manager
+acquisition in tools or encoders. `LiveReadEngineTest` checks fixed-prefix order facts and address
+accounting, hot/cold opaque values and the live decoder's exception policy. The existing reload,
+mapping-lifetime and data-endpoint checks retain their response-level assertions.
+
+`StoreReadCatalogTest` covers manifest-only admission, mirrors, provenance, invalid manifests,
+move aliases, shared system receipts and independently calculated REV offsets/drift.
+It also checks reuse and invalidation after new manifests, atomic replacements and payload loss,
+and session unions against hand-calculated clocks, overlap refusals, excluded unproven sources and
+provenance. It also checks captured rollover admission, exclusion of other recording runs, peer
+round trips, retained index budgets and concurrent catalog retirement. `SessionReadTest` drives
+the real HTTP transport over a writer-owned live prefix while new samples arrive.
+`SessionTransferReadTest` connects the actual recorder to a loopback NT4 fixture, holds a session
+prefix through growth and rollover, then reads the closed session after peer sync and mirroring
+over HTTP. Timestamps and values are checked against the generating function on every path;
+the manifests are written by the production recorder and transfer code. This proves those
+software paths, not real-robot networking or filesystem behavior on an untested platform.
+`SessionClockTest` checks inverse-window margins, clock chains and integer edges above 2^53;
+a narrow session query asserts its visited-record count as well as hand-calculated values.
+`SessionCursorTest` checks the aggregate lookahead bound. `QueryOperationsTest` pins
+projection, exact bucket boundaries, non-finite counts and shared arithmetic; the legacy bucket and
+window tests retain their independently computed expectations. The shared bucket fill is checked
+against computing every sample's bucket afresh, in and out of time order, and its boundaries
+against exact big-integer arithmetic. `LogFollowerTest` covers partial
+tails, incremental scan positions, backward timestamps and a held older prefix.
+`RevReadCacheTest` checks concurrent decode sharing, active memory charges, replacement identity,
+and input/decoded expansion bounds, plus selective decoding for exact device/signal keys.
+`RevLogParserNativeFormatTest` checks that selection in the other REV container format. `LocalLogAccessTest` pins shared sort charges across snapshots.
+`HttpAdmissionTest` includes 32 real clients that stop reading; `StreamingRequestsTest` proves
+the progress watchdog releases a blocked socket without the client disconnecting. These tests
+use bounded generated batches, so heap exhaustion cannot accidentally free a worker and disguise
+the starvation being tested.
+`HttpRefusalTest` sends an oversized body twenty times to each JSON body-reader route with a raw
+socket client that cannot hide a lost reply by retrying. It also tests chunked MCP/follow input;
+every attempt must receive the full refusal. `RequestBodiesTest` checks the four-MiB discard
+bound, deadline cleanup and real sockets that stop during draining or exactly at the discard
+ceiling; neither may strand a worker in request or response close. The follow endpoint
+suite separately proves that a size refusal leaves the retained retry page intact.
+`ReadEndpointTest`, `ReadWireTest`, `RemoteLogAccessTest` and `RevReadEndpointTest` cover the
+versioned read routes, exact typed values, projected/reduced Arrow shapes, multi-entry NDJSON
+and multipart Arrow, bounded leases, cancellation, completion proof and input/path admission.
+They also check retryable overload, schema errors and null-message failures. Read and store
+streaming admission are tested independently; the Python example test plants a decode problem
+and requires it to survive the terminal-status check. `StructSchemaDescriptionsTest` keeps schema provenance intact
+without trusting remote byte sizes. `ReadArrowTypesTest` pins the shared encoding owner.
+`ReadLibraryTest` compiles and runs a consumer with only `readerJar` on its classpath, including a
+mirror and recorded REV data, typed remote catalog/descriptor signatures, and checks that no home
+or cache is written. `ReadLibraryLinkageTest`
+checks bytecode dependencies so an unexercised error path cannot depend on an omitted server class.
+The public API and runnable examples are in [READ_API.md](READ_API.md).
+
+Run the frozen-build comparison below whenever shared scanning or decoding changes. The same-build
+conformance oracle alone cannot prove compatibility with the previous implementation. Both MCP and
+Arrow/CSV now use the shared admission and traversal; their compatibility materializer deliberately
+keeps the legacy whole-entry diagnostics and value representation.
+
+### Data store enrollment checks
+
+`LocalIngestionTest` advances an injected clock through discovery, settlement, queued rechecks,
+copy/move, duplicates, restart receipts, source limits and unavailable paths. `RevReconsiderationTest`
+checks REV-first arrival, ambiguity, the same-boot gate, bounded work and preservation of original
+provenance. `LocalIngestionEndpointTest` drives the real loopback policy, session, Origin and
+revision gates; `LocalIngestionListingTest` checks default/all views before counts and paging.
+`ConfigLoaderTest` and `MainRunTest` check that the named-server experimental flag defaults off
+and gates loading saved policy, grants and synchronization. Extension pure tests cover command
+visibility and direct-execution gating, setup cancellation, temporary lease restoration, source
+defaults, Move acknowledgment and reporting. Real editor checks exercise the glue on supported
+versions.
+
+Opting out must preserve the frozen read comparison. Placement changes additionally require the
+stratified Java replay; this feature does not change NT4, capture, the replayer or native transport.
+Measure idle discovery and restart on a synthetic store: retained receipts must cause no repeated
+payload hashing or correlation, and the timing report names its file/session count.
+
+### Comparing frozen server builds
+
+The shared read API migration starts with a behavior baseline, before changing the reader.
+The ordinary conformance sweep compares entry orders within one implementation. The frozen-build
+check instead runs the same requests against two packaged servers through HTTP MCP and the data
+endpoint. It requires zero unexplained differences; a passing comparison is evidence for the
+listed cases, not proof about every possible input or thread interleaving.
+
+Create the corpus once from the baseline checkout, outside the repository. Keep its absolute
+location, files, modification times and request manifest unchanged for both captures. Requests
+are generated from the baseline's schemas and entries, never regenerated from the candidate.
+The generator and capture commands refuse an existing output directory. Select the baseline
+JAR from `build/libs` explicitly; that folder can also hold earlier versions.
+
+```bash
+evidence=$(mktemp -d)
+git rev-parse HEAD > "$evidence/baseline-commit.txt"
+./gradlew shadowJar readBehaviorCorpus -PreadBehaviorDir="$evidence/corpus"
+cp /path/to/baseline-all.jar "$evidence/baseline.jar"
+python3 ci/capture_read_behavior.py --jar "$evidence/baseline.jar" \
+  --corpus "$evidence/corpus" --output "$evidence/baseline"
+```
+
+After the candidate is built, pass its JAR explicitly and use the baseline capture's `port`
+from `manifest.json`. The endpoint URL is part of the public response and must be identical.
+Do not copy the corpus to a second directory: paths and file identity affect responses and ETags.
+
+```bash
+python3 ci/capture_read_behavior.py --jar /path/to/candidate.jar \
+  --corpus "$evidence/corpus" --output "$evidence/candidate" --port <baseline-port>
+python3 ci/compare_read_behavior.py "$evidence/baseline" "$evidence/candidate" \
+  --report "$evidence/comparison.json"
+python3 -m unittest ci.test_compare_read_behavior ci.test_capture_read_behavior
+```
+
+The comparison preserves numeric tokens exactly, including integers above 2^53 and negative zero,
+array order, null versus missing fields, warnings, paths and complete result metadata. MCP JSON text
+blocks are compared structurally, and Arrow, CSV and image data retain their bytes. Object member
+order is immaterial. Only the top-level tool execution duration is replaced with numeric zero;
+its presence and numeric type remain checked. HTTP Date and the random MCP session identifier are
+run-specific; MCP Content-Length is omitted because the duration changes the response length.
+The capture manifest lists these rules. Raw responses are retained alongside compared results.
+Inputs' hashes and modification times are checked before and after each capture. The corpus hash
+is compared too. Missing cases, changed requests, malformed captures and incomplete runs fail.
+
+Each child has an isolated home and cache, no TBA credentials, and a loopback-only listener.
+Export artifacts are collected only for the request that writes them, and owned temporary exports
+are removed on exit. Startup health and initial REV synchronization are barriers, with their raw
+responses retained; their timing is not an equality assertion. Timings for every measured request,
+the JDK and JAR hash are recorded under `run`, separately from behavior.
+
+The corpus covers convention fixtures, a frozen manifest with system text, successful REV reads,
+typed and projected Arrow/CSV, multiple entries, nonempty windows and refusals. A malformed record
+outside a requested window pins existing whole-entry diagnostics. Existing consumers must retain
+those diagnostics when selective decoding arrives; scoped diagnostics will be a new API option.
+Runtime heap/cache observations, external TBA results and alignment writes are explicitly excluded.
+Live growth, cancellation, mapping lifetimes, concurrent access, mirrors and third-party adapters
+remain separate migration gates, with independent-reader and numerical checks retained. Do not
+call a static corpus comparison complete validation of those behaviors or silently fix a baseline
+defect during the refactor. Keep stage results separately reviewable; proceed through multiple
+stages only when the maintainer has authorized doing so. Neither passing checks nor a completed
+migration authorize publication.
 
 ## Changing or Adding a Tool
 
 A tool is more than its code: agents read its description and schema, and several tests hold them to what the code does. When you add a tool or change what one takes or returns:
 
-1. Follow the design principles. Return measurements with their sample counts, not conclusions. Find inputs through the shared signal resolver, never by a word in a name or by content alone: an entry is used when it is passed, follows a published convention, or is the only one of its type, and anything else that looks right is listed as a candidate. Say what was used, what was skipped, and what was cut short. A tool that cannot apply returns `not_applicable` or `no_match` with what it looked for, never an empty success.
+1. Follow the design principles. Return measurements with their sample counts, not conclusions. Find inputs through the shared signal resolver, never by a word in a name or by content alone. An entry is used when it is passed, follows a published convention, or is the only one of its type; anything else that looks right is listed as a candidate. Say what was used, what was skipped, and what was cut short. A tool that cannot apply returns `not_applicable` or `no_match` with what it looked for, never an empty success.
 2. Use the shared pieces. A tool that reads a log extends the log-reading base, which adds the `path` parameter and loads the log. Build the result with the shared response builder, take time ranges through the shared scope and window handling, and attach data quality where the result rests on statistics.
 3. Write the description for an agent. Name every output, and say what the numbers do and don't show. A test fails when a description names an output that no result contains.
 4. Register it and list it. Register the tool in the module with related tools, and add it to the catalog that `get_server_guide` and `suggest_tools` use.
 5. Test it. Add tests for the tool's behavior and the edge cases above, on a fixture or on a log built in the test. The conformance sweep calls a new tool automatically. If the tool has a required parameter that the sweep has no argument rule for, the sweep fails and says so, and the rule has to be added. Give the tool argument variants if its real analysis needs parameters that its schema leaves optional. Add the tool to the stress tests.
-6. Document it. Add a section to [TOOLS.md](TOOLS.md) (its parameter list must match the schema), an entry in the README's tool table, a call in `src/test/resources/tool-responses/scenarios.json`, and a line in [CHANGELOG.md](../CHANGELOG.md). If the change completes something in [IDEAS.md](IDEAS.md), update or remove that item.
+6. Document it. Add a section to [TOOLS.md](TOOLS.md) (its parameter list must match the schema) and an entry in the README's tool table, a call in `src/test/resources/tool-responses/scenarios.json`, and a line in [CHANGELOG.md](../CHANGELOG.md). If the change completes something in [IDEAS.md](IDEAS.md), update or remove that item.
 7. Regenerate the response reference. [TOOL_RESPONSES.md](TOOL_RESPONSES.md) is generated by running the calls in the scenarios file against real logs:
    ```bash
    ./gradlew test --tests '*.docs.*' -PtoolResponsesLogDir=/path/to/logs
@@ -134,21 +1055,166 @@ A tool is more than its code: agents read its description and schema, and severa
 
 ## Releasing
 
+The installer branch must merge together with the release carrying the `install` verb, since the installers on `main` download the latest release; older releases fall back to their own tagged installer.
+
+Before a release tag, run both commands on the team's log directory, with no file limit:
+
+```bash
+./gradlew test --tests '*.conformance.*' -PconformanceLogDir=/path/to/logs -PconformanceSample=full
+harness/run -PconformanceNative=full -PconformanceLogDir=/path/to/logs
+```
+
+Both must pass before tagging. A sampled milestone run is not the release check.
+
+Before tagging a full release, remove the temporary version and checkout qualifications in
+`README.md` (Installation), `vscode-extension/README.md` (the `--tag` paragraph under Install),
+`doc/OPERATIONS.md` (opening note and 6.1 Install), and `doc/STANDALONE.md` (opening note and
+Install). Search those four files case-insensitively for
+"0.10.0-dev5", "Until this version" and "For these changes before release". The qualifications
+apply only while `main` is older than this branch; keep the general checkout instructions and
+JDK advice. The `--tag v0.10.0-dev5 --with-extension` examples in `README.md` (Installation) and
+`doc/STANDALONE.md` (Install) also match the version search and stay: they show how to install a
+published pre-release, not a temporary qualification. The two installer URLs in
+`doc/STANDALONE.md` (Trying a pre-release) return from `development` to `main` at the release.
+
 1. Set `version` in `build.gradle` (e.g. `0.9.0`) and run `./gradlew syncExtensionVersion`; a test fails until the extension's files match.
 2. Regenerate [TOOL_RESPONSES.md](TOOL_RESPONSES.md), whose first lines carry the version (step 7 of [Changing or Adding a Tool](#changing-or-adding-a-tool)).
 3. Move the `[Unreleased]` entries in [CHANGELOG.md](../CHANGELOG.md) under the new version.
-4. Commit, then tag `v0.9.0` with an annotated tag (`git tag -a v0.9.0 -F notes.md`: the file's first line is the title, the rest becomes the release notes, and the workflow appends the list of merged pull requests) and push the tag.
+4. Commits stay local, one per change, until the maintainer says push. This is a public repository: never push, tag, bump the version, or merge to main without the maintainer's explicit consent in words for that specific action. A go-ahead for a task is not consent for the push that ends it. Only with that consent, tag `v0.9.0` with an annotated tag (`git tag -a v0.9.0 -F notes.md`: the file's first line is the title, the rest becomes the release notes, and the workflow appends the list of merged pull requests) and push the tag.
 
 The release workflow (`.github/workflows/release.yml`) builds the server JAR and the `.vsix` under that version and attaches both to a GitHub release. It stops if the tag and `build.gradle` disagree. A release without a suffix is also published to the Visual Studio Marketplace; see [Publishing to the Marketplace](#publishing-to-the-marketplace).
 
-A tag with a suffix, such as `v0.9.0-dev`, is published as a pre-release. For a pre-release, skip steps 2 and 3 and tag the version `build.gradle` carries. The repository's releases are immutable: a published release's files and tag cannot be changed, and a deleted release's tag name cannot be used again, so a release that went wrong gets a new version (`0.9.0-dev2` for a pre-release, the next patch version for a release), never a moved tag.
+A tag with a suffix, such as `v0.9.0-dev`, is published as a pre-release. For a pre-release, skip steps 2 and 3 and tag the version `build.gradle` carries. The repository's releases are immutable: a published release's files and tag cannot be changed, and a deleted release's tag name cannot be used again. So a release that went wrong gets a new version (`0.9.0-dev2` for a pre-release, the next patch version for a release), never a moved tag.
 
 ## Publishing to the Marketplace
 
-The extension is published under the `TripleHelixProgramming` publisher. Publishing needs a Personal Access Token from an Azure DevOps organization, created with **All accessible organizations** and the **Marketplace (Manage)** scope. The publisher's management page is [marketplace.visualstudio.com/manage](https://marketplace.visualstudio.com/manage). The release workflow publishes every release without a suffix when the token is in the `VSCE_PAT` repository secret; when the secret is missing or the token has expired, the workflow says so, and the `.vsix` from the GitHub release can be uploaded on the management page instead. The Marketplace does not accept a version with a suffix, and never accepts a version twice, so a release that must be redone gets a new patch version. `package.json`'s `publisher` must stay the publisher's ID: VS Code identifies the extension as `TripleHelixProgramming.wpilog-analyzer`, and changing it would make the Marketplace listing a different extension.
+The extension is published under the `TripleHelixProgramming` publisher. Publishing needs a Personal Access Token from an Azure DevOps organization, created with **All accessible organizations** and the **Marketplace (Manage)** scope. The publisher's management page is [marketplace.visualstudio.com/manage](https://marketplace.visualstudio.com/manage).
+
+The release workflow publishes every release without a suffix when the token is in the `VSCE_PAT` repository secret. When the secret is missing or the token has expired, the workflow says so, and the `.vsix` from the GitHub release can be uploaded on the management page instead. The Marketplace does not accept a version with a suffix, and never accepts a version twice, so a release that must be redone gets a new patch version.
+
+`package.json`'s `publisher` must stay the publisher's ID: VS Code identifies the extension as `TripleHelixProgramming.wpilog-analyzer`, and changing it would make the Marketplace listing a different extension.
 
 ## Contributing
 
 - Report bugs: open an issue with steps to reproduce, and the tool call and result if a tool gave a wrong answer.
 - Request features: open an issue describing your use case.
 - Submit pull requests: fork, make your changes, add tests, and open a PR.
+
+
+The recording-panel editor fixture runs after `./gradlew extensionSmokeFixture` and extension
+compilation, using `WPILOG_PANEL_FIXTURE=true VSCODE_VERSION=1.101.0 node
+out/smoke/recordedRun.js` from `vscode-extension/`; repeat with the cached current editor version.
+It creates an isolated profile and foreground synthetic server, with 20,000 topics and two
+members, and exercises paged selection, plots/value/statistics/raw tables, exact integer and
+backward-time appends, unchanged acquisition/analysis after title edits, pause/resume,
+independent peers, hide/reveal and finalization.
+It checks no single-file analysis fallback, no renderer/CSP errors and zero charged buffers at
+close. The fixture's stdin commands are test-only and expose no product route. Keep the recorded
+workflow fixture passing too; shared renderer changes can affect both paths. Native operating
+systems and sustained-load measurements are distinct from the ordinary Node/Java suites.
+
+### Recording health and recovery checkpoint
+
+The focused capture workflow starts a real loopback gateway and laptop acquisition, verifies
+quiet-source health, disconnects/reconnects the same robot clock, and checks the exact two-sample
+count and mean after resume. A different capture must not supply health for the old anchor.
+HTTP and MCP share the health result; grants, raw request limits and bounded dispatch remain
+part of transport coverage. A synthetic scheduler independently fixes publication duration,
+without borrowing sample timestamps as elapsed time.
+
+Extension tests cover shared health requests, cancellation, late replies, pause-state truth,
+same-anchor rebootstrap, whole-operation recovery retries and frame timing in separate clock
+domains. The native recording workflow replaces the HTTP/session/workspace owners while a
+writer continues, deliberately refuses one attachment, and checks restored configuration,
+working UUID, pause intent, fresh buffers and window allowance in both supported editor
+versions. It retires the unused opening overview before peer workflows, and waits for enabled
+controls rather than assuming that a follow's terminal state has already been painted.
+A second phase starts a fresh Java process after finalization and checks the same
+working record and exact restored samples. Abrupt process crashes and power cuts remain a
+separate gate. Evidence,
+failing-first runs and mutation plants are in
+`/private/tmp/wpilog-visualization-stage3-health-recovery/validation.md`.
+
+The dense-history continuation validates the shared native merge/reducer through HTTP and MCP,
+with a generated 10,000-sample two-member oracle (early extrema, duplicate and backward times),
+projection/nonfinite cases, work/byte limits, cancellation and post-read grant/boundary changes.
+Controller/renderer checks cover budget-sized requests, stale replies, pause/hide/close,
+empty-window refresh and incoming follow frames preserving displayed history. The recording
+native workflow now compares bucket counts/means/extrema to its own integer-time oracle,
+including 5,003 original records and a spike outside the old 4,096-point tail. Evidence belongs
+under `/private/tmp/wpilog-visualization-stage3-reduction/validation.md`; run the full build,
+license, broker and Node suites before the two native editor versions. The declaration-burst,
+season-sized store, sustained-performance and platform gates remain separate.
+
+The code-review follow-up adds real HTTP/MCP cases for missing array leaves, signed and
+unsigned enum/integer boundaries, declaration-only files and recordings, clock-present/absent
+relative windows, and null-versus-omitted chart arguments. The headless broker task now also
+runs the live analysis controller against a real Java server: an empty admitted binding returns
+`no_match`, and its first appended sample refreshes statistics, histogram and scatter without
+Retry. Numeric regressions check lag translation invariance and WPILib's documented brownout
+thresholds. Failing-first runs, plants and final checks are recorded in
+`/private/tmp/wpilog-code-review-fixes-2026-10-18/validation.md`.
+
+### Direct connection checkpoint tests
+
+`followBrokerTest` also runs `connectionsReal.test.ts` against two synthetic Java servers:
+API 2 inventory, follow, chart, qualified data and library requests keep their serving owner,
+including restart, with a local-daemon factory that fails if called. `npm test` runs the pure
+connection/URI/credential and rendered-source tests. These are loopback transport tests,
+not a real remote deployment or throughput measurement.
+
+The optional native M3 routing fixture uses already-installed macOS editor binaries and never
+downloads or installs them. After `compileExtension` and `extensionSmokeFixture`, run from
+`vscode-extension` with explicit `VSCODE_VERSION=1.101.0` (then `1.141.0`) and
+`WPILOG_CONNECTION_OUTPUT=/private/tmp/wpilog-source-mirror-m3`:
+`/opt/homebrew/bin/node out/smoke/connectionsRun.js`. It opens isolated editor windows,
+profiles and two synthetic server processes. Obtain permission before launching native UI
+validation. Inspect each `native-*/result.json`; compilation alone is not a native pass.
+
+### Replica identity and preservation checkpoint
+
+`MirrorPreservationTest` checks the no-network/no-deletion gate and callback lock ownership.
+`ReplicaContractsTest` checks exact master receipts, unconfirmed legacy copies, file and metadata
+accounting, overflow, interrupted marker publication, stale filesystem snapshots, cancellation
+and the two-builder/no-queue bound. `MirrorEndpointTest` drives local migration jobs, file/control
+contracts, malformed inputs, denied Origins and forwarded requests. `LegacyMirrorFixture` is
+test-only format-1 writer code retained to construct historical migration/read fixtures; its
+automatic eviction and capture-exclusion tests do not describe the current production engine.
+`ReadLibraryTest` runs external consumers against both store formats with the standalone reader
+JAR alone. The synthetic shop timeline explicitly selects its known store; the gateway probe
+directory remains a separate source and cannot supply an implicit default.
+
+M4 performs no payload transfers or cleanup execution. M5's `ReplicaTransfersTest` exercises
+synthetic generation transfers, strict size/hash/format checks, resumable flushed prefixes,
+capacity with incumbent bytes, blocked read/cancellation/shutdown ownership, file-lock release,
+publication/cleanup crash boundaries and reader retirement. `MirrorEndpointTest` drives cleanup,
+affected working views, persistent exclusions and retry through real HTTP. Raw-read corruption
+checks exercise the shared verified-hash owner. These seams simulate I/O failures and process
+interruption; they do not prove physical disk exhaustion, kernel hangs or power-loss durability.
+Run destructive mutation plants in an isolated scratch copy. Native durability/platform checks
+and throughput measurements remain separate gates.
+
+
+### Replica protocol and discovery checkpoint
+
+The synthetic `ReplicaProtocolTest`, `ReplicaProtocolBoundsTest`, `ReplicaNetworkTest`,
+`ReplicaClientTest`, `ReplicaMasterRecoveryTest`, `MirrorReplicaStatusTest`, `ClockRecordsTest`,
+`PeerDiscoveryTest` and `MirrorEndpointTest` exercise real HTTP pages/streams, owner limits,
+correction, exact MCP/Arrow numbers, history byte budgets, crash recovery and service grants.
+Extension checks cover plural configuration, selected control routes, bounded session traversal,
+renderer disclosure and generation changes before/during initial display.
+
+Native multicast is opt-in: `WPILOG_MDNS_PROOF=1 ./gradlew test --tests '*MdnsPeersTest'` uses a
+random synthetic service type and an eligible private interface. Ordinary tests skip this proof
+and do not use production service advertisements. The macOS private-interface proof passed;
+loopback did not discover its peer. Linux/Windows, interface churn, physical power loss and scale
+are not established by these tests. JmDNS is pinned to 3.6.2, Apache-2.0, with a bundled notice;
+see its [release](https://github.com/jmdns/jmdns/releases/tag/v3.6.2) and
+[build metadata](https://github.com/jmdns/jmdns/blob/v3.6.2/pom.xml).
+
+Before native editor validation, obtain permission to open the already-installed VS Code
+versions. Check 1.101.0 and stable: configure two synthetic mirrors, select each explicitly,
+inspect discovery/status, migrate a legacy fixture, include a session, close the window and
+observe the daemon continuing, then reopen a provisional preview and correct it through its
+master. It must disclose and refresh the same logical source. These checks do not require real
+robot data, a production daemon or installed extensions. Native checks remain a release gate.

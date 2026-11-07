@@ -1,0 +1,97 @@
+/* Match the workbench sidebar, including custom themes and high contrast. */
+body {
+  color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
+  background: var(--vscode-sideBar-background);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  margin: 0;
+  padding: 0;
+}
+button, input, select { font: inherit; }
+button { color: inherit; }
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--vscode-sideBar-background);
+}
+.toolbar-row { display: flex; align-items: center; gap: 4px; }
+.grouping-row { gap: 8px; }
+.grouping-row label { flex: none; color: var(--vscode-descriptionForeground); }
+#grouping {
+  flex: 1;
+  min-width: 0;
+  color: var(--vscode-dropdown-foreground);
+  background: var(--vscode-dropdown-background);
+  border: 1px solid var(--vscode-dropdown-border, transparent);
+  padding: 3px 4px;
+}
+#grouping:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+.filter-box {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+}
+.filter-box:focus-within { outline: 1px solid var(--vscode-focusBorder); }
+#filter {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  padding: 4px 6px;
+  line-height: 20px;
+}
+#filter::placeholder { color: var(--vscode-input-placeholderForeground); }
+.icon-button, .row-action, .chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 0;
+}
+.icon-button { width: 24px; height: 24px; font-size: 20px; }
+.icon-button:hover, .row-action:hover, .chevron:hover { background: var(--vscode-toolbar-hoverBackground); }
+.icon-button:disabled { visibility: hidden; }
+button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.collapse-icon { width: 12px; height: 10px; position: relative; border: 1px solid currentColor; }
+.collapse-icon::before { content: ""; position: absolute; width: 9px; height: 6px; left: -4px; top: -4px; border-top: 1px solid currentColor; border-left: 1px solid currentColor; }
+.collapse-icon::after { content: ""; position: absolute; width: 6px; top: 4px; left: 3px; border-top: 1px solid currentColor; }
+#status { color: var(--vscode-descriptionForeground); padding: 2px 12px 8px; overflow-wrap: anywhere; }
+#status:empty { display: none; }
+#status.error { color: var(--vscode-errorForeground); }
+#entries { padding-bottom: 8px; }
+.tree-group { padding-left: 14px; }
+.tree-row { display: flex; align-items: center; min-height: 24px; padding: 0 8px 0 4px; gap: 2px; cursor: pointer; }
+.tree-row:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-list-hoverForeground); }
+.tree-item:focus { outline: none; }
+.tree-item:focus > .tree-row {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+  outline: 1px solid var(--vscode-list-focusOutline, var(--vscode-focusBorder));
+  outline-offset: -1px;
+}
+.chevron, .chevron-space { width: 18px; height: 20px; flex: none; }
+.chevron::before { content: ""; width: 5px; height: 5px; border-top: 1px solid currentColor; border-right: 1px solid currentColor; transform: rotate(45deg); }
+.chevron.expanded::before { transform: rotate(135deg); margin-top: -4px; }
+.entry-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry-description { min-width: 0; margin-left: 5px; color: var(--vscode-descriptionForeground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-item:focus > .tree-row .entry-description { color: inherit; opacity: .8; }
+.row-actions { display: flex; margin-left: auto; padding-left: 4px; gap: 2px; }
+.row-action { min-width: 20px; height: 20px; padding: 0 3px; font-size: 12px; }
+.row-action:hover { outline: 1px solid var(--vscode-contrastBorder, transparent); }
+.note, .loading-children { padding: 4px 12px; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
+.note { cursor: default; }

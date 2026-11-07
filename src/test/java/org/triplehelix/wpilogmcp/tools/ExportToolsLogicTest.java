@@ -21,6 +21,35 @@ import org.triplehelix.wpilogmcp.mcp.ToolRegistry;
 
 class ExportToolsLogicTest extends ToolTestBase {
 
+  @Test void aFailedCsvWriteCannotReportSuccess(@TempDir Path directory) throws Exception {
+    var previous = ExportTools.getExportDirectory();
+    ExportTools.setExportDirectory(directory.toString());
+    try {
+      var log = new MockLogBuilder().setPath("/test/write-failure.wpilog")
+          .addNumericEntry("/x", new double[]{0, 1}, new double[]{1, 2}).build();
+      putLogInCache(log);
+      var tool = new ExportTools.ExportCsvTool() {
+        @Override java.io.Writer openWriter(Path path) throws java.io.IOException {
+          return new java.io.FilterWriter(Files.newBufferedWriter(path)) {
+            @Override public void write(char[] chars, int start, int length) throws java.io.IOException {
+              out.write(chars, start, Math.min(10, length)); out.flush();
+              throw new java.io.IOException("Synthetic disk full after a partial write");
+            }
+          };
+        }
+      };
+      var args = new JsonObject(); args.addProperty("path", log.path()); args.addProperty("name", "/x");
+      args.addProperty("output_path", "failed.csv");
+      var result = tool.execute(args).getAsJsonObject();
+      assertEquals("error", result.get("status").getAsString(), result.toString());
+      assertTrue(result.get("error").getAsString().contains("disk full"), result.toString());
+      assertFalse(Files.exists(directory.resolve("failed.csv")), "A failed write must not publish a partial CSV");
+      try (var files = Files.list(directory)) {
+        assertEquals(java.util.List.of(), files.toList(), "Failed exports must remove their temporary file");
+      }
+    } finally { ExportTools.setExportDirectory(previous.toString()); }
+  }
+
   @Override
   protected void registerTools(ToolRegistry registry) {
     ExportTools.registerAll(registry);
@@ -31,7 +60,7 @@ class ExportToolsLogicTest extends ToolTestBase {
   class GenerateReportBrownoutTests {
 
     @Test
-    @DisplayName("voltage 6.9V is NOT high brownout risk (above 6.8V threshold)")
+    @DisplayName("voltage 6.9V is NOT high brownout risk (above 6.3V threshold)")
     void testBrownoutNotHighAt6_9V() throws Exception {
       var log = new MockLogBuilder()
           .setPath("/test/brownout_safe.wpilog")
@@ -51,17 +80,18 @@ class ExportToolsLogicTest extends ToolTestBase {
       assertTrue(resultObj.has("battery"), "Should have battery section");
       var battery = resultObj.getAsJsonObject("battery");
       assertNotEquals("HIGH", battery.get("brownout_risk").getAsString(),
-          "6.9V min should NOT be HIGH brownout risk (threshold is 6.8V)");
+          "6.9V min should NOT be HIGH brownout risk (threshold is 6.3V)");
     }
 
-    @Test
-    @DisplayName("voltage 6.7V IS high brownout risk (below 6.8V threshold)")
-    void testBrownoutHighAt6_7V() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"6.2,HIGH", "6.7,MODERATE"})
+    @DisplayName("voltage crossings use the assumed 6.3V output-disable threshold")
+    void reportUsesOutputDisableThreshold(double low, String risk) throws Exception {
       var log = new MockLogBuilder()
           .setPath("/test/brownout_danger.wpilog")
           .addNumericEntry("/Robot/BatteryVoltage",
               new double[]{0, 1, 2, 3, 4},
-              new double[]{12.0, 11.5, 6.7, 10.0, 12.0})
+              new double[]{12.0, 11.5, low, 10.0, 12.0})
           .build();
       putLogInCache(log);
 
@@ -74,8 +104,8 @@ class ExportToolsLogicTest extends ToolTestBase {
       assertTrue(resultObj.get("success").getAsBoolean());
       assertTrue(resultObj.has("battery"), "Should have battery section");
       var battery = resultObj.getAsJsonObject("battery");
-      assertEquals("HIGH", battery.get("brownout_risk").getAsString(),
-          "6.7V min should be HIGH brownout risk (below 6.8V threshold)");
+      assertEquals(6.3, battery.get("brownout_threshold").getAsDouble());
+      assertEquals(risk, battery.get("brownout_risk").getAsString());
     }
   }
 
@@ -308,7 +338,7 @@ class ExportToolsLogicTest extends ToolTestBase {
       try {
         // Create a symlink inside the export dir pointing to /tmp/outside
         var outsideDir = Files.createTempDirectory("outside");
-        var symlinkPath = exportDir.resolve("escape_link");
+        var symlinkPath = exportDir.toRealPath().resolve("escape_link");
         Files.createSymbolicLink(symlinkPath, outsideDir);
 
         var log = new MockLogBuilder()
@@ -321,7 +351,7 @@ class ExportToolsLogicTest extends ToolTestBase {
         var args = new JsonObject();
         args.addProperty("path", "/test/export_csv.wpilog");
         args.addProperty("name", "/Test/Values");
-        args.addProperty("output_path", symlinkPath.resolve("evil.csv").toString());
+        args.addProperty("output_path", symlinkPath.resolve("uncreated").resolve("evil.csv").toString());
 
         var result = tool.execute(args);
         var resultObj = result.getAsJsonObject();
@@ -329,6 +359,7 @@ class ExportToolsLogicTest extends ToolTestBase {
         assertFalse(resultObj.get("success").getAsBoolean(),
             "Should reject export through symlink that escapes export dir");
         assertTrue(resultObj.get("error").getAsString().contains("not allowed"));
+        assertFalse(Files.exists(outsideDir.resolve("uncreated")), "Refusal must precede directory creation outside the root");
       } finally {
         ExportTools.setExportDirectory(savedExportDir.toString());
       }
